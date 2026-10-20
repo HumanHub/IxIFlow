@@ -76,6 +76,12 @@ internal sealed class ExecutionCheckpoint
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<InspectionError>? Diagnostics { get; set; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? OperatorDiagnosticIds { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public InspectionError? ResultDiagnostic { get; set; }
+
     /// <summary>New raw records travel once with the commit, never in checkpoint JSON.</summary>
     [JsonIgnore]
     public List<WorkflowDiagnostic> PendingDiagnostics { get; } = [];
@@ -99,18 +105,29 @@ internal sealed class ExecutionCheckpoint
         return safe;
     }
 
-    /// <summary>
-    /// Keep the latest diagnostic and every pending activity/stop's diagnostic. Completed, caught and
-    /// retried failures get only the single latest slot, independent of the number of loop iterations.
-    /// </summary>
+    /// <summary>Operator-authored records are bounded by operator actions, independently of failures.</summary>
+    public InspectionError RecordOperatorDiagnostic(string code, string message)
+    {
+        var diagnostic = RecordDiagnostic(code, message);
+        (OperatorDiagnosticIds ??= []).Add(diagnostic.DiagnosticId);
+        return diagnostic;
+    }
+
+    /// <summary>Keep operator records, the latest failure, and all pending activity/stop identities.</summary>
     public void RetainDiagnostics()
     {
+        var operatorIds = (OperatorDiagnosticIds ?? []).ToHashSet(StringComparer.Ordinal);
+        var latest = Diagnostics?.LastOrDefault(item => !operatorIds.Contains(item.DiagnosticId));
+        ResultDiagnostic = OperatorStop?.Diagnostic ?? Continuations
+            .FirstOrDefault(item => item.Status == ContinuationStatus.WaitingResolution)
+            ?.PendingActivity?.ResolutionDiagnostic ?? latest;
         if (Diagnostics is not { Count: > 0 })
             return;
         var retained = Continuations.Where(item => item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled))
             .Select(item => item.PendingActivity?.ResolutionDiagnostic?.DiagnosticId)
-            .Append(OperatorStop?.Diagnostic?.DiagnosticId).Append(Diagnostics[^1].DiagnosticId)
+            .Append(OperatorStop?.Diagnostic?.DiagnosticId).Append(latest?.DiagnosticId)
             .Where(id => id != null).ToHashSet(StringComparer.Ordinal);
+        retained.UnionWith(operatorIds);
         Diagnostics.RemoveAll(item => !retained.Contains(item.DiagnosticId));
         PendingDiagnostics.RemoveAll(item => !retained.Contains(item.DiagnosticId));
     }

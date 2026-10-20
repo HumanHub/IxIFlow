@@ -67,7 +67,7 @@ internal static class OperatorTrace
     public static void Resolved(ExecutionCheckpoint checkpoint, ActivityInvocationState pending,
         ActivityResolutionState decision, DateTime now)
     {
-        var diagnostic = string.IsNullOrEmpty(decision.Note) ? null : checkpoint.RecordDiagnostic("OperatorNote", decision.Note);
+        var diagnostic = string.IsNullOrEmpty(decision.Note) ? null : checkpoint.RecordOperatorDiagnostic("OperatorNote", decision.Note);
         if (checkpoint.Trace.Accepts(TraceEntryType.ActivityResolved, now))
             checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now, EntryType = TraceEntryType.ActivityResolved,
                 Error = diagnostic,

@@ -75,14 +75,17 @@ public sealed class DiagnosticRedactionTests : IClassFixture<SqliteTestDatabase<
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task RawExceptionLoggerRequiresExplicitCategoryOptIn(bool optIn)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task RawExceptionLoggerRequiresExplicitEngineOptIn(bool optIn, bool providerSpecific)
     {
         var capture = new Capture();
-        using var services = Services(new InMemoryWorkflowStateRepository(), capture, optIn: optIn);
+        using var services = Services(new InMemoryWorkflowStateRepository(), capture, optIn: optIn,
+            providerSpecific: providerSpecific);
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(
-            Workflow.Create<Data>("SensitiveLogger" + optIn).Step<Noop>().Step<ThrowsSecret>().Build(), new Data());
+            Workflow.Create<Data>("SensitiveLogger" + optIn + providerSpecific).Step<Noop>().Step<ThrowsSecret>().Build(), new Data());
         Assert.Equal(Secret, result.ErrorMessage);
         var sensitive = capture.Entries.Where(item => item.Category == InspectionRedactionPolicy.SensitiveDiagnosticsCategory).ToArray();
         if (optIn)
@@ -93,6 +96,7 @@ public sealed class DiagnosticRedactionTests : IClassFixture<SqliteTestDatabase<
                 Assert.Equal(Secret, item.Error!.Message);
                 Assert.NotEmpty(item.Error.StackTrace!);
                 Assert.Contains("DiagnosticId", item.State);
+                Assert.Contains(result.Diagnostic!.DiagnosticId, item.State);
             });
             Assert.Contains(sensitive, item => item.Text.Contains(nameof(ThrowsSecret)));
         }
@@ -205,18 +209,25 @@ public sealed class DiagnosticRedactionTests : IClassFixture<SqliteTestDatabase<
         Assert.All(capture.Entries, entry => Assert.DoesNotContain(Secret, entry.Text + entry.State));
     }
 
-    private static ServiceProvider Services(IWorkflowStateRepository store, Capture capture, bool? authorize = null, bool optIn = false)
+    private static ServiceProvider Services(IWorkflowStateRepository store, Capture capture, bool? authorize = null,
+        bool optIn = false, bool providerSpecific = false)
     {
         var services = new ServiceCollection();
-        services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(capture));
-        services.AddIxIFlow();
+        services.AddLogging(logging =>
+        {
+            logging.SetMinimumLevel(LogLevel.Trace).AddProvider(capture);
+            if (providerSpecific)
+                logging.AddFilter<Capture>(InspectionRedactionPolicy.SensitiveDiagnosticsCategory, LogLevel.Trace);
+            else
+                logging.AddFilter(InspectionRedactionPolicy.SensitiveDiagnosticsCategory, LogLevel.Trace);
+        });
+        services.AddIxIFlow(options => options.EnableSensitiveDiagnostics = optIn);
         services.AddSingleton(store);
         services.AddTransient<Noop>();
         services.AddTransient<ThrowsSecret>();
         services.AddTransient<Recovers>();
         services.AddTransient<BadMapping>();
         if (authorize is { } allowed) services.AddScoped<IWorkflowDiagnosticsAuthorizer>(_ => new Authorizer(allowed));
-        if (optIn) services.AddLogging(logging => logging.AddFilter(InspectionRedactionPolicy.SensitiveDiagnosticsCategory, LogLevel.Error));
         return services.BuildServiceProvider();
     }
 

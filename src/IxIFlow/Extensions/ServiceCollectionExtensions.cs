@@ -23,14 +23,16 @@ public static class ServiceCollectionExtensions
     /// <returns>The builder, whose <see cref="IIxIFlowBuilder.Services"/> continues the service collection</returns>
     public static IIxIFlowBuilder AddIxIFlow(this IServiceCollection services)
     {
-        services.AddLogging(logging => logging.AddFilter(InspectionRedactionPolicy.SensitiveDiagnosticsCategory, LogLevel.None));
+        services.AddLogging();
+        services.TryAddSingleton(InspectionRedactionPolicy.Default);
         services.AddScoped<IWorkflowDiagnostics, WorkflowDiagnostics>();
         // Core workflow services
         services.TryAddSingleton<HostSettings>(_ => HostSettings.Default);
         services.TryAddSingleton(RetentionSettings.Default);
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
-            provider.GetService<ILogger<WorkflowHost>>(), provider.GetService<ILogger<SensitiveDiagnostics>>()));
+            provider.GetService<ILogger<WorkflowHost>>(), provider.GetService<ILogger<SensitiveDiagnostics>>(),
+            provider.GetRequiredService<InspectionRedactionPolicy>()));
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
@@ -78,6 +80,7 @@ public static class ServiceCollectionExtensions
 
         // Add core services
         services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton(new InspectionRedactionPolicy(options.EnableSensitiveDiagnostics)));
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
         if (!Enum.IsDefined(options.TraceDetail))
@@ -250,6 +253,9 @@ internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinitio
 /// </summary>
 public class IxIFlowOptions
 {
+    /// <summary>Emit original exceptions to the sensitive diagnostics logger category. Off by default.</summary>
+    public bool EnableSensitiveDiagnostics { get; set; }
+
     /// <summary>How long unreferenced artifacts are retained; defaults to 90 days.</summary>
     public TimeSpan ArtifactRetention { get; set; } = TimeSpan.FromDays(90);
 

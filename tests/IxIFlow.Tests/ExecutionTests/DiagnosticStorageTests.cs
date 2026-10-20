@@ -107,16 +107,35 @@ public sealed class DiagnosticStorageTests : IClassFixture<SqliteTestDatabase<Di
         Assert.Equal(2, savedErrors!.Count);
         Assert.DoesNotContain(nameof(WorkflowDiagnostic.Message), JsonSerializer.Serialize(savedErrors));
         Assert.DoesNotContain(nameof(WorkflowDiagnostic.StackTrace), JsonSerializer.Serialize(savedErrors));
+        var newestFailure = Assert.Single(raw, item => item.DiagnosticId == savedErrors[^1].DiagnosticId);
         // Completing one activity must preserve the other unresolved activity's original diagnostic.
         await client.ResolveAsync(saved.InstanceId, pending[0].InvocationId,
             ActivityResolution.Completed(new Dictionary<string, object?>()));
         var stillPending = Assert.Single(await client.GetPendingActivitiesAsync(saved.InstanceId));
         var remaining = await diagnostics.ReadAsync(saved.InstanceId);
-        Assert.Contains(remaining, item => stillPending.Reason!.Contains(item.DiagnosticId) && item.Message == Secret);
+        var unresolvedFailure = Assert.Single(remaining, item => stillPending.Reason!.Contains(item.DiagnosticId));
+        Assert.Contains(unresolvedFailure, raw);
+        Assert.Contains(newestFailure, remaining);
+        var firstNote = Assert.Single(remaining, item => item.ErrorType == "OperatorNote");
+        Assert.Equal("Observed completed", firstNote.Message);
+        Assert.Null(firstNote.StackTrace);
         var finished = await client.ResolveAsync(saved.InstanceId, stillPending.InvocationId,
             ActivityResolution.Completed(new Dictionary<string, object?>()));
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
-        Assert.Single(await diagnostics.ReadAsync(saved.InstanceId));
+        var retained = await diagnostics.ReadAsync(saved.InstanceId);
+        Assert.Equal(newestFailure, Assert.Single(retained, item => item.ErrorType != "OperatorNote"));
+        var notes = retained.Where(item => item.ErrorType == "OperatorNote").ToArray();
+        Assert.Equal(2, notes.Length);
+        Assert.Contains(firstNote, notes);
+        var resolutions = (await client.GetTraceAsync(saved.InstanceId))
+            .Where(entry => entry.EntryType == TraceEntryType.ActivityResolved).ToArray();
+        Assert.Equal(2, resolutions.Length);
+        Assert.All(notes, note =>
+        {
+            Assert.Equal("Observed completed", note.Message);
+            Assert.Null(note.StackTrace);
+            Assert.Contains(resolutions, entry => entry.Error?.DiagnosticId == note.DiagnosticId);
+        });
         await store.DeleteWorkflowInstanceAsync(saved.InstanceId);
         Assert.Empty(await diagnostics.ReadAsync(saved.InstanceId));
         Assert.Empty(await store.GetDiagnosticsAsync(saved.InstanceId));
@@ -220,7 +239,7 @@ public sealed class DiagnosticStorageTests : IClassFixture<SqliteTestDatabase<Di
             Sizes.Add(commit.StateBytes() + commit.Diagnostics.Sum(item => Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(item))));
             foreach (var diagnostic in commit.Diagnostics)
                 Writes[diagnostic.DiagnosticId] = Writes.GetValueOrDefault(diagnostic.DiagnosticId) + 1;
-            MaxDiagnostics = Math.Max(MaxDiagnostics, (await GetDiagnosticsAsync(commit.InstanceId)).Count);
+            MaxDiagnostics = Math.Max(MaxDiagnostics, (await GetDiagnosticsForIncarnationAsync(commit.InstanceId, commit.Incarnation)).Count);
             // No raw diagnostic payload can hide in the trunk or any rewritten checkpoint part.
             var state = ExecutionCheckpoint.ReadTrunk(commit.ReadTrunk().ExecutionStateJson);
             Assert.DoesNotContain(nameof(WorkflowDiagnostic.StackTrace), JsonSerializer.Serialize(state.Diagnostics));

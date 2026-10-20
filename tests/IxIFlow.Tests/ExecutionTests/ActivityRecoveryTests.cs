@@ -205,7 +205,8 @@ public sealed class ActivityRecoveryTests
         var diagnostic = history.Single(entry => entry.EntryType == TraceEntryType.ActivityResolved).Error!;
         Assert.Equal("OperatorNote", diagnostic.ErrorType);
         Assert.Matches("^[0-9a-f]{32}$", diagnostic.DiagnosticId);
-        var raw = Assert.Single(await services.GetRequiredService<IWorkflowDiagnostics>().ReadAsync(running.InstanceId));
+        var raw = Assert.Single(await services.GetRequiredService<IWorkflowDiagnostics>().ReadAsync(running.InstanceId),
+            item => item.DiagnosticId == diagnostic.DiagnosticId);
         Assert.Equal(diagnostic.DiagnosticId, raw.DiagnosticId);
         Assert.Equal("Checked the provider receipt", raw.Message);
     }
@@ -1019,6 +1020,8 @@ public sealed class ActivityRecoveryTests
             _inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
         public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId) =>
             _inner.GetDiagnosticsAsync(instanceId);
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation) =>
+            _inner.GetDiagnosticsForIncarnationAsync(instanceId, incarnation);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             _inner.GetTraceAsync(instanceId, afterSequence, limit);

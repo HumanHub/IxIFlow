@@ -251,8 +251,11 @@ public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStor
     /// </summary>
     Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000);
 
-    /// <summary>Raw immutable diagnostic records. Only the authorized diagnostics service exposes this read.</summary>
-    Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId);
+    /// <summary>
+    /// Raw immutable diagnostic records, read atomically only while the instance has the authorized incarnation.
+    /// Only the authorized diagnostics service exposes this read.
+    /// </summary>
+    Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation);
 
     /// <summary>
     /// Deletes an instance and its inbox, waits and receipts. A child whose parent still waits for it ends

@@ -13,7 +13,10 @@ public sealed class InspectionRedactionPolicy
     public const string SensitiveDiagnosticsCategory = "IxIFlow.Core.SensitiveDiagnostics";
     private static readonly ConditionalWeakTable<Exception, InspectionError> Errors = new();
 
-    private InspectionRedactionPolicy() { }
+    private readonly bool _enableSensitiveDiagnostics;
+
+    internal InspectionRedactionPolicy(bool enableSensitiveDiagnostics = false) =>
+        _enableSensitiveDiagnostics = enableSensitiveDiagnostics;
 
     /// <summary>A random correlation ID, never derived from the message or stack.</summary>
     public InspectionError Error(Exception error) => Errors.GetValue(error, value =>
@@ -47,9 +50,13 @@ public sealed class InspectionRedactionPolicy
     /// <summary>Projects a stored diagnostic without exposing its message or stack.</summary>
     public InspectionError Error(WorkflowDiagnostic diagnostic) => new(diagnostic.ErrorType, diagnostic.DiagnosticId);
 
-    /// <summary>The safe identity of a result, including rejections that did not produce a checkpoint.</summary>
-    public InspectionError ResultError(WorkflowExecutionResult result) => result.Diagnostic ??=
-        new(result.ErrorType ?? result.Status.ToString(), Guid.NewGuid().ToString("N"));
+    /// <summary>The committed diagnostic identity, or none for a data-free engine rejection.</summary>
+    public InspectionError? ResultError(WorkflowExecutionResult result) => result.Diagnostic;
+
+    /// <summary>Only explicitly classified engine reasons may expose their original text.</summary>
+    public string ResultReason(WorkflowExecutionResult result) => result.ErrorKind != null
+        ? result.ErrorMessage ?? result.ErrorKind.ToString()!
+        : result.Diagnostic?.ToString() ?? result.Status.ToString();
 
     /// <summary>Projects a delivery for an inspection listing. Store reads remain execution primitives.</summary>
     public OutboxDelivery Delivery(OutboxDelivery delivery) => delivery with
@@ -125,6 +132,7 @@ public sealed class InspectionRedactionPolicy
 
     internal void LogSensitive(ILogger<SensitiveDiagnostics>? logger, Exception error)
     {
+        if (!_enableSensitiveDiagnostics) return;
         var safe = Error(error);
         logger?.LogError(error, "Sensitive diagnostic {ErrorType} ({DiagnosticId})", safe.ErrorType, safe.DiagnosticId);
     }
@@ -136,7 +144,7 @@ public sealed record InspectionError(string ErrorType, string DiagnosticId)
     public override string ToString() => $"{ErrorType} ({DiagnosticId})";
 }
 
-/// <summary>Logger category for raw exceptions. Disabled by AddIxIFlow; explicitly enable its category to opt in.</summary>
+/// <summary>Logger category for raw exceptions. Emission requires the engine sensitive-diagnostics setting.</summary>
 public sealed class SensitiveDiagnostics;
 
 /// <summary>Raw diagnostics from a checkpoint. Return only after application authorization.</summary>

@@ -113,8 +113,12 @@ public sealed partial class WorkflowHost
             instance.LastErrorStackTrace = null;
             var state = JsonNode.Parse(instance.ExecutionStateJson)!;
             state["OperatorStop"] = null;
-            // Termination closes every activity. Only the recent diagnostic slot remains live.
-            var retained = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson).Diagnostics?.TakeLast(1).ToArray() ?? [];
+            // Termination closes activities, preserving operator-authored records and the latest failure.
+            var prior = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
+            var operatorIds = (prior.OperatorDiagnosticIds ?? []).ToHashSet(StringComparer.Ordinal);
+            var latest = prior.Diagnostics?.LastOrDefault(item => !operatorIds.Contains(item.DiagnosticId));
+            var retained = prior.Diagnostics?.Where(item => operatorIds.Contains(item.DiagnosticId) || item == latest).ToArray() ?? [];
+            state["ResultDiagnostic"] = null;
             state["Diagnostics"] = retained.Length == 0 ? null : JsonSerializer.SerializeToNode(retained);
             instance.ExecutionStateJson = state.ToJsonString();
             instance.Stored = null;

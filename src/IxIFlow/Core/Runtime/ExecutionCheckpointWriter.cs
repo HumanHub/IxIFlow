@@ -61,7 +61,7 @@ internal static class ExecutionCheckpointWriter
             childCancellations: checkpoint.ChildCancellations.ToArray(),
             parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: checkpoint.Trace.Pending,
             diagnostics: checkpoint.PendingDiagnostics,
-            retainedDiagnosticIds: checkpoint.Diagnostics?.Select(item => item.DiagnosticId).ToArray() ?? []);
+            retainedDiagnosticIds: checkpoint.Diagnostics is { Count: > 0 } diagnostics ? diagnostics.Select(item => item.DiagnosticId).ToArray() : null);
         using var span = Telemetry.Source.StartActivity("commit");
         Telemetry.Tag(span, instance);
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();

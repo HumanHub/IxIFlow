@@ -83,6 +83,7 @@ public sealed partial class WorkflowHost
                 {
                     InstanceId = instanceId,
                     Status = WorkflowExecutionStatus.Running,
+                    ErrorKind = WorkflowErrorKind.InvalidState,
                     ErrorMessage = "Cancellation was requested; the executing host will stop the workflow"
                 };
             if (instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
@@ -108,7 +109,7 @@ public sealed partial class WorkflowHost
 
         private async Task<WorkflowExecutionResult?> RemovedResultAsync(string instanceId) =>
             await _store.GetTombstoneAsync(instanceId) != null
-                ? new WorkflowExecutionResult { InstanceId = instanceId, Status = WorkflowExecutionStatus.Removed,
+                ? new WorkflowExecutionResult { InstanceId = instanceId, Status = WorkflowExecutionStatus.Removed, ErrorKind = WorkflowErrorKind.InstanceRemoved,
                     ErrorMessage = "The workflow instance and its retained result were removed by retention" }
                 : null;
 
@@ -143,7 +144,8 @@ public sealed partial class WorkflowHost
             if (checkpoint.StructureHash != scopes.StructureHash)
                 return Rejected(instanceId, scopes.Mismatch(definition, checkpoint.StructureHash));
             if (checkpoint.OperatorStop is { } stop)
-                return Rejected(instanceId, stop.Describe());
+                return new WorkflowExecutionResult { InstanceId = instanceId, Status = WorkflowExecutionStatus.Faulted,
+                    ErrorMessage = stop.Describe(), Diagnostic = stop.Diagnostic };
             var continuation = checkpoint.Continuations.SingleOrDefault(item =>
                 item.PendingActivity?.Id == invocationId && item.Status == ContinuationStatus.WaitingResolution)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
@@ -676,11 +678,12 @@ public sealed partial class WorkflowHost
             return checkpoint.OperatorStop is { } stop ? Stopped(existing, stop) : ExistingResult(existing);
         }
 
-        private static WorkflowExecutionResult Rejected(string instanceId, string reason) => new()
+        private static WorkflowExecutionResult Rejected(string instanceId, string reason, WorkflowErrorKind kind = WorkflowErrorKind.InvalidState) => new()
         {
             InstanceId = instanceId,
             Status = WorkflowExecutionStatus.Faulted,
-            ErrorMessage = reason
+            ErrorMessage = reason,
+            ErrorKind = kind
         };
 
         private static WorkflowExecutionStatus StatusOf(WorkflowStatus status) => status switch
@@ -698,10 +701,7 @@ public sealed partial class WorkflowHost
         private static InspectionError? ResultDiagnostic(WorkflowInstance instance)
         {
             if (!HasStructuredCheckpoint(instance)) return null;
-            var checkpoint = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
-            return checkpoint.OperatorStop?.Diagnostic ?? checkpoint.Continuations
-                .FirstOrDefault(item => item.Status == ContinuationStatus.WaitingResolution)
-                ?.PendingActivity?.ResolutionDiagnostic ?? checkpoint.Diagnostics?.LastOrDefault();
+            return ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson).ResultDiagnostic;
         }
 
         private static WorkflowExecutionResult ExistingResult(WorkflowInstance instance) => new()
@@ -780,6 +780,7 @@ public sealed partial class WorkflowHost
                     {
                         InstanceId = instance.InstanceId,
                         Status = WorkflowExecutionStatus.Running,
+                        ErrorKind = WorkflowErrorKind.InvalidState,
                         ErrorMessage = "Execution ownership was lost; the assigned incarnation is no longer available",
                         TraceEntries = receipt.Trace.ToList()
                     };
@@ -815,6 +816,7 @@ public sealed partial class WorkflowHost
         {
             InstanceId = instanceId,
             Status = WorkflowExecutionStatus.Running,
+            ErrorKind = WorkflowErrorKind.InvalidState,
             ErrorMessage = "The workflow instance is executing on another host"
         };
 
@@ -967,6 +969,8 @@ public sealed partial class WorkflowHost
                 // Neither changes the saved execution positions or workflow data being compared.
                 proposed.Diagnostics = null;
                 previous.Diagnostics = null;
+                proposed.ResultDiagnostic = null;
+                previous.ResultDiagnostic = null;
                 if (JsonSerializer.Serialize(proposed) == JsonSerializer.Serialize(previous)) return;
             }
             if (sameData && commit.Instance.Status == WorkflowStatus.Failed && proposed.Continuations.Count == 0 &&

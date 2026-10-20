@@ -20,11 +20,14 @@ internal sealed class WorkflowDiagnostics(IServiceProvider services, IWorkflowSt
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         cancellationToken.ThrowIfCancellationRequested();
+        var instance = await repository.GetWorkflowInstanceSummaryAsync(instanceId);
+        cancellationToken.ThrowIfCancellationRequested();
         var authorizer = services.GetService<IWorkflowDiagnosticsAuthorizer>();
         if (authorizer == null || !await authorizer.CanReadAsync(instanceId, cancellationToken))
             throw new UnauthorizedAccessException("Raw workflow diagnostics require application authorization");
         cancellationToken.ThrowIfCancellationRequested();
-        var diagnostics = await repository.GetDiagnosticsAsync(instanceId);
+        var diagnostics = instance == null ? []
+            : await repository.GetDiagnosticsForIncarnationAsync(instanceId, instance.Incarnation);
         cancellationToken.ThrowIfCancellationRequested();
         return diagnostics;
     }

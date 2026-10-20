@@ -662,7 +662,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             DELETE FROM dbo.IxIFlowWorkflowCommits WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId;
             """,
-        Statement.Diagnostics => "SELECT DiagnosticJson FROM dbo.IxIFlowWorkflowDiagnostics WHERE InstanceId = @InstanceId ORDER BY DiagnosticId",
+        Statement.IncarnationDiagnostics => "SELECT d.DiagnosticJson FROM dbo.IxIFlowWorkflowInstances i WITH (HOLDLOCK) JOIN dbo.IxIFlowWorkflowDiagnostics d ON d.InstanceId = i.InstanceId WHERE i.InstanceId = @InstanceId AND i.Incarnation = @Incarnation ORDER BY d.DiagnosticId",
         Statement.DiagnosticIds => "SELECT DiagnosticId FROM dbo.IxIFlowWorkflowDiagnostics WHERE InstanceId = @InstanceId",
         Statement.InsertDiagnostic => "INSERT INTO dbo.IxIFlowWorkflowDiagnostics (InstanceId, DiagnosticId, DiagnosticJson) VALUES (@InstanceId, @DiagnosticId, @DiagnosticJson)",
         Statement.DeleteDiagnostics => "DELETE FROM dbo.IxIFlowWorkflowDiagnostics WHERE InstanceId = @InstanceId AND DiagnosticId IN @Ids",
