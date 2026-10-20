@@ -7,7 +7,7 @@ namespace IxIFlow.Core.Runtime;
 /// <summary>Creates the suggestion once, before a wait is saved. Answers never use this value.</summary>
 internal static class WaitSuggestions
 {
-    public static string? Create(WorkflowStep step, object workflowData, object? previous, ItemValues? items = null)
+    public static StoredJson? Create(WorkflowStep step, object workflowData, object? previous, ItemValues? items = null)
     {
         if (step.DefaultPayload == null && step.InputMappings.Count == 0)
             return null;
@@ -31,6 +31,6 @@ internal static class WaitSuggestions
             if ((property.GetMethod != null ? property.GetValue(payload) : mapped.GetValueOrDefault(property.Name)) is null or "")
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"InvalidInput: event input '{eventType.Name}.{property.Name}' is required and cannot be null or an empty string");
-        return JsonSerializer.Serialize(payload, eventType);
+        return StoredJson.Inline(JsonSerializer.Serialize(payload, eventType));
     }
 }

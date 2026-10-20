@@ -22,6 +22,8 @@ public sealed record WorkflowEvent(
     string? Source = null,
     TimeSpan? DeliveryRetention = null)
 {
+    public long? PayloadThresholdBytes { get; init; }
+    public IReadOnlyList<PayloadReference> PayloadDependencies { get; init; } = [];
     /// <summary>
     /// SHA-256 of the type, key, target wait, subject and payload, each a separate JSON string. An
     /// event ID sent again with another hash is a different event and is refused. CloudEvents set
@@ -39,6 +41,8 @@ public sealed record WorkflowEvent(
         ArgumentException.ThrowIfNullOrWhiteSpace(EventId);
         ArgumentException.ThrowIfNullOrWhiteSpace(EventType);
         ArgumentNullException.ThrowIfNull(PayloadJson);
+        ArgumentNullException.ThrowIfNull(PayloadDependencies);
+        ArgumentOutOfRangeException.ThrowIfNegative(PayloadThresholdBytes ?? 0);
         if (DeliveryIdentity != null && (DeliveryIdentity.Length != 64 || !DeliveryIdentity.All(Uri.IsHexDigit)) ||
             DeliveryRetention is { } retention && (retention <= TimeSpan.Zero || retention > CheckpointCommit.MaxDuration))
             throw new ArgumentException("Invalid delivery identity or retention");
@@ -177,7 +181,7 @@ public sealed record StoredWorkflowEvent(
     string EventType,
     string? Key,
     string? TargetWaitId,
-    string PayloadJson,
+    StoredJson PayloadJson,
     DateTime ReceivedAtUtc,
     EventOutcome Outcome,
     string? WaitId = null,
@@ -223,14 +227,14 @@ public enum WaitCloseReason
 /// timeout.
 /// </summary>
 public sealed record OpenedWait(string WaitId, WaitKind Kind, string Key, string EventType, TimeSpan? Timeout,
-    string? DefaultPayloadJson = null);
+    StoredJson? DefaultPayloadJson = null);
 
 /// <summary>
 /// A request's reserved reply wait activated when its <c>WaitFor</c> is reached, with an optional
 /// timeout and saved suggested payload. A deadline or suggestion already stored is kept.
 /// The deadline is the store's time at that commit plus <paramref name="Timeout"/>.
 /// </summary>
-public sealed record ArmedWait(string WaitId, TimeSpan? Timeout, string? DefaultPayloadJson = null);
+public sealed record ArmedWait(string WaitId, TimeSpan? Timeout, StoredJson? DefaultPayloadJson = null);
 
 /// <summary>A wait a commit closes, and why.</summary>
 public sealed record ClosedWait(string WaitId, WaitCloseReason Reason);
@@ -242,6 +246,10 @@ public sealed record ClosedWait(string WaitId, WaitCloseReason Reason);
 /// </summary>
 public sealed record ChildStart(string ChildInstanceId, string Payload, string ParentWaitId)
 {
+    public Guid Incarnation { get; init; } = Guid.NewGuid();
+    internal IReadOnlyList<PayloadReference> PayloadReferences => Child is { } child
+        ? Runtime.CheckpointPayloads.References(child.ExecutionStateJson,
+            new Dictionary<string, StoredJson> { [CheckpointParts.DataKey] = child.WorkflowDataJson }) : [];
     private readonly WorkflowInstance? _child = Read(Payload);
 
     /// <summary>
@@ -278,7 +286,10 @@ public sealed record ChildCancellation(string ChildInstanceId, CancellationReaso
 /// wait for it. The child's commit applies whatever becomes of it.
 /// </summary>
 public sealed record ParentNotice(string ParentInstanceId, string ParentWaitId, string EventId, string EventType,
-    string PayloadJson);
+    string PayloadJson)
+{
+    public IReadOnlyList<PayloadReference> PayloadDependencies { get; init; } = [];
+}
 
 /// <summary>A row of the waits table: open, or closed with its reason.</summary>
 public sealed record StoredWait(
@@ -292,7 +303,7 @@ public sealed record StoredWait(
     DateTime OpenedAtUtc,
     WaitCloseReason? CloseReason = null,
     DateTime? ClosedAtUtc = null,
-    string? DefaultPayloadJson = null)
+    StoredJson? DefaultPayloadJson = null)
 {
     public bool IsOpen => CloseReason == null;
 
@@ -327,7 +338,10 @@ public sealed record WaitQuery(
     WaitKind? Kind = null,
     string? AfterWaitRef = null,
     int Limit = 100,
-    IReadOnlyCollection<string>? InstanceIds = null);
+    IReadOnlyCollection<string>? InstanceIds = null)
+{
+    public bool IncludeClosed { get; init; }
+}
 
 /// <summary>
 /// The per-instance inbox and waits table. Events are stored before they are

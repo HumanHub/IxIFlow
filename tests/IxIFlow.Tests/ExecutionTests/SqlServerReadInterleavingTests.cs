@@ -77,7 +77,7 @@ public sealed class SqlServerReadInterleavingTests
         }
         finally { await transaction.RollbackAsync(); }
         var saved = Assert.IsType<WorkflowInstance>(await reading.WaitAsync(TimeSpan.FromSeconds(15)));
-        using var data = JsonDocument.Parse(saved.WorkflowDataJson);
+        using var data = JsonDocument.Parse(saved.WorkflowDataJson.InlineText);
         var marker = data.RootElement.GetProperty("marker").GetString();
         Assert.Contains(marker, new[] { "old", "new" });
         Assert.Equal(marker, ExecutionCheckpoint.ReadTrunk(saved.ExecutionStateJson).StructureHash);

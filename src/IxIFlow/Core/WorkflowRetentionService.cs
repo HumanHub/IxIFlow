@@ -14,6 +14,9 @@ internal sealed class WorkflowRetentionService(IWorkflowStateRepository reposito
         var result = await repository.PurgeAsync(settings.FinishedRetention, settings.TombstoneRetention,
             settings.BatchSize, cancellationToken);
         await repository.PurgeArtifactsAsync(artifacts ?? repository, settings.ArtifactRetention, settings.BatchSize, cancellationToken);
+        foreach (var reference in await repository.PayloadStore.FindCollectionCandidatesAsync(settings.BatchSize,
+                     settings.FinishedRetention, cancellationToken))
+            await repository.PayloadStore.CollectAsync(reference, settings.FinishedRetention, cancellationToken);
         foreach (var (publisher, count) in result.SkippedUnattemptedByPublisher)
         {
             Telemetry.RetentionSkippedUnattempted.Add(count,

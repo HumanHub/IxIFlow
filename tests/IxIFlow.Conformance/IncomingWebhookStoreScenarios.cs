@@ -148,7 +148,7 @@ public sealed class IncomingWebhookStoreScenarios
             var instance = new WorkflowInstance
             {
                 InstanceId = "signed-owner", WorkflowName = "Receipt", WorkflowVersion = 1, Status = WorkflowStatus.Running,
-                WorkflowDataType = typeof(object).AssemblyQualifiedName!, WorkflowDataJson = "{}",
+                WorkflowDataType = typeof(object).AssemblyQualifiedName!, WorkflowDataJson = StoredJson.Inline("{}"),
                 ExecutionStateJson = StoreTestSupport.CheckpointJson
             };
             var request = new WorkflowAdmission("vendor", "trigger", "delivery", new string('A', 64), "vendor",

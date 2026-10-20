@@ -449,7 +449,7 @@ public sealed class CatalogArtifactContractTests
     {
         InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = name, WorkflowVersion = 1,
         Status = WorkflowStatus.Suspended, ExecutionStateJson = StoreTestSupport.CheckpointJson,
-        WorkflowDataJson = "{}", WorkflowDataType = typeof(Data).AssemblyQualifiedName!, CorrelationId = "catalog"
+        WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = typeof(Data).AssemblyQualifiedName!, CorrelationId = "catalog"
     };
 
     private static WorkflowDefinition Definition(string name, int version = 1) => Workflow.Create<Data>(name, version).Step<Noop>().Build();

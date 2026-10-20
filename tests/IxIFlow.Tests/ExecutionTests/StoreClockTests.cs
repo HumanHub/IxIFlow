@@ -56,7 +56,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         await FinishedAsync(services, started.InstanceId);
         var saved = await InstanceAsync(services, started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved.Status);
-        Assert.Contains("\"Outcome\":\"timeout\"", saved.WorkflowDataJson);
+        Assert.Contains("\"Outcome\":\"timeout\"", saved.WorkflowDataJson.InlineText);
     }
 
     [Theory]
@@ -79,7 +79,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
 
         var saved = await InstanceAsync(services, started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved.Status);
-        Assert.Contains("\"Outcome\":\"approved\"", saved.WorkflowDataJson);
+        Assert.Contains("\"Outcome\":\"approved\"", saved.WorkflowDataJson.InlineText);
         Assert.Equal(EventOutcome.Consumed, (await store.GetEventAsync(started.InstanceId, "a1"))!.Outcome);
     }
 
@@ -108,7 +108,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         await FinishedAsync(services, started.InstanceId);
         var saved = await InstanceAsync(services, started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved.Status);
-        Assert.Contains("after-delay", saved.WorkflowDataJson);
+        Assert.Contains("after-delay", saved.WorkflowDataJson.InlineText);
     }
 
     [Fact]
@@ -205,7 +205,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         var result = await run.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(WorkflowStatus.Cancelled, result.Status);
         Assert.Equal(WaitCloseReason.Cancelled, host.Closed[waitId]);
-        Assert.Equal("", JsonSerializer.Deserialize<ClockData>(result.WorkflowDataJson)!.Outcome);
+        Assert.Equal("", JsonSerializer.Deserialize<ClockData>(result.WorkflowDataJson.InlineText)!.Outcome);
     }
 
     [Fact]
@@ -660,7 +660,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             // The request's start opens its reply wait without a deadline; its WaitFor arms it.
             var instance = new WorkflowInstance
             { InstanceId = instanceId, WorkflowName = "StoreClock", Status = WorkflowStatus.Running,
-                ExecutionStateJson = StoreTestSupport.CheckpointJson, WorkflowDataJson = "{}" };
+                ExecutionStateJson = StoreTestSupport.CheckpointJson, WorkflowDataJson = StoredJson.Inline("{}") };
             var started = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance,
                 (await StoreTestSupport.LeaseAsync(store, instanceId)).Epoch, 0,
                 openedWaits: [new OpenedWait("reply", WaitKind.Reply, "payment", "Payment", null)]));
@@ -696,7 +696,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = instanceId, WorkflowName = "StoreClock", Status = WorkflowStatus.Suspended,
-            WorkflowDataJson = "{}"
+            WorkflowDataJson = StoredJson.Inline("{}")
         };
         var result = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0,
             openedWaits: waits, wakeAfter: wakeAfter));
@@ -841,7 +841,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
             WorkflowDataType = typeof(ClockData).AssemblyQualifiedName!,
-            WorkflowDataJson = JsonSerializer.Serialize(data),
+            WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(data)),
             Status = WorkflowStatus.Running,
             CreatedAt = now,
             StartedAt = now
@@ -876,6 +876,8 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     /// </summary>
     private sealed class DueHost(TimeProvider time) : IExecutionHost
     {
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
         private readonly object _lock = new();
         private readonly List<string> _opened = [];
         private readonly Dictionary<string, WaitCloseReason> _closed = new(StringComparer.Ordinal);

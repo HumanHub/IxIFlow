@@ -1,3 +1,4 @@
+using System.Text.Json;
 using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
@@ -25,10 +26,40 @@ public interface IWorkflowOperations
         CancellationToken cancellationToken = default);
     Task<InstanceSummary> TerminateAsync(string instanceId, string reasonCode, string? description = null,
         string? actor = null, CancellationToken cancellationToken = default);
+    /// <summary>Subscribes to local committed changes. Remote owners require bounded polling until coordinator notices are available.</summary>
+    IDisposable WatchChanges(string instanceId, Action changed);
+    Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string instanceId, CancellationToken cancellationToken = default);
+    /// <summary>Loads bounded, detached replay through the same privacy projection as inspection.</summary>
+    Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries = 10000, CancellationToken cancellationToken = default);
+    /// <summary>Reads only a source named by the instance's published step table; null when unavailable locally.</summary>
+    Task<string?> GetSourceAsync(string instanceId, string path, CancellationToken cancellationToken = default);
+    /// <summary>Starts a registered definition with an optional hold saved before any workflow code runs.</summary>
+    Task<string> LaunchAsync(string instanceId, string workflow, int version, JsonElement input, bool stopOnEntry,
+        string actor, CancellationToken cancellationToken = default);
+    /// <summary>Reads a projection of the saved checkpoint, never the checkpoint itself.</summary>
+    Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default);
+    /// <summary>Requests a durable pause; running activities finish before it is committed.</summary>
+    Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+    /// <summary>Continues a pause under a fresh lease on this host.</summary>
+    Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+    /// <summary>Accepts a durable continue and schedules it on the host, without waiting for workflow activities to finish.</summary>
+    Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+    /// <summary>Runs only the selected continuation and branches it creates, under a fresh lease.</summary>
+    Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
+        string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+    /// <summary>Edits a paused root or branch view with an immutable, caller-supplied edit ID.</summary>
+    Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
+        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+    /// <summary>Replaces the instance's breakpoint set and returns the resolved addresses.</summary>
+    Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId, IReadOnlyList<Breakpoint> breakpoints,
+        string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+    /// <summary>Reads the latest requested set with committed hit counts.</summary>
+    Task<IReadOnlyList<Breakpoint>> GetBreakpointsAsync(string instanceId, CancellationToken cancellationToken = default);
+
 }
 
 internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimeProvider time,
-    IWorkflowCatalog catalog, IWorkflowStateRepository repository, CoordinationState coordination) : IWorkflowOperations
+    IWorkflowCatalog catalog, IWorkflowStateRepository repository, IWorkflowClient client, CoordinationState coordination) : IWorkflowOperations
 {
     public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
         CancellationToken cancellationToken = default)
@@ -105,7 +136,7 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
         cancellationToken.ThrowIfCancellationRequested();
         return host.ReadAsync(async client => (IReadOnlyList<PendingWait>)(await client.GetOpenWaitsAsync(
             new WaitQuery(Kind: WaitKind.Event, Limit: int.MaxValue, InstanceIds: instanceIds)))
-            .Select(wait => new PendingWait(wait.InstanceId, wait.Key, wait.EventType, wait.DefaultPayloadJson,
+            .Select(wait => new PendingWait(wait.InstanceId, wait.Key, wait.EventType, wait.DefaultPayloadJson?.InlineText,
                 wait.DeadlineUtc, wait.OpenedAtUtc)).ToArray());
     }
 
@@ -114,7 +145,7 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         cancellationToken.ThrowIfCancellationRequested();
-        return host.ReadAsync(client => client.GetTracePageAsync(instanceId, afterSequence, limit));
+        return host.ReadAsync(client => client.GetTraceAsync(instanceId, afterSequence, limit, cancellationToken));
     }
 
     public async Task<InstanceSummary> TerminateAsync(string instanceId, string reasonCode, string? description = null,

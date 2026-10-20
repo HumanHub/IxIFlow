@@ -9,6 +9,20 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
     private int _runCancelled;
     private int _ownershipLost;
     private int _recycle;
+    private WorkflowDebugState? _debug;
+    public WorkflowDebugState? Debug => Volatile.Read(ref _debug);
+    public void Deliver(DebugCommands message)
+    {
+        if (message.AssignmentId != AssignmentId) return;
+        while (true)
+        {
+            var previous = Debug;
+            if (previous != null && previous.Version >= message.State.Version && previous.PauseGeneration >= message.State.PauseGeneration) return;
+            if (Interlocked.CompareExchange(ref _debug, message.State, previous) != previous) continue;
+            Pulse();
+            return;
+        }
+    }
 
     public Guid AssignmentId { get; } = assignmentId;
     public void Dispose() => close(AssignmentId);

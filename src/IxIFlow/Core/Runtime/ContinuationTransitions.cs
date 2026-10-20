@@ -36,7 +36,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     public bool ProcessExecutionDeadline(WorkflowInstance instance,
         ExecutionCheckpoint checkpoint)
     {
-        if (!checkpoint.ExecutionTimerOpen || !checkpoint.Inbox.IsDue(checkpoint.ExecutionTimerId!))
+        if (checkpoint.Debug.Stepping != null || !checkpoint.ExecutionTimerOpen || !checkpoint.Inbox.IsDue(checkpoint.ExecutionTimerId!))
             return false;
         checkpoint.Inbox.Closed(checkpoint.ExecutionTimerId!, WaitCloseReason.TimedOut);
         checkpoint.TimedOut = true;
@@ -59,7 +59,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     public bool ProcessDueWaits(ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes)
     {
         var due = checkpoint.Waits.Where(wait => wait.ChildWorkflowId == null &&
-            checkpoint.Inbox.IsDue(wait.Id)).ToArray();
+            SteppingPolicy.Allows(checkpoint, wait.ContinuationId) && checkpoint.Inbox.IsDue(wait.Id)).ToArray();
         foreach (var wait in due)
         {
             var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
@@ -147,8 +147,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             {
                 continuation.Status = ContinuationStatus.Completed;
                 checkpoint.Trace.ItemEnded(continuation, position);
-                ForEachTransitions.BranchFinished(scopes, checkpoint, continuation, position);
-                CompleteJoin(scopes, checkpoint, continuation);
+                if (continuation.ParentJoinId != null)
+                {
+                    continuation.PendingJoinFrame = position;
+                    NotifyCompletedBranches(scopes, checkpoint);
+                }
             }
             else
             {
@@ -457,6 +460,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 Previous = previous,
                 Stack = [new ScopePosition { ScopeId = scopes.BranchScope(step, index) }]
             };
+            SteppingPolicy.Forked(checkpoint, parent, child);
             join.ChildContinuationIds.Add(child.Id);
             checkpoint.Continuations.Add(child);
             checkpoint.Trace.Record(TraceEntryType.BranchStarted, step, child, index, child.Stack[0].ScopeId, join.Id);
@@ -478,6 +482,25 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 ContinuationStatus.Cancelling or ContinuationStatus.Joining));
         if (live + starting > maxActiveBranches)
             throw new BranchLimitExceededException(live, starting, maxActiveBranches);
+    }
+
+    // Completion of a selected branch must not complete or cancel an outside join. Keep its
+    // item result on the branch until Continue makes the owning join eligible again.
+    public static bool NotifyCompletedBranches(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint)
+    {
+        var changed = false;
+        foreach (var child in checkpoint.Continuations.Where(c => c.PendingJoinFrame != null).ToArray())
+        {
+            var join = checkpoint.Joins.SingleOrDefault(j => j.Id == child.ParentJoinId);
+            if (join == null || !SteppingPolicy.AllowsJoin(checkpoint, join)) continue;
+            checkpoint.Touch(child);
+            var frame = child.PendingJoinFrame!;
+            child.PendingJoinFrame = null;
+            ForEachTransitions.BranchFinished(scopes, checkpoint, child, frame);
+            CompleteJoin(scopes, checkpoint, child);
+            changed = true;
+        }
+        return changed;
     }
 
     private static void CompleteJoin(
@@ -725,7 +748,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         List<(ContinuationState Parent, JoinConflictException Conflict)> conflicts)
     {
         var completed = false;
-        foreach (var join in checkpoint.Joins.Where(item => item.IsCompleting).ToList())
+        foreach (var join in checkpoint.Joins.Where(item => item.IsCompleting && SteppingPolicy.AllowsJoin(checkpoint, item)).ToList())
         {
             var children = checkpoint.BranchesOf(join);
             if (!children.All(item => item.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled))
@@ -807,6 +830,23 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         return false;
     }
 
+    public bool ProcessDeferredFailures(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint)
+    {
+        if (checkpoint.CancellationRequested) return false;
+        var changed = false;
+        foreach (var branch in checkpoint.Continuations.Where(c => c.DeferredFailure != null).ToArray())
+        {
+            var join = checkpoint.Joins.SingleOrDefault(j => j.Id == branch.ParentJoinId);
+            if (join != null && !SteppingPolicy.AllowsJoin(checkpoint, join)) continue;
+            checkpoint.Touch(branch);
+            var error = branch.DeferredFailure!.ForPropagation();
+            branch.DeferredFailure = null;
+            if (!CaptureFailure(scopes, checkpoint, branch, error, allowStepRetry: false)) throw error;
+            changed = true;
+        }
+        return changed;
+    }
+
     public bool CaptureFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, Exception error, bool allowStepRetry = true)
     {
@@ -862,6 +902,14 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             }
 
             var join = checkpoint.Joins.Single(item => item.Id == continuation.ParentJoinId);
+            if (!SteppingPolicy.AllowsJoin(checkpoint, join))
+            {
+                // Propagating a branch failure would cancel its held siblings and unwind its parent.
+                // Persist it on the selected branch until the owning join can advance.
+                continuation.DeferredFailure = SerializedException.From(error);
+                continuation.Status = ContinuationStatus.WaitingResolution;
+                return true;
+            }
             join.IsCompleting = true;
             join.ResumeParentWithoutAdvance = true;
             foreach (var branch in checkpoint.BranchesOf(join))

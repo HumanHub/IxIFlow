@@ -51,7 +51,7 @@ public sealed class RedactionTests : IClassFixture<SqliteTestDatabase<RedactionT
         var wait = Assert.Single(await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
         Assert.Equal("", JsonDocument.Parse(wait.DefaultPayloadJson!).RootElement.GetProperty("Secret").GetString());
         // Inspection must not change the saved default, data or notes used by subsequent execution.
-        Assert.Contains(Secret, Assert.Single(await store.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId))).DefaultPayloadJson!);
+        Assert.Contains(Secret, Assert.Single(await store.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId))).DefaultPayloadJson!.InlineText);
         var finished = await client.ReplyAsync(wait.Token, new Notice { Secret = Secret });
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
         Assert.Equal(Secret, Assert.IsType<Data>(finished.WorkflowData).Secret);

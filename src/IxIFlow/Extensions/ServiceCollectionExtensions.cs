@@ -47,6 +47,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IActivityExecutor, ActivityExecutor>();
         services.AddScoped<WorkflowHost.InstanceOperations>();
         services.TryAddSingleton(new OutboxSettings());
+        services.TryAddSingleton(new PayloadStoreSettings());
+        services.TryAddSingleton<IPayloadStore>(provider =>
+            provider.GetRequiredService<IWorkflowStateRepository>().PayloadStore);
         // Registers before recovery starts; stops after the host has drained its work.
         services.AddHostedService<WorkflowHeartbeatService>();
         // Stops after the workflow host, so its final commits can be delivered during drain.
@@ -84,6 +87,8 @@ public static class ServiceCollectionExtensions
 
         // Add core services
         services.AddIxIFlow();
+        services.Replace(ServiceDescriptor.Singleton(new PayloadStoreSettings(options.MaxPayloadBytes, options.PayloadThresholdBytes)));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxHydratedPayloadBytes);
         services.Replace(ServiceDescriptor.Singleton(new InspectionRedactionPolicy(options.EnableSensitiveDiagnostics)));
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
@@ -118,6 +123,9 @@ public static class ServiceCollectionExtensions
         services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits
         {
             MaxCheckpointBytes = options.MaxCheckpointBytes,
+            PayloadThresholdBytes = options.PayloadThresholdBytes,
+            MaxPayloadBytes = options.MaxPayloadBytes,
+            MaxHydratedPayloadBytes = options.MaxHydratedPayloadBytes,
             MaxTraceEntriesPerCommit = options.MaxTraceEntriesPerCommit,
             TraceDetail = options.TraceDetail,
             MaxTraceEntriesPerInstance = options.MaxTraceEntriesPerInstance,
@@ -136,7 +144,7 @@ public static class ServiceCollectionExtensions
         var hostSettings = (options.Slots, options.DrainTimeout, options.PollInterval, options.HostName, options.HeartbeatInterval);
         services.Replace(ServiceDescriptor.Singleton<HostSettings>(_ =>
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
-            { HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes,
+            { Debugging = options.Debugging, HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes,
                 UnschedulableScanInterval = options.UnschedulableScanInterval }));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
@@ -271,6 +279,14 @@ internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinitio
 /// </summary>
 public class IxIFlowOptions
 {
+    /// <summary>Whole-value UTF-8 claim-check threshold, disabled by default (zero). Set 256 KiB to enable it.</summary>
+    public long PayloadThresholdBytes { get; set; } = PayloadStoreSettings.DefaultPayloadThresholdBytes;
+    /// <summary>Aggregate hydrated and in-flight payload bytes per run, default 128 MiB.</summary>
+    public long MaxHydratedPayloadBytes { get; set; } = 128L * 1024 * 1024;
+
+    /// <summary>Maximum bytes in one put, default 64 MiB.</summary>
+    public long MaxPayloadBytes { get; set; } = PayloadStoreSettings.DefaultMaxPayloadBytes;
+
     /// <summary>Lifetime of a RequiredHostId demand, measured by store time. Default five minutes.</summary>
     public TimeSpan HostPinLifetime { get; set; } = TimeSpan.FromMinutes(5);
 
@@ -329,6 +345,9 @@ public class IxIFlowOptions
     /// lease, before the instance is quarantined at NeedsResolution. No host runs a quarantined
     /// instance until an operator releases it. Progress resets the count.
     /// </summary>
+    /// <summary>Enables authorized pause and continue operations on this host. Off by default.</summary>
+    public bool Debugging { get; set; }
+
     public int MaxCrashes { get; set; } = HostSettings.DefaultMaxCrashes;
 
     /// <summary>
