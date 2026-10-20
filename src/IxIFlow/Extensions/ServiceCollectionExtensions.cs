@@ -38,6 +38,7 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<InspectionRedactionPolicy>()));
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
+        services.AddSingleton<ExecutionLeaseRenewer>();
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
         services.AddSingleton<IWorkflowOperations, HostedWorkflowOperations>();
         services.AddSingleton<IWorkflowIngressClient, WorkflowIngressClient>();

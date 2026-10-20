@@ -134,8 +134,8 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         inner.GetRunnableInstancesAsync(query);
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) => inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
-    public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-        inner.RenewExecutionLeaseAsync(instanceId, token, duration);
+    public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
+        inner.RenewExecutionLeasesAsync(leases);
     public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         inner.ReleaseExecutionLeaseAsync(instanceId, token);
 

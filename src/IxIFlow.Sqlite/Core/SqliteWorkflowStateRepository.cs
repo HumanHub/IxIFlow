@@ -404,6 +404,10 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             SELECT cancellation_json FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
             """,
+        Statement.Cancellations => """
+            SELECT instance_id, cancellation_json FROM ixiflow_workflow_instances
+            WHERE instance_id IN @InstanceIds AND cancellation_json IS NOT NULL
+            """,
         Statement.Running => """
                 SELECT COUNT(*) FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId AND status = 'Running'
                 """,
@@ -422,12 +426,6 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                         WHEN @Running AND ixiflow_workflow_leases.expires_at_utc > '0001-01-01 00:00:00.0000000' THEN 1 ELSE 0 END
                 WHERE ixiflow_workflow_leases.expires_at_utc <= @Now
                 RETURNING epoch AS Epoch, crash_count AS CrashCount
-                """,
-        Statement.RenewLease => """
-                UPDATE ixiflow_workflow_leases
-                SET expires_at_utc = @Until
-                WHERE instance_id = @InstanceId AND token = @Token
-                    AND expires_at_utc > @Now
                 """,
         Statement.ReleaseLease => """
                 UPDATE ixiflow_workflow_leases SET expires_at_utc = '0001-01-01 00:00:00.0000000'

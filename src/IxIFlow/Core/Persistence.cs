@@ -229,9 +229,14 @@ public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStor
     Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable);
 
-    /// <summary>Extends a lease held by the same execution token. Pending termination refuses renewal so recovery can claim at expiry.</summary>
-    Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
-        TimeSpan duration);
+    /// <summary>
+    /// Renews execution tokens in one batch, returning one result per request in the same order.
+    /// Instance IDs must be distinct. Missing, expired or mismatched tokens are refused individually.
+    /// Pending termination refuses renewal and returns its durable reason without extending expiry.
+    /// Providers chunk requests within their parameter limits and use their ownership connection pool.
+    /// </summary>
+    Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+        IReadOnlyList<ExecutionLeaseRenewal> leases);
 
     /// <summary>Releases a lease only when the caller still owns it.</summary>
     Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token);
@@ -507,19 +512,33 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         }
     }
 
-    public virtual Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
-        TimeSpan duration)
+    public virtual Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+        IReadOnlyList<ExecutionLeaseRenewal> leases)
     {
-        ValidateLeaseArguments(instanceId, token, duration);
+        ArgumentNullException.ThrowIfNull(leases);
+        foreach (var request in leases)
+            ValidateLeaseArguments(request.InstanceId, request.Token, request.Duration);
+        if (leases.Select(request => request.InstanceId).Distinct(StringComparer.Ordinal).Count() != leases.Count)
+            throw new ArgumentException("Renewal instance IDs must be distinct", nameof(leases));
         lock (_claimLock)
         {
             var now = Now;
-            if (!_leases.TryGetValue(instanceId, out var lease) ||
-                lease.Token != token || lease.ExpiresAtUtc <= now ||
-                _cancellations.GetValueOrDefault(instanceId)?.Mode == WorkflowControlMode.Terminate)
-                return Task.FromResult(false);
-            _leases[instanceId] = lease with { ExpiresAtUtc = now.Add(duration) };
-            return Task.FromResult(true);
+            var results = new ExecutionLeaseRenewalResult[leases.Count];
+            for (var index = 0; index < leases.Count; index++)
+            {
+                var request = leases[index];
+                if (!_leases.TryGetValue(request.InstanceId, out var lease) ||
+                    lease.Token != request.Token || lease.ExpiresAtUtc <= now)
+                    results[index] = new(ExecutionLeaseRenewalStatus.Refused);
+                else if (_cancellations.GetValueOrDefault(request.InstanceId) is { Mode: WorkflowControlMode.Terminate } reason)
+                    results[index] = new(ExecutionLeaseRenewalStatus.TerminationRequested, JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason)));
+                else
+                {
+                    _leases[request.InstanceId] = lease with { ExpiresAtUtc = now.Add(request.Duration) };
+                    results[index] = new(ExecutionLeaseRenewalStatus.Renewed);
+                }
+            }
+            return Task.FromResult<IReadOnlyList<ExecutionLeaseRenewalResult>>(results);
         }
     }
 

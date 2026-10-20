@@ -248,9 +248,10 @@ public sealed class TraceReviewTests
         var store = new InMemoryWorkflowStateRepository(time);
         using var services = new ServiceCollection().AddLogging().AddSingleton(gate)
             .AddIxIFlow().Services.BuildServiceProvider();
+        await using var renewer = new ExecutionLeaseRenewer(store, time);
         await using var watch = new CancellationWatch(store, time);
         var host = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
-            store, services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+            store, services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), renewer,
             timeProvider: time, watch: watch);
         var running = host.StartAsync(Workflow.Create<Data>("ReceiptTrace").Step<HeldTrace>().Build(),
             new Data(), new WorkflowOptions(), CancellationToken.None);

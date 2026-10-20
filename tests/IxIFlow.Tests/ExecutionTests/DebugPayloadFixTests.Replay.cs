@@ -39,8 +39,9 @@ public sealed partial class DebugPayloadFixTests
         control.OnScheduled(scheduler.Schedule);
         control.OnUnscheduled(scheduler.Unschedule);
         await using var watch = new CancellationWatch(store, h.Clock);
+        await using var renewer = new ExecutionLeaseRenewer(store, h.Clock);
         var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
-            store, services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+            store, services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), renewer,
             timeProvider: h.Clock, watch: watch, control: control);
         store.Owner = () => ((IDictionary)typeof(WorkflowHost.InstanceOperations)
             .GetField("_assignments", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(operations)!)
@@ -94,11 +95,12 @@ public sealed partial class DebugPayloadFixTests
             }
             return result;
         }
-        public override async Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
+        public override async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
         {
-            var renewed = await base.RenewExecutionLeaseAsync(id, token, duration);
-            if (!renewed) Interlocked.Increment(ref RejectedRenewals);
-            return renewed;
+            var results = await base.RenewExecutionLeasesAsync(leases);
+            foreach (var result in results)
+                if (result.Status != ExecutionLeaseRenewalStatus.Renewed) Interlocked.Increment(ref RejectedRenewals);
+            return results;
         }
     }
     public sealed class ReplayFailure : IAsyncActivity

@@ -84,11 +84,12 @@ public sealed class HostMessageStoreTests : IClassFixture<SqliteTestDatabase<Hos
             Status = WorkflowStatus.Running
         };
         await store.SeedAsync(instance);
+        await using var renewer = new ExecutionLeaseRenewer(store, time);
         await using var watch = new CancellationWatch(store, time);
         var cancellation = new TaskCompletionSource<CancellationReason>(TaskCreationOptions.RunContinuationsAsynchronously);
         var loss = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance,
-            ExecutionLeaseSettings.Default, watch, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), error => loss.TrySetResult(error),
+            ExecutionLeaseSettings.Default, watch, renewer, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), error => loss.TrySetResult(error),
             reason => cancellation.TrySetResult(reason), _ => { }, time);
         Assert.NotNull(lease);
         lease.ObserveCancellation(new CancellationReason { ReasonCode = "requested" });

@@ -20,6 +20,7 @@ public sealed partial class WorkflowHost
         IWorkflowStateRepository repository,
         IWorkflowCatalog registry,
         InProcessInstanceGate gate,
+        ExecutionLeaseRenewer renewer,
         ExecutionLeaseSettings? leaseSettings = null,
         TimeProvider? timeProvider = null,
         ExecutionLimits? limits = null,
@@ -897,7 +898,7 @@ public sealed partial class WorkflowHost
         private async Task<WorkflowExecutionLease?> AcquireAsync(WorkflowInstance instance, ExecutionSignals signals,
             ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
             await
-            WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, await ClaimQueryAsync(),
+            WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, renewer, await ClaimQueryAsync(),
                 _ => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Ownership)),
                 reason => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Workflow, reason)),
                 sequence => Executor.Deliver(new Arrivals(signals.AssignmentId, sequence)), _time, kind, Released,

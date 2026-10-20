@@ -159,8 +159,9 @@ public sealed class DefinitionValidationTests
             Status = WorkflowStatus.Running, ExecutionStateJson = System.Text.Json.JsonSerializer.Serialize(checkpoint)
         };
         await repository.SeedAsync(instance);
+        await using var renewer = new ExecutionLeaseRenewer(repository);
         var operations = new WorkflowHost.InstanceOperations(provider, provider.GetRequiredService<IActivityExecutor>(),
-            repository, new UncheckedRegistry(definition), new InProcessInstanceGate());
+            repository, new UncheckedRegistry(definition), new InProcessInstanceGate(), renewer);
 
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => operations.RecoverAsync(instance.InstanceId,
             CancellationToken.None));
