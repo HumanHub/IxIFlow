@@ -563,7 +563,7 @@ public sealed class WorkflowExecutor
                             // A cancelled activity can outlive its assignment. Keep its context usable
                             // until the actual task ends, including when the host's grace period expires.
                             var activityLease = definitionLease.Retain();
-                            using (ExecutionContext.SuppressFlow())
+                            using (ExecutionContextFlow.SuppressIfNeeded())
                                 _ = running.Task.ContinueWith(_ => activityLease.Dispose(), CancellationToken.None,
                                     TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                             inFlight.Add(runnable.Id, running);

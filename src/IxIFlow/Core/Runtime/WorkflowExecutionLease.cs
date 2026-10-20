@@ -26,7 +26,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     {
         _lost = lost;
         _cancelled = cancellation;
-        using (ExecutionContext.SuppressFlow())
+        using (ExecutionContextFlow.SuppressIfNeeded())
             _ = _cancellation.Task.ContinueWith(task => Deliver(task.Result),
                 CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         Epoch = grant.Epoch;

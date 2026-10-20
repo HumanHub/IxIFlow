@@ -64,7 +64,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
                 _watched[instanceId] = subscribers = [];
             subscribers.Add(subscriber);
             if (_loop == null || _loop.IsCompleted)
-                using (ExecutionContext.SuppressFlow())
+                using (ExecutionContextFlow.SuppressIfNeeded())
                     _loop = Task.Run(RunAsync);
         }
         return subscriber;
@@ -223,7 +223,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     {
         lock (_lock)
             _reads[read] = description;
-        using (ExecutionContext.SuppressFlow())
+        using (ExecutionContextFlow.SuppressIfNeeded())
             _ = read.ContinueWith(finished =>
             {
                 lock (_lock)

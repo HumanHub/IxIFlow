@@ -28,7 +28,7 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
         _sensitiveDiagnostics = sensitiveDiagnostics;
         _inspectionPolicy = inspectionPolicy ?? InspectionRedactionPolicy.Default;
         // This singleton can first be resolved inside a bundle's type scope.
-        using (ExecutionContext.SuppressFlow())
+        using (ExecutionContextFlow.SuppressIfNeeded())
             _timer = _time.CreateTimer(_ => Tick(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
@@ -164,7 +164,7 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
             {
                 owner._leases.Remove(this);
                 // Observe a late failure of an abandoned store call as well as a completed one.
-                using (ExecutionContext.SuppressFlow())
+                using (ExecutionContextFlow.SuppressIfNeeded())
                     _ = Reply.Task.ContinueWith(task => _ = task.Exception, CancellationToken.None,
                         TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 if (!owner._disposed) owner.Arm();

@@ -134,9 +134,25 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
 {
     private readonly IReadOnlyDictionary<string, Assembly> _shared;
     private readonly Dictionary<string, ReadOnlyMemory<byte>> _private = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _lifetime = new();
+    private bool _unloading;
+    private Action<AssemblyLoadContext>? _onUnloading;
 
     internal BundleLoadContext(WorkflowBundle bundle, ArtifactDigest digest) : base(digest.Value, isCollectible: true)
     {
+        // Observe retirement before the context is exposed. The runtime's public event
+        // permits subscriptions after it has fired, so late subscribers need this state.
+        Unloading += _ =>
+        {
+            Action<AssemblyLoadContext>? release;
+            lock (_lifetime)
+            {
+                _unloading = true;
+                release = _onUnloading;
+                _onUnloading = null;
+            }
+            release?.Invoke(this);
+        };
         _shared = WorkflowSharedAssemblies.Validate(bundle.Manifest);
         foreach (var (path, bytes) in bundle.Entries.Where(pair => pair.Key.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)))
         {
@@ -146,6 +162,21 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
             if (_shared.ContainsKey(name) || !_private.TryAdd(name, bytes))
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, $"Duplicate or shared private assembly '{name}'");
         }
+    }
+
+    internal bool TryRegisterUnloading(Action<AssemblyLoadContext> release)
+    {
+        lock (_lifetime)
+        {
+            if (_unloading) return false;
+            _onUnloading += release;
+            return true;
+        }
+    }
+
+    internal void UnregisterUnloading(Action<AssemblyLoadContext>? release)
+    {
+        lock (_lifetime) _onUnloading -= release;
     }
 
     protected override Assembly Load(AssemblyName assemblyName)
@@ -180,13 +211,25 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
 /// <summary>The exact shared compatibility profile. Application assemblies are private bundle assets.</summary>
 public static class WorkflowSharedAssemblies
 {
-    private static readonly IReadOnlyDictionary<string, AssemblyName> Framework =
-        RuntimeAssemblies((string?)AppContext.GetData("APP_CONTEXT_DEPS_FILES"), AppContext.BaseDirectory);
-    private static readonly IReadOnlyDictionary<string, AssemblyName> Profile = CreateProfile();
+    private static readonly IReadOnlyDictionary<string, AssemblyName> Framework;
+    private static readonly IReadOnlyDictionary<string, AssemblyName> Profile;
+
+    static WorkflowSharedAssemblies()
+    {
+        Framework = RuntimeAssemblies((string?)AppContext.GetData("APP_CONTEXT_DEPS_FILES"), AppContext.BaseDirectory,
+            out var available);
+        HasFrameworkIdentities = available;
+        Profile = CreateProfile();
+    }
+
+    /// <summary>Whether runtime framework identity discovery completed with a usable framework.</summary>
+    public static bool HasFrameworkIdentities { get; }
 
     /// <summary>Matches an assembly's full identity against this runtime's shared frameworks.</summary>
-    public static bool IsFrameworkAssembly(AssemblyName name) => name.Name != null &&
-        Framework.TryGetValue(name.Name, out var identity) && name.Version == identity.Version &&
+    public static bool IsFrameworkAssembly(AssemblyName name) => IsFrameworkAssembly(name, Framework);
+
+    internal static bool IsFrameworkAssembly(AssemblyName name, IReadOnlyDictionary<string, AssemblyName> identities) => name.Name != null &&
+        identities.TryGetValue(name.Name, out var identity) && name.Version == identity.Version &&
         (name.CultureName ?? "") == (identity.CultureName ?? "") &&
         name.GetPublicKeyToken().AsSpan().SequenceEqual(identity.GetPublicKeyToken());
 
@@ -206,14 +249,19 @@ public static class WorkflowSharedAssemblies
         var profile = new Dictionary<string, AssemblyName>(Framework, StringComparer.OrdinalIgnoreCase);
         // Do not let the SDK dependency walk reconstruct a partial runtime profile after
         // failed discovery (including an embedded single-file manifest).
-        if (profile.Count == 0) return profile;
+        if (!HasFrameworkIdentities) return profile;
         AddSdkAssemblies(profile, [typeof(WorkflowDefinition).Assembly]);
         profile["IxIFlow.Templates"] = new AssemblyName("IxIFlow.Templates");
         return profile;
     }
 
     internal static Dictionary<string, AssemblyName> RuntimeAssemblies(string? depsFiles, string applicationDirectory)
+        => RuntimeAssemblies(depsFiles, applicationDirectory, out _);
+
+    private static Dictionary<string, AssemblyName> RuntimeAssemblies(string? depsFiles, string applicationDirectory,
+        out bool available)
     {
+        available = false;
         var profile = new Dictionary<string, AssemblyName>(StringComparer.OrdinalIgnoreCase);
         try
         {
@@ -245,6 +293,7 @@ public static class WorkflowSharedAssemblies
                     }
                 }
             }
+            available = profile.ContainsKey("System.Private.CoreLib") && profile.ContainsKey("System.Runtime");
         }
         catch (Exception error) when (error is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
         { profile.Clear(); }
@@ -344,7 +393,7 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
                 entry.Load = new(() =>
                 {
                     // A nested acquisition must not give the cached load its caller's bundle scope.
-                    using (ExecutionContext.SuppressFlow())
+                    using (ExecutionContextFlow.SuppressIfNeeded())
                         return Task.Run(() => LoadAsync(digest, created.Stop.Token));
                 });
                 _loaded.Add(digest, entry);
@@ -435,7 +484,7 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
         foreach (var entry in retired)
         {
             entry.Stop.Cancel();
-            using (ExecutionContext.SuppressFlow())
+            using (ExecutionContextFlow.SuppressIfNeeded())
                 _ = entry.Load.Value.ContinueWith(task =>
                 {
                     if (task.IsCompletedSuccessfully)

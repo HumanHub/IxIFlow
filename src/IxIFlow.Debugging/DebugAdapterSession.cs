@@ -49,7 +49,7 @@ public sealed partial class DebugAdapterSession : DebugAdapterBase, IDisposable
         InitializeProtocolClient(input, output);
         Protocol.Run();
         Task reader;
-        using (ExecutionContext.SuppressFlow())
+        using (ExecutionContextFlow.SuppressIfNeeded())
             reader = Task.Run(() => Protocol.WaitForReader());
         var monitor = MonitorAsync(linked.Token);
         try { await Task.WhenAny(reader, _closed.Task).WaitAsync(linked.Token); }
