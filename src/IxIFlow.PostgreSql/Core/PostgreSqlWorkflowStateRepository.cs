@@ -72,7 +72,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     // A child its parent still waits for ends that wait as terminated. The parent's row is locked before the
     // child's, as a child's terminal commit locks them, so the parent is read before any lock is taken, and read
     // again once the instance is locked; when it changed in between, nothing is done and the delete starts over.
-    // Only the locked row is deleted: a later save or child insertion without the identity lock is left whole.
+    // Only the locked row is deleted: a later save or child insertion is left whole.
     internal override string DeleteRevalidationSql => """
             SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE
             """;
@@ -679,7 +679,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // commit, a claim and a delete must still not interleave. It is taken after the row lock of the instance's
         // parent, as a child's commit takes that one first, and before the instance's own row.
         Statement.LockIdentity => "SELECT pg_advisory_xact_lock(hashtextextended(@InstanceId, 0))",
-        Statement.TryLockClaimIdentity => "SELECT pg_try_advisory_xact_lock(hashtextextended(@InstanceId, 0))",
+        Statement.TryLockClaimIdentity or Statement.TryLockChildIdentity => "SELECT pg_try_advisory_xact_lock(hashtextextended(@InstanceId, 0))",
         Statement.DeleteAllParts => "DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId",
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key = ANY(@Keys)
