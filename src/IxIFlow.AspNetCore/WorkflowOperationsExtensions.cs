@@ -105,7 +105,7 @@ public static class WorkflowOperationsExtensions
             }
             catch (ArgumentException error) when (error.ParamName == "invocationResult")
             {
-                return Results.Problem(statusCode: 400, title: "Invalid child workflow result", detail: InspectionRedactionPolicy.Default.Error(error).ToString());
+                return Results.Problem(statusCode: 400, title: "Invalid child workflow result", detail: error.Message);
             }
         });
         MapInstance("POST", "/release", options.WritePolicy!, (http, summary) => MutateAsync(http, summary.InstanceId, options,
