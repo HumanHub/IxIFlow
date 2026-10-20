@@ -21,7 +21,8 @@ internal sealed class PayloadCatalog(
     Func<DateTime> now, PayloadStoreSettings settings, DbTransaction? transaction,
     Func<PayloadOwner, CancellationToken, ValueTask<IReadOnlyList<PayloadRecord>>> forOwner,
     Func<PayloadRecord, CancellationToken, ValueTask<byte[]?>>? readBody,
-    Func<CancellationToken, ValueTask<IReadOnlyList<PayloadRecord>>> discover) : IPayloadTransaction
+    Func<int, TimeSpan, CancellationToken, ValueTask<IReadOnlyList<PayloadRecord>>> discover,
+    Func<string, CancellationToken, ValueTask<PayloadRecord?>> lookup) : IPayloadTransaction
 {
     public DbTransaction? DatabaseTransaction => transaction;
     private bool _active = true;
@@ -125,19 +126,27 @@ internal sealed class PayloadCatalog(
             if (row.Owners.Add(owner)) await write(row, ct);
     }
 
-    private ValueTask<IReadOnlyList<PayloadRecord>> Owned(PayloadOwner owner, CancellationToken ct) =>
-        forOwner(owner, ct);
+    private async ValueTask<IReadOnlyList<PayloadRecord>> Owned(PayloadOwner owner, CancellationToken ct)
+    {
+        var rows = new List<PayloadRecord>();
+        foreach (var item in (await forOwner(owner, ct)).OrderBy(r => r.Reference.Digest, StringComparer.Ordinal))
+            if (await read(item.Reference.Digest, ct) is { } row) rows.Add(row);
+        return rows;
+    }
 
     public async ValueTask LockAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default)
     {
         Check(ct);
-        var owned = await Owned(owner, ct);
-        foreach (var reference in references.Concat(owned.Select(r => r.Reference)).Distinct().OrderBy(r => r.Digest, StringComparer.Ordinal))
+        // Discover immutable closures without locking, then acquire the complete set in digest order.
+        // Ownership/revision and body availability are rechecked by the referencing transaction.
+        var owned = await forOwner(owner, ct);
+        var all = references.Concat(owned.Select(r => r.Reference)).Distinct().ToHashSet();
+        foreach (var reference in all.ToArray())
         {
-            var row = await read(reference.Digest, ct);
-            if (row != null)
-                foreach (var dependency in row.Dependencies) await read(dependency.Digest, ct);
+            if (await lookup(reference.Digest, ct) is { } row)
+                foreach (var dependency in row.Dependencies) all.Add(dependency);
         }
+        foreach (var reference in all.OrderBy(r => r.Digest, StringComparer.Ordinal)) await read(reference.Digest, ct);
     }
 
     internal async ValueTask<ReadOnlyMemory<byte>?> Get(PayloadReference reference, CancellationToken ct)
@@ -176,7 +185,7 @@ internal sealed class PayloadCatalog(
         Check(ct);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         if (grace < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(grace));
-        var rows = await discover(ct);
+        var rows = await discover(limit, grace, ct);
         var time = now();
         return rows.Where(row => row.Owners.Count == 0 && row.TouchedAtUtc + grace <= time)
             .OrderBy(row => row.Reference.Digest, StringComparer.Ordinal).Take(limit).Select(row => row.Reference).ToArray();

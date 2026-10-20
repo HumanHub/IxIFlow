@@ -420,22 +420,36 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private async Task<WorkflowCommitResult> Commit(CheckpointCommit commit, WorkflowAdmission? admission)
     {
         ArgumentNullException.ThrowIfNull(commit);
-        if (commit.PreservesPayloadPins) return await CommitCore(commit, admission);
+        Guid? parentIncarnation;
+        lock (_claimLock) parentIncarnation = commit.ParentNotice is { } completion &&
+            _instances.TryGetValue(completion.ParentInstanceId, out var parent) ? parent.Incarnation : null;
+        var noticePayload = commit.ParentNotice is { } preparedNotice
+            ? InboxPayloads.Prepare(ToEvent(preparedNotice), _payloadSettings) : null;
+        if (commit.PreservesPayloadPins) return await CommitCore(commit, admission, parentIncarnation);
         Task<WorkflowCommitResult>? replay;
         lock (_claimLock)
-            replay = _commits.ContainsKey((commit.InstanceId, commit.CommitId)) ? CommitCore(commit, admission) : null;
+            replay = _commits.ContainsKey((commit.InstanceId, commit.CommitId)) ? CommitCore(commit, admission, parentIncarnation) : null;
         if (replay != null) return await replay;
         WorkflowCommitResult? result = null;
         try
         {
             await PayloadStore.InTransactionAsync(async (pins, ct) =>
             {
+                await pins.LockAsync(commit.PayloadOwner, commit.PayloadReferences
+                    .Concat(commit.PayloadBodies.Select(b => b.Reference)).Concat(commit.PayloadBodies.SelectMany(b => b.Dependencies))
+                    .Concat(commit.ChildStarts.SelectMany(child => child.PayloadReferences))
+                    .Concat(noticePayload?.References ?? []).Distinct().ToArray(), ct);
                 foreach (var body in commit.PayloadBodies)
                     await pins.PutAsync(body.Body, body.Dependencies, ct);
-                await pins.LockAsync(commit.PayloadOwner, commit.PayloadReferences, ct);
                 await pins.ReplaceAsync(commit.PayloadOwner, commit.PayloadReferences, ct);
+                foreach (var child in commit.ChildStarts)
+                    await pins.ReplaceAsync(new("checkpoint", $"{child.ChildInstanceId}/{child.Incarnation:N}"), child.PayloadReferences, ct);
+                if (commit.ParentNotice is { } notice && parentIncarnation is { } parentId)
+                {
+                    await noticePayload!.PublishAsync(pins, InboxPayloads.Owner(notice.ParentInstanceId, parentId), ct);
+                }
                 ct.ThrowIfCancellationRequested();
-                result = await CommitCore(commit, admission);
+                result = await CommitCore(commit, admission, parentIncarnation);
                 // A receipt replay must never replace a newer checkpoint's pins.
                 if (result.Status != WorkflowCommitStatus.Applied) throw new PayloadCommitNotAppliedException();
             });
@@ -446,16 +460,16 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     private sealed class PayloadCommitNotAppliedException : Exception;
 
-    private async Task<WorkflowCommitResult> CommitCore(CheckpointCommit commit, WorkflowAdmission? admission)
+    private async Task<WorkflowCommitResult> CommitCore(CheckpointCommit commit, WorkflowAdmission? admission, Guid? parentIncarnation)
     {
         ArgumentNullException.ThrowIfNull(commit);
         var catalogStart = commit.ExpectedRevision == 0 || commit.ChildStarts.Count > 0;
         if (catalogStart) await _catalogLock.WaitAsync();
-        try { return await CommitUnderClaimLock(commit, admission); }
+        try { return await CommitUnderClaimLock(commit, admission, parentIncarnation); }
         finally { if (catalogStart) _catalogLock.Release(); }
     }
 
-    private Task<WorkflowCommitResult> CommitUnderClaimLock(CheckpointCommit commit, WorkflowAdmission? admission)
+    private Task<WorkflowCommitResult> CommitUnderClaimLock(CheckpointCommit commit, WorkflowAdmission? admission, Guid? parentIncarnation)
     {
         ArgumentNullException.ThrowIfNull(commit);
         var snapshot = commit.ReadTrunk();
@@ -496,6 +510,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             }
 
             // Receipts are deleted with the instance, so any replay above belongs to its current creation.
+            if (commit.ParentNotice is { } noticeIdentity &&
+                (_instances.TryGetValue(noticeIdentity.ParentInstanceId, out var noticeParent) ? noticeParent.Incarnation : (Guid?)null) != parentIncarnation)
+                return Task.FromResult(Result(WorkflowCommitStatus.Retry, revision));
             if (commit.ExpectedRevision > 0 && stored != null &&
                 stored.Incarnation != commit.Incarnation)
                 return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
@@ -610,7 +627,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             foreach (var start in commit.ChildStarts)
             {
                 var child = JsonSerializer.Deserialize<WorkflowInstance>(start.Payload)!;
-                child.Incarnation = Guid.NewGuid();
+                child.Incarnation = start.Incarnation;
                 child.Revision = 1;
                 child.RunnableAtUtc = now;
                 _instances[child.InstanceId] = child;
@@ -650,31 +667,61 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     private static WorkflowEvent ToEvent(ParentNotice notice) =>
         new(notice.ParentInstanceId, notice.EventId, notice.EventType, notice.PayloadJson,
-            TargetWaitId: notice.ParentWaitId);
+            TargetWaitId: notice.ParentWaitId) { PayloadDependencies = notice.PayloadDependencies, PayloadThresholdBytes = 0 };
 
     // Caller holds _claimLock.
     private bool Unread(CheckpointCommit commit) =>
         commit.InboxReadThrough is { } readThrough &&
         _inboxSequence.GetValueOrDefault(commit.InstanceId) > readThrough;
 
-    public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent)
+    public async Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent)
     {
         ArgumentNullException.ThrowIfNull(workflowEvent);
         workflowEvent.Validate();
-        lock (_claimLock)
+        var payload = InboxPayloads.Prepare(workflowEvent, _payloadSettings);
+        while (true)
         {
-            var now = Now;
-            var hash = workflowEvent.ContentHash();
-            if (workflowEvent.DeliveryIdentity is { } identity && _webhookDeliveries.TryGetValue(identity, out var saved) && saved.Expires > now)
-                return Task.FromResult(saved.Hash.SequenceEqual(hash)
-                    ? saved.Receipt with { Status = EventAppendStatus.Duplicate, MadeRunnable = false }
-                    : new EventAppendResult(EventAppendStatus.Conflict));
-            var receipt = Append(workflowEvent, now);
-            if (workflowEvent.DeliveryIdentity is { } key && receipt.Status is EventAppendStatus.Stored or EventAppendStatus.Duplicate or EventAppendStatus.Rejected)
-                _webhookDeliveries[key] = (hash, receipt, now + (workflowEvent.DeliveryRetention ?? TimeSpan.FromHours(24)));
-            return Task.FromResult(receipt);
+            Guid? incarnation;
+            lock (_claimLock) incarnation = _instances.GetValueOrDefault(workflowEvent.InstanceId)?.Incarnation;
+            EventAppendResult receipt = null!;
+            try
+            {
+                await PayloadStore.InTransactionAsync(async (pins, ct) =>
+                {
+                    if (incarnation is { } seen)
+                    {
+                        var owner = InboxPayloads.Owner(workflowEvent.InstanceId, seen);
+                        await pins.LockAsync(owner, payload.References.Concat(payload.Bodies.SelectMany(b => b.Dependencies)).ToArray(), ct);
+                        await payload.PublishAsync(pins, owner, ct);
+                    }
+                    lock (_claimLock)
+                    {
+                        if (_instances.GetValueOrDefault(workflowEvent.InstanceId)?.Incarnation != incarnation)
+                            throw new InboxIdentityChangedException();
+                        var now = Now;
+                        var hash = workflowEvent.ContentHash();
+                        if (workflowEvent.DeliveryIdentity is { } identity && _webhookDeliveries.TryGetValue(identity, out var saved) && saved.Expires > now)
+                            receipt = saved.Hash.SequenceEqual(hash)
+                                ? saved.Receipt with { Status = EventAppendStatus.Duplicate, MadeRunnable = false }
+                                : new EventAppendResult(EventAppendStatus.Conflict);
+                        else
+                        {
+                            receipt = Append(workflowEvent, now);
+                            if (workflowEvent.DeliveryIdentity is { } key && receipt.Status is EventAppendStatus.Stored or EventAppendStatus.Duplicate or EventAppendStatus.Rejected)
+                                _webhookDeliveries[key] = (hash, receipt, now + (workflowEvent.DeliveryRetention ?? TimeSpan.FromHours(24)));
+                        }
+                        if (receipt.Status is not (EventAppendStatus.Stored or EventAppendStatus.Rejected))
+                            throw new InboxNotAppendedException();
+                    }
+                });
+                return receipt;
+            }
+            catch (InboxIdentityChangedException) { }
+            catch (InboxNotAppendedException) { return receipt; }
         }
     }
+    private sealed class InboxIdentityChangedException : Exception;
+    private sealed class InboxNotAppendedException : Exception;
 
     // Caller holds _claimLock.
     private EventAppendResult Append(WorkflowEvent workflowEvent, DateTime now)
@@ -731,9 +778,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             instance.Revision, null, null));
     }
 
-    private static StoredWorkflowEvent Stored(WorkflowEvent workflowEvent, long sequence, DateTime now) =>
+    private StoredWorkflowEvent Stored(WorkflowEvent workflowEvent, long sequence, DateTime now) =>
         new(workflowEvent.InstanceId, workflowEvent.EventId, sequence, workflowEvent.EventType, workflowEvent.Key,
-            workflowEvent.TargetWaitId, StoredJson.Inline(workflowEvent.PayloadJson), now, EventOutcome.Pending,
+            workflowEvent.TargetWaitId, InboxPayloads.Prepare(workflowEvent, _payloadSettings).Value, now, EventOutcome.Pending,
             Subject: workflowEvent.Subject);
 
     // Caller holds _claimLock.
@@ -810,11 +857,11 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         if (query.InstanceIds?.Count > 1000) throw new ArgumentException("At most 1000 instance IDs", nameof(query));
         lock (_claimLock)
             return Task.FromResult<IReadOnlyList<StoredWait>>((query.InstanceId != null
-                    ? OpenWaits(query.InstanceId)
+                    ? WaitsOf(query.InstanceId).Values
                     : query.InstanceIds != null
-                        ? query.InstanceIds.Distinct(StringComparer.Ordinal).SelectMany(OpenWaits)
+                        ? query.InstanceIds.Distinct(StringComparer.Ordinal).SelectMany(id => WaitsOf(id).Values)
                         : _waits.Values.SelectMany(waits => waits.Values))
-                .Where(wait => wait.IsOpen &&
+                .Where(wait => (query.IncludeClosed || wait.IsOpen) &&
                                (query.InstanceId == null || wait.InstanceId == query.InstanceId) &&
                                (query.InstanceIds == null || query.InstanceIds.Contains(wait.InstanceId)) &&
                                (query.Key == null || wait.Key == query.Key) &&
@@ -874,23 +921,61 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 : []);
     }
 
-    public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)
+    public async Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)
     {
         var period = tombstoneRetention ?? RetentionSettings.Default.TombstoneRetention;
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(period, TimeSpan.Zero);
+        while (!await DeleteWithPayloadsAsync(instanceId, period)) { }
+    }
+
+    private async Task<bool> DeleteWithPayloadsAsync(string instanceId, TimeSpan period,
+        DateTime? cutoff = null, CancellationToken cancellationToken = default)
+    {
+        Guid incarnation;
+        long revision;
+        int eventCount;
+        PayloadReference[] inboxReferences;
         lock (_claimLock)
         {
-            if (_instances.ContainsKey(instanceId))
-            {
-                var now = Now;
-                DeleteInstance(instanceId);
-                _tombstones[instanceId] = new WorkflowTombstone(instanceId, now, now + period);
-            }
-            else
-                _leases.Remove(instanceId);
+            if (!_instances.TryGetValue(instanceId, out var seen))
+            { _leases.Remove(instanceId); return cutoff == null; }
+            incarnation = seen.Incarnation;
+            revision = seen.Revision;
+            var events = _events.Where(pair => pair.Key.InstanceId == instanceId).Select(pair => pair.Value.Event).ToArray();
+            eventCount = events.Length;
+            inboxReferences = events.SelectMany(e => e.PayloadJson.Reference is { } r
+                ? e.PayloadJson.Dependencies.Append(r) : e.PayloadJson.Dependencies).Distinct().ToArray();
         }
-        return Task.CompletedTask;
+        try
+        {
+            await PayloadStore.InTransactionAsync(async (pins, ct) =>
+            {
+                var owner = new PayloadOwner("checkpoint", $"{instanceId}/{incarnation:N}");
+                await pins.LockAsync(owner, inboxReferences, ct);
+                var inboxOwner = InboxPayloads.Owner(instanceId, incarnation);
+                await pins.ReleaseAsync(owner, ct);
+                await pins.ReleaseAsync(inboxOwner, ct);
+                lock (_claimLock)
+                {
+                    if (!_instances.TryGetValue(instanceId, out var current) || current.Incarnation != incarnation ||
+                        current.Revision != revision || _events.Keys.Count(key => key.InstanceId == instanceId) != eventCount ||
+                        cutoff is { } end && (!WorkflowStoreRules.IsTerminal(current.Status) ||
+                            !_endedAt.TryGetValue(instanceId, out var ended) || ended > end ||
+                            _deliveries.Values.Any(d => d.Event.InstanceId == instanceId && d.Status == OutboxDeliveryStatus.Pending) ||
+                            _instances.Values.Any(child => child.ParentInstanceId == instanceId)))
+                        throw new PayloadDeleteNotAppliedException();
+                    ct.ThrowIfCancellationRequested();
+                    var now = Now;
+                    DeleteInstance(instanceId);
+                    _tombstones[instanceId] = new WorkflowTombstone(instanceId, now, now + period);
+                }
+            }, cancellationToken);
+            return true;
+        }
+        catch (PayloadDeleteNotAppliedException) { return false; }
     }
+
+    private sealed class PayloadDeleteNotAppliedException : Exception;
 
     // Caller holds _claimLock.
     private void DeleteInstance(string instanceId)

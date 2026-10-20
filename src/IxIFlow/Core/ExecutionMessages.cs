@@ -13,7 +13,10 @@ public sealed record Assign(Guid AssignmentId, WorkflowInstance Instance,
     public bool DebuggingEnabled { get; init; }
 }
 public sealed record RecoveryPreparation(IReadOnlyList<string> ReactivatedContinuations,
-    CancellationReason? PendingCancellation, bool ClearOperatorStop = false, bool Released = false, string? Actor = null);
+    CancellationReason? PendingCancellation, bool ClearOperatorStop = false, bool Released = false, string? Actor = null)
+{
+    public bool ReactivateWaitingActivities { get; init; }
+}
 public sealed record AcknowledgedCommit(string CommitId, long Revision);
 public sealed record Ready(Guid AssignmentId, AssignmentOutcome? Outcome, AcknowledgedCommit? LastAcknowledgedCommit,
     int ContractVersion = ExecutionContract.Version, string? ExecutorName = null,

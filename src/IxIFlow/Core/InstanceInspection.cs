@@ -9,7 +9,10 @@ public sealed record InstanceInspection(InspectionSummary Summary, long Revision
     IReadOnlyList<InspectionWait> Waits, IReadOnlyList<InspectionData> Data);
 
 public sealed record InspectionSummary(string InstanceId, string WorkflowName, int WorkflowVersion,
-    WorkflowStatus Status, string? ParentInstanceId, DateTime CreatedAt, DateTime? CompletedAt, string? Error);
+    WorkflowStatus Status, string? ParentInstanceId, DateTime CreatedAt, DateTime? CompletedAt, string? Error)
+{
+    public Guid Incarnation { get; init; }
+}
 // DebugCommand deliberately does not cross this projection: it contains edit values.
 public sealed record InspectionDebugState(long PauseGeneration, long AppliedOrder, BreakpointStop? Stop,
     DebugStepping? Stepping)

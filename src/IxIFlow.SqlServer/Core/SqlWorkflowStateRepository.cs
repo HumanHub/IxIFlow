@@ -38,7 +38,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     private readonly string _ownershipConnectionString;
 
     private const string ServerEventColumns =
-        "InstanceId, EventId, Sequence, EventType, EventKey, TargetWaitId, PayloadJson, ReceivedAtUtc, " +
+        "InstanceId, EventId, Sequence, EventType, EventKey, TargetWaitId, StoredPayloadJson AS PayloadJson, ReceivedAtUtc, " +
         "Outcome, WaitId, Rejection, Subject";
 
     private const string ServerWaitColumns =
@@ -263,7 +263,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 """, WithTimes(new
             {
                 child.InstanceId,
-                Incarnation = Guid.NewGuid(),
+                start.Incarnation,
                 child.WorkflowName,
                 child.WorkflowVersion,
                 StopKind = child.StopKind?.ToString(),
@@ -555,7 +555,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                     RunnableAtUtc = CASE WHEN @MadeRunnable = 1 THEN @Now ELSE RunnableAtUtc END
                 WHERE InstanceId = @InstanceId;
             INSERT INTO dbo.IxIFlowWorkflowEvents
-                (InstanceId, EventId, Sequence, EventType, EventKey, TargetWaitId, Subject, PayloadJson,
+                (InstanceId, EventId, Sequence, EventType, EventKey, TargetWaitId, Subject, StoredPayloadJson,
                  PayloadHash, ReceivedAtUtc, Outcome, Rejection, SettledAtUtc)
             VALUES (@InstanceId, @EventId, @Sequence, @EventType, @Key, @TargetWaitId, @Subject, @PayloadJson,
                 @Hash, @Now, CASE WHEN @Rejection IS NULL THEN 0 ELSE 2 END, @Rejection,
@@ -767,7 +767,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 EventKey NVARCHAR(400) NULL,
                 TargetWaitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
                 Subject NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
-                PayloadJson NVARCHAR(MAX) NOT NULL,
+                StoredPayloadJson NVARCHAR(MAX) NOT NULL,
                 PayloadHash BINARY(32) NOT NULL,
                 ReceivedAtUtc DATETIME2 NOT NULL,
                 Outcome TINYINT NOT NULL,

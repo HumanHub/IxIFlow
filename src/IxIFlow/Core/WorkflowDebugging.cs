@@ -21,7 +21,10 @@ public sealed record DebugCommand(string Id, long Order, DebugCommandKind Kind,
     IReadOnlyList<Breakpoint>? Breakpoints = null, string? ContinuationId = null, DebugStepKind? StepKind = null,
     DataEditRequest? Edit = null, DataEditResult? EditResult = null);
 public sealed record DebugCommandRequest(string Id, DebugCommandKind Kind, long PauseGeneration, string Actor,
-    IReadOnlyList<Breakpoint>? Breakpoints = null, string? ContinuationId = null, DebugStepKind? StepKind = null, DataEditRequest? Edit = null);
+    IReadOnlyList<Breakpoint>? Breakpoints = null, string? ContinuationId = null, DebugStepKind? StepKind = null, DataEditRequest? Edit = null)
+{
+    public Guid? ExpectedIncarnation { get; init; }
+}
 public sealed record DebugCommandResult(DebugCommandStatus Status, DebugCommand? Command = null);
 
 /// <summary>Versioned commands outside the checkpoint. Version is the last allocated order.</summary>
@@ -78,6 +81,8 @@ public static class WorkflowDebugRules
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Actor);
         ArgumentOutOfRangeException.ThrowIfNegative(request.PauseGeneration);
         if (!Enum.IsDefined(request.Kind)) throw new ArgumentOutOfRangeException(nameof(request));
+        if (instance != null && request.ExpectedIncarnation is { } expected && instance.Incarnation != expected)
+            return new(DebugCommandStatus.InvalidState);
         if (commands.FirstOrDefault(c => c.Id == request.Id) is { } existing)
         {
             if (existing.Kind != request.Kind || existing.Actor != request.Actor || existing.PauseGeneration != request.PauseGeneration ||
@@ -88,7 +93,8 @@ public static class WorkflowDebugRules
             return new(DebugCommandStatus.AlreadyAccepted, existing);
         }
         if (instance == null) return new(DebugCommandStatus.NotFound);
-        if (WorkflowStoreRules.IsTerminal(instance.Status)) return new(DebugCommandStatus.InvalidState);
+        if (WorkflowStoreRules.IsTerminal(instance.Status) || instance.Status == WorkflowStatus.NeedsResolution ||
+            Runtime.ExecutionCheckpoint.StopOf(instance) != null) return new(DebugCommandStatus.InvalidState);
         var checkpoint = Checkpoint(instance);
         if (request.Kind == DebugCommandKind.Step)
         {

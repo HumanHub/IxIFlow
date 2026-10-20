@@ -8,7 +8,7 @@ public sealed partial class WorkflowHost
     internal sealed partial class InstanceOperations
     {
         public async Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
-            DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken)
+            DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken, Guid? expectedIncarnation = null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(editId);
@@ -22,17 +22,22 @@ public sealed partial class WorkflowHost
             // Own every path and JSON value across awaits; the caller may reuse its input buffers.
             var request = JsonSerializer.Deserialize<DataEditRequest>(JsonSerializer.Serialize(new DataEditRequest(expectedRevision, target, patches)))!;
             using var entered = await gate.EnterAsync(instanceId, cancellationToken);
-            return await EditUnderGateAsync(instanceId, editId, request, actor, cancellationToken);
+            var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
+            RequireIncarnation(instance, expectedIncarnation);
+            return await EditUnderGateAsync(instanceId, editId, request, actor, cancellationToken,
+                instance?.Incarnation ?? throw EditRefused("Workflow instance does not exist"));
         }
 
         private async Task<DataEditResult> EditUnderGateAsync(string instanceId, string editId, DataEditRequest request,
-            string actor, CancellationToken cancellationToken)
+            string actor, CancellationToken cancellationToken, Guid incarnation)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            RequireIncarnation(await _store.GetWorkflowInstanceSummaryAsync(instanceId), incarnation);
             var state = (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId);
             if (EditReceipt(state, editId, request, actor) is { } receipt) return receipt;
             var instance = await _store.GetWorkflowInstanceAsync(instanceId)
                 ?? throw EditRefused("Workflow instance does not exist");
+            RequireIncarnation(instance, incarnation);
             using var signals = Executor.PrepareAssignment(Guid.NewGuid());
             await using var owner = await AcquireAsync(instance, signals);
             if (owner == null)
@@ -101,7 +106,8 @@ public sealed partial class WorkflowHost
             if (prepared.Bytes > _limits.MaxCheckpointBytes) throw EditRefused("The edited checkpoint exceeds the size limit");
             cancellationToken.ThrowIfCancellationRequested();
             var accepted = await _store.RequestDebugCommandAsync(instanceId,
-                new(editId, DebugCommandKind.EditData, request.Target.PauseGeneration, actor, Edit: request));
+                new(editId, DebugCommandKind.EditData, request.Target.PauseGeneration, actor, Edit: request)
+                    { ExpectedIncarnation = incarnation });
             if (accepted.Status is not (DebugCommandStatus.Accepted or DebugCommandStatus.AlreadyAccepted))
                 throw EditRefused($"Edit command refused: {accepted.Status}");
             if (accepted.Command!.EditResult is { } original) return original;

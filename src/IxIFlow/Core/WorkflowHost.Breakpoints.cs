@@ -7,7 +7,7 @@ public sealed partial class WorkflowHost
     internal sealed partial class InstanceOperations
     {
         public async Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId,
-            IReadOnlyList<Breakpoint> breakpoints, string actor, CancellationToken cancellationToken)
+            IReadOnlyList<Breakpoint> breakpoints, string actor, CancellationToken cancellationToken, Guid? expectedIncarnation = null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(actor);
@@ -16,6 +16,7 @@ public sealed partial class WorkflowHost
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Debugging is disabled on this host");
             var instance = await _store.GetWorkflowInstanceAsync(instanceId)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow instance does not exist");
+            RequireIncarnation(instance, expectedIncarnation);
             var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow definition is unavailable");
             if (WorkflowDefinitionValidator.ForExecution(definition).StructureHash !=
@@ -35,7 +36,7 @@ public sealed partial class WorkflowHost
             var generation = state.PauseGeneration + (instance.Status != WorkflowStatus.Paused &&
                 state.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause) ? 1 : 0);
             var result = await _store.RequestDebugCommandAsync(instanceId, new(Guid.NewGuid().ToString("N"),
-                DebugCommandKind.SetBreakpoints, generation, actor, resolved));
+                DebugCommandKind.SetBreakpoints, generation, actor, resolved) { ExpectedIncarnation = instance.Incarnation });
             if (result.Status != DebugCommandStatus.Accepted)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, $"Debug command refused: {result.Status}");
             return resolved;

@@ -271,7 +271,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             ParentInstanceId = parentInstanceId,
             ParentWaitIds = children.Select(child => child.ParentWaitId).ToArray(),
             Ids = children.Select(child => child.Instance!.InstanceId).ToArray(),
-            Incarnations = children.Select(_ => Guid.NewGuid()).ToArray(),
+            Incarnations = children.Select(child => child.Incarnation).ToArray(),
             StopKinds = children.Select(child => child.Instance!.StopKind?.ToString()).ToArray(),
             StopCrashCounts = children.Select(child => child.Instance!.StopCrashCount).ToArray(),
             Created = children.Select(child => Timestamp(child.Instance!.CreatedAt)).ToArray(),
@@ -562,7 +562,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 """,
         Statement.InsertEvent => """
             INSERT INTO ixiflow_workflow_events
-                (instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, payload_json,
+                (instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, stored_payload_json,
                  payload_hash, received_at_utc, outcome, rejection, settled_at_utc)
             VALUES (@InstanceId, @EventId, @Sequence, @EventType, @Key, @TargetWaitId, @Subject, @PayloadJson,
                 @Hash, @Now, CASE WHEN @Rejection::smallint IS NULL THEN 0 ELSE 2 END, @Rejection,
@@ -745,7 +745,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             event_key varchar(400) COLLATE "C" NULL,
             target_wait_id varchar(100) COLLATE "C" NULL,
             subject varchar(100) COLLATE "C" NULL,
-            payload_json text NOT NULL,
+            stored_payload_json text NOT NULL,
             payload_hash bytea NOT NULL,
             received_at_utc timestamptz NOT NULL,
             outcome smallint NOT NULL,

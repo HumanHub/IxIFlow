@@ -113,6 +113,12 @@ public sealed class WorkflowExecutor
             checkpoint.RootDataChanged = false;
             checkpoint.RootDataUnchanged = BranchData.Observe(data);
             signals.Deliver(new Arrivals(assign.AssignmentId, assign.InboxSequence));
+            IReadOnlyList<string> reactivated = assign.Recovery is { } recovery
+                ? checkpoint.Continuations.Where(item => recovery.ReactivatedContinuations.Contains(item.Id) ||
+                    item.PendingActivity is { ChildWorkflowId: null } &&
+                    (item.Status == ContinuationStatus.Cancelling ||
+                     item.Status == ContinuationStatus.WaitingResolution && recovery.ReactivateWaitingActivities))
+                    .Select(item => item.Id).ToArray() : [];
             if (checkpoint.StructureHash == WorkflowDefinitionValidator.ForExecution(definition).StructureHash &&
                 assign.Recovery is { } preparation)
             {
@@ -126,7 +132,7 @@ public sealed class WorkflowExecutor
                     if (preparation.Released) OperatorTrace.Released(checkpoint, preparation.Actor, Now);
                 }
                 foreach (var continuation in checkpoint.Continuations.Where(item =>
-                             !pendingResume && preparation.ReactivatedContinuations.Contains(item.Id) && SteppingPolicy.Allows(checkpoint, item.Id)))
+                             !pendingResume && reactivated.Contains(item.Id) && SteppingPolicy.Allows(checkpoint, item.Id)))
                 {
                     checkpoint.Touch(continuation);
                     continuation.Status = ContinuationStatus.Active;
@@ -141,7 +147,7 @@ public sealed class WorkflowExecutor
                         preserveSavedWorkflowData: true, enforceLimit: false);
             }
             var outcome = await RunCoreAsync(definition, instance, checkpoint, data, session, signals, assign.DebuggingEnabled,
-                assign.Recovery?.ReactivatedContinuations ?? []);
+                reactivated);
             return new(assign.AssignmentId, outcome, session.LastAcknowledgedCommit, ExecutorName: _executorName);
         }
         catch (ExecutionOwnershipLostException)

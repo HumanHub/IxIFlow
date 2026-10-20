@@ -22,7 +22,7 @@ public partial class InMemoryWorkflowStateRepository
         }
         if (ids.Length > 0 && failures.Count == ids.Length)
             throw new AggregateException("No cancellation request could be read", failures);
-        return new(cancellations, await GetDebugStatesAsync(ids));
+        return new(cancellations, await ReadDebugStatesAsync(ids, includeGeneration: false));
     }
     private readonly Dictionary<string, List<DebugCommand>> _debugCommands = new(StringComparer.Ordinal);
     private IReadOnlyList<DebugCommand> CommandsOf(string id) => _debugCommands.TryGetValue(id, out var commands) ? commands : [];
@@ -43,7 +43,10 @@ public partial class InMemoryWorkflowStateRepository
             return Task.FromResult(result);
         }
     }
-    public virtual Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds)
+    public virtual Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
+        ReadDebugStatesAsync(instanceIds, includeGeneration: true);
+
+    private Task<IReadOnlyDictionary<string, WorkflowDebugState>> ReadDebugStatesAsync(IReadOnlyCollection<string> instanceIds, bool includeGeneration)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
         lock (_claimLock)
@@ -54,7 +57,7 @@ public partial class InMemoryWorkflowStateRepository
                 {
                     var commands = CommandsOf(id);
                     result[id] = new(WorkflowDebugRules.Version(commands),
-                        WorkflowDebugRules.Checkpoint(instance).PauseGeneration, commands.ToArray());
+                        includeGeneration ? WorkflowDebugRules.Checkpoint(instance).PauseGeneration : 0, commands.ToArray());
                 }
             return Task.FromResult<IReadOnlyDictionary<string, WorkflowDebugState>>(result);
         }

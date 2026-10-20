@@ -26,11 +26,9 @@ internal sealed class ChildCompleted
                     ChildInstanceId = instance.InstanceId,
                     Status = instance.Status,
                     DataJson = instance.Status != WorkflowStatus.Completed ? StoredJson.Inline("")
-                        : instance.WorkflowDataJson.IsInline ? instance.WorkflowDataJson
-                        : StoredJson.Inline(BranchData.Snapshot(checkpoint.RootData
-                            ?? throw new InvalidOperationException("A completed child must have its result data"))),
+                        : instance.WorkflowDataJson,
                     Error = instance.Status == WorkflowStatus.Failed ? checkpoint.UnhandledError : null
-                }))
+                })) { PayloadDependencies = instance.Status == WorkflowStatus.Completed && instance.WorkflowDataJson.Reference is { } reference ? [reference] : [] }
             : null;
 
     /// <summary>

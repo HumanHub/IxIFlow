@@ -30,7 +30,7 @@ public abstract partial class RelationalWorkflowStateRepository
             await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { InstanceId = instanceId });
             var (current, now) = await LockAsync<CommitState>(connection, transaction, Statement.CommitState, instanceId);
             var instance = current?.StateJson == null ? null : JsonSerializer.Deserialize<WorkflowInstance>(current.StateJson);
-            if (instance != null) instance.Revision = current!.Revision;
+            if (instance != null) { instance.Revision = current!.Revision; instance.Incarnation = current.Incarnation; }
             var commands = await ReadDebugCommandsAsync(connection, transaction, instanceId);
             var result = WorkflowDebugRules.Validate(instance, commands, command);
             if (result.Status == DebugCommandStatus.Accepted)
@@ -51,9 +51,12 @@ public abstract partial class RelationalWorkflowStateRepository
     }
 
     public async Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
-        (await GetControlRequestsAsync(instanceIds)).DebugStates;
+        (await ReadControlRequestsAsync(instanceIds, includeGeneration: true)).DebugStates;
 
-    public async Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds)
+    public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
+        ReadControlRequestsAsync(instanceIds, includeGeneration: false);
+
+    private async Task<WorkflowControlRequests> ReadControlRequestsAsync(IReadOnlyCollection<string> instanceIds, bool includeGeneration)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
         var states = new Dictionary<string, WorkflowDebugState>(StringComparer.Ordinal);
@@ -74,13 +77,14 @@ public abstract partial class RelationalWorkflowStateRepository
         var failures = new List<Exception>();
         var failedReads = 0;
         var filter = PayloadSqlDialect == PayloadDialect.PostgreSql ? "= ANY(@Ids)" : "IN @Ids";
+        var stateColumn = includeGeneration ? DebugColumn("StateJson") : "NULL";
         foreach (var batch in ids.Chunk(OwnershipReadBatchSize))
         {
             (string InstanceId, string StateJson, string? CancellationJson)[] instances;
             ILookup<string, string> commands;
             try
             {
-                using var rows = await connection.QueryMultipleAsync($"SELECT {DebugColumn("InstanceId")} AS InstanceId, {DebugColumn("StateJson")} AS StateJson, {DebugColumn("CancellationJson")} AS CancellationJson FROM {DebugInstanceTable} WHERE {DebugColumn("InstanceId")} {filter}; SELECT {DebugColumn("InstanceId")} AS InstanceId, {DebugColumn("CommandJson")} AS CommandJson FROM {DebugTable} WHERE {DebugColumn("InstanceId")} {filter} ORDER BY {DebugColumn("CommandOrder")}", new { Ids = batch });
+                using var rows = await connection.QueryMultipleAsync($"SELECT {DebugColumn("InstanceId")} AS InstanceId, {stateColumn} AS StateJson, {DebugColumn("CancellationJson")} AS CancellationJson FROM {DebugInstanceTable} WHERE {DebugColumn("InstanceId")} {filter}; SELECT {DebugColumn("InstanceId")} AS InstanceId, {DebugColumn("CommandJson")} AS CommandJson FROM {DebugTable} WHERE {DebugColumn("InstanceId")} {filter} ORDER BY {DebugColumn("CommandOrder")}", new { Ids = batch });
                 instances = (await rows.ReadAsync<(string InstanceId, string StateJson, string? CancellationJson)>()).ToArray();
                 commands = (await rows.ReadAsync<(string InstanceId, string CommandJson)>()).ToLookup(r => r.InstanceId, r => r.CommandJson);
             }
@@ -94,10 +98,10 @@ public abstract partial class RelationalWorkflowStateRepository
             {
                 try
                 {
-                    var instance = JsonSerializer.Deserialize<WorkflowInstance>(row.StateJson)!;
+                    var generation = includeGeneration ? WorkflowDebugRules.Checkpoint(JsonSerializer.Deserialize<WorkflowInstance>(row.StateJson)!).PauseGeneration : 0;
                     var cancellation = row.CancellationJson is { } reason ? JsonSerializer.Deserialize<CancellationReason>(reason) : null;
                     var items = commands[row.InstanceId].Select(json => JsonSerializer.Deserialize<DebugCommand>(json)!).ToArray();
-                    states[row.InstanceId] = new(WorkflowDebugRules.Version(items), WorkflowDebugRules.Checkpoint(instance).PauseGeneration, items);
+                    states[row.InstanceId] = new(WorkflowDebugRules.Version(items), generation, items);
                     if (cancellation != null) cancellations[row.InstanceId] = cancellation;
                 }
                 catch (Exception error)

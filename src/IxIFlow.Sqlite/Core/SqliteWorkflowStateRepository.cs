@@ -239,7 +239,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 """, children.Select(child => new
         {
             child.Instance!.InstanceId,
-            Incarnation = Guid.NewGuid(),
+            child.Incarnation,
             child.Instance!.WorkflowName,
             child.Instance!.WorkflowVersion,
             CreatedAtUtc = Timestamp(child.Instance!.CreatedAt),
@@ -497,7 +497,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 """,
         Statement.InsertEvent => """
             INSERT INTO ixiflow_workflow_events
-                (instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, payload_json,
+                (instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, stored_payload_json,
                  payload_hash, received_at_utc, outcome, rejection, settled_at_utc)
             VALUES (@InstanceId, @EventId, @Sequence, @EventType, @Key, @TargetWaitId, @Subject, @PayloadJson,
                 @Hash, @Now, CASE WHEN @Rejection IS NULL THEN 0 ELSE 2 END, @Rejection,
@@ -674,7 +674,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             event_key TEXT COLLATE BINARY NULL,
             target_wait_id TEXT COLLATE BINARY NULL,
             subject TEXT COLLATE BINARY NULL,
-            payload_json TEXT NOT NULL,
+            stored_payload_json TEXT NOT NULL,
             payload_hash BLOB NOT NULL,
             received_at_utc TEXT NOT NULL,
             outcome INTEGER NOT NULL,

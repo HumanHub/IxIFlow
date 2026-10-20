@@ -20,42 +20,50 @@ internal sealed partial class HostedWorkflowOperations
     }
     public Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default) =>
         host.ReadAsync(client => client.InspectAsync(instanceId, cancellationToken));
-    public async Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default)
+    public async Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
     {
-        var result = await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Pause, actor, cancellationToken));
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        var result = await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Pause, actor, cancellationToken, incarnation));
         if (result.Status != WorkflowExecutionStatus.Paused) host.WakeNow(instanceId);
         return result;
     }
 
-    public async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default)
+    public async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
     {
-        await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor, cancellationToken));
-        return await client.RecoverAsync(instanceId, cancellationToken);
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor, cancellationToken, incarnation));
+        return await host.RunAsync(instanceId, (slot, _, token) => slot.RecoverAsync(instanceId, token, incarnation), cancellationToken);
     }
 
-    public async Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default)
+    public async Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
     {
-        await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor, cancellationToken));
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor, cancellationToken, incarnation));
         host.WakeNow(instanceId);
     }
 
     public async Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
-        string actor, CancellationToken cancellationToken = default)
+        string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
     {
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
         ArgumentException.ThrowIfNullOrWhiteSpace(continuationId);
         if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
-        await host.ReadAsync(client => client.RequestStepAsync(instanceId, continuationId, kind, actor, cancellationToken));
-        return await client.RecoverAsync(instanceId, cancellationToken);
+        await host.ReadAsync(client => client.RequestStepAsync(instanceId, continuationId, kind, actor, cancellationToken, incarnation));
+        return await host.RunAsync(instanceId, (slot, _, token) => slot.RecoverAsync(instanceId, token, incarnation), cancellationToken);
     }
 
-    public Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
-        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken = default) =>
-        host.ReadAsync(client => client.EditDataAsync(instanceId, editId, expectedRevision, target, patches, actor, cancellationToken));
+    public async Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
+        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
+    {
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        return await host.ReadAsync(client => client.EditDataAsync(instanceId, editId, expectedRevision, target, patches, actor, cancellationToken, incarnation));
+    }
 
     public async Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId, IReadOnlyList<Breakpoint> breakpoints,
-        string actor, CancellationToken cancellationToken = default)
+        string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
     {
-        var resolved = await host.ReadAsync(client => client.SetBreakpointsAsync(instanceId, breakpoints, actor, cancellationToken));
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        var resolved = await host.ReadAsync(client => client.SetBreakpointsAsync(instanceId, breakpoints, actor, cancellationToken, incarnation));
         host.WakeNow(instanceId);
         return resolved;
     }

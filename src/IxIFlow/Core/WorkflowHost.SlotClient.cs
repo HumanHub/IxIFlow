@@ -133,19 +133,19 @@ public sealed partial class WorkflowHost
 
         public Task<WorkflowExecutionStatus?> ReadStatusAsync(string instanceId) => _runner.ReadStatusAsync(instanceId);
 
-        public Task<WorkflowExecutionResult> RequestDebugAsync(string id, DebugCommandKind kind, string actor, CancellationToken token) =>
-            _runner.RequestDebugAsync(id, kind, actor, token);
+        public Task<WorkflowExecutionResult> RequestDebugAsync(string id, DebugCommandKind kind, string actor, CancellationToken token, Guid? expectedIncarnation = null) =>
+            _runner.RequestDebugAsync(id, kind, actor, token, expectedIncarnation: expectedIncarnation);
 
         public Task<WorkflowExecutionResult> RequestStepAsync(string id, string continuationId, DebugStepKind kind,
-            string actor, CancellationToken token) =>
-            _runner.RequestDebugAsync(id, DebugCommandKind.Step, actor, token, continuationId, kind);
+            string actor, CancellationToken token, Guid? expectedIncarnation = null) =>
+            _runner.RequestDebugAsync(id, DebugCommandKind.Step, actor, token, continuationId, kind, expectedIncarnation);
 
         public Task<DataEditResult> EditDataAsync(string id, string editId, long expectedRevision,
-            DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken token) =>
-            _runner.EditDataAsync(id, editId, expectedRevision, target, patches, actor, token);
+            DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken token, Guid? expectedIncarnation = null) =>
+            _runner.EditDataAsync(id, editId, expectedRevision, target, patches, actor, token, expectedIncarnation);
 
-        public Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string id, IReadOnlyList<Breakpoint> breakpoints, string actor, CancellationToken token) =>
-            _runner.SetBreakpointsAsync(id, breakpoints, actor, token);
+        public Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string id, IReadOnlyList<Breakpoint> breakpoints, string actor, CancellationToken token, Guid? expectedIncarnation = null) =>
+            _runner.SetBreakpointsAsync(id, breakpoints, actor, token, expectedIncarnation);
         public Task<IReadOnlyList<Breakpoint>> GetBreakpointsAsync(string id, CancellationToken token) =>
             _runner.GetBreakpointsAsync(id, token);
 

@@ -15,6 +15,7 @@ public partial class InMemoryWorkflowStateRepository
     {
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates = new(StringComparer.Ordinal);
         private readonly Dictionary<string, PayloadRecord> _rows = new(StringComparer.Ordinal);
+        private readonly SortedSet<string> _orderedDigests = new(StringComparer.Ordinal);
         private readonly object _index = new();
 
         internal override async ValueTask<T> Execute<T>(Func<PayloadCatalog, CancellationToken, ValueTask<T>> action, CancellationToken ct)
@@ -44,8 +45,14 @@ public partial class InMemoryWorkflowStateRepository
                     {
                         var rows = new List<PayloadRecord>();
                         foreach (var digest in digests.Distinct().Order(StringComparer.Ordinal))
-                            if (await Read(digest, token) is { } row) rows.Add(row);
+                            if (await Lookup(digest, token) is { } row) rows.Add(row);
                         return rows;
+                    }
+                    ValueTask<PayloadRecord?> Lookup(string digest, CancellationToken token)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (staged.TryGetValue(digest, out var cached)) return ValueTask.FromResult(cached);
+                        lock (_index) return ValueTask.FromResult(_rows.TryGetValue(digest, out var row) ? Clone(row) : null);
                     }
                     string[] Digests(PayloadOwner owner)
                     {
@@ -58,11 +65,24 @@ public partial class InMemoryWorkflowStateRepository
                         (digest, _) => { staged[digest] = null; written.Add(digest); return ValueTask.CompletedTask; },
                         () => time.GetUtcNow().UtcDateTime, Settings, null,
                         forOwner: (owner, token) => Rows(Digests(owner), token),
-                        readBody: null, discover: _ => { lock (_index) return ValueTask.FromResult<IReadOnlyList<PayloadRecord>>(_rows.Values.ToArray()); });
+                        readBody: null, discover: (limit, grace, token) =>
+                        {
+                            var found = new List<PayloadRecord>();
+                            lock (_index)
+                                foreach (var digest in _orderedDigests)
+                                {
+                                    token.ThrowIfCancellationRequested();
+                                    var row = _rows[digest];
+                                    if (row.Owners.Count == 0 && row.TouchedAtUtc + grace <= time.GetUtcNow().UtcDateTime)
+                                    { found.Add(row); if (found.Count == limit) break; }
+                                }
+                            return ValueTask.FromResult<IReadOnlyList<PayloadRecord>>(found);
+                        }, lookup: Lookup);
                     var result = await action(catalog, ct);
                     // Publication is the callback's final action. All pins remain locked until staged rows publish.
                     lock (_index) foreach (var digest in written)
-                        if (staged[digest] is { } row) _rows[digest] = row; else _rows.Remove(digest);
+                        if (staged[digest] is { } row) { _rows[digest] = row; _orderedDigests.Add(digest); }
+                        else { _rows.Remove(digest); _orderedDigests.Remove(digest); }
                     return result;
                 }
                 catch (DigestBusyException busy) { blocked = busy.Gate; }
