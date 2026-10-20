@@ -422,12 +422,6 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 WHERE ixiflow_workflow_leases.expires_at_utc <= @Now
                 RETURNING epoch AS Epoch, crash_count AS CrashCount
                 """,
-        Statement.RenewLease => """
-                UPDATE ixiflow_workflow_leases
-                SET expires_at_utc = @Until
-                WHERE instance_id = @InstanceId AND token = @Token
-                    AND expires_at_utc > @Now
-                """,
         Statement.ReleaseLease => """
                 UPDATE ixiflow_workflow_leases SET expires_at_utc = '0001-01-01 00:00:00.0000000'
                 WHERE instance_id = @InstanceId AND token = @Token AND expires_at_utc > @Now
