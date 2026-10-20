@@ -15,12 +15,13 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     private readonly TaskCompletionSource<CancellationReason> _cancellation =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _renewal;
+    private ExecutionLeaseRenewer.Registration? _renewalRegistration;
     private readonly IDisposable _cancellationWatch;
     private Action<ExecutionLeaseReleaseResult>? _released;
 
     private WorkflowExecutionLease(IWorkflowStateRepository repository, string instanceId,
         string token, ExecutionLeaseGrant grant, DateTime requestedAtUtc, ExecutionLeaseSettings settings,
-        TimeProvider time, CancellationWatch watch, Action<Exception> lost,
+        TimeProvider time, CancellationWatch watch, ExecutionLeaseRenewer renewer, Action<Exception> lost,
         Action<CancellationReason> cancellation, Action<long> arrivals)
     {
         _lost = lost;
@@ -40,7 +41,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
             {
                 if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested) arrivals(sequence);
             });
-        _renewal = RenewUntilStoppedAsync(settings, requestedAtUtc.Add(settings.Duration));
+        _renewal = RenewUntilStoppedAsync(settings, requestedAtUtc, renewer);
     }
 
     private void Deliver(CancellationReason reason)
@@ -63,6 +64,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         if (_stop.IsCancellationRequested) return;
         if (Interlocked.CompareExchange(ref _loss, error, null) == null)
         {
+            _renewalRegistration?.Dispose();
             Telemetry.LeasesLost.Add(1);
             _lost(error);
         }
@@ -70,7 +72,8 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
 
     public static async Task<WorkflowExecutionLease?> TryAcquireAsync(
         IWorkflowStateRepository repository, WorkflowInstance instance,
-        ExecutionLeaseSettings settings, CancellationWatch watch, ClaimQuery query, Action<Exception> lost,
+        ExecutionLeaseSettings settings, CancellationWatch watch, ExecutionLeaseRenewer renewer,
+        ClaimQuery query, Action<Exception> lost,
         Action<CancellationReason> cancellation, Action<long> arrivals, TimeProvider? time = null,
         ExecutionClaimKind kind = ExecutionClaimKind.Runnable, Action<ExecutionLeaseReleaseResult>? released = null)
     {
@@ -87,7 +90,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                 settings.Duration, query, kind) is not { } grant)
             return null;
         return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, requestedAtUtc, settings,
-            time, watch, lost, cancellation, arrivals) { _released = released };
+            time, watch, renewer, lost, cancellation, arrivals) { _released = released };
     }
 
     /// <summary>Records a cancellation request learned outside the watch, such as from a commit.</summary>
@@ -117,61 +120,53 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     public void StopRenewing()
     {
         _stop.Cancel();
+        _renewalRegistration?.Dispose();
         _cancellationWatch.Dispose();
     }
 
     // Loss is decided by the clock, not by when a store call returns: a renewal that has not
     // succeeded by the time the lease may have expired ends ownership (B-09). The expiry counts
     // from when the renewal was sent, since the store may have applied it at any point after.
-    private async Task RenewUntilStoppedAsync(ExecutionLeaseSettings settings, DateTime expiresAtUtc)
+    private async Task RenewUntilStoppedAsync(ExecutionLeaseSettings settings, DateTime requestedAtUtc,
+        ExecutionLeaseRenewer renewer)
     {
-        var delay = NextRenewal(settings, expiresAtUtc);
+        var expiresAtUtc = requestedAtUtc.Add(settings.Duration);
         try
         {
+            using var registration = renewer.Register(new(_instanceId, _token, settings.Duration),
+                requestedAtUtc.Add(NextRenewal(settings, expiresAtUtc)));
+            _renewalRegistration = registration;
             while (true)
             {
-                await Task.Delay(delay, _time, _stop.Token);
-                var sentAtUtc = Now;
-                if (sentAtUtc >= expiresAtUtc)
-                {
-                    Lose(new TimeoutException(
-                        $"Execution lease for workflow instance '{_instanceId}' expired before it could be renewed"));
-                    return;
-                }
-                var renewal = _repository.RenewExecutionLeaseAsync(_instanceId, _token, settings.Duration);
-                var remaining = expiresAtUtc - Now;
+                _stop.Token.ThrowIfCancellationRequested();
+                if (Volatile.Read(ref _loss) != null) return;
                 try
                 {
-                    var renewed = await renewal.WaitAsync(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero,
-                        _time, _stop.Token);
-                    if (!renewed)
+                    var remaining = expiresAtUtc - Now;
+                    var attempt = await registration.Next.WaitAsync(
+                        remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero, _time, _stop.Token);
+                    _stop.Token.ThrowIfCancellationRequested();
+                    if (Volatile.Read(ref _loss) != null) return;
+                    // A late result cannot revive ownership, even if the timer continuation was delayed.
+                    if (Now >= expiresAtUtc) throw new TimeoutException();
+                    if (attempt.Result.Status == ExecutionLeaseRenewalStatus.TerminationRequested &&
+                        attempt.Result.PendingTermination is { Mode: WorkflowControlMode.Terminate } reason)
                     {
-                        try
-                        {
-                            var request = _repository.GetCancellationRequestAsync(_instanceId);
-                            remaining = expiresAtUtc - Now;
-                            var reason = await request.WaitAsync(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero,
-                                _time, _stop.Token);
-                            if (reason?.Mode == WorkflowControlMode.Terminate && Now < expiresAtUtc)
-                            {
-                                // Termination refuses renewal but leaves the current lease valid until
-                                // expiry, so its owner can still acknowledge the hard stop at a commit.
-                                ObserveCancellation(reason);
-                                return;
-                            }
-                        }
-                        catch (Exception error) when (error is not OperationCanceledException and not TimeoutException)
-                        {
-                            Lose(error);
-                            return;
-                        }
+                        ObserveCancellation(reason);
+                        return;
+                    }
+                    if (attempt.Result.Status != ExecutionLeaseRenewalStatus.Renewed)
+                    {
                         Lose(new InvalidOperationException(
                             $"Execution lease for workflow instance '{_instanceId}' was lost"));
                         return;
                     }
-                    expiresAtUtc = sentAtUtc.Add(settings.Duration);
+                    expiresAtUtc = attempt.SentAtUtc.Add(settings.Duration);
                     Interlocked.Exchange(ref _expiresAtUtcTicks, expiresAtUtc.Ticks);
-                    delay = NextRenewal(settings, expiresAtUtc);
+                    // Count the interval from the attempt, including store latency.
+                    var due = attempt.SentAtUtc.Add(settings.RenewalInterval);
+                    var safeDue = Now.Add(NextRenewal(settings, expiresAtUtc));
+                    registration.Schedule(due < safeDue ? due : safeDue);
                 }
                 catch (TimeoutException)
                 {
@@ -186,19 +181,14 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                         Lose(error);
                         return;
                     }
-                    // Try again soon, while the lease still holds.
                     var left = (expiresAtUtc - Now) / 4;
-                    delay = left < settings.RenewalInterval ? left : settings.RenewalInterval;
+                    if (left <= TimeSpan.Zero) left = TimeSpan.FromTicks(1);
+                    registration.Schedule(Now.Add(left < settings.RenewalInterval ? left : settings.RenewalInterval));
                 }
             }
         }
-        catch (OperationCanceledException) when (_stop.IsCancellationRequested)
-        {
-        }
-        catch (Exception error)
-        {
-            Lose(error);
-        }
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
+        catch (Exception error) { Lose(error); }
     }
 
     // Normally one interval; sooner when a slow renewal left less time than that before expiry.

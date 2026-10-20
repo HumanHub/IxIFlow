@@ -61,7 +61,7 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
         var formerToken = store.OwnerToken!;
         var query = await StoreTestSupport.ClaimAsync(services);
         Assert.Null(await store.TryAcquireExecutionLeaseAsync(instanceId, "probe", TimeSpan.FromSeconds(5), query));
-        Assert.False(await store.RenewExecutionLeaseAsync(instanceId, formerToken, TimeSpan.FromSeconds(5)));
+        Assert.False((await store.RenewExecutionLeasesAsync([new(instanceId, formerToken, TimeSpan.FromSeconds(5))]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
         Assert.DoesNotContain(await store.GetRunnableInstancesAsync(query), item => item.InstanceId == instanceId);
 
         // Past the backoff, the host resumes the retry.
@@ -144,7 +144,7 @@ public sealed class ParkedRunTests : IClassFixture<SqliteTestDatabase<ParkedRunT
             Assert.DoesNotContain(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)), item => item.InstanceId == parkedId);
             var claim = await store.TryAcquireExecutionLeaseAsync(parkedId, "next", TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.Null(claim);
-            Assert.False(await store.RenewExecutionLeaseAsync(parkedId, "owner", TimeSpan.FromSeconds(5)));
+            Assert.False((await store.RenewExecutionLeasesAsync([new(parkedId, "owner", TimeSpan.FromSeconds(5))]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
             if (time != null) time.Advance(delay);
             else await WaitForAsync(async () =>
                 (await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 1000)))

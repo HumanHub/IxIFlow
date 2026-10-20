@@ -72,11 +72,12 @@ public sealed class TerminationRenewalRefusalTests
         var time = new TimerRecordingClock();
         var store = new DelayedWatchStore(time);
         var instance = await OperationsTests.SeedAsync(store, WorkflowStatus.Running);
+        using var renewer = new ExecutionLeaseRenewer(store, time);
         using var watch = new CancellationWatch(store, time);
         var lost = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancelled = new TaskCompletionSource<CancellationReason>(TaskCreationOptions.RunContinuationsAsynchronously);
         var expiresAt = time.GetUtcNow() + Settings.Duration;
-        await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, Claim,
+        await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, renewer, Claim,
             error => lost.TrySetResult(error), reason => cancelled.TrySetResult(reason), _ => { }, time);
         Assert.NotNull(lease);
         try
@@ -113,15 +114,16 @@ public sealed class TerminationRenewalRefusalTests
     [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(false, true)]
-    public async Task RefusalWithoutConfirmedTerminationStillLosesImmediately(bool gracefulCancellation, bool unreadableCancellation)
+    public async Task RefusalWithoutConfirmedTerminationStillLosesImmediately(bool gracefulCancellation, bool terminationWithoutReason)
     {
         var time = new TimerRecordingClock();
-        var store = new DelayedWatchStore(time) { RefuseRenewal = true, FailCancellationRead = unreadableCancellation };
+        var store = new DelayedWatchStore(time) { RefuseRenewal = true, TerminationWithoutReason = terminationWithoutReason };
         var instance = await OperationsTests.SeedAsync(store, WorkflowStatus.Running);
+        using var renewer = new ExecutionLeaseRenewer(store, time);
         using var watch = new CancellationWatch(store, time);
         var lost = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancelled = new TaskCompletionSource<CancellationReason>(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, Claim,
+        await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, renewer, Claim,
             error => lost.TrySetResult(error), reason => cancelled.TrySetResult(reason), _ => { }, time);
         Assert.NotNull(lease);
         try
@@ -133,8 +135,7 @@ public sealed class TerminationRenewalRefusalTests
             time.Advance(Settings.RenewalInterval);
 
             var error = await lost.Task.WaitAsync(Patience);
-            if (unreadableCancellation) Assert.IsType<IOException>(error);
-            else Assert.IsType<InvalidOperationException>(error);
+            Assert.IsType<InvalidOperationException>(error);
             Assert.Throws<ExecutionOwnershipLostException>(lease.ThrowIfLost);
             Assert.False(cancelled.Task.IsCompleted);
             Assert.Equal(time.Start + Settings.RenewalInterval, time.GetUtcNow());
@@ -143,38 +144,30 @@ public sealed class TerminationRenewalRefusalTests
     }
 
     [Fact]
-    public async Task CancellationReadAfterRefusalCannotOutlastTheLease()
+    public async Task ARefusalLosesOwnershipWithoutAFollowUpCancellationRead()
     {
         var time = new TimerRecordingClock();
-        var store = new DelayedWatchStore(time) { RefuseRenewal = true, DelayCancellationRead = true };
+        var store = new DelayedWatchStore(time) { RefuseRenewal = true };
         var instance = await OperationsTests.SeedAsync(store, WorkflowStatus.Running);
+        using var renewer = new ExecutionLeaseRenewer(store, time);
         using var watch = new CancellationWatch(store, time);
         var lost = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancelled = new TaskCompletionSource<CancellationReason>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var expiresAt = time.GetUtcNow() + Settings.Duration;
-        await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, Claim,
+        await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, renewer, Claim,
             error => lost.TrySetResult(error), reason => cancelled.TrySetResult(reason), _ => { }, time);
         Assert.NotNull(lease);
         try
         {
             await store.WatchStarted.Task.WaitAsync(Patience);
             time.Advance(Settings.RenewalInterval);
-            await store.CancellationReadStarted.Task.WaitAsync(Patience);
-            await time.WaitForTimerDueAtAsync(expiresAt);
-            Assert.False(lost.Task.IsCompleted);
-            time.Advance(expiresAt - time.GetUtcNow());
-
-            Assert.IsType<TimeoutException>(await lost.Task.WaitAsync(Patience));
+            Assert.IsType<InvalidOperationException>(await lost.Task.WaitAsync(Patience));
             Assert.Throws<ExecutionOwnershipLostException>(lease.ThrowIfLost);
-            store.CancellationReply.TrySetResult(new CancellationReason { Mode = WorkflowControlMode.Terminate });
+            Assert.Equal(0, store.CancellationReads);
+            Assert.False(store.WatchReply.Task.IsCompleted);
             Assert.False(cancelled.Task.IsCompleted);
-            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "fallback", Settings.Duration, Claim));
+            Assert.Equal(time.Start + Settings.RenewalInterval, time.GetUtcNow());
         }
-        finally
-        {
-            store.CancellationReply.TrySetResult(null);
-            store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason>());
-        }
+        finally { store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason>()); }
     }
 
     [Fact]
@@ -183,12 +176,13 @@ public sealed class TerminationRenewalRefusalTests
         var time = new TimerRecordingClock();
         var store = new DelayedWatchStore(time);
         var instance = await OperationsTests.SeedAsync(store, WorkflowStatus.Running);
+        using var renewer = new ExecutionLeaseRenewer(store, time);
         using var watch = new CancellationWatch(store, time);
         var lost = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         var reasons = new ConcurrentQueue<CancellationReason>();
         var graceful = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var terminated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, Claim,
+        await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, renewer, Claim,
             error => lost.TrySetResult(error), reason =>
             {
                 reasons.Enqueue(reason);
@@ -262,19 +256,17 @@ public sealed class TerminationRenewalRefusalTests
         }
     }
 
-    // The shared batch watch is held independently of the renewal's single-instance lookup.
+    // The shared watch is held independently of reading the renewal batch's per-lease outcome.
     private sealed class DelayedWatchStore(TimeProvider time) : FaultInjectingRepository(time)
     {
         public TaskCompletionSource WatchStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<IReadOnlyDictionary<string, CancellationReason>> WatchReply { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource RenewalRefused { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource CancellationReadStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource<CancellationReason?> CancellationReply { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ConcurrentQueue<CheckpointCommit> AppliedCommits { get; } = new();
         public bool RefuseRenewal { get; init; }
-        public bool DelayCancellationRead { get; init; }
-        public bool FailCancellationRead { get; init; }
+        public bool TerminationWithoutReason { get; init; }
+        public int CancellationReads;
         private int _renewalCalls;
         public int RenewalCalls => Volatile.Read(ref _renewalCalls);
 
@@ -287,17 +279,23 @@ public sealed class TerminationRenewalRefusalTests
 
         public override Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
         {
-            CancellationReadStarted.TrySetResult();
-            if (FailCancellationRead) throw new IOException("Cancellation request unavailable");
-            return DelayCancellationRead ? CancellationReply.Task : base.GetCancellationRequestAsync(instanceId);
+            Interlocked.Increment(ref CancellationReads);
+            return base.GetCancellationRequestAsync(instanceId);
         }
 
-        public override async Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration)
+        public override async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+            IReadOnlyList<ExecutionLeaseRenewal> leases)
         {
             Interlocked.Increment(ref _renewalCalls);
-            var renewed = !RefuseRenewal && await base.RenewExecutionLeaseAsync(instanceId, token, duration);
-            if (!renewed) RenewalRefused.TrySetResult();
-            return renewed;
+            if (!RefuseRenewal)
+            {
+                var results = await base.RenewExecutionLeasesAsync(leases);
+                if (results.Any(result => result.Status != ExecutionLeaseRenewalStatus.Renewed)) RenewalRefused.TrySetResult();
+                return results;
+            }
+            RenewalRefused.TrySetResult();
+            return leases.Select(_ => new ExecutionLeaseRenewalResult(TerminationWithoutReason
+                ? ExecutionLeaseRenewalStatus.TerminationRequested : ExecutionLeaseRenewalStatus.Refused)).ToArray();
         }
 
         public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)

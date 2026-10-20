@@ -109,7 +109,7 @@ public sealed class RunReceiptLifecycleTests
             _services = services.BuildServiceProvider();
             _watch = new(Store, _time);
             Operations = new(_services, _services.GetRequiredService<IActivityExecutor>(), Store,
-                _services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+                _services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), _services.GetRequiredService<ExecutionLeaseRenewer>(),
                 timeProvider: _time, watch: _watch, control: Control,
                 hostSettings: HostSettings.Default with { MaxCrashes = 1 });
         }

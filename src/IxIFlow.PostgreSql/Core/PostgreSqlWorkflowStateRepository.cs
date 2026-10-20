@@ -101,7 +101,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         if (operation is not (Operation.Catalog or Operation.Registry or Operation.RunnableRead or Operation.RetentionRead
             or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim
             or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
-            or Operation.CancellationRequest or Operation.LeaseRelease or Operation.Termination)) return null;
+            or Operation.CancellationRequest or Operation.LeaseRelease or Operation.LeaseRenew or Operation.Termination)) return null;
         var transaction = await connection.BeginTransactionAsync();
         try
         {
@@ -478,12 +478,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                     WHEN @Running AND lease.expires_at_utc > '-infinity' THEN 1 ELSE 0 END
             WHERE lease.expires_at_utc <= clock_timestamp()
             RETURNING epoch AS Epoch, crash_count AS CrashCount
-            """,
-        Statement.RenewLease => """
-            UPDATE ixiflow_workflow_leases
-            SET expires_at_utc = clock_timestamp() + @Milliseconds * INTERVAL '1 millisecond'
-            WHERE instance_id = @InstanceId AND token = @Token
-                AND expires_at_utc > clock_timestamp()
             """,
         Statement.ReleaseLease => """
             WITH released AS (
