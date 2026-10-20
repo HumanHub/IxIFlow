@@ -197,7 +197,7 @@ The following work is planned for 1.0 and is **not yet available**, or has an im
 | Area | Remaining 1.0 work |
 | --- | --- |
 | Execution and scheduling | Commit resend backoff, batched host lease renewal and completion of demand-aware local-first start/resume admission; execution-claim skip-locked policy remains open |
-| Publishing and versioning | Activity-package dependency resolution and digest pinning, template dependencies, isolated bundle assemblies and type resolution per version, host fetching/caching and verification at load, shared-assembly compatibility checks at load; Azure Blob Storage and S3 artifact providers; draft, upload and publishing HTTP APIs |
+| Publishing and versioning | Activity-package dependency resolution and digest pinning, template dependencies, isolated bundle assemblies and type resolution per version, host fetching/caching and verification at load, shared-assembly compatibility checks at load; draft, upload and publishing HTTP APIs |
 | Authoring and catalog | Unified workflow/activity catalog API with input/output metadata, remaining placement and inspection parity for code-defined workflows, published activity packages and YAML code activities, inline workflow calls, explicit workflow input/output contracts and local activity registration |
 | Debugger and audit | Breakpoints and their commits, all-stop pause, stepping including loops, audited data edits, Debug Adapter Protocol and inspection/replay tooling. Timers will keep running while paused; edits will record actor, time, revision and paths |
 | Large payloads | Opt-in storage by reference for workflow data, events and child inputs/results, with transactional reference tracking and collection; bodies stay in the state store |
