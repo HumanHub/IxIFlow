@@ -14,7 +14,7 @@ public sealed record ClaimQuery
     public Guid HostId { get; }
     public IReadOnlyDictionary<string, string> Capabilities { get; }
     public int Limit { get; private init; }
-    // 1,024 recent refusals plus at most 256 candidates considered by this pass.
+    // Room for 1,024 refusals and 256 pass candidates; spare room also holds deferrals.
     internal const int MaxExcludedInstanceIds = 1280;
     public IReadOnlyList<string> ExcludedInstanceIds { get; private init; } = Array.Empty<string>();
 
@@ -22,7 +22,6 @@ public sealed record ClaimQuery
     {
         var excluded = ids.Distinct(StringComparer.Ordinal).ToArray();
         ArgumentOutOfRangeException.ThrowIfGreaterThan(excluded.Length, MaxExcludedInstanceIds);
-        foreach (var id in excluded) InstanceIds.Validate(id);
         return this with { ExcludedInstanceIds = Array.AsReadOnly(excluded), Limit = limit };
     }
 }

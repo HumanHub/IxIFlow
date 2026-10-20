@@ -9,7 +9,7 @@ public sealed partial class WorkflowHost
         public async Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId,
             IReadOnlyList<Breakpoint> breakpoints, string actor, CancellationToken cancellationToken, Guid? expectedIncarnation = null)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(actor);
             cancellationToken.ThrowIfCancellationRequested();
             if (!(hostSettings ?? HostSettings.Default).Debugging)
@@ -46,7 +46,7 @@ public sealed partial class WorkflowHost
 
         public async Task<IReadOnlyList<Breakpoint>> GetBreakpointsAsync(string instanceId, CancellationToken cancellationToken)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             cancellationToken.ThrowIfCancellationRequested();
             var instance = await _store.GetWorkflowInstanceAsync(instanceId)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow instance does not exist");

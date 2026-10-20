@@ -476,14 +476,17 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             """,
         // Two statements in one round trip: row visibility must be sampled AFTER ID acquisition.
         Statement.Running => """
-            SELECT pg_try_advisory_xact_lock(hashtextextended(@InstanceId COLLATE "C", 0));
+            SELECT set_config('ixiflow.claim_id_acquired',
+                pg_try_advisory_xact_lock(hashtextextended(@InstanceId COLLATE "C", 0))::text, true)::boolean;
             WITH locked AS MATERIALIZED (
                 SELECT status FROM ixiflow_workflow_instances
-                WHERE instance_id = @InstanceId FOR UPDATE SKIP LOCKED
+                WHERE current_setting('ixiflow.claim_id_acquired')::boolean
+                    AND instance_id = @InstanceId FOR UPDATE SKIP LOCKED
             )
-            SELECT COALESCE((SELECT CASE WHEN status = 'Running' THEN 1 ELSE 0 END FROM locked),
+            SELECT CASE WHEN NOT current_setting('ixiflow.claim_id_acquired')::boolean THEN -1
+                ELSE COALESCE((SELECT CASE WHEN status = 'Running' THEN 1 ELSE 0 END FROM locked),
                 CASE WHEN EXISTS (SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId)
-                    THEN -1 ELSE 0 END)
+                    THEN -1 ELSE 0 END) END
             """,
         Statement.ClaimLease => """
             INSERT INTO ixiflow_workflow_leases AS lease (instance_id, token, expires_at_utc, epoch, crash_count)

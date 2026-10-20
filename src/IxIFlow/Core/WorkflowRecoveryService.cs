@@ -26,7 +26,7 @@ internal sealed partial class WorkflowRecoveryService(
     // Only entries actually taken by a worker are reserved across overlapping passes.
     private readonly Dictionary<string, object> _recovering = new(StringComparer.Ordinal);
     // Dictionary insertion order is not an eviction contract; keep oldest-first explicitly.
-    private readonly Dictionary<string, DateTime> _refused = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _refused = new(StringComparer.Ordinal);
     private readonly Queue<string> _refusalOrder = new();
     internal const int RefusedCapacity = 1024;
     internal static readonly TimeSpan RefusalInterval = TimeSpan.FromSeconds(1);
@@ -38,7 +38,8 @@ internal sealed partial class WorkflowRecoveryService(
     {
         FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true
     });
-    private readonly Dictionary<string, (DateTime Until, int Times)> _deferred = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (long Started, TimeSpan Wait, int Times)> _deferred = new(StringComparer.Ordinal);
+    private TimeSpan RefusalCooldown => _settings.PollInterval < RefusalInterval ? _settings.PollInterval : RefusalInterval;
     // Bound contention work even when discovery keeps finding more due instances.
     internal const int MaxCandidatesPerPass = 256;
     internal const int RefillPageSize = 8;
@@ -51,7 +52,7 @@ internal sealed partial class WorkflowRecoveryService(
         {
             var times = _deferred.TryGetValue(instanceId, out var previous) ? previous.Times + 1 : 1;
             var wait = TimeSpan.FromSeconds(Math.Min(300, 5 * Math.Pow(2, Math.Min(times - 1, 6))));
-            _deferred[instanceId] = (_time.GetUtcNow().UtcDateTime + wait, times);
+            _deferred[instanceId] = (_time.GetTimestamp(), wait, times);
         }
     }
 
@@ -96,8 +97,8 @@ internal sealed partial class WorkflowRecoveryService(
         var owner = new object();
         lock (_lock)
         {
-            var now = _time.GetUtcNow().UtcDateTime;
-            foreach (var stale in _deferred.Where(item => now - item.Value.Until > TimeSpan.FromMinutes(10))
+            var now = _time.GetTimestamp();
+            foreach (var stale in _deferred.Where(item => _time.GetElapsedTime(item.Value.Started, now) - item.Value.Wait > TimeSpan.FromMinutes(10))
                          .Select(item => item.Key).ToArray())
                 _deferred.Remove(stale);
         }
@@ -116,7 +117,14 @@ internal sealed partial class WorkflowRecoveryService(
         lock (_lock)
         {
             ExpireRefusals();
-            query = query.Excluding(_refused.Keys.Concat(attempted), limit);
+            var now = _time.GetTimestamp();
+            // Keep this pass's IDs and all retained refusals; use the remaining room for
+            // unexpired deferrals, oldest first. Deferrals must not keep occupying the head.
+            var excluded = attempted.Concat(_refused.Keys).Concat(_deferred
+                .Where(item => _time.GetElapsedTime(item.Value.Started, now) < item.Value.Wait)
+                .OrderByDescending(item => _time.GetElapsedTime(item.Value.Started, now))
+                .Select(item => item.Key)).Distinct(StringComparer.Ordinal).Take(ClaimQuery.MaxExcludedInstanceIds);
+            query = query.Excluding(excluded, limit);
         }
         return repository.GetRunnableInstancesAsync(query);
     }
@@ -124,8 +132,7 @@ internal sealed partial class WorkflowRecoveryService(
     // Called only under _lock. Expiries are fixed at refusal and therefore oldest-first.
     private void ExpireRefusals()
     {
-        var now = _time.GetUtcNow().UtcDateTime;
-        while (_refusalOrder.TryPeek(out var id) && _refused[id] <= now)
+        while (_refusalOrder.TryPeek(out var id) && _time.GetElapsedTime(_refused[id]) >= RefusalCooldown)
         {
             _refusalOrder.Dequeue();
             _refused.Remove(id);
@@ -142,8 +149,7 @@ internal sealed partial class WorkflowRecoveryService(
             schedule = _refused.Count == 0;
             if (_refused.Count == RefusedCapacity) _refused.Remove(_refusalOrder.Dequeue());
             _refusalOrder.Enqueue(id);
-            _refused.Add(id, _time.GetUtcNow().UtcDateTime +
-                (_settings.PollInterval < RefusalInterval ? _settings.PollInterval : RefusalInterval));
+            _refused.Add(id, _time.GetTimestamp());
         }
         // A refusal can arrive while ExecuteAsync is already waiting on a ten-second poll.
         if (schedule) _refusalChanges.Writer.TryWrite(true);
@@ -153,10 +159,11 @@ internal sealed partial class WorkflowRecoveryService(
         object owner, CancellationToken cancellationToken)
     {
         using var discovery = new SemaphoreSlim(1, 1);
-        var page = new Queue<RunnableInstance>(first);
-        var seen = new HashSet<string>(first.Select(candidate => candidate.InstanceId), StringComparer.Ordinal);
-        var remaining = MaxCandidatesPerPass - first.Count;
+        var page = new Queue<RunnableInstance>(first.Take(MaxCandidatesPerPass));
+        var seen = new HashSet<string>(page.Select(candidate => candidate.InstanceId), StringComparer.Ordinal);
+        var remaining = Math.Max(0, MaxCandidatesPerPass - first.Count);
         var exhausted = first.Count < slots;
+        var continuationRequested = false; // Accessed only under discovery, including by delayed siblings.
         int refusalsAtStart;
         lock (_lock) refusalsAtStart = _refused.Count;
         try
@@ -179,29 +186,34 @@ internal sealed partial class WorkflowRecoveryService(
                             {
                                 if (page.Count == 0)
                                 {
-                                    if (remaining == 0)
+                                    if (remaining <= 0)
                                     {
                                         // Fill the bounded refusal set across immediate passes, before
                                         // the poll could expire it. Once full, eviction cannot busy-loop.
                                         lock (_lock)
-                                            if (_refused.Count > refusalsAtStart) _wakes.Writer.TryWrite(true);
+                                            if (!continuationRequested && _refused.Count > refusalsAtStart)
+                                            {
+                                                continuationRequested = true;
+                                                _wakes.Writer.TryWrite(true);
+                                            }
                                         return;
                                     }
                                     if (exhausted) return;
                                     var requested = Math.Min(RefillPageSize, remaining);
                                     var next = await ReadCandidatesAsync(query, requested, seen, token);
-                                    remaining -= next.Count;
+                                    var accepted = next.Take(remaining).ToArray();
+                                    remaining = Math.Max(0, remaining - next.Count);
                                     exhausted = next.Count < requested;
-                                    foreach (var candidate in next)
+                                    foreach (var candidate in accepted)
                                         if (seen.Add(candidate.InstanceId)) page.Enqueue(candidate);
                                     if (page.Count == 0 && exhausted) return;
                                 }
                                 var candidateToTake = page.Dequeue();
                                 lock (_lock)
                                     if ((!_deferred.TryGetValue(candidateToTake.InstanceId, out var deferred) ||
-                                         deferred.Until <= _time.GetUtcNow().UtcDateTime) &&
-                                        (!_refused.TryGetValue(candidateToTake.InstanceId, out var expiry) ||
-                                         expiry <= _time.GetUtcNow().UtcDateTime) &&
+                                         _time.GetElapsedTime(deferred.Started) >= deferred.Wait) &&
+                                        (!_refused.TryGetValue(candidateToTake.InstanceId, out var refusedAt) ||
+                                         _time.GetElapsedTime(refusedAt) >= RefusalCooldown) &&
                                         _recovering.TryAdd(candidateToTake.InstanceId, owner))
                                         instance = candidateToTake;
                             }
@@ -313,14 +325,15 @@ internal sealed partial class WorkflowRecoveryService(
 
     private async Task WaitForPassAsync(CancellationToken stoppingToken)
     {
-        var pollAt = _time.GetUtcNow() + (_coordination.Connected ? _coordination.PollInterval : _settings.PollInterval);
+        var started = _time.GetTimestamp();
+        var pollInterval = _coordination.Connected ? _coordination.PollInterval : _settings.PollInterval;
         while (true)
         {
             using var wait = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-            var delay = pollAt - _time.GetUtcNow();
+            var delay = pollInterval - _time.GetElapsedTime(started);
             lock (_lock)
                 if (_refusalOrder.TryPeek(out var id))
-                    delay = TimeSpan.FromTicks(Math.Min(delay.Ticks, (_refused[id] - _time.GetUtcNow().UtcDateTime).Ticks));
+                    delay = TimeSpan.FromTicks(Math.Min(delay.Ticks, (RefusalCooldown - _time.GetElapsedTime(_refused[id])).Ticks));
             var tick = Task.Delay(delay > TimeSpan.Zero ? delay : TimeSpan.Zero, _time, wait.Token);
             var wake = _wakes.Reader.ReadAsync(wait.Token).AsTask();
             var changed = _refusalChanges.Reader.ReadAsync(wait.Token).AsTask();

@@ -38,7 +38,8 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
 
     // Handlers enqueue subscription changes only. They run under the host lock to preserve ordering.
     internal event Action<string, bool>? AwaitingChanged;
-    internal event Action? FreeSlotsChanged;
+    // Always report capacity; only newly available execution capacity should wake recovery.
+    internal event Action<bool>? FreeSlotsChanged;
     internal Func<string, CancellationToken, Task>? AwaitSubscriptionAsync;
 
     internal Task ConfirmSubscriptionAsync(string instanceId, CancellationToken token) =>
@@ -212,7 +213,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         try
         {
             result = await RunAsync(instanceId, (client, _, token) => client.RecoverAsync(instanceId, token),
-                CancellationToken.None);
+                CancellationToken.None, recoveryProbe: true);
         }
         catch (OperationCanceledException)
         {
@@ -316,13 +317,13 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     /// </summary>
     internal Task<T> RunAsync<T>(string? instanceId,
         Func<SlotClient, RunControl, CancellationToken, Task<T>> operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool recoveryProbe = false)
     {
         // A run's context stays with activities that outlive it; once it is closed their calls queue.
         if (TryRunInline(operation, cancellationToken, out var inline))
             return inline;
 
-        var item = new WorkItem<T>(instanceId, operation, cancellationToken);
+        var item = new WorkItem<T>(instanceId, operation, cancellationToken, recoveryProbe);
         var start = false;
         lock (_lock)
         {
@@ -365,6 +366,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     private async Task ExecuteAsync(WorkItem item)
     {
         var slotTaken = false;
+        var executionCapacityAvailable = !item.RecoveryProbe;
         try
         {
             if (item.IsSettled)
@@ -373,14 +375,15 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             using (var waiting = CancellationTokenSource.CreateLinkedTokenSource(stop.Token, _draining.Token))
                 await _slots.WaitAsync(waiting.Token);
             slotTaken = true;
-            FreeSlotsChanged?.Invoke();
+            FreeSlotsChanged?.Invoke(false);
             item.MarkStarted();
             var scope = _scopes.CreateAsyncScope();
             RunContext? context = null;
+            RunControl? control = null;
             CancellationTokenRegistration recycleRegistration = default;
             try
             {
-                var control = scope.ServiceProvider.GetRequiredService<RunControl>();
+                control = scope.ServiceProvider.GetRequiredService<RunControl>();
                 recycleRegistration = _draining.Token.UnsafeRegister(_ => control.Recycle(), null);
                 control.OnInstanceKnown(instanceId => Register(item, instanceId));
                 control.OnScheduled(Schedule);
@@ -394,6 +397,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             }
             finally
             {
+                executionCapacityAvailable |= control?.ExecutionClaimed == true;
                 CurrentRun.Value = null;
                 if (context == null)
                 {
@@ -418,7 +422,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
                         finally
                         {
                             _slots.Release();
-                            FreeSlotsChanged?.Invoke();
+                            FreeSlotsChanged?.Invoke(executionCapacityAvailable);
                             lock (_lock)
                                 _lingering.Remove(released.Task);
                             released.TrySetResult();
@@ -436,7 +440,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             if (slotTaken)
             {
                 _slots.Release();
-                FreeSlotsChanged?.Invoke();
+                FreeSlotsChanged?.Invoke(executionCapacityAvailable);
             }
             item.Complete();
             Finish(item);
@@ -651,6 +655,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         /// <summary>Completes when the host has finished with the item, run or not.</summary>
         public TaskCompletionSource Done { get; } = NewSignal();
         public abstract bool IsSettled { get; }
+        public virtual bool RecoveryProbe => false;
         public abstract Task RunAsync(SlotClient client, RunControl control, CancellationToken token);
         public abstract void Fail(Exception error);
         public abstract void Cancel();
@@ -674,7 +679,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
 
     private sealed class WorkItem<T>(string? instanceId,
         Func<SlotClient, RunControl, CancellationToken, Task<T>> operation,
-        CancellationToken callerToken) : WorkItem(instanceId, callerToken)
+        CancellationToken callerToken, bool recoveryProbe) : WorkItem(instanceId, callerToken)
     {
         private T? _result;
         private Exception? _error;
@@ -684,6 +689,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public override bool IsSettled => Completion.Task.IsCompleted;
+        public override bool RecoveryProbe => recoveryProbe;
 
         public override async Task RunAsync(SlotClient client, RunControl control,
             CancellationToken token)
