@@ -61,7 +61,6 @@ public sealed partial class SqlWorkflowStateRepository
                 "IX_IxIFlowWorkflowEvents_Pending",
                 "IX_IxIFlowWorkflowInstances_CorrelationId",
                 "IX_IxIFlowWorkflowInstances_Parent",
-                "IX_IxIFlowWorkflowInstances_Runnable",
                 "IX_IxIFlowWorkflowInstances_Status",
                 "IX_IxIFlowWorkflowInstances_UnfinishedWorkflow",
                 "IX_IxIFlowWorkflowInstances_WorkflowName",

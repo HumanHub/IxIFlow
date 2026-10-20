@@ -752,9 +752,6 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             EXEC(N'CREATE INDEX IX_IxIFlowInstances_Ended
                 ON dbo.IxIFlowWorkflowInstances (EndedAtUtc, InstanceId) WHERE EndedAtUtc IS NOT NULL');
         END
-        CREATE INDEX IX_IxIFlowWorkflowInstances_Runnable
-            ON dbo.IxIFlowWorkflowInstances (RunnableAtUtc, InstanceId)
-            INCLUDE (LastHostId) WHERE RunnableAtUtc IS NOT NULL;
         CREATE INDEX IX_IxIFlowInstances_DemandSet ON dbo.IxIFlowWorkflowInstances (DemandSetId);
         CREATE INDEX IX_IxIFlowInstances_SetRunnable
             ON dbo.IxIFlowWorkflowInstances (DemandSetId, RunnableAtUtc, InstanceId) INCLUDE (LastHostId, PinnedHost, PinExpiresAtUtc) WHERE RunnableAtUtc IS NOT NULL;
