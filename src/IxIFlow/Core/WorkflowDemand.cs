@@ -9,6 +9,8 @@ namespace IxIFlow.Core;
 /// <summary>A capability required by an instance. Only explicitly inherited demands pass to children.</summary>
 public sealed record WorkflowDemand(string Key, string? Value = null, DateTime? ExpiresAtUtc = null, bool Inherit = false)
 {
+    /// <summary>Expiry of the value restriction when it ends before the key-presence constraint.</summary>
+    public DateTime? ValueExpiresAtUtc { get; init; }
     [JsonIgnore] internal LambdaExpression? Expression { get; init; }
     [JsonIgnore] internal Func<object, string?>? Evaluate { get; init; }
 }
@@ -48,16 +50,22 @@ internal static class WorkflowDemands
         {
             Validate(declaration);
             var value = declaration.Evaluate == null ? declaration.Value : declaration.Evaluate(data);
-            var demand = new WorkflowDemand(declaration.Key, value, declaration.ExpiresAtUtc, declaration.Inherit);
+            var demand = new WorkflowDemand(declaration.Key, value, declaration.ExpiresAtUtc, declaration.Inherit)
+                { ValueExpiresAtUtc = declaration.ValueExpiresAtUtc };
             if (resolved.TryGetValue(demand.Key, out var previous))
             {
                 if (previous.Value != null && value != null && previous.Value != value)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                         $"Conflicting demands for '{demand.Key}': '{previous.Value}' and '{value}'");
-                // Both constraints must hold: an unbounded constraint outlives an expiring one.
+                static DateTime? Later(DateTime? first, DateTime? second) =>
+                    first == null || second == null ? null : first > second ? first : second;
+                var valueExpiry = previous.Value == null ? demand.ValueExpiresAtUtc ?? demand.ExpiresAtUtc
+                    : value == null ? previous.ValueExpiresAtUtc ?? previous.ExpiresAtUtc
+                    : Later(previous.ValueExpiresAtUtc ?? previous.ExpiresAtUtc, demand.ValueExpiresAtUtc ?? demand.ExpiresAtUtc);
+                var presenceExpiry = Later(previous.ExpiresAtUtc, demand.ExpiresAtUtc);
                 demand = demand with { Value = previous.Value ?? value, Inherit = previous.Inherit || demand.Inherit,
-                    ExpiresAtUtc = previous.ExpiresAtUtc == null || demand.ExpiresAtUtc == null ? null
-                        : previous.ExpiresAtUtc > demand.ExpiresAtUtc ? previous.ExpiresAtUtc : demand.ExpiresAtUtc };
+                    ExpiresAtUtc = presenceExpiry,
+                    ValueExpiresAtUtc = previous.Value == null && value == null || valueExpiry == presenceExpiry ? null : valueExpiry };
             }
             resolved[demand.Key] = demand;
         }

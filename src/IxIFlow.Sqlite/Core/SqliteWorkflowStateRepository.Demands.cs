@@ -9,6 +9,7 @@ public sealed partial class SqliteWorkflowStateRepository
             demand_key TEXT COLLATE BINARY NOT NULL,
             demand_value TEXT COLLATE BINARY NULL,
             expires_at_utc TEXT NULL,
+            value_expires_at_utc TEXT NULL,
             inherit INTEGER NOT NULL,
             PRIMARY KEY (demand_set_id, demand_key)
         );
@@ -21,16 +22,16 @@ public sealed partial class SqliteWorkflowStateRepository
     internal override string CollectDemandSetsLockSql => CreateDemandSetsLockSql;
 
     internal override string ReadDemandsSql => """
-        SELECT demand.demand_key AS [Key], demand.demand_value AS [Value], demand.expires_at_utc AS [ExpiresAtUtc], demand.inherit AS [Inherit]
+        SELECT demand.demand_key AS [Key], demand.demand_value AS [Value], demand.value_expires_at_utc AS [ValueExpiresAtUtc], demand.expires_at_utc AS [ExpiresAtUtc], demand.inherit AS [Inherit]
         FROM ixiflow_workflow_instances AS instance JOIN ixiflow_demand_set_rows AS demand ON demand.demand_set_id = instance.demand_set_id
         WHERE instance.instance_id = @InstanceId
         UNION ALL
-        SELECT 'host', pinned_host, pin_expires_at_utc, pin_inherit FROM ixiflow_workflow_instances
+        SELECT 'host', pinned_host, NULL, pin_expires_at_utc, pin_inherit FROM ixiflow_workflow_instances
         WHERE instance_id = @InstanceId AND pinned_host IS NOT NULL
         """;
 
     internal override string ReadDemandSetSql => """
-        SELECT demand_key AS [Key], demand_value AS [Value], expires_at_utc AS [ExpiresAtUtc], inherit AS [Inherit]
+        SELECT demand_key AS [Key], demand_value AS [Value], value_expires_at_utc AS [ValueExpiresAtUtc], expires_at_utc AS [ExpiresAtUtc], inherit AS [Inherit]
         FROM ixiflow_demand_set_rows WHERE demand_set_id = @DemandSetId
         """;
 
@@ -40,8 +41,8 @@ public sealed partial class SqliteWorkflowStateRepository
         RETURNING demand_set_id;
         """;
     internal override string InsertDemandSql => """
-        INSERT INTO ixiflow_demand_set_rows (demand_set_id, demand_key, demand_value, expires_at_utc, inherit)
-        VALUES (@DemandSetId, @Key, @Value, @ExpiresAtUtc, @Inherit)
+        INSERT INTO ixiflow_demand_set_rows (demand_set_id, demand_key, demand_value, expires_at_utc, value_expires_at_utc, inherit)
+        VALUES (@DemandSetId, @Key, @Value, @ExpiresAtUtc, @ValueExpiresAtUtc, @Inherit)
         """;
 
     internal override string CollectDemandSetsSql => """

@@ -15,6 +15,7 @@ public abstract partial class RelationalWorkflowStateRepository
         public string? Key { get; set; }
         public string? Value { get; set; }
         public DateTime? ExpiresAtUtc { get; set; }
+        public DateTime? ValueExpiresAtUtc { get; set; }
         public bool Inherit { get; set; }
     }
 
@@ -51,10 +52,11 @@ public abstract partial class RelationalWorkflowStateRepository
             var hosts = UnschedulableWork.LiveHosts(
                 await ReadLiveMembersAsync(connection, transaction, now, cancellationToken), now);
             var rows = await connection.QueryAsync<SetDemandRow>(new CommandDefinition(AllDemandSetsSql,
-                transaction: transaction, cancellationToken: cancellationToken));
+                WithTimes(new { }, ("Now", now)), transaction: transaction, cancellationToken: cancellationToken));
             var sets = rows.GroupBy(row => row.DemandSetId).ToDictionary(group => group.Key,
                 group => group.Where(row => row.Key != null).Select(row => new WorkflowDemand(row.Key!, row.Value,
-                    row.ExpiresAtUtc is { } expiry ? ReadTime(expiry) : null, row.Inherit)).ToArray(), StringComparer.Ordinal);
+                    row.ExpiresAtUtc is { } expiry ? ReadTime(expiry) : null, row.Inherit)
+                    { ValueExpiresAtUtc = row.ValueExpiresAtUtc is { } valueExpiry ? ReadTime(valueExpiry) : null }).ToArray(), StringComparer.Ordinal);
             var placement = sets.Select(set =>
             {
                 var matching = hosts.Where(host => DemandMatching.Meets(set.Value, host, now)).ToArray();

@@ -31,6 +31,7 @@ public static class WorkflowOperationsExtensions
             throw new InvalidOperationException("Workflow operations require an application IInstanceQueryScope");
 
         var group = endpoints.MapGroup(prefix);
+        Map("GET", "/unschedulable", options.ReadPolicy!, http => UnschedulableAsync(http, options.ReadPolicy!));
         Map("GET", "/instances", options.ReadPolicy!, async http =>
         {
             var q = new Query(http);
@@ -234,6 +235,48 @@ public static class WorkflowOperationsExtensions
             WaitReference.Of(w.InstanceId, w.WaitId), w.Kind, w.Key, w.EventType, w.EventSchema, w.DeadlineUtc,
             w.OpenedAtUtc, w.Token, w.DefaultPayloadJson)).ToArray(), waits.Count > limit
                 ? WaitPageCursor.Create(WaitReference.Of(waits[limit - 1].InstanceId, waits[limit - 1].WaitId)) : null));
+    }
+
+    private static async Task<IResult> UnschedulableAsync(HttpContext http, string policy)
+    {
+        var query = new Query(http);
+        var limit = query.Limit();
+        UnschedulableCursor? cursor = null;
+        if (query.Text("cursor") is { } token)
+        {
+            if (token.Length > 4096) throw new ArgumentException("Invalid unschedulable cursor");
+            cursor = JsonSerializer.Deserialize<UnschedulableCursor>(Convert.FromBase64String(token));
+            if (cursor == null || cursor.RunnableAtUtc == default || cursor.RunnableAtUtc.Kind != DateTimeKind.Utc ||
+                string.IsNullOrWhiteSpace(cursor.InstanceId) || cursor.InstanceId.Length > 400)
+                throw new ArgumentException("Invalid unschedulable cursor");
+        }
+        var operations = Operations(http);
+        var scope = http.RequestServices.GetRequiredService<IInstanceQueryScope>();
+        var items = new List<UnschedulableInstance>();
+        DateTime now;
+        // Apply the application's scope as an exact store query and authorize each resource
+        // before counting it toward the HTTP page. Hidden rows never enter the returned cursor.
+        do
+        {
+            var page = await operations.GetUnschedulableAsync(100, cursor, http.RequestAborted);
+            now = page.StoreTimeUtc;
+            foreach (var item in page.Items)
+            {
+                var scoped = await scope.ScopeAsync(http.User, new InstanceQuery(InstanceId: item.InstanceId, Limit: 1), http.RequestAborted);
+                var summary = (await operations.SearchAsync(scoped, http.RequestAborted)).Items
+                    .SingleOrDefault(row => row.InstanceId == item.InstanceId);
+                if (summary == null || await AuthorizeAsync(http, summary, policy) != null) continue;
+                items.Add(item);
+                if (items.Count > limit) break;
+            }
+            cursor = page.NextCursor;
+        } while (items.Count <= limit && cursor != null);
+        var more = items.Count > limit;
+        var visible = items.Take(limit).ToArray();
+        var last = visible.LastOrDefault();
+        var next = more && last != null ? Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(
+            new UnschedulableCursor(last.RunnableAtUtc, last.InstanceId))) : null;
+        return Results.Ok(new WorkflowUnschedulablePage(visible, next, now));
     }
     private static string? WaitBoundary(string? token)
     {

@@ -15,6 +15,7 @@ public sealed partial class SqlWorkflowStateRepository
             DemandKey NVARCHAR(400) COLLATE Latin1_General_100_BIN2 NOT NULL,
             DemandValue NVARCHAR(MAX) COLLATE Latin1_General_100_BIN2 NULL,
             ExpiresAtUtc DATETIME2 NULL,
+            ValueExpiresAtUtc DATETIME2 NULL,
             Inherit BIT NOT NULL,
             DemandKeyBytes AS DATALENGTH(DemandKey) PERSISTED NOT NULL,
             PRIMARY KEY (DemandSetId, DemandKey, DemandKeyBytes)
@@ -34,16 +35,16 @@ public sealed partial class SqlWorkflowStateRepository
         """;
 
     internal override string ReadDemandsSql => """
-        SELECT demand.DemandKey AS [Key], demand.DemandValue AS [Value], demand.ExpiresAtUtc AS [ExpiresAtUtc], demand.Inherit AS [Inherit]
+        SELECT demand.DemandKey AS [Key], demand.DemandValue AS [Value], demand.ExpiresAtUtc AS [ExpiresAtUtc], demand.ValueExpiresAtUtc AS [ValueExpiresAtUtc], demand.Inherit AS [Inherit]
         FROM dbo.IxIFlowWorkflowInstances AS instance JOIN dbo.IxIFlowDemandSetRows AS demand ON demand.DemandSetId = instance.DemandSetId
         WHERE instance.InstanceId = @InstanceId
         UNION ALL
-        SELECT 'host', PinnedHost, PinExpiresAtUtc, PinInherit FROM dbo.IxIFlowWorkflowInstances
+        SELECT 'host', PinnedHost, PinExpiresAtUtc, NULL, PinInherit FROM dbo.IxIFlowWorkflowInstances
         WHERE InstanceId = @InstanceId AND PinnedHost IS NOT NULL
         """;
 
     internal override string ReadDemandSetSql => """
-        SELECT DemandKey AS [Key], DemandValue AS [Value], ExpiresAtUtc AS [ExpiresAtUtc], Inherit AS [Inherit]
+        SELECT DemandKey AS [Key], DemandValue AS [Value], ExpiresAtUtc AS [ExpiresAtUtc], ValueExpiresAtUtc AS [ValueExpiresAtUtc], Inherit AS [Inherit]
         FROM dbo.IxIFlowDemandSetRows WHERE DemandSetId = @DemandSetId
         """;
 
@@ -64,8 +65,8 @@ public sealed partial class SqlWorkflowStateRepository
         END;
         """;
     internal override string InsertDemandSql => """
-        INSERT INTO dbo.IxIFlowDemandSetRows (DemandSetId, DemandKey, DemandValue, ExpiresAtUtc, Inherit)
-        VALUES (@DemandSetId, @Key, @Value, @ExpiresAtUtc, @Inherit)
+        INSERT INTO dbo.IxIFlowDemandSetRows (DemandSetId, DemandKey, DemandValue, ExpiresAtUtc, ValueExpiresAtUtc, Inherit)
+        VALUES (@DemandSetId, @Key, @Value, @ExpiresAtUtc, @ValueExpiresAtUtc, @Inherit)
         """;
 
     internal override string CollectDemandSetsSql => """

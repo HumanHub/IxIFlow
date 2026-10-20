@@ -25,6 +25,7 @@ internal sealed class CoordinatorLinks(CoordinatorClientOptions options, IWorkfl
         host.AwaitSubscriptionAsync = ConfirmAsync;
         host.ObserveAwaiters(AwaitingChanged);
         host.FreeSlotsChanged += FreeSlotsChanged;
+        state.ClaimPassCompleted += ReportCapacity;
         return base.StartAsync(cancellationToken);
     }
 
@@ -61,8 +62,12 @@ internal sealed class CoordinatorLinks(CoordinatorClientOptions options, IWorkfl
     }
     private void FreeSlotsChanged()
     {
-        lock (_gate) foreach (var link in _active.ToArray()) link.Ready();
+        ReportCapacity();
         if (state.Connected && host.FreeSlots > 0) state.RequestPass();
+    }
+    private void ReportCapacity()
+    {
+        lock (_gate) foreach (var link in _active.ToArray()) link.Ready();
     }
     public async Task NotifyAsync(RunnableNotice notice, CancellationToken cancellationToken)
     {
@@ -137,6 +142,7 @@ internal sealed class CoordinatorLinks(CoordinatorClientOptions options, IWorkfl
     {
         host.AwaitingChanged -= AwaitingChanged;
         host.FreeSlotsChanged -= FreeSlotsChanged;
+        state.ClaimPassCompleted -= ReportCapacity;
         host.AwaitSubscriptionAsync = null;
     }
     public override void Dispose() { Detach(); base.Dispose(); }

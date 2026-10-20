@@ -54,7 +54,7 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
 {
     private readonly IWorkflowCatalogStore _store;
     private readonly ConcurrentDictionary<(string, int), WorkflowDefinition> _definitions = new();
-    private readonly Dictionary<(string, int), WorkflowVersion> _registrations = new();
+    private readonly ConcurrentDictionary<(string, int), WorkflowVersion> _registrations = new();
     private readonly SemaphoreSlim _registrationLock = new(1, 1);
     private readonly IArtifactStore? _artifacts;
 
@@ -90,7 +90,7 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
             else
             {
                 await _store.RegisterWorkflowVersionAsync(registration, _artifacts);
-                _registrations.Add(key, registration);
+                _registrations.TryAdd(key, registration);
                 _definitions.TryAdd(key, definition);
             }
         }
@@ -107,7 +107,8 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
     }
 
     public async Task<string?> GetWorkflowStructureHashAsync(string name, int version) =>
-        (await _store.GetWorkflowVersionAsync(name, version))?.StructureHash;
+        _registrations.TryGetValue((name, version), out var local) ? local.StructureHash
+            : (await _store.GetWorkflowVersionAsync(name, version))?.StructureHash;
 
     public async Task<WorkflowVersion?> GetLatestWorkflowVersionAsync(string name) =>
         (await _store.GetWorkflowVersionsAsync(name)).Where(row => row.State == WorkflowVersionState.Published)

@@ -451,7 +451,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         _steps.Add(tryStep);
 
         return new TryBuilder<TWorkflowData, TPreviousStepData>(
-            _steps, tryStep, name, workflowVersion);
+            _steps, tryStep, name, workflowVersion, _demands);
     }
 
     /// <summary>

@@ -116,7 +116,7 @@ Start the returned host with `RunAsync()` or `StartAsync()`.
 
 `AddCoordinator` starts a dedicated HTTP/2 listener inside the application, including an ASP.NET Core application. It does not take over the application's HTTP routes. `AdvertisedEndpoint` overrides the address written to the registry and uses the same transport as the listener; a plaintext advertised endpoint must be loopback. A listen port of zero selects an available port and advertises the actual address, which is useful for tests. Configure an explicit port for normal use.
 
-The matching service keeps connected host capabilities and free slots, subscriptions, and a bounded cache of notice IDs and unmatched hints. It accesses only its own registry row and heartbeat. If the application also runs ordinary workflow hosted services, those services retain their normal store access independently of matching.
+The matching service keeps connected host capabilities and free slots, subscriptions, and a bounded hold of unmatched hints. It removes a hint when it sends a wake, so a later notice for the same instance can wake work again immediately. It accesses only its own registry row and heartbeat. If the application also runs ordinary workflow hosted services, those services retain their normal store access independently of matching.
 
 ## Link workflow hosts
 
@@ -135,7 +135,7 @@ public static void LinkHost(IServiceCollection services, string connectionString
 }
 ```
 
-Load each host's workflow definitions before starting it, as described in [hosting](coordinator-and-hosts.md). Hosts publish their actual capabilities and current free slots. Every active demand must match; matching prefers the previous host, then the most free slots, then the host woken least recently. A wake starts one recovery claim pass. The store rechecks eligibility and decides ownership through its fenced lease.
+Load each host's workflow definitions before starting it, as described in [hosting](coordinator-and-hosts.md). Hosts publish their actual capabilities and current free slots. Every active demand must match; matching prefers the previous host, then the most free slots, then the host woken least recently. A wake starts one recovery claim pass. Hosts report capacity when a pass completes, including an empty pass. The store rechecks eligibility and decides ownership through its fenced lease. A dedicated termination claim requires a pending Terminate command and ignores placement; lease epochs and incarnation checks still apply because termination writes only saved state and runs no workflow code.
 
 The link service discovers registry members every `DiscoveryInterval` (five seconds). It merges those addresses with the static `Coordinators` list and links to every endpoint. Stale registry entries are dropped; static entries remain candidates for reconnection. Failed links stop contributing to coordinated polling immediately and reconnect with exponential delays from `ReconnectMinDelay` (one second) up to `ReconnectMaxDelay` (30 seconds).
 

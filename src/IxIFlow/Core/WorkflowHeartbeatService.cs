@@ -37,7 +37,7 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        await RegisterAsync(await CapabilitiesAsync(registry, settings), cancellationToken);
+        await RegisterAsync(await settings.RefreshCapabilitiesAsync(registry), cancellationToken);
         try { await base.StartAsync(cancellationToken); }
         catch
         {
@@ -55,7 +55,7 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
             {
                 try
                 {
-                    var capabilities = await CapabilitiesAsync(registry, settings);
+                    var capabilities = await settings.RefreshCapabilitiesAsync(registry);
                     if (!await repository.HeartbeatAsync(settings.Id, capabilities, stoppingToken))
                         await RegisterAsync(capabilities, stoppingToken);
                 }

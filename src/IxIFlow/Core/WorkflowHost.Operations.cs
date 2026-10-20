@@ -50,7 +50,7 @@ public sealed partial class WorkflowHost
             if (prepared == null) return false;
             using var signals = Executor.PrepareAssignment(Guid.NewGuid());
             using var recycle = _control.Register(signals.AssignmentId, Executor.Deliver);
-            await using var owner = await AcquireAsync(prepared.Saved, signals);
+            await using var owner = await AcquireAsync(prepared.Saved, signals, ExecutionClaimKind.Termination);
             if (owner == null) return false;
             using var assignment = Admit(prepared.Saved, owner, signals.AssignmentId);
             var commit = prepared.Commit(owner.Epoch);

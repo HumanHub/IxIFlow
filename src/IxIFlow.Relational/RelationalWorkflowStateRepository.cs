@@ -212,7 +212,7 @@ public abstract partial class RelationalWorkflowStateRepository :
                 await connection.ExecuteAsync(InsertDemandSql, WithTimes(new
                 {
                     DemandSetId = set.Id, demand.Key, demand.Value, demand.Inherit
-                }, ("ExpiresAtUtc", demand.ExpiresAtUtc)), transaction);
+                }, ("ExpiresAtUtc", demand.ExpiresAtUtc), ("ValueExpiresAtUtc", demand.ValueExpiresAtUtc)), transaction);
         }
         return WithTimes(new { DemandSetId = set.Id, PinnedHost = set.Pin?.Value, PinInherit = set.Pin?.Inherit ?? false },
             ("PinExpiresAtUtc", set.Pin?.ExpiresAtUtc));
@@ -229,13 +229,15 @@ public abstract partial class RelationalWorkflowStateRepository :
     }
 
     private WorkflowDemand ToDemand(DemandRow row) => new(row.Key, row.Value,
-        row.ExpiresAtUtc is { } expiry ? ReadTime(expiry) : null, row.Inherit);
+        row.ExpiresAtUtc is { } expiry ? ReadTime(expiry) : null, row.Inherit)
+        { ValueExpiresAtUtc = row.ValueExpiresAtUtc is { } valueExpiry ? ReadTime(valueExpiry) : null };
 
     private sealed class DemandRow
     {
         public string Key { get; set; } = "";
         public string? Value { get; set; }
         public DateTime? ExpiresAtUtc { get; set; }
+        public DateTime? ValueExpiresAtUtc { get; set; }
         public bool Inherit { get; set; }
     }
 
@@ -453,8 +455,16 @@ public abstract partial class RelationalWorkflowStateRepository :
             var eligibility = PlacementParameters(query, now, query.Limit);
             eligibility.Add("InstanceId", instanceId);
             eligibility.Add("Operator", kind == ExecutionClaimKind.Operator);
+            bool eligible;
+            if (kind == ExecutionClaimKind.Termination)
+            {
+                var (command, _) = await LockAsync<TerminationRow>(connection, transaction, Statement.TerminationState, instanceId);
+                eligible = command != null && !WorkflowStoreRules.IsTerminal(command.Status) &&
+                    ReadReason(command.CancellationJson)?.Mode == WorkflowControlMode.Terminate;
+            }
+            else eligible = await connection.ExecuteScalarAsync<int>(ClaimEligibilitySql, eligibility, transaction) == 1;
             if (await TombstoneAsync(connection, transaction, instanceId, now) != null ||
-                await connection.ExecuteScalarAsync<int>(ClaimEligibilitySql, eligibility, transaction) != 1)
+                !eligible)
             {
                 await transaction.CommitAsync();
                 return null;

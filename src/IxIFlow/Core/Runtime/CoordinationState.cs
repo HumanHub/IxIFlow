@@ -8,6 +8,7 @@ internal sealed class CoordinationState
     private TaskCompletionSource _changed = NewSignal();
     internal TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(10);
     internal event Action? Wake;
+    internal event Action? ClaimPassCompleted;
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal bool Observe(out Task changed)
@@ -33,4 +34,5 @@ internal sealed class CoordinationState
         RequestPass();
     }
     internal void RequestPass() => Wake?.Invoke();
+    internal void CompleteClaimPass() => ClaimPassCompleted?.Invoke();
 }

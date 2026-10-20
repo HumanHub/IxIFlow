@@ -25,6 +25,7 @@ public sealed partial class SqlWorkflowStateRepository
     private const string UnmetDemand = """
         (demand.ExpiresAtUtc IS NULL OR demand.ExpiresAtUtc > @Now)
         AND (capability.capability_key IS NULL OR (demand.DemandValue IS NOT NULL
+            AND (demand.ValueExpiresAtUtc IS NULL OR demand.ValueExpiresAtUtc > @Now)
             AND (capability.capability_value <> demand.DemandValue
                 OR DATALENGTH(capability.capability_value) <> DATALENGTH(demand.DemandValue))))
         """;
@@ -39,7 +40,9 @@ public sealed partial class SqlWorkflowStateRepository
         -- Only distinct sets and their rows participate in capability matching.
         SELECT sets.DemandSetId INTO #ClaimMatched
         FROM dbo.IxIFlowDemandSets AS sets
-        WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDemandSetRows AS demand
+        WHERE EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances AS due WITH (FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
+                WHERE due.DemandSetId = sets.DemandSetId AND due.RunnableAtUtc <= @Now)
+          AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDemandSetRows AS demand
             LEFT JOIN #ClaimCapabilities AS capability ON {CapabilityKeyJoin}
             WHERE demand.DemandSetId = sets.DemandSetId AND {UnmetDemand})
         OPTION (RECOMPILE);

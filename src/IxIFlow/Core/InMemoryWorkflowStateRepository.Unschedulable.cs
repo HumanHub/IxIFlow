@@ -24,7 +24,7 @@ public partial class InMemoryWorkflowStateRepository
             var now = Now;
             var hosts = UnschedulableWork.LiveHosts(_members.Values, now);
             var candidates = new List<WorkflowInstance>();
-            foreach (var (setId, demands) in _demandSets)
+            foreach (var (setId, demands) in DueDemandSets(now))
             {
                 var matching = hosts.Where(host => DemandMatching.Meets(demands, host, now)).ToArray();
                 // Schedulable sets only visit their pin bucket, never their ordinary instance population.

@@ -329,6 +329,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         }
     }
 
+    private IEnumerable<KeyValuePair<string, WorkflowDemand[]>> DueDemandSets(DateTime now) =>
+        _demandSets.Where(set => _demandSetMembers[set.Key].Any(id => _instances[id].RunnableAtUtc <= now));
+
     private IEnumerable<WorkflowDemand> SavedDemands(string id)
     {
         if (!_placement.TryGetValue(id, out var placement)) return [];
@@ -451,7 +454,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         lock (_claimLock)
         {
             var now = Now;
-            var matchingSets = _demandSets.Where(set => DemandMatching.Meets(set.Value, query, now));
+            var matchingSets = DueDemandSets(now).Where(set => DemandMatching.Meets(set.Value, query, now));
             var runnable = matchingSets.SelectMany(set => _demandSetMembers[set.Key]).Select(id => _instances[id])
                 .Where(instance => instance.RunnableAtUtc <= now &&
                     (_placement[instance.InstanceId].Pin is not { } pin || DemandMatching.Meets([pin], query, now)) &&
@@ -475,12 +478,16 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         lock (_claimLock)
         {
             var now = Now;
+            if (kind == ExecutionClaimKind.Termination &&
+                _cancellations.GetValueOrDefault(instanceId)?.Mode != WorkflowControlMode.Terminate)
+                return Task.FromResult<ExecutionLeaseGrant?>(null);
             if (_instances.TryGetValue(instanceId, out var candidate) &&
                 (WorkflowStoreRules.IsTerminal(candidate.Status) ||
-                 !(candidate.RunnableAtUtc <= now || kind == ExecutionClaimKind.Operator &&
+                 kind != ExecutionClaimKind.Termination &&
+                 (!(candidate.RunnableAtUtc <= now || kind == ExecutionClaimKind.Operator &&
                     (candidate.Status == WorkflowStatus.NeedsResolution ||
                         ExecutionCheckpoint.IsStructured(candidate.ExecutionStateJson) && ExecutionCheckpoint.StopOf(candidate) != null)) ||
-                 !DemandMatching.Meets(SavedDemands(instanceId), query, now)))
+                 !DemandMatching.Meets(SavedDemands(instanceId), query, now))))
                 return Task.FromResult<ExecutionLeaseGrant?>(null);
             if (ActiveTombstone(instanceId, now) != null)
                 return Task.FromResult<ExecutionLeaseGrant?>(null);
