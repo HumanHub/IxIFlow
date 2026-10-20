@@ -118,6 +118,8 @@ The package includes [workflow.schema.json](../src/IxIFlow/schemas/workflow.sche
 
 `WorkflowYamlSerializer` and the Authoring `WorkflowJsonSerializer` share the document model and strict member rules. JSON document reading/writing and translation from a `WorkflowDocument` exist; automatic build discovery is for YAML/YML files.
 
+## Publishing and boundaries
+
 `WorkflowPublisher` in `IxIFlow.Authoring` publishes import-free YAML drafts as verified bundles. It validates, translates and compiles the draft, then calls the generated `Build()` in the publishing process, inside a collectible scratch load context on a dedicated background thread. `WorkflowPublisherOptions.BuildTimeout` defaults to 30 seconds. If the build exceeds that deadline, publication fails with a build-timeout diagnostic and uploads nothing. The thread cannot be stopped: a warning reports that it and its scratch load context are abandoned until the process restarts. Supply an `ILogger<WorkflowPublisher>` to capture these warnings. A completed build is validated before its scratch context is unloaded and its bundle is uploaded and published against the draft revision.
 
 See the [generator guide](../src/IxIFlow.Generators/README.md) for custom filenames, opt-out, MSBuild metadata and explicit project references. Dependency resolution/pinning, host bundle loading, inline workflow calls and YAML-defined code activities remain planned. Application hosting, store choice, publishers and client calls use C# configuration.
