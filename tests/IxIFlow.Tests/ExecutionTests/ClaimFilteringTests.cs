@@ -10,7 +10,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Spec", "C-02")]
 [Trait("Spec", "C-08")]
 [Trait("Spec", "C-09")]
-public sealed class ClaimFilteringTests
+public sealed class ClaimFilteringTests : IClassFixture<SqliteTestDatabase<ClaimFilteringTests>>
 {
     [Fact]
     public Task MemoryClaimContract() => Contract(new InMemoryWorkflowStateRepository());
