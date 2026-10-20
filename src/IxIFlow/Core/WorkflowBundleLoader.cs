@@ -38,7 +38,7 @@ public sealed class WorkflowDefinitionLease : IDisposable
 }
 
 internal sealed class BundleCache(IArtifactStore artifacts, string directory, WorkflowBundleReadLimits limits, TimeSpan fetchTimeout,
-    TimeSpan cacheLockTimeout)
+    TimeSpan cacheLockTimeout, ILogger? logger = null)
 {
     private readonly string _directory = Path.GetFullPath(directory);
     private readonly Lazy<string> _nativeDirectory = new(() =>
@@ -86,7 +86,7 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
         // Temporary names are under the digest lock, so every leftover belongs to a crashed writer.
         var opened = new Dictionary<string, FileStream>(comparer);
         using var privateImages = !OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()
-            ? NativeImageDirectory.Create() : null;
+            ? NativeImageDirectory.Create(logger: logger) : null;
         try
         {
             foreach (var (name, asset) in native)
@@ -185,7 +185,7 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
             {
                 timeout.Token.ThrowIfCancellationRequested();
                 try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
-                catch (IOException error) when ((error.HResult & 0xffff) is 11 or 32 or 33)
+                catch (IOException error) when ((error.HResult & 0xffff) is 11 or 32 or 33 or 35)
                 { await Task.Delay(25, timeout.Token); }
             }
         }
@@ -402,6 +402,7 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
 
         ~NativeLifetime()
         {
+            if (!_context.IsAllocated) return;
             if (_context.Target != null)
             {
                 GC.ReRegisterForFinalize(this);
@@ -683,7 +684,7 @@ internal sealed class LoadedBundle(BundleLoadContext context, WorkflowDefinition
 internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBundleOptions options, ILogger? logger = null) : IDisposable
 {
     private readonly object _gate = new();
-    private readonly BundleCache _cache = new(artifacts, options.CacheDirectory, options.ReadLimits, options.FetchTimeout, options.CacheLockTimeout);
+    private readonly BundleCache _cache = new(artifacts, options.CacheDirectory, options.ReadLimits, options.FetchTimeout, options.CacheLockTimeout, logger);
     private readonly Dictionary<ArtifactDigest, Entry> _loaded = [];
     private long _clock;
     private bool _disposed;

@@ -286,7 +286,17 @@ public sealed class ActivityPackageMergeTests
         {
             using var process = System.Diagnostics.Process.GetCurrentProcess();
             Assert.Equal(expected, process.Modules.Cast<System.Diagnostics.ProcessModule>()
-                .Any(module => module.FileName.StartsWith(cache + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)));
+                .Any(module =>
+                {
+                    try
+                    {
+                        var directory = IxIFlow.TestSupport.ExistingPath.Canonicalize(Path.GetDirectoryName(module.FileName)!);
+                        return directory.Equals(cache, StringComparison.OrdinalIgnoreCase) ||
+                            directory.StartsWith(cache + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+                    }
+                    // An unrelated module may outlive its directory.
+                    catch (System.ComponentModel.Win32Exception) { return false; }
+                }));
         }
         if (OperatingSystem.IsLinux()) Assert.Equal(expected, File.ReadAllText("/proc/self/maps").Contains(cache, StringComparison.Ordinal));
     }
