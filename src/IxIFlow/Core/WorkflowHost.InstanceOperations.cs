@@ -662,8 +662,7 @@ public sealed partial class WorkflowHost
             if (!release && !forEvent && instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
                 return await ReadResult(instance);
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
-            var debugState = (hostSettings ?? HostSettings.Default).Debugging
-                ? (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId) : null;
+            var debugState = (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId);
             if (instance?.Status == WorkflowStatus.Paused && cancellationReason == null &&
                 debugState?.Commands.FirstOrDefault(c => c.AcknowledgedRevision == null) is { Kind: DebugCommandKind.EditData, Edit: { } edit } pendingEdit)
             {
@@ -683,7 +682,7 @@ public sealed partial class WorkflowHost
                 (!(hostSettings ?? HostSettings.Default).Debugging ||
                  hasConditions && services.GetService(typeof(IBreakpointConditionCompiler)) == null))
                 return await ExistingResult(instance!);
-            var canApplyPausedDebug = (hostSettings ?? HostSettings.Default).Debugging && pendingDebug;
+            var canApplyPausedDebug = pendingDebug;
             if (instance?.Status == WorkflowStatus.Paused && cancellationReason == null && !canApplyPausedDebug)
                 return await ExistingResult(instance);
             var canRecover = instance?.Status == WorkflowStatus.Paused && (cancellationReason != null || canApplyPausedDebug) ||
@@ -826,8 +825,7 @@ public sealed partial class WorkflowHost
                 _ => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Ownership)),
                 reason => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Workflow, reason)),
                 sequence => Executor.Deliver(new Arrivals(signals.AssignmentId, sequence)), _time,
-                (hostSettings ?? HostSettings.Default).Debugging
-                    ? state => Executor.Deliver(new DebugCommands(signals.AssignmentId, state)) : null);
+                state => Executor.Deliver(new DebugCommands(signals.AssignmentId, state)));
 
         internal sealed class RunReceipt
         {
@@ -854,8 +852,7 @@ public sealed partial class WorkflowHost
                 var assign = new Assign(signals.AssignmentId, assigned, instance.PartsAt(instance.Revision),
                     checkpoint.StructureHash, assignment.Owner.Epoch, signals.InboxSequence, _limits, depth == 1, checkpoint.Debug.Breakpoints, preparation)
                 {
-                    DebugState = (hostSettings ?? HostSettings.Default).Debugging
-                        ? (await _store.GetDebugStatesAsync([instance.InstanceId])).GetValueOrDefault(instance.InstanceId) : null,
+                    DebugState = (await _store.GetDebugStatesAsync([instance.InstanceId])).GetValueOrDefault(instance.InstanceId),
                     DebuggingEnabled = (hostSettings ?? HostSettings.Default).Debugging
                 };
                 var ready = await Executor.ExecuteAsync(assign, CancellationToken.None);
