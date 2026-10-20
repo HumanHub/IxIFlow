@@ -19,6 +19,19 @@ public partial class InMemoryWorkflowStateRepository
             .Where(package => id == null || package.Id == id.ToLowerInvariant()).Select(WorkflowPackageRules.Copy).ToArray());
     }
 
+    public Task<WorkflowPackage?> GetPackageAsync(string id, string version)
+    {
+        lock (_claimLock) return Task.FromResult(_packages.TryGetValue((id.ToLowerInvariant(), version), out var row) ? WorkflowPackageRules.Copy(row) : null);
+    }
+
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        lock (_claimLock) return Task.FromResult<IReadOnlyList<WorkflowPackage>>(_packages.Values
+            .Where(row => row.Id == id.ToLowerInvariant() && (afterVersion == null || string.CompareOrdinal(row.Version, afterVersion) > 0))
+            .OrderBy(row => row.Version, StringComparer.Ordinal).Take(limit).Select(WorkflowPackageRules.Copy).ToArray());
+    }
+
     public async Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts)
     {
         WorkflowPackageRules.Validate(package);

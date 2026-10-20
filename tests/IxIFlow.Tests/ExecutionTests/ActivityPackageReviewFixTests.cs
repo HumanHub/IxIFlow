@@ -25,10 +25,13 @@ public sealed class ActivityPackageReviewFixTests
     {
         var store = new InMemoryWorkflowStateRepository();
         await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(ActivityPackageFixture.LowerReferencePackage(framework)));
-        var row = await ActivityPackageFixture.PublishAsync(store, yaml: ActivityPackageFixture.Yaml(extraImport: "fixture.lower@1.0.0"));
+        var row = await ActivityPackageFixture.PublishAsync(store, yaml: ActivityPackageFixture.Yaml(extraImport: "fixture.lower@1.0.0").Replace("dataType: Packaged.Data", "dataType: LowerReference"));
         using var catalog = new WorkflowCatalog(store, artifacts: store, bundles: new(Folder()));
         using var lease = await catalog.ResolveWorkflowDefinitionAsync(row.Name, 1);
         Assert.Equal(row.StructureHash, WorkflowDefinitionValidator.Inspect(lease.Definition));
+        Assert.Equal("LowerReference", lease.Definition.WorkflowDataType!.Name);
+        var data = Activator.CreateInstance(lease.Definition.WorkflowDataType)!;
+        Assert.NotNull(lease.Definition.WorkflowDataType.GetProperty("Values")!.GetValue(data));
     }
 
     [Fact]
@@ -87,7 +90,7 @@ public sealed class ActivityPackageReviewFixTests
         var other = OperatingSystem.IsWindows() ? "linux-x64" : "win-x64";
         var graph = JsonSerializer.Serialize(new { runtimes = new Dictionary<string, object> { [other] = new Dictionary<string, object> { ["fixture.rid-root"] = new Dictionary<string, string> { ["fixture.other"] = "[1.0.0]" } } } });
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.rid-root", "1.0.0", new() { ["runtime.json"] = Encoding.UTF8.GetBytes(graph) })));
-        await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.other", "1.0.0", new() { [$"runtimes/{other}/native/other.bin"] = [1] })));
+        await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.other", "1.0.0", new() { [$"runtimes/{other}/native/fixture_native" + (other.StartsWith("win") ? ".dll" : ".so")] = ActivityPackageFixture.NativeLibraryBytes(rid: other) })));
         var row = await ActivityPackageFixture.PublishAsync(store, yaml: ActivityPackageFixture.Yaml(extraImport: "fixture.rid-root@1.0.0"));
         var manifest = JsonSerializer.Deserialize<WorkflowBundleManifest>(row.ManifestJson!)!;
         var pin = manifest.ActivityPackages.Single(package => package.Id == "fixture.other");
@@ -204,7 +207,7 @@ public sealed class ActivityPackageReviewFixTests
         Assert.Contains("Duplicate native", error.Message);
     }
 
-    [Theory]
+    [NativeTheory]
     [InlineData("unexpected")]
     [InlineData("oversized")]
     [InlineData("corrupt")]
@@ -226,8 +229,10 @@ public sealed class ActivityPackageReviewFixTests
         else if (defect == "corrupt") { bytes[0] ^= 1; await File.WriteAllBytesAsync(file, bytes); }
         else await File.WriteAllBytesAsync(Path.Combine(native, "undeclared.dll"), [1]);
         using var catalog = new WorkflowCatalog(store, artifacts: store, bundles: new(root));
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.ResolveWorkflowDefinitionAsync(row.Name, 1));
-        Assert.Equal(WorkflowErrorKind.ArtifactMismatch, error.Kind);
+        using var repaired = await catalog.ResolveWorkflowDefinitionAsync(row.Name, 1);
+        Assert.NotNull(repaired.Definition);
+        Assert.Equal(ActivityPackageFixture.NativeLibraryBytes(), await File.ReadAllBytesAsync(file));
+        Assert.Single(Directory.GetFiles(native));
     }
 
     [Fact]
@@ -242,7 +247,7 @@ public sealed class ActivityPackageReviewFixTests
         Assert.NotNull(lease.Definition);
     }
 
-    [Fact]
+    [NativeFact]
     public async Task NativeMaterializationWaitsForTheDigestLockAndReusesVerifiedFiles()
     {
         var store = new InMemoryWorkflowStateRepository();

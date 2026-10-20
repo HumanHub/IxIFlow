@@ -168,7 +168,7 @@ public static class WorkflowBundleArchive
         foreach (var pin in manifest.ActivityPackages)
         {
             if (pin == null) throw Mismatch("Invalid null package pin");
-            try { WorkflowPackageRules.Validate(new(pin.Id, pin.Version, pin.Digest, pin.Entries)); }
+            try { WorkflowPackageRules.Validate(new(pin.Id, pin.Version, pin.Digest, pin.Entries, [])); }
             catch (Exception error) when (error is WorkflowEngineException or ArgumentException)
             { throw Mismatch("Invalid package pin", error); }
             if (!packageIds.Add(pin.Id) || pin.ReferenceAssemblies == null || pin.RuntimeAssets == null ||

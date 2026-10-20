@@ -37,12 +37,13 @@ public abstract partial class RelationalWorkflowStateRepository
         public string Version { get; set; } = "";
         public string Digest { get; set; } = "";
         public string MetadataJson { get; set; } = "";
+        public string DependencyGroupsJson { get; set; } = "";
         public WorkflowPackage Value
         {
             get
             {
                 var package = JsonSerializer.Deserialize<WorkflowPackage>(MetadataJson)!;
-                if (package.Id != Id || package.Version != Version || package.Digest.Value != Digest)
+                if (package.Id != Id || package.Version != Version || package.Digest.Value != Digest || JsonSerializer.Serialize(package.DependencyGroups) != DependencyGroupsJson)
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Package catalog columns differ from its metadata");
                 WorkflowPackageRules.Validate(package);
                 return package;
@@ -55,6 +56,19 @@ public abstract partial class RelationalWorkflowStateRepository
             (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackages), new { Id = id?.ToLowerInvariant() }, transaction))
                 .Select(row => row.Value).ToArray());
 
+    public async Task<WorkflowPackage?> GetPackageAsync(string id, string version) =>
+        await CatalogConnectionAsync(async (connection, transaction) =>
+            (await connection.QuerySingleOrDefaultAsync<PackageRow>(RequiredSql(Statement.CatalogPackage),
+                new { Id = id.ToLowerInvariant(), Version = version }, transaction))?.Value);
+
+    public async Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        return await CatalogConnectionAsync<IReadOnlyList<WorkflowPackage>>(async (connection, transaction) =>
+            (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackagePage),
+                new { Id = id.ToLowerInvariant(), AfterVersion = afterVersion, Limit = limit }, transaction)).Select(row => row.Value).ToArray());
+    }
+
     public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts)
     {
         WorkflowPackageRules.Validate(package);
@@ -62,12 +76,11 @@ public abstract partial class RelationalWorkflowStateRepository
         {
             if (!await artifacts.ExistsAsync(package.Digest))
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Package artifact {package.Digest} is unavailable");
-            var existing = (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackages), new { package.Id }, transaction))
-                .Select(row => row.Value).SingleOrDefault(row => row.Version == package.Version);
+            var existing = (await connection.QuerySingleOrDefaultAsync<PackageRow>(RequiredSql(Statement.CatalogPackage), new { package.Id, package.Version }, transaction))?.Value;
             WorkflowPackageRules.CheckRegistration(existing, package);
             if (existing == null)
                 await connection.ExecuteAsync(RequiredSql(Statement.CatalogPackageInsert), new
-                { package.Id, package.Version, Digest = package.Digest.Value, MetadataJson = JsonSerializer.Serialize(package) }, transaction);
+                { package.Id, package.Version, Digest = package.Digest.Value, MetadataJson = JsonSerializer.Serialize(package), DependencyGroupsJson = JsonSerializer.Serialize(package.DependencyGroups) }, transaction);
             return true;
         });
     }

@@ -118,49 +118,31 @@ public static class ActivityPackageFixture
         {
             ["lib/net10.0/NativeCall.dll"] = emitted.Assembly,
             ["runtimes/" + System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier + "/native/fixture_native" + extension] = NativeLibraryBytes(),
-            ["runtimes/test-other-platform/native/not-selected.bin"] = [9]
+            ["runtimes/test-other-platform/native/not-selected.bin"] = NativeLibraryBytes()
         });
     }
 
-    private static readonly Lazy<byte[]> NativeLibrary = new(BuildNativeLibrary);
-    public static byte[] NativeLibraryBytes() => NativeLibrary.Value.ToArray();
-
-    private static byte[] BuildNativeLibrary()
+    public static byte[] NativeLibraryBytes(string name = "fixture_native", string? rid = null)
     {
-        var root = Path.Combine(Path.GetTempPath(), "IxIFlow.NativeFixture", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        try
-        {
-            File.WriteAllText(Path.Combine(root, "fixture.c"), "int fixture_value(void) { return 42; }");
-            var windows = OperatingSystem.IsWindows();
-            var output = Path.Combine(root, windows ? "fixture.dll" : OperatingSystem.IsMacOS() ? "fixture.dylib" : "fixture.so");
-            var compiler = windows ? Directory.EnumerateFiles(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft Visual Studio"),
-                "cl.exe", SearchOption.AllDirectories).First(path => path.Contains(Environment.Is64BitProcess ? "Hostx64" + Path.DirectorySeparatorChar + "x64" : "Hostx86" + Path.DirectorySeparatorChar + "x86", StringComparison.OrdinalIgnoreCase)) : "cc";
-            var start = new System.Diagnostics.ProcessStartInfo(compiler)
-            { WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-            foreach (var argument in windows ? new[] { "/nologo", "/LD", "/O2", "fixture.c", "/link", "/NOENTRY", "/NODEFAULTLIB", "/EXPORT:fixture_value", "/OUT:" + output }
-                : new[] { OperatingSystem.IsMacOS() ? "-dynamiclib" : "-shared", "-fPIC", "-nostdlib", "-o", output, "fixture.c" }) start.ArgumentList.Add(argument);
-            using var process = System.Diagnostics.Process.Start(start)!;
-            var stdout = process.StandardOutput.ReadToEndAsync();
-            var stderr = process.StandardError.ReadToEndAsync();
-            Assert.True(process.WaitForExit(30000), "Native fixture compiler exceeded 30 seconds");
-            Assert.True(process.ExitCode == 0, stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult());
-            return File.ReadAllBytes(output);
-        }
-        finally { Directory.Delete(root, recursive: true); }
+        rid ??= System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier;
+        if (rid is not ("win-x64" or "linux-x64" or "osx-arm64"))
+            throw Xunit.Sdk.SkipException.ForSkip($"Prebuilt native activity fixtures are available only for win-x64 and linux-x64; current RID is {rid}");
+        using var stream = typeof(ActivityPackageFixture).Assembly.GetManifestResourceStream(
+            "IxIFlow.TestSupport.NativeFixtures." + rid + "." + name + (rid == "win-x64" ? ".dll" : rid == "osx-arm64" ? ".dylib" : ".so"))!;
+        using var bytes = new MemoryStream(); stream.CopyTo(bytes); return bytes.ToArray();
     }
 
     public static byte[] LowerReferencePackage(string framework)
     {
         string root;
         if (framework == "netstandard2.0")
-            root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages", "netstandard.library", "2.0.3", "build", framework, "ref");
+            root = Path.Combine(AppContext.BaseDirectory, "PackageDownloads", "netstandard.library", "2.0.3", "build", framework, "ref");
         else
-            root = Directory.EnumerateDirectories(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "packs", "Microsoft.NETCore.App.Ref"), "8.*")
+            root = Directory.EnumerateDirectories(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(typeof(object).Assembly.Location))))!, "packs", "Microsoft.NETCore.App.Ref"), "8.*")
                 .Order(StringComparer.Ordinal).Last() + Path.DirectorySeparatorChar + Path.Combine("ref", "net8.0");
         var references = Directory.EnumerateFiles(root, "*.dll").Select(path => MetadataReference.CreateFromFile(path));
         var compilation = CSharpCompilation.Create("Lower.Reference." + framework,
-            [CSharpSyntaxTree.ParseText("public sealed class LowerReference { public System.Collections.Generic.List<string> Values { get; } = new(); }")], references,
+            [CSharpSyntaxTree.ParseText("public sealed class LowerReference { public System.Collections.Generic.List<string> Values { get; } = new(); public string Value { get; set; } = \"\"; public string Result { get; set; } = \"\"; }")], references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
         using var output = new MemoryStream();
         var emitted = compilation.Emit(output);

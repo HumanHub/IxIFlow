@@ -5,7 +5,10 @@ namespace IxIFlow.Core;
 
 /// <summary>An immutable, content-addressed nupkg registered in the publishing catalog.</summary>
 public sealed record WorkflowPackage(string Id, string Version, ArtifactDigest Digest,
-    IReadOnlyDictionary<string, ArtifactDigest> Entries);
+    IReadOnlyDictionary<string, ArtifactDigest> Entries, IReadOnlyList<WorkflowPackageDependencyGroup> DependencyGroups);
+
+public sealed record WorkflowPackageDependency(string Id, string VersionRange);
+public sealed record WorkflowPackageDependencyGroup(string Framework, IReadOnlyList<WorkflowPackageDependency> Dependencies);
 
 public sealed record WorkflowPackageAssets(IReadOnlyList<string> ManagedAssemblies, IReadOnlyList<string> NativeLibraries);
 
@@ -107,14 +110,18 @@ internal static class WorkflowPackageRules
         if (numbers.Length is not (3 or 4) || numbers.Any(number => !int.TryParse(number, System.Globalization.NumberStyles.None,
             System.Globalization.CultureInfo.InvariantCulture, out var value) || number != value.ToString(System.Globalization.CultureInfo.InvariantCulture)) ||
             numbers.Length == 4 && numbers[3] == "0") return false;
-        return pieces.Length == 1 || pieces[1].Split('.').All(label => label.Length > 0 && label.All(c => char.IsAsciiLetterOrDigit(c) || c == '-'));
+        return pieces.Length == 1 || pieces[1].Split('.').All(label => label.Length > 0 &&
+            label.All(c => char.IsAsciiLetterOrDigit(c) || c == '-') &&
+            !(label.Length > 1 && label[0] == '0' && label.All(char.IsAsciiDigit)));
     }
 
     internal static WorkflowPackage Copy(WorkflowPackage package) => JsonSerializer.Deserialize<WorkflowPackage>(JsonSerializer.Serialize(package))!;
     internal static void Validate(WorkflowPackage package)
     {
         if (!ValidId(package.Id) || package.Id != package.Id.ToLowerInvariant() ||
-            !CanonicalVersion(package.Version) || package.Entries == null || package.Entries.Count == 0)
+            !CanonicalVersion(package.Version) || package.Entries == null || package.Entries.Count == 0 || package.DependencyGroups == null ||
+            package.DependencyGroups.Any(group => group == null || string.IsNullOrWhiteSpace(group.Framework) || group.Dependencies == null ||
+                group.Dependencies.Any(dependency => dependency == null || !ValidId(dependency.Id) || string.IsNullOrWhiteSpace(dependency.VersionRange))))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Invalid package catalog metadata");
         _ = new ArtifactDigest(package.Digest.Value);
         foreach (var (path, hash) in package.Entries)
@@ -128,7 +135,8 @@ internal static class WorkflowPackageRules
     {
         Validate(package);
         if (existing != null && (existing.Digest != package.Digest || existing.Entries.Count != package.Entries.Count ||
-            existing.Entries.Any(pair => !package.Entries.TryGetValue(pair.Key, out var hash) || hash != pair.Value)))
+            existing.Entries.Any(pair => !package.Entries.TryGetValue(pair.Key, out var hash) || hash != pair.Value) ||
+            JsonSerializer.Serialize(existing.DependencyGroups) != JsonSerializer.Serialize(package.DependencyGroups)))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, $"Package '{package.Id}@{package.Version}' is immutable");
     }
 }

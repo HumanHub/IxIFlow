@@ -24,6 +24,7 @@ public sealed partial class SqliteWorkflowStateRepository
         CREATE TABLE ixiflow_packages (
             id TEXT COLLATE BINARY NOT NULL,
             version TEXT COLLATE BINARY NOT NULL,
+            dependency_groups_json TEXT NOT NULL,
             digest TEXT COLLATE BINARY NOT NULL,
             metadata_json TEXT NOT NULL,
             PRIMARY KEY (id, version)
@@ -39,8 +40,10 @@ public sealed partial class SqliteWorkflowStateRepository
 
     private static string? CatalogSql(Statement statement) => statement switch
     {
-        Statement.CatalogPackages => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson FROM ixiflow_packages WHERE id=COALESCE(@Id,id)",
-        Statement.CatalogPackageInsert => "INSERT INTO ixiflow_packages (id, version, digest, metadata_json) VALUES (@Id, @Version, @Digest, @MetadataJson)",
+        Statement.CatalogPackages => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=COALESCE(@Id,id)",
+        Statement.CatalogPackage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=@Id AND version=@Version",
+        Statement.CatalogPackagePage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=@Id AND (@AfterVersion IS NULL OR version>@AfterVersion) ORDER BY version LIMIT @Limit",
+        Statement.CatalogPackageInsert => "INSERT INTO ixiflow_packages (id, version, digest, metadata_json, dependency_groups_json) VALUES (@Id, @Version, @Digest, @MetadataJson, @DependencyGroupsJson)",
         Statement.CatalogLock => null,
         Statement.CatalogSharedLock => null,
         Statement.CatalogInstanceDigests => "SELECT DISTINCT bundle_digest FROM ixiflow_workflow_instances WHERE bundle_digest IS NOT NULL",
