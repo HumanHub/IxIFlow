@@ -70,6 +70,11 @@ public static class WorkflowDefinitionValidator
                 ExpressionRules.CheckDemand(demand);
             }
             var steps = definition.Steps;
+            foreach (var type in ParallelRules.Flatten(steps).SelectMany(step => new[]
+                     { step.WorkflowDataType, step.PreviousStepDataType,
+                         step.ResumeEventType, step.ReplyType, step.InvokedDataType, step.ResultType })
+                         .Prepend(definition.WorkflowDataType).OfType<Type>().Distinct())
+                _ = RedactingJson.ClassifiedPaths(type);
             var ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var step in ParallelRules.Flatten(steps))
                 if (!ids.Add(step.Id))

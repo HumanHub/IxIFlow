@@ -8,7 +8,8 @@ namespace IxIFlow.Coordinator;
 
 internal sealed class CoordinatorLinks(CoordinatorClientOptions options, IWorkflowStateRepository store,
     WorkflowHost host, HostSettings settings, IWorkflowCatalog registry, CoordinationState state,
-    TimeProvider time, ILogger<CoordinatorLinks> logger) : BackgroundService, IRunnableNotifier
+    TimeProvider time, ILogger<CoordinatorLinks> logger, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
+    InspectionRedactionPolicy? inspectionPolicy = null) : BackgroundService, IRunnableNotifier
 {
     private readonly object _gate = new();
     private readonly Dictionary<Uri, CoordinatorLink> _links = [];
@@ -103,7 +104,7 @@ internal sealed class CoordinatorLinks(CoordinatorClientOptions options, IWorkfl
                     registryAvailable = true;
                 }
                 catch (Exception error) when (error is not OperationCanceledException)
-                { logger.LogWarning(error, "Could not discover coordinators; retaining existing links"); }
+                { (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Could not discover coordinators; retaining existing links"); }
                 List<CoordinatorLink> dropped = [];
                 lock (_gate)
                 {

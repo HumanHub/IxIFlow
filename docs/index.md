@@ -27,6 +27,7 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [Outbox and publishers](outbox-and-publishers.md) | Completion delivery, custom publishers, outgoing webhooks and templates |
 | [Retention and tombstones](retention-and-tombstones.md) | Retained results, cleanup and removed instance IDs |
 | [Tracing and observability](observability.md) | Committed history, snapshots, OpenTelemetry and logging |
+| [Marking and redaction](redaction.md) | Classified members, inspection erasure and optional HMAC pseudonyms |
 | [Architecture](architecture.md) | Runtime boundaries and packages |
 | [Engine capabilities](engine-capabilities.md) | A compact guide to available behavior |
 | [Roadmap](roadmap.md) | Remaining 1.0 work and later features |

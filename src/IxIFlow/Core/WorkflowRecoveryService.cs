@@ -16,8 +16,8 @@ internal sealed partial class WorkflowRecoveryService(
     ILogger<WorkflowRecoveryService> logger,
     TimeProvider? timeProvider = null,
     HostSettings? settings = null,
-    IRunnableWakeSource? wakeSource = null,
-    CoordinationState? coordination = null) : BackgroundService
+    IRunnableWakeSource? wakeSource = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
+    InspectionRedactionPolicy? inspectionPolicy = null, CoordinationState? coordination = null) : BackgroundService
 {
     private readonly HostSettings _settings = settings ?? HostSettings.Default;
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
@@ -137,10 +137,10 @@ internal sealed partial class WorkflowRecoveryService(
                     .RecoverAsync(instance.InstanceId, token);
                 if (result.Status == WorkflowExecutionStatus.Faulted)
                     logger.LogWarning("Recovery of workflow {InstanceId} was rejected: {Reason}",
-                        instance.InstanceId, result.ErrorMessage);
+                        instance.InstanceId, InspectionRedactionPolicy.Default.ResultReason(result));
                 else if (result.Status == WorkflowExecutionStatus.NeedsResolution && result.ErrorMessage != null)
                     logger.LogWarning("Workflow {InstanceId} needs an operator: {Reason}",
-                        instance.InstanceId, result.ErrorMessage);
+                        instance.InstanceId, InspectionRedactionPolicy.Default.ResultReason(result));
                 // A row this host rejected, or left stopped, may still be due; let others go first.
                 if (result.Status is WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.NeedsResolution)
                     Defer(instance.InstanceId);
@@ -158,7 +158,7 @@ internal sealed partial class WorkflowRecoveryService(
             }
             catch (Exception error)
             {
-                logger.LogError(error, "Could not recover workflow {InstanceId}", instance.InstanceId);
+                (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not recover workflow {InstanceId}", instance.InstanceId);
                 // A row whose recovery throws, such as unreadable data, must not hold the poll.
                 Defer(instance.InstanceId);
             }
@@ -189,7 +189,7 @@ internal sealed partial class WorkflowRecoveryService(
             {
                 try { Track(passes, PassAsync(await ClaimAsync(stoppingToken), stoppingToken)); }
                 catch (Exception error) when (error is not OperationCanceledException)
-                { logger.LogError(error, "Could not scan running workflows for recovery"); }
+                { (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not scan running workflows for recovery"); }
                 using var wait = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 var tick = Task.Delay(_coordination.Connected ? _coordination.PollInterval : _settings.PollInterval,
                     _time, wait.Token);
@@ -246,7 +246,7 @@ internal sealed partial class WorkflowRecoveryService(
             catch (OperationCanceledException) when (listenStop.IsCancellationRequested) { }
             catch (Exception error)
             {
-                logger.LogWarning(error, "Lost the store's wake-ups; polling every {PollInterval} until they return",
+                (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Lost the store's wake-ups; polling every {PollInterval} until they return",
                     _settings.PollInterval);
             }
             try
@@ -274,7 +274,7 @@ internal sealed partial class WorkflowRecoveryService(
         }
         catch (Exception error)
         {
-            logger.LogError(error, "Could not scan running workflows for recovery");
+            (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not scan running workflows for recovery");
         }
     }
 }

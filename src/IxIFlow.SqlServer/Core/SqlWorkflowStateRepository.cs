@@ -654,11 +654,16 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             DELETE FROM dbo.IxIFlowOutboxEvents WHERE InstanceId=@InstanceId AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowOutboxDeliveries pending WHERE pending.EventId=dbo.IxIFlowOutboxEvents.EventId);
             DELETE FROM dbo.IxIFlowWorkflowWaits WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowTraces WHERE InstanceId = @InstanceId;
+                DELETE FROM dbo.IxIFlowWorkflowDiagnostics WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowEvents WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowCommits WHERE InstanceId = @InstanceId;
             DELETE FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId;
             """,
+        Statement.IncarnationDiagnostics => "SELECT d.DiagnosticJson FROM dbo.IxIFlowWorkflowInstances i WITH (HOLDLOCK) JOIN dbo.IxIFlowWorkflowDiagnostics d ON d.InstanceId = i.InstanceId WHERE i.InstanceId = @InstanceId AND i.Incarnation = @Incarnation ORDER BY d.DiagnosticId",
+        Statement.DiagnosticIds => "SELECT DiagnosticId FROM dbo.IxIFlowWorkflowDiagnostics WHERE InstanceId = @InstanceId",
+        Statement.InsertDiagnostic => "INSERT INTO dbo.IxIFlowWorkflowDiagnostics (InstanceId, DiagnosticId, DiagnosticJson) VALUES (@InstanceId, @DiagnosticId, @DiagnosticJson)",
+        Statement.DeleteDiagnostics => "DELETE FROM dbo.IxIFlowWorkflowDiagnostics WHERE InstanceId = @InstanceId AND DiagnosticId IN @Ids",
         Statement.Trace => """
             SELECT TOP (@Limit) Sequence, EntryJson FROM dbo.IxIFlowWorkflowTraces
             WHERE InstanceId = @InstanceId AND Sequence > @AfterSequence
@@ -789,6 +794,13 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 PartKey NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
                 Json NVARCHAR(MAX) NOT NULL,
                 CONSTRAINT PK_IxIFlowWorkflowParts PRIMARY KEY (InstanceId, PartKey)
+            );
+        IF OBJECT_ID(N'dbo.IxIFlowWorkflowDiagnostics', N'U') IS NULL
+            CREATE TABLE dbo.IxIFlowWorkflowDiagnostics (
+                InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                DiagnosticId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                DiagnosticJson NVARCHAR(MAX) NOT NULL,
+                CONSTRAINT PK_IxIFlowWorkflowDiagnostics PRIMARY KEY (InstanceId, DiagnosticId)
             );
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowTraces', N'U') IS NULL
             CREATE TABLE dbo.IxIFlowWorkflowTraces (

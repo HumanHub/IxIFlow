@@ -46,8 +46,8 @@ public sealed class LoggingScopeTests
         }
         Assert.Equal(3, ran.Select(entry => entry.Scope["StepId"]).Distinct().Count());
         // Each entry carries its own step: the engine logs applying each activity's name input in the same scope.
-        foreach (var (name, entry) in new[] { "first", "left", "right" }.Zip(ran))
-            Assert.Contains(capture.Entries, applied => applied.Message == $"Applied typed input mapping: Name = {name}" &&
+        foreach (var entry in ran)
+            Assert.Contains(capture.Entries, applied => applied.Message == "Applied typed input mapping: Name" &&
                                                          Equals(applied.Scope["StepId"], entry.Scope["StepId"]));
 
         // The engine's own entries for an attempt, from applying its inputs to applying its outputs, carry the same

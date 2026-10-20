@@ -76,7 +76,7 @@ public static class WorkflowOperationsExtensions
             if (await Client(http).GetStatusAsync(summary.InstanceId) == WorkflowExecutionStatus.Removed) return Removed();
             return Results.Ok(new WorkflowTracePage(entries.Select(e => new WorkflowTraceResponse(e.Sequence,
                 e.Entry.TraceId, e.Entry.Timestamp, e.Entry.Clock, e.Entry.StepNumber, e.Entry.ActivityName,
-                e.Entry.EntryType, e.Entry.Duration, e.Entry.ErrorMessage, e.Entry.Payload)).ToArray(),
+                e.Entry.EntryType, e.Entry.Duration, e.Entry.ErrorMessage, e.Entry.Payload) { Error = e.Entry.Error }).ToArray(),
                 entries.Count == limit ? entries[^1].Sequence : null));
         }, inspect: true);
         MapInstance("GET", "/snapshot", options.InspectPolicy!, async (http, summary) =>
@@ -87,7 +87,8 @@ public static class WorkflowOperationsExtensions
             return Results.Ok(new WorkflowSnapshotResponse(snapshot.InstanceId, snapshot.WorkflowName, snapshot.WorkflowVersion,
                 snapshot.Status, snapshot.CapturedAtUtc, snapshot.Pointers.Select(p => new WorkflowPointerResponse(
                     p.PointerId, p.StepId, p.StepIndex, p.Status, p.FrameId)).ToArray(),
-                snapshot.Frames.Select(f => new WorkflowFrameResponse(f.FrameId, f.Kind, f.StepId, f.ParentFrameId)).ToArray()));
+                snapshot.Frames.Select(f => new WorkflowFrameResponse(f.FrameId, f.Kind, f.StepId, f.ParentFrameId)).ToArray())
+                { Errors = snapshot.Errors });
         }, inspect: true);
         MapInstance("POST", "/resolutions", options.WritePolicy!, async (http, summary) =>
         {

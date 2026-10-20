@@ -23,7 +23,11 @@ public class WorkflowExecutionResult
     
     public string? ErrorMessage { get; set; }
     public string? ErrorType { get; set; }
+    /// <summary>Set only for data-free engine reasons, whose text is safe for operation results and logs.</summary>
+    public WorkflowErrorKind? ErrorKind { get; set; }
     public string? ErrorStackTrace { get; set; }
+    /// <summary>Safe identity for correlating this error with inspection and diagnostics.</summary>
+    public InspectionError? Diagnostic { get; set; }
     public TimeSpan ExecutionTime { get; set; }
     public List<ExecutionTraceEntry> TraceEntries { get; set; } = new();
     public object? WorkflowData { get; set; }

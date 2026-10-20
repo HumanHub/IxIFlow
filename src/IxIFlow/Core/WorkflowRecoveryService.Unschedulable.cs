@@ -86,7 +86,7 @@ internal sealed partial class WorkflowRecoveryService
                     // Restart a failed cycle rather than counting a partially consumed page twice.
                     _unschedulableCursor = null;
                     _unschedulableTotals.Clear();
-                    logger.LogError(error, "Could not scan unschedulable workflows");
+                    (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not scan unschedulable workflows");
                 }
             } while (await timer.WaitForNextTickAsync(token));
         }
