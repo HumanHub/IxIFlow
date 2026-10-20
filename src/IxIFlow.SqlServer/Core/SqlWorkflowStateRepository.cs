@@ -61,7 +61,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     // sp_getapplock reports a deadlock through its return code, translated to 51001 by interning.
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 or 51001 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.Catalog or Operation.Termination or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease
+        operation is Operation.Catalog or Operation.Termination or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease or Operation.LeaseRenew
             ? await connection.BeginTransactionAsync() : null;
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
@@ -472,12 +472,6 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 VALUES (@InstanceId, @Token,
                     DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME()), @Epoch, 0)
             OUTPUT inserted.Epoch, inserted.CrashCount;
-            """,
-        Statement.RenewLease => """
-            UPDATE dbo.IxIFlowWorkflowLeases
-            SET ExpiresAtUtc = DATEADD(MILLISECOND, @Milliseconds, SYSUTCDATETIME())
-            WHERE InstanceId = @InstanceId AND Token = @Token
-                AND ExpiresAtUtc > SYSUTCDATETIME()
             """,
         Statement.ReleaseLease => """
             UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = CAST('0001-01-01' AS DATETIME2)

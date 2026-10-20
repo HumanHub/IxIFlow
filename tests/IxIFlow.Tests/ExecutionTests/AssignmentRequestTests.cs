@@ -319,6 +319,7 @@ public sealed class AssignmentRequestTests
         public required WorkflowHost.InstanceOperations Operations;
         public required WorkflowHost.InstanceOperations.HostedRun Admission;
         public required CancellationWatch Watch;
+        public required ExecutionLeaseRenewer Renewer;
         public IWorkflowCatalog Registry => Services.GetRequiredService<IWorkflowCatalog>();
         public IExecutionHost Host => new WorkflowHost.InstanceOperations.ExecutionHost(Operations);
         public static async Task<Assigned> CreateAsync(IWorkflowStateRepository? store = null, ExecutionLimits? limits = null)
@@ -336,14 +337,15 @@ public sealed class AssignmentRequestTests
             if (store is HeldCommitStore held) held.Hold = true;
             var instance = (await proxy.GetWorkflowInstanceAsync(assign.Instance.InstanceId))!;
             var watch = new CancellationWatch(proxy, time);
+            var renewer = new ExecutionLeaseRenewer(proxy, time);
             var owner = (await WorkflowExecutionLease.TryAcquireAsync(proxy, instance,
-                new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, await StoreTestSupport.ClaimAsync(services), _ => { }, _ => { }, _ => { }, time))!;
+                new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, renewer, await StoreTestSupport.ClaimAsync(services), _ => { }, _ => { }, _ => { }, time))!;
             var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(), proxy,
-                services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), timeProvider: time, limits: limits);
+                services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), renewer, timeProvider: time, limits: limits);
             var identity = Guid.NewGuid();
             var admission = operations.Admit(instance, owner, identity);
             var result = new Assigned { Services = services, Store = proxy, Probe = probe, Instance = instance,
-                Owner = owner, Operations = operations, Admission = admission, Watch = watch };
+                Owner = owner, Operations = operations, Admission = admission, Watch = watch, Renewer = renewer };
             result._identity = identity;
             result._time = time;
             return result;
@@ -362,6 +364,7 @@ public sealed class AssignmentRequestTests
             Admission.Dispose();
             await ReleaseOwnerAsync();
             await Watch.DisposeAsync();
+            await Renewer.DisposeAsync();
             await Services.DisposeAsync();
         }
     }

@@ -294,22 +294,27 @@ public sealed class ResourceLimitTests
         var settings = new ExecutionLeaseSettings(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(1));
         var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Hanging" };
         var loss = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var renewer = new ExecutionLeaseRenewer(store, time);
         await using var watch = new CancellationWatch(store, time);
         await using var lease = (await WorkflowExecutionLease.TryAcquireAsync(store, instance, settings,
-            watch, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), error => loss.TrySetResult(error), _ => { }, _ => { }, time))!;
-        store.Hang = true;
-
-        var started = time.GetUtcNow();
-        while (!loss.Task.IsCompleted)
+            watch, renewer, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), error => loss.TrySetResult(error), _ => { }, _ => { }, time))!;
+        try
         {
-            await Task.Delay(20);
-            time.Advance(TimeSpan.FromMilliseconds(250));
-            Assert.True(time.GetUtcNow() - started < TimeSpan.FromSeconds(10), "The lease was never lost");
-        }
+            store.Hang = true;
 
-        // The hanging renewal was sent one second in, while the lease ran until three.
-        Assert.True(time.GetUtcNow() - started <= TimeSpan.FromSeconds(3.5));
-        Assert.IsType<TimeoutException>(await loss.Task);
+            var started = time.GetUtcNow();
+            while (!loss.Task.IsCompleted)
+            {
+                await Task.Delay(20);
+                time.Advance(TimeSpan.FromMilliseconds(250));
+                Assert.True(time.GetUtcNow() - started < TimeSpan.FromSeconds(10), "The lease was never lost");
+            }
+
+            // The hanging renewal was sent one second in, while the lease ran until three.
+            Assert.True(time.GetUtcNow() - started <= TimeSpan.FromSeconds(3.5));
+            Assert.IsType<TimeoutException>(await loss.Task);
+        }
+        finally { store.Reply.TrySetResult([new(ExecutionLeaseRenewalStatus.Refused)]); }
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository store, Action<IxIFlowOptions> configure)
@@ -445,9 +450,11 @@ public sealed class ResourceLimitTests
     private sealed class HangingRenewalStore : FaultInjectingRepository
     {
         public volatile bool Hang;
+        public TaskCompletionSource<IReadOnlyList<ExecutionLeaseRenewalResult>> Reply { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public override Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            Hang ? new TaskCompletionSource<bool>().Task : base.RenewExecutionLeaseAsync(instanceId, token, duration);
+        public override Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
+            Hang ? Reply.Task : base.RenewExecutionLeasesAsync(leases);
     }
     private static async Task VerifyLeasesAndCancellationWithExhaustedMainPool(string connectionString, Func<string, IWorkflowStateRepository> newRepository, Func<string, System.Data.Common.DbConnection> newConnection)
     {
@@ -467,7 +474,7 @@ public sealed class ResourceLimitTests
             await Assert.ThrowsAnyAsync<Exception>(() => store.GetWorkflowInstanceAsync(instanceId));
 
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
-            Assert.True(await store.RenewExecutionLeaseAsync(instanceId, "owner", Patience));
+            Assert.True((await store.RenewExecutionLeasesAsync([new(instanceId, "owner", Patience)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
             Assert.Empty(await store.GetCancellationRequestsAsync([instanceId]));
             Assert.True((await store.RequestCancellationAsync(instanceId,
                 new CancellationReason { ReasonCode = "operator" })).Accepted);
