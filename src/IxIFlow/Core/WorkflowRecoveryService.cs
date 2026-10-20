@@ -23,12 +23,13 @@ internal sealed partial class WorkflowRecoveryService(
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private readonly CoordinationState _coordination = coordination ?? new();
     private readonly object _lock = new();
-    // Instances a pass is recovering now, and instances this host could not run, with the time it
-    // tries them again, so the earliest rows cannot keep every slot's worth of the poll to themselves.
+    // Only entries actually taken by a worker are reserved across overlapping passes.
     private readonly Dictionary<string, object> _recovering = new(StringComparer.Ordinal);
-    // No-grant candidates sit out the following pass, then become eligible again.
+    // Recent refusals are an ordering hint, never an exclusion (including on a wake).
     private readonly Dictionary<string, long> _refused = new(StringComparer.Ordinal);
     private long _passNumber;
+    private long _scanOffset;
+    private readonly SemaphoreSlim _scan = new(1, 1);
     private readonly Dictionary<string, (DateTime Until, int Times)> _deferred = new(StringComparer.Ordinal);
     // Bound contention work even when discovery keeps finding more due instances.
     internal const int MaxCandidatesPerPass = 256;
@@ -50,12 +51,12 @@ internal sealed partial class WorkflowRecoveryService(
         await await ClaimAsync(cancellationToken);
 
     // Lists the instances this host may claim now and reserves them; the task returned recovers them.
-    private async Task<Task> ClaimAsync(CancellationToken cancellationToken)
+    private async Task<Task> ClaimAsync(CancellationToken cancellationToken, bool wakeDriven = false)
     {
         var handedOff = false;
         try
         {
-            var pass = await ReserveAsync(cancellationToken);
+            var pass = await ReserveAsync(cancellationToken, wakeDriven);
             handedOff = true;
             return CompletePassAsync(pass);
         }
@@ -72,7 +73,7 @@ internal sealed partial class WorkflowRecoveryService(
         finally { _coordination.CompleteClaimPass(); }
     }
 
-    private async Task<Task> ReserveAsync(CancellationToken cancellationToken)
+    private async Task<Task> ReserveAsync(CancellationToken cancellationToken, bool wakeDriven)
     {
         // A host claims only what it has slots for (D-10); the rest waits for the next pass or another host.
         int limit;
@@ -83,92 +84,93 @@ internal sealed partial class WorkflowRecoveryService(
         {
             return Task.CompletedTask;
         }
-        HashSet<string> skipped;
         var owner = new object();
-        long passNumber;
         lock (_lock)
         {
-            passNumber = ++_passNumber;
+            var passNumber = ++_passNumber;
             foreach (var expired in _refused.Where(item => item.Value < passNumber).Select(item => item.Key).ToArray())
                 _refused.Remove(expired);
             var now = _time.GetUtcNow().UtcDateTime;
-            // Expired entries stay a while, so a row rejected again waits longer; long-expired ones go.
             foreach (var stale in _deferred.Where(item => now - item.Value.Until > TimeSpan.FromMinutes(10))
                          .Select(item => item.Key).ToArray())
                 _deferred.Remove(stale);
-            skipped = new HashSet<string>(_recovering.Keys.Concat(_refused.Keys)
-                .Concat(_deferred.Where(item => item.Value.Until > now).Select(item => item.Key)), StringComparer.Ordinal);
         }
         ClaimQuery query;
         using (var probe = scopes.CreateScope())
             query = new ClaimQuery(_settings.Id, await _settings.GetCapabilitiesAsync(
                 probe.ServiceProvider.GetRequiredService<IWorkflowCatalog>()), limit);
-        var instances = await ReserveCandidatesAsync(query, skipped, limit, owner, cancellationToken);
-        return RecoverReservedAsync(instances, query, skipped, owner, cancellationToken);
+        // A wake probes the head immediately without resetting the continuing scan. Its small
+        // page leaves budget for scan progress even under a continuous stream of wakes.
+        var first = await ReadCandidatesAsync(query, wakeDriven ? Math.Min(RefillPageSize, limit) : limit,
+            cancellationToken, head: wakeDriven);
+        return RecoverCandidatesAsync(first, query, limit, owner, cancellationToken);
     }
 
-    private async Task<List<RunnableInstance>> ReserveCandidatesAsync(ClaimQuery query, HashSet<string> skipped,
-        int limit, object owner, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<RunnableInstance>> ReadCandidatesAsync(ClaimQuery query, int limit,
+        CancellationToken cancellationToken, bool head = false)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        lock (_lock)
-        {
-            skipped.UnionWith(_recovering.Keys);
-            skipped.UnionWith(_refused.Keys);
-        }
-        // Enlarge the ordered page past IDs excluded by this pass; each ID is tried at most once.
-        var candidates = await repository.GetRunnableInstancesAsync(
-            new ClaimQuery(query.HostId, query.Capabilities, limit + skipped.Count));
-        // Reserve against the live sets, so a pass running alongside cannot take the same instance.
-        var instances = new List<RunnableInstance>();
-        lock (_lock)
-            foreach (var candidate in candidates)
-            {
-                if (instances.Count == limit)
-                    break;
-                if (!skipped.Contains(candidate.InstanceId) && _recovering.TryAdd(candidate.InstanceId, owner))
-                {
-                    skipped.Add(candidate.InstanceId);
-                    instances.Add(candidate);
-                }
-            }
-        return instances;
-    }
-
-    private async Task RecoverReservedAsync(List<RunnableInstance> instances, ClaimQuery query,
-        HashSet<string> skipped, object owner, CancellationToken cancellationToken)
-    {
-        using var discovery = new SemaphoreSlim(1, 1);
-        var page = new Queue<RunnableInstance>();
-        var remaining = MaxCandidatesPerPass - instances.Count;
+        // Continue the ordered scan across passes, even if every earlier candidate keeps refusing.
+        // Serialize cursor advancement, not recovery. Changes in the runnable set are picked up
+        // on wraparound. A page is only a prefetch; it owns no recovery reservations.
+        await _scan.WaitAsync(cancellationToken);
         try
         {
-            await Parallel.ForEachAsync(instances, new ParallelOptions
+            var candidates = await repository.GetRunnableInstancesAsync(query.Continue(head ? 0 : _scanOffset, limit));
+            if (!head && candidates.Count == 0 && _scanOffset != 0)
+            {
+                _scanOffset = 0;
+                candidates = await repository.GetRunnableInstancesAsync(query.Continue(0, limit));
+            }
+            if (!head) _scanOffset = candidates.Count < limit ? 0 : _scanOffset + candidates.Count;
+            lock (_lock)
+                return candidates.OrderBy(candidate => _refused.ContainsKey(candidate.InstanceId)).ToArray();
+        }
+        finally { _scan.Release(); }
+    }
+
+    private async Task RecoverCandidatesAsync(IReadOnlyList<RunnableInstance> first, ClaimQuery query, int slots,
+        object owner, CancellationToken cancellationToken)
+    {
+        using var discovery = new SemaphoreSlim(1, 1);
+        var page = new Queue<RunnableInstance>(first);
+        var seen = new HashSet<string>(first.Select(candidate => candidate.InstanceId), StringComparer.Ordinal);
+        var remaining = MaxCandidatesPerPass - first.Count;
+        var exhausted = first.Count == 0;
+        try
+        {
+            await Parallel.ForEachAsync(Enumerable.Range(0, slots), new ParallelOptions
             {
                 MaxDegreeOfParallelism = 8,
                 CancellationToken = cancellationToken
-            }, async (first, token) =>
+            }, async (_, token) =>
             {
-                var instance = first;
-                while (!await RecoverAsync(instance, owner, token))
+                while (true)
                 {
-                    // A no-grant result did not use this slot. Refill immediately, even while
-                    // other slots in this pass are still running, preserving discovery order.
+                    RunnableInstance? instance = null;
                     try
                     {
                         await discovery.WaitAsync(token);
                         try
                         {
-                            if (page.Count == 0)
+                            while (instance == null)
                             {
-                                if (remaining == 0) return;
-                                var next = await ReserveCandidatesAsync(query, skipped,
-                                    Math.Min(RefillPageSize, remaining), owner, token);
-                                if (next.Count == 0) return;
-                                remaining -= next.Count;
-                                foreach (var candidate in next) page.Enqueue(candidate);
+                                if (page.Count == 0)
+                                {
+                                    if (remaining == 0 || exhausted) return;
+                                    var next = await ReadCandidatesAsync(query, Math.Min(RefillPageSize, remaining), token);
+                                    remaining -= next.Count;
+                                    foreach (var candidate in next)
+                                        if (seen.Add(candidate.InstanceId)) page.Enqueue(candidate);
+                                    // A wrapped page with no new entries ends this pass.
+                                    if (page.Count == 0) { exhausted = true; return; }
+                                }
+                                var candidateToTake = page.Dequeue();
+                                lock (_lock)
+                                    if ((!_deferred.TryGetValue(candidateToTake.InstanceId, out var deferred) ||
+                                         deferred.Until <= _time.GetUtcNow().UtcDateTime) &&
+                                        _recovering.TryAdd(candidateToTake.InstanceId, owner))
+                                        instance = candidateToTake;
                             }
-                            instance = page.Dequeue();
                         }
                         finally { discovery.Release(); }
                     }
@@ -179,13 +181,13 @@ internal sealed partial class WorkflowRecoveryService(
                             LogLevel.Error, error, "Could not refill workflows for recovery");
                         return;
                     }
+                    // A no-grant result did not consume this slot; refill while siblings run.
+                    if (await RecoverAsync(instance, owner, token)) return;
                 }
             });
         }
         finally
         {
-            // Includes unused page entries. A completed attempt may have been reserved by a newer
-            // pass already; remove only reservations that still belong to this pass.
             lock (_lock)
                 foreach (var id in _recovering.Where(item => ReferenceEquals(item.Value, owner)).Select(item => item.Key).ToArray())
                     _recovering.Remove(id);
@@ -256,17 +258,20 @@ internal sealed partial class WorkflowRecoveryService(
         var diagnostics = UnschedulableAsync(stoppingToken);
         // A pass runs until the work it handed out is idle or parked; the next tick does not wait for
         // it, and skips the instances it is still recovering.
+        var wakeDriven = false;
         try
         {
             do
             {
-                try { Track(passes, PassAsync(await ClaimAsync(stoppingToken), stoppingToken)); }
+                try { Track(passes, PassAsync(await ClaimAsync(stoppingToken, wakeDriven), stoppingToken)); }
                 catch (Exception error) when (error is not OperationCanceledException)
                 { (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not scan running workflows for recovery"); }
                 using var wait = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
                 var tick = Task.Delay(_coordination.Connected ? _coordination.PollInterval : _settings.PollInterval,
                     _time, wait.Token);
-                await Task.WhenAny(wakes.Reader.ReadAsync(wait.Token).AsTask(), tick);
+                var wake = wakes.Reader.ReadAsync(wait.Token).AsTask();
+                await Task.WhenAny(wake, tick);
+                wakeDriven = wake.IsCompletedSuccessfully;
                 wait.Cancel();
                 stoppingToken.ThrowIfCancellationRequested();
             } while (true);

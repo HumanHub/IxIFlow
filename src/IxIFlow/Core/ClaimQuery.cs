@@ -13,7 +13,10 @@ public sealed record ClaimQuery
 
     public Guid HostId { get; }
     public IReadOnlyDictionary<string, string> Capabilities { get; }
-    public int Limit { get; }
+    public int Limit { get; private init; }
+    // Recovery's ordered continuation; ordinary discovery and claims start at zero.
+    internal long ScanOffset { get; init; }
+    internal ClaimQuery Continue(long offset, int limit) => this with { ScanOffset = offset, Limit = limit };
 }
 
 /// <summary>Operator claims may enter stopped work. Termination claims require a pending command and ignore placement.</summary>

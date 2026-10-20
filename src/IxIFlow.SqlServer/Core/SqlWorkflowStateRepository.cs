@@ -62,6 +62,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     internal override int OwnershipReadBatchSize => 1000;
     // sp_getapplock reports a deadlock through its return code, translated to 51001.
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 or 51001 };
+    internal override bool IsClaimRefusal(Exception error) => error is SqlException { Number: 1222 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
         operation is Operation.Catalog or Operation.Termination or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.RunnableRead or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease or Operation.LeaseRenew
             ? await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted) : null;
@@ -461,23 +462,23 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 WHERE InstanceId IN @InstanceIds AND CancellationJson IS NOT NULL
                 """,
         Statement.LockIdentity => """
-            DECLARE @result int, @resource nvarchar(255) = N'IxIFlow.Instance/' + @InstanceId;
+            DECLARE @result int, @resource nvarchar(max) = N'IxIFlow.Instance/' + RTRIM(@InstanceId);
+            IF DATALENGTH(@resource) > 510 THROW 51000, 'Instance identity resource exceeds 255 characters', 1;
             EXEC @result = sys.sp_getapplock @Resource = @resource,
                 @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = -1;
             IF @result = -3 THROW 51001, 'Instance identity lock deadlock', 1;
             IF @result < 0 THROW 51000, 'Could not lock instance identity', 1;
-            """,
-        Statement.TryLockClaimIdentity => """
-            DECLARE @result int, @resource nvarchar(255) = N'IxIFlow.Instance/' + @InstanceId;
-            EXEC @result = sys.sp_getapplock @Resource = @resource,
-                @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 0;
-            SELECT CAST(CASE WHEN @result >= 0 THEN 1 ELSE 0 END AS bit);
             """,
         // The ID lock protects absence through eligibility, lease arbitration and host stamping.
         // Lock the row without a range lock: unrelated absent IDs must not contend on a gap.
         // A held row or uncommitted insert/delete raises 1222; C# rolls back and returns no grant.
         // Genuine absence retains the existing lease-row fencing of concurrent first claims.
         Statement.Running => """
+            DECLARE @result int, @resource nvarchar(max) = N'IxIFlow.Instance/' + RTRIM(@InstanceId);
+            IF DATALENGTH(@resource) > 510 THROW 51000, 'Instance identity resource exceeds 255 characters', 1;
+            EXEC @result = sys.sp_getapplock @Resource = @resource,
+                @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 0;
+            IF @result < 0 BEGIN SELECT -1; RETURN; END;
             DECLARE @Running INT;
             SELECT @Running = CASE WHEN Status = 'Running' THEN 1 ELSE 0 END
             FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK, NOWAIT)

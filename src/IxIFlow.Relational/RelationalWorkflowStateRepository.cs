@@ -43,7 +43,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         EnablePublisher, RetryDisabledDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
         TerminationState, TerminationRequest, TerminationChildren, Cancellation, Cancellations, Runnable, Running, ClaimLease, ReleaseLease, Notice,
-        LockIdentity, TryLockClaimIdentity, LockInbox, ParentInbox, CommitState, Receipt, UpdateReceiptNotices, Lease, TakenChild,
+        LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, UpdateReceiptNotices, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, UpdateEventNotice, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
         ReadInstance,
@@ -167,6 +167,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     internal virtual int OwnershipReadBatchSize => int.MaxValue;
     /// <summary>Maps database concurrency failures that require retrying the entire atomic commit.</summary>
     internal virtual bool IsRetryableCommit(Exception error) => false;
+    internal virtual bool IsClaimRefusal(Exception error) => false;
     // Providers may translate a nonwaiting instance-lock failure before any lease work begins.
     internal virtual Task<int> ReadClaimStateAsync(DbConnection connection, DbTransaction transaction, string instanceId) =>
         connection.ExecuteScalarAsync<int>(RequiredSql(Statement.Running), new { InstanceId = instanceId }, transaction);
@@ -400,44 +401,50 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             await using var connection = await OpenConnectionAsync(ownership: true);
             await using var transaction = (await BeginTransactionAsync(connection, Operation.LeaseClaim))!;
-            if (Sql(Statement.TryLockClaimIdentity) is { } identitySql &&
-                !await connection.ExecuteScalarAsync<bool>(CheckSql(nameof(Statement.TryLockClaimIdentity), identitySql),
-                    new { InstanceId = instanceId }, transaction))
-                return null;
-            // Running returns -1 for contention, 0 for an absent/non-running row, and 1 for Running.
-            // A skipped row must never follow the absent-instance admission path.
-            var claimState = await ReadClaimStateAsync(connection, transaction, instanceId);
-            if (claimState < 0) return null;
-            var running = claimState > 0;
-            var now = await OutboxNowAsync(connection, transaction);
-            var eligibility = PlacementParameters(query, now, query.Limit);
-            eligibility.Add("InstanceId", instanceId);
-            eligibility.Add("Operator", kind == ExecutionClaimKind.Operator);
-            bool eligible;
-            if (kind == ExecutionClaimKind.Termination)
+            try
             {
-                var (command, _) = await LockAsync<TerminationRow>(connection, transaction, Statement.TerminationState, instanceId);
-                eligible = command != null && !WorkflowStoreRules.IsTerminal(command.Status) &&
-                    ReadReason(command.CancellationJson)?.Mode == WorkflowControlMode.Terminate;
-            }
-            else eligible = await connection.ExecuteScalarAsync<int>(ClaimEligibilitySql, eligibility, transaction) == 1;
-            if (await TombstoneAsync(connection, transaction, instanceId, now) != null ||
-                !eligible)
-            {
+                // Running returns -1 for contention, 0 for an absent/non-running row, and 1 for Running.
+                // A skipped row must never follow the absent-instance admission path.
+                var claimState = await ReadClaimStateAsync(connection, transaction, instanceId);
+                if (claimState < 0) return null;
+                var running = claimState > 0;
+                var now = await OutboxNowAsync(connection, transaction);
+                var eligibility = PlacementParameters(query, now, query.Limit);
+                eligibility.Add("InstanceId", instanceId);
+                eligibility.Add("Operator", kind == ExecutionClaimKind.Operator);
+                bool eligible;
+                if (kind == ExecutionClaimKind.Termination)
+                {
+                    var (command, _) = await LockAsync<TerminationRow>(connection, transaction, Statement.TerminationState, instanceId);
+                    eligible = command != null && !WorkflowStoreRules.IsTerminal(command.Status) &&
+                        ReadReason(command.CancellationJson)?.Mode == WorkflowControlMode.Terminate;
+                }
+                else eligible = await connection.ExecuteScalarAsync<int>(ClaimEligibilitySql, eligibility, transaction) == 1;
+                if (await TombstoneAsync(connection, transaction, instanceId, now) != null ||
+                    !eligible)
+                {
+                    await transaction.CommitAsync();
+                    return null;
+                }
+                // Capture SQLite's lease clock only after its writer and instance locks.
+                var parameters = ClaimParameters(instanceId, token, TimeSpan.FromMilliseconds(milliseconds));
+                parameters.Add("Running", running);
+                var grant = await connection.QuerySingleOrDefaultAsync<LeaseGrantRow>(RequiredSql(Statement.ClaimLease), parameters, transaction);
+                if (grant != null)
+                {
+                    await connection.ExecuteAsync(SetLeaseHostSql, new { InstanceId = instanceId, query.HostId }, transaction);
+                    await connection.ExecuteAsync(ClaimStampHostSql, new { InstanceId = instanceId }, transaction);
+                }
                 await transaction.CommitAsync();
+                return grant == null ? null : new ExecutionLeaseGrant(grant.Epoch, grant.CrashCount);
+            }
+            catch (Exception error) when (IsClaimRefusal(error))
+            {
+                // A later instance write can refuse after lease arbitration. Undo the entire claim,
+                // including the lease and host, even when XACT_ABORT has already ended it.
+                if (transaction.Connection != null) await transaction.RollbackAsync();
                 return null;
             }
-            // Capture SQLite's lease clock only after its writer and instance locks.
-            var parameters = ClaimParameters(instanceId, token, TimeSpan.FromMilliseconds(milliseconds));
-            parameters.Add("Running", running);
-            var grant = await connection.QuerySingleOrDefaultAsync<LeaseGrantRow>(RequiredSql(Statement.ClaimLease), parameters, transaction);
-            if (grant != null)
-            {
-                await connection.ExecuteAsync(SetLeaseHostSql, new { InstanceId = instanceId, query.HostId }, transaction);
-                await connection.ExecuteAsync(StampHostSql, new { InstanceId = instanceId }, transaction);
-            }
-            await transaction.CommitAsync();
-            return grant == null ? null : new ExecutionLeaseGrant(grant.Epoch, grant.CrashCount);
         });
     }
 
@@ -799,7 +806,10 @@ public abstract partial class RelationalWorkflowStateRepository :
         var parent = commit.ParentNotice is { } notice
             ? (await LockAsync<InboxRow>(connection, transaction, Statement.ParentInbox,
                 notice.ParentInstanceId, clock: false)).Row : null;
-        await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { commit.InstanceId });
+        // Only a first commit can insert this row. Existing-row commits serialize on the row;
+        // child starts take each child's ID below, after their parent's row.
+        if (commit.ExpectedRevision == 0)
+            await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { commit.InstanceId });
         CommitState? current;
         if (UsesLocalClock)
             current = await connection.QuerySingleOrDefaultAsync<CommitState>(RequiredSql(Statement.CommitState),
