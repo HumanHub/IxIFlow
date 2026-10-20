@@ -48,7 +48,9 @@ public sealed partial class DebugAdapterSession : DebugAdapterBase, IDisposable
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         InitializeProtocolClient(input, output);
         Protocol.Run();
-        var reader = Task.Run(() => Protocol.WaitForReader());
+        Task reader;
+        using (ExecutionContext.SuppressFlow())
+            reader = Task.Run(() => Protocol.WaitForReader());
         var monitor = MonitorAsync(linked.Token);
         try { await Task.WhenAny(reader, _closed.Task).WaitAsync(linked.Token); }
         catch (OperationCanceledException) when (linked.IsCancellationRequested) { }

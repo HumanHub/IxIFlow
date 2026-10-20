@@ -180,7 +180,15 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
 /// <summary>The exact shared compatibility profile. Application assemblies are private bundle assets.</summary>
 public static class WorkflowSharedAssemblies
 {
+    private static readonly IReadOnlyDictionary<string, AssemblyName> Framework =
+        RuntimeAssemblies((string?)AppContext.GetData("APP_CONTEXT_DEPS_FILES"), AppContext.BaseDirectory);
     private static readonly IReadOnlyDictionary<string, AssemblyName> Profile = CreateProfile();
+
+    /// <summary>Matches an assembly's full identity against this runtime's shared frameworks.</summary>
+    public static bool IsFrameworkAssembly(AssemblyName name) => name.Name != null &&
+        Framework.TryGetValue(name.Name, out var identity) && name.Version == identity.Version &&
+        (name.CultureName ?? "") == (identity.CultureName ?? "") &&
+        name.GetPublicKeyToken().AsSpan().SequenceEqual(identity.GetPublicKeyToken());
 
     /// <summary>
     /// Whether this process found its runtime and SDK identities. Self-contained single-file processes
@@ -195,7 +203,7 @@ public static class WorkflowSharedAssemblies
 
     private static IReadOnlyDictionary<string, AssemblyName> CreateProfile()
     {
-        var profile = RuntimeAssemblies((string?)AppContext.GetData("APP_CONTEXT_DEPS_FILES"), AppContext.BaseDirectory);
+        var profile = new Dictionary<string, AssemblyName>(Framework, StringComparer.OrdinalIgnoreCase);
         // Do not let the SDK dependency walk reconstruct a partial runtime profile after
         // failed discovery (including an embedded single-file manifest).
         if (profile.Count == 0) return profile;
@@ -333,7 +341,12 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
             {
                 entry = new Entry { Load = null! };
                 var created = entry;
-                entry.Load = new(() => Task.Run(() => LoadAsync(digest, created.Stop.Token)));
+                entry.Load = new(() =>
+                {
+                    // A nested acquisition must not give the cached load its caller's bundle scope.
+                    using (ExecutionContext.SuppressFlow())
+                        return Task.Run(() => LoadAsync(digest, created.Stop.Token));
+                });
                 _loaded.Add(digest, entry);
             }
             Interlocked.Increment(ref entry.Users);
@@ -422,16 +435,17 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
         foreach (var entry in retired)
         {
             entry.Stop.Cancel();
-            _ = entry.Load.Value.ContinueWith(task =>
-            {
-                if (task.IsCompletedSuccessfully)
+            using (ExecutionContext.SuppressFlow())
+                _ = entry.Load.Value.ContinueWith(task =>
                 {
-                    WorkflowJson.Release(task.Result.Context);
-                    task.Result.Context.Unload();
-                }
-                else _ = task.Exception;
-                entry.Stop.Dispose();
-            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                    if (task.IsCompletedSuccessfully)
+                    {
+                        WorkflowJson.Release(task.Result.Context);
+                        task.Result.Context.Unload();
+                    }
+                    else _ = task.Exception;
+                    entry.Stop.Dispose();
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
     }
 
