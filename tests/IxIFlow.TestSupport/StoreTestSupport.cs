@@ -40,7 +40,7 @@ public static class StoreTestSupport
         try
         {
             var duration = TimeSpan.FromMinutes(5);
-            if (owner.Grant != null && await store.RenewExecutionLeaseAsync(instanceId, owner.Token, duration))
+            if (owner.Grant != null && (await store.RenewExecutionLeasesAsync([new(instanceId, owner.Token, duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed)
                 return owner.Grant;
             if (query == null)
             {

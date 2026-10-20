@@ -149,9 +149,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind),
             $"Acquiring the execution lease of workflow instance '{instanceId}'");
 
-    public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-        Guard(() => _store.RenewExecutionLeaseAsync(instanceId, token, duration),
-            $"Renewing the execution lease of workflow instance '{instanceId}'");
+    public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
+        Guard(() => _store.RenewExecutionLeasesAsync(leases), "Renewing workflow execution leases");
 
     public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         Guard(() => _store.ReleaseExecutionLeaseAsync(instanceId, token),

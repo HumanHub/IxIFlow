@@ -39,11 +39,23 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
         {
             CancelKind.Ownership => Interlocked.Exchange(ref _ownershipLost, 1) == 0,
             CancelKind.Run => Interlocked.Exchange(ref _runCancelled, 1) == 0,
-            CancelKind.Workflow when message.Reason != null =>
-                Interlocked.CompareExchange(ref _cancellation, message.Reason, null) == null,
+            CancelKind.Workflow when message.Reason != null => Request(message.Reason),
             _ => false
         };
         if (changed) Pulse();
+    }
+
+    // The first request stands, except that a termination escalates an earlier graceful one.
+    private bool Request(CancellationReason reason)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _cancellation);
+            if (current != null && (current.Mode == WorkflowControlMode.Terminate ||
+                                    reason.Mode != WorkflowControlMode.Terminate))
+                return false;
+            if (Interlocked.CompareExchange(ref _cancellation, reason, current) == current) return true;
+        }
     }
 
     public void Deliver(Arrivals message)

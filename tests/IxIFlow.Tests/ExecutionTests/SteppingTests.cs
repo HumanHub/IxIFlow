@@ -632,10 +632,12 @@ public sealed class SteppingTests
                 _crashed = true;
             return result;
         }
-        public override Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
+        public override Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
         {
-            if (!LoseLease) return base.RenewExecutionLeaseAsync(id, token, duration);
-            LeaseLost.TrySetResult(); return Task.FromResult(false);
+            if (!LoseLease) return base.RenewExecutionLeasesAsync(leases);
+            LeaseLost.TrySetResult();
+            return Task.FromResult<IReadOnlyList<ExecutionLeaseRenewalResult>>(
+                leases.Select(_ => new ExecutionLeaseRenewalResult(ExecutionLeaseRenewalStatus.Refused)).ToArray());
         }
     }
 }

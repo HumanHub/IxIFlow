@@ -1051,8 +1051,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             await PassAsync(time, TimeSpan.FromMilliseconds(300));
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
-            Assert.False(await repository.RenewExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromSeconds(5)));
+            Assert.False((await repository.RenewExecutionLeasesAsync([new(instanceId, "first",
+                TimeSpan.FromSeconds(5))]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
         }
         finally
         {
@@ -1070,7 +1070,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         {
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             await PassAsync(time, renewAfter);
-            Assert.True(await repository.RenewExecutionLeaseAsync(instanceId, "first", lease));
+            Assert.True((await repository.RenewExecutionLeasesAsync([new(instanceId, "first", lease)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
             await PassAsync(time, checkAfter);
             Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         }
@@ -1497,19 +1497,19 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
         public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string id, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
             inner.TryAcquireExecutionLeaseAsync(id, token, duration, query, kind);
-        public Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
+        public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
         {
             if (Interlocked.Exchange(ref LoseNextRenewal, 0) > 0)
             {
                 LeaseLost.TrySetResult();
-                return Task.FromResult(false);
+                return Task.FromResult<IReadOnlyList<ExecutionLeaseRenewalResult>>(leases.Select(_ => new ExecutionLeaseRenewalResult(ExecutionLeaseRenewalStatus.Refused)).ToArray());
             }
             if (Interlocked.Exchange(ref FailNextRenewals, 0) > 0)
             {
                 RenewalFailed.TrySetResult();
                 throw new IOException("Lease renewal unavailable");
             }
-            return inner.RenewExecutionLeaseAsync(id, token, duration);
+            return inner.RenewExecutionLeasesAsync(leases);
         }
         public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string id, string token) =>
             FailRelease ? throw new IOException("Release acknowledgment unavailable") :

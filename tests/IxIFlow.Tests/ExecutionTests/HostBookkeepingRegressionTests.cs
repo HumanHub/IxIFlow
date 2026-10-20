@@ -206,7 +206,7 @@ public sealed class HostBookkeepingRegressionTests
             control.OnUnscheduled(scheduler.Unschedule);
             _watch = new CancellationWatch(Store, Time);
             Operations = new(Services, Services.GetRequiredService<IActivityExecutor>(), Store,
-                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), Services.GetRequiredService<ExecutionLeaseRenewer>(),
                 timeProvider: Time, watch: _watch, control: control,
                 limits: new ExecutionLimits { MaxTraceEntriesPerInstance = 0 });
         }
@@ -225,7 +225,7 @@ public sealed class HostBookkeepingRegressionTests
         {
             var instance = await SeedAsync(Workflow.Create<Data>("Bookkeeping").Step<Noop>().Build());
             var owner = (await WorkflowExecutionLease.TryAcquireAsync(Store, instance,
-                ExecutionLeaseSettings.Default, _watch, await StoreTestSupport.ClaimAsync(Services), _ => { }, _ => { }, _ => { }, Time))!;
+                ExecutionLeaseSettings.Default, _watch, Services.GetRequiredService<ExecutionLeaseRenewer>(), await StoreTestSupport.ClaimAsync(Services), _ => { }, _ => { }, _ => { }, Time))!;
             var identity = Guid.NewGuid();
             return new(instance, owner, identity, Operations.Admit(instance, owner, identity));
         }
@@ -290,10 +290,10 @@ public sealed class HostBookkeepingRegressionTests
             ? new(WorkflowCommitStatus.Retry, 0)
             : throw new IOException("The commit reply was lost");
 
-        public override async Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
+        public override async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
         {
-            var renewed = await base.RenewExecutionLeaseAsync(id, token, duration);
-            if (!renewed) Interlocked.Increment(ref RejectedRenewals);
+            var renewed = await base.RenewExecutionLeasesAsync(leases);
+            Interlocked.Add(ref RejectedRenewals, renewed.Count(result => result.Status != ExecutionLeaseRenewalStatus.Renewed));
             return renewed;
         }
     }
