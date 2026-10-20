@@ -28,5 +28,8 @@ public enum WorkflowErrorKind
     ResourceExhausted,
 
     /// <summary>Retention removed the instance; its ID is still reserved by a tombstone.</summary>
-    InstanceRemoved
+    InstanceRemoved,
+
+    /// <summary>No live host advertises all demands at start admission.</summary>
+    Unschedulable
 }

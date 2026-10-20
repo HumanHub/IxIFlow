@@ -42,6 +42,15 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
     public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
         inner.UnregisterMemberAsync(memberId, cancellationToken);
+    public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
+        inner.GetWorkflowDemandsAsync(instanceId);
+
+    public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default) =>
+        inner.GetUnschedulableAsync(limit, cursor, cancellationToken);
+    public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
+        inner.CanScheduleAsync(demands, cancellationToken);
+
     public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
         inner.GetLiveMembersAsync(cancellationToken);
 
@@ -110,19 +119,19 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         return result;
     }
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+    public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
         inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
     public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         inner.GetCancellationRequestAsync(instanceId);
     public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
         IReadOnlyCollection<string> instanceIds) => inner.GetCancellationRequestsAsync(instanceIds);
-    public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
-        inner.GetRunnableInstancesAsync(limit);
+    public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
+        inner.GetRunnableInstancesAsync(query);
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
-        TimeSpan duration) => inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
+        TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) => inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
     public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
         inner.RenewExecutionLeaseAsync(instanceId, token, duration);
-    public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+    public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         inner.ReleaseExecutionLeaseAsync(instanceId, token);
 
     public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>

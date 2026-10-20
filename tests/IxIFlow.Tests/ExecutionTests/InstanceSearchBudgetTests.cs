@@ -20,20 +20,22 @@ public sealed class InstanceSearchBudgetTests
             var store = new PostgreSqlWorkflowStateRepository(cs);
             await store.QueryInstancesAsync(new InstanceQuery()); // create the production schema
             await using var connection = new NpgsqlConnection(cs);
+            var demandSetId = DemandSet.Create([]).Id;
+            await connection.ExecuteAsync("INSERT INTO ixiflow_demand_sets (demand_set_id) VALUES (@Id)", new { Id = demandSetId });
             await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_instances
                     (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, status,
-                     correlation_id, parent_instance_id, ended_at_utc, stop_kind, stop_crash_count, state_json, revision)
+                     correlation_id, parent_instance_id, ended_at_utc, stop_kind, stop_crash_count, state_json, revision, demand_set_id)
                 SELECT 'row-' || lpad(i::text, 9, '0'), md5(i::text)::uuid, 'workflow-' || (i % 100), i % 5,
                     '2026-01-01'::timestamptz + (i / 10) * interval '1 second',
                     CASE WHEN i % 5 = 0 THEN 'Completed' WHEN i % 7 = 0 THEN 'NeedsResolution' ELSE 'Suspended' END,
                     'correlation-' || (i % 100), 'parent-' || (i % 1000),
                     CASE WHEN i % 5 = 0 THEN '2026-01-01'::timestamptz + (i / 10) * interval '1 second' END,
                     CASE WHEN i % 7 = 0 THEN 'Quarantine' END, CASE WHEN i % 7 = 0 THEN 7 END,
-                    'intentionally unread', 1
+                    'intentionally unread', 1, @DemandSetId
                 FROM generate_series(1, 300000) AS i;
                 ANALYZE ixiflow_workflow_instances;
-                """, commandTimeout: 120);
+                """, new { DemandSetId = demandSetId }, commandTimeout: 120);
             string[] filters = ["true", "workflow_name='workflow-2'", "status='Suspended'",
                 "status=ANY(ARRAY['Suspended','NeedsResolution'])", "workflow_version=2",
                 "workflow_name='workflow-2' AND workflow_version=2", "stop_kind='Quarantine'",

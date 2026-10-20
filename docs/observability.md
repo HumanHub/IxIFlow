@@ -49,6 +49,15 @@ Spans cover run passes, activity attempts and checkpoint commits. They include w
 
 Metric tags use workflow name/version and relevant bounded dimensions such as activity type, outcome and publisher name; they avoid a series per instance. [Telemetry.cs](../src/IxIFlow/Core/Runtime/Telemetry.cs) defines the exact instruments.
 
+| Unschedulable backlog gauge | Value |
+| --- | --- |
+| `ixiflow.backlog.unschedulable` | Number of due, unleased instances no live host can run, from the last completed paged scan |
+| `ixiflow.backlog.unschedulable.age` | Seconds since the oldest such instance became runnable; zero when the group clears |
+
+Both gauges carry only `ixiflow.workflow.name` and `ixiflow.workflow.version`. They include neither instance IDs nor demand keys, hashes or host identifiers. They measure the shared store's backlog, rather than additions to a counter. The recovery service elects the lowest live host GUID to publish them, publishes zero for groups that clear, and continues large scans across intervals. During reporter failover, aggregate overlapping host resource series with **maximum**, not sum. Keep separate stores in separate resource groups. A missing or stale measurement means no recent complete scan; it does not mean an empty backlog.
+
+Warnings identify individual instances and their unmet demands, including missing definition hashes. They are limited to one per instance per reporting host every five minutes. See [work waiting for a capable host](coordinator-and-hosts.md#work-waiting-for-a-capable-host) for the operator read and scan settings.
+
 ## Structured logging and actors
 
 Run scopes include `InstanceId` and `WorkflowName`. Activity/child attempt scopes add `StepId` and `InvocationId`; loggers resolved through activity DI participate in the same scopes. Publisher delivery scopes add publisher name, event ID and attempt number.

@@ -18,7 +18,7 @@ public sealed class HostMessageStoreTests : IClassFixture<SqliteTestDatabase<Hos
         IWorkflowStateRepository store = sqlite
             ? new SqliteWorkflowStateRepository(SqliteTestDatabase<HostMessageStoreTests>.ConnectionString, time)
             : new InMemoryWorkflowStateRepository(time);
-        try { await VerifyReceiptAsync(store, () => time.Advance(TimeSpan.FromSeconds(20))); }
+        try { await VerifyReceiptAsync(store, duration => { time.Advance(duration); return Task.CompletedTask; }); }
         finally { if (store is IAsyncDisposable disposable) await disposable.DisposeAsync(); }
     }
 
@@ -27,7 +27,7 @@ public sealed class HostMessageStoreTests : IClassFixture<SqliteTestDatabase<Hos
     public async Task SqlServerReturnsSchedulingInCommitAndReplay()
     {
         var store = new SqlWorkflowStateRepository(SqlTestDatabase<HostMessageStoreTests>.ConnectionString);
-        await VerifyReceiptAsync(store, () => { });
+        await VerifyReceiptAsync(store, duration => Task.Delay(duration));
     }
 
     [PostgreSqlFact]
@@ -35,10 +35,10 @@ public sealed class HostMessageStoreTests : IClassFixture<SqliteTestDatabase<Hos
     public async Task PostgreSqlReturnsSchedulingInCommitAndReplay()
     {
         var store = new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<HostMessageStoreTests>.ConnectionString);
-        await VerifyReceiptAsync(store, () => { });
+        await VerifyReceiptAsync(store, duration => Task.Delay(duration));
     }
 
-    private static async Task VerifyReceiptAsync(IWorkflowStateRepository store, Action advance)
+    private static async Task VerifyReceiptAsync(IWorkflowStateRepository store, Func<TimeSpan, Task> advance)
     {
         var instance = new WorkflowInstance
         {
@@ -46,7 +46,7 @@ public sealed class HostMessageStoreTests : IClassFixture<SqliteTestDatabase<Hos
             WorkflowDataJson = "{}", ExecutionStateJson = StoreTestSupport.CheckpointJson,
             Status = WorkflowStatus.Suspended
         };
-        var grant = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(5)))!;
+        var grant = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         var commit = CheckpointCommit.Create(instance, grant.Epoch, 0,
             openedWaits: [new OpenedWait("timer", WaitKind.Delay, "timer", "", TimeSpan.FromMinutes(1))]);
         var applied = await store.CommitWorkflowInstanceAsync(commit);
@@ -54,7 +54,7 @@ public sealed class HostMessageStoreTests : IClassFixture<SqliteTestDatabase<Hos
         Assert.NotEqual(default, applied.StoreTimeUtc);
         Assert.Equal(applied.StoreTimeUtc.AddMinutes(1), applied.RunnableAtUtc);
         Assert.Equal(applied.RunnableAtUtc, (await store.GetWorkflowInstanceAsync(instance.InstanceId))!.RunnableAtUtc);
-        advance();
+        await advance(TimeSpan.FromSeconds(20));
         var replay = await store.CommitWorkflowInstanceAsync(commit);
         Assert.Equal(WorkflowCommitStatus.AlreadyApplied, replay.Status);
         Assert.Equal(applied.RunnableAtUtc, replay.RunnableAtUtc);
@@ -62,7 +62,9 @@ public sealed class HostMessageStoreTests : IClassFixture<SqliteTestDatabase<Hos
         // A replay must preserve the original deadline while reducing the remaining delay.
         Assert.True(replay.RunnableAtUtc - replay.StoreTimeUtc < applied.RunnableAtUtc - applied.StoreTimeUtc);
 
-        var next = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "next", TimeSpan.FromMinutes(5)))!;
+        // Claims recheck the timer's runnable time, so let its deadline become due.
+        await advance(applied.RunnableAtUtc!.Value - replay.StoreTimeUtc + TimeSpan.FromMilliseconds(10));
+        var next = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "next", TimeSpan.FromMinutes(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         instance.Status = WorkflowStatus.Completed;
         var completed = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, next.Epoch, applied.Revision));
         Assert.Equal(WorkflowCommitStatus.Applied, completed.Status);
@@ -86,7 +88,7 @@ public sealed class HostMessageStoreTests : IClassFixture<SqliteTestDatabase<Hos
         var cancellation = new TaskCompletionSource<CancellationReason>(TaskCreationOptions.RunContinuationsAsynchronously);
         var loss = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance,
-            ExecutionLeaseSettings.Default, watch, error => loss.TrySetResult(error),
+            ExecutionLeaseSettings.Default, watch, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), error => loss.TrySetResult(error),
             reason => cancellation.TrySetResult(reason), _ => { }, time);
         Assert.NotNull(lease);
         lease.ObserveCancellation(new CancellationReason { ReasonCode = "requested" });

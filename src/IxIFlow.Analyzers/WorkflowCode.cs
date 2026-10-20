@@ -16,7 +16,7 @@ namespace IxIFlow.Analyzers;
 /// functions are followed where they are called, not where they are declared. What a member leads to is kept per
 /// compilation; a chain deeper than <see cref="MaxDepth"/> is not followed.
 /// </summary>
-internal sealed class WorkflowCode(Compilation compilation)
+internal sealed class WorkflowCode(Compilation compilation, System.Func<ISymbol, string?>? additionalImpurity = null)
 {
     private const int MaxDepth = 32;
 
@@ -71,7 +71,7 @@ internal sealed class WorkflowCode(Compilation compilation)
                 continue;
             string? member = null;
             foreach (var target in Targets(each, assigned))
-                if ((member = ImpureMembers.Named(target) ?? Through(target, path, cancellation, ref truncated)) != null)
+                if ((member = additionalImpurity?.Invoke(target) ?? ImpureMembers.Named(target) ?? Through(target, path, cancellation, ref truncated)) != null)
                     break;
             if (member != null)
             {

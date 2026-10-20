@@ -5,6 +5,9 @@ namespace IxIFlow.Core;
 /// <summary>Operator access on the host pipeline. Applications enforce authorization at their boundary.</summary>
 public interface IWorkflowOperations
 {
+    /// <summary>Due, unleased work that no live host can run. Applications control access.</summary>
+    Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default);
     Task<WorkflowOperation> SubmitResolutionAsync(string instanceId, string invocationId, ActivityResolution resolution, Guid? expectedIncarnation = null);
     Task<WorkflowOperation> SubmitReleaseAsync(string instanceId, string actor, Guid? expectedIncarnation = null);
     Task<WorkflowOperation> SubmitCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null);
@@ -25,8 +28,15 @@ public interface IWorkflowOperations
 }
 
 internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimeProvider time,
-    IWorkflowCatalog catalog, IWorkflowStateRepository repository) : IWorkflowOperations
+    IWorkflowCatalog catalog, IWorkflowStateRepository repository, CoordinationState coordination) : IWorkflowOperations
 {
+    public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default)
+    {
+        UnschedulableWork.Validate(limit, cursor);
+        return host.ReadAsync(client => client.GetUnschedulableAsync(limit, cursor, cancellationToken));
+    }
+
     public Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName, string actor, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(eventId);

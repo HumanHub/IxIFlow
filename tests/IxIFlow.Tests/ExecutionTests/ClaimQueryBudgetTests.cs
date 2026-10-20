@@ -1,0 +1,263 @@
+using System.Data.Common;
+using System.Diagnostics;
+using System.Reflection;
+using System.Text.Json;
+using Dapper;
+using IxIFlow.Core;
+using IxIFlow.Tests.Infrastructure;
+using Microsoft.Data.SqlClient;
+using Microsoft.Data.Sqlite;
+using Npgsql;
+using Xunit.Abstractions;
+
+namespace IxIFlow.Tests.ExecutionTests;
+
+/// <summary>Production SQL, 300,000 due rows, actual plans and a 500 ms warmed scan budget.</summary>
+[Trait("Feature", "host")]
+[Trait("Spec", "C-09")]
+[Trait("Category", "ClaimQueryBudget")]
+public sealed class ClaimQueryBudgetTests(ITestOutputHelper output)
+{
+    private static readonly TimeSpan ScanBudget = TimeSpan.FromMilliseconds(500);
+
+    [DockerBudgetFact]
+    [Trait("Category", "SqlIntegration")]
+    public Task SqlServerPlansAndBudget() => RunAsync(false);
+
+    [DockerBudgetFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    public Task PostgreSqlPlansAndBudget() => RunAsync(true);
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    public async Task SqliteMaterializesAndIndexesTheSnapshot()
+    {
+        var connectionString = SqliteTestDatabase<ClaimQueryBudgetTests>.ConnectionString;
+        await using var store = new SqliteWorkflowStateRepository(connectionString);
+        await store.GetWorkflowDemandsAsync("schema");
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        var query = new ClaimQuery(Guid.NewGuid(), Enumerable.Range(0, 514)
+            .ToDictionary(index => "key-" + index, _ => "value"));
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var sql = (string)store.GetType().GetProperty("RunnableSql", flags)!.GetValue(store)!;
+        var parameters = (DynamicParameters)store.GetType().GetMethod("PlacementParameters", flags)!
+            .Invoke(store, [query, DateTime.UtcNow, query.Limit])!;
+        var plan = (await connection.QueryAsync("EXPLAIN QUERY PLAN " + sql, parameters))
+            .Select(row => (string)row.detail).ToArray();
+        output.WriteLine(string.Join(Environment.NewLine, plan));
+        Assert.Contains(plan, row => row.Contains("MATERIALIZE capabilities", StringComparison.Ordinal));
+        Assert.Contains(plan, row => row.Contains("MATERIALIZE matched", StringComparison.Ordinal));
+        Assert.Contains(plan, row => row.Contains("SEARCH capability USING AUTOMATIC", StringComparison.Ordinal));
+        Assert.Contains(plan, row => row.StartsWith("SEARCH instance ", StringComparison.Ordinal)
+            && row.Contains("(demand_set_id=?", StringComparison.Ordinal));
+        Assert.DoesNotContain(plan, row => row.StartsWith("SCAN instance", StringComparison.Ordinal));
+    }
+
+    private async Task RunAsync(bool postgres)
+    {
+        var connectionString = postgres
+            ? await PostgreSqlTestServer.CreateDatabaseAsync("claim_budget")
+            : await SqlServerTestServer.CreateDatabaseAsync("ClaimBudget");
+        try
+        {
+            IWorkflowStateRepository store = postgres ? new PostgreSqlWorkflowStateRepository(connectionString)
+                : new SqlWorkflowStateRepository(connectionString);
+            await store.GetWorkflowDemandsAsync("schema");
+            await using DbConnection connection = postgres ? new NpgsqlConnection(connectionString) : new SqlConnection(connectionString);
+            await connection.OpenAsync();
+            var hostId = Guid.NewGuid();
+            var otherHost = Guid.NewGuid();
+            // Same 300,000 instances and 660,000 logical demands, shared by two sets.
+            // Use the production canonical IDs, not a different test-only demand format.
+            var cuda = DemandSet.Create([new("gpu", "cuda"), new("region", "eu")]);
+            var metal = DemandSet.Create([new("gpu", "metal"), new("region", "eu")]);
+            foreach (var set in new[] { cuda, metal })
+            {
+                await connection.ExecuteAsync(postgres
+                    ? "INSERT INTO ixiflow_demand_sets (demand_set_id) VALUES (@Id)"
+                    : "INSERT INTO dbo.IxIFlowDemandSets (DemandSetId) VALUES (@Id)", new { set.Id });
+                foreach (var row in set.Rows)
+                    await connection.ExecuteAsync(postgres
+                        ? "INSERT INTO ixiflow_demand_set_rows (demand_set_id, demand_key, demand_value, inherit) VALUES (@Id, @Key, @Value, false)"
+                        : "INSERT INTO dbo.IxIFlowDemandSetRows (DemandSetId, DemandKey, DemandValue, Inherit) VALUES (@Id, @Key, @Value, 0)",
+                        new { set.Id, row.Key, row.Value });
+            }
+            await connection.ExecuteAsync(postgres ? """
+                INSERT INTO ixiflow_workflow_instances
+                    (instance_id, workflow_name, workflow_version, created_at_utc, status, runnable_at_utc, state_json, revision, last_host_id,
+                     demand_set_id, pinned_host, pin_expires_at_utc)
+                SELECT n::text, 'budget', 1, clock_timestamp(), 'Running', clock_timestamp() - n * INTERVAL '1 millisecond', '{"WorkflowVersion":1}', 1,
+                    CASE n % 3 WHEN 0 THEN @HostId WHEN 1 THEN NULL ELSE @OtherHost END,
+                    CASE WHEN n % 10000 = 0 THEN @Cuda ELSE @Metal END,
+                    CASE WHEN n % 5 = 0 THEN CAST(@OtherHost AS text) END,
+                    CASE WHEN n % 5 = 0 THEN clock_timestamp() +
+                        CASE WHEN n % 7 = 0 AND n % 10000 <> 0 THEN INTERVAL '1 hour' ELSE -INTERVAL '1 minute' END END
+                FROM generate_series(1, 300000) n;
+                INSERT INTO ixiflow_workflow_leases (instance_id, token, expires_at_utc, epoch, crash_count)
+                SELECT instance_id, 'live', clock_timestamp() + INTERVAL '1 hour', nextval('ixiflow_execution_epoch'), 0
+                FROM ixiflow_workflow_instances WHERE instance_id::int % 10000 = 0 AND instance_id::int <= 50000;
+                ANALYZE ixiflow_workflow_instances;
+                ANALYZE ixiflow_demand_sets;
+                ANALYZE ixiflow_demand_set_rows;
+                ANALYZE ixiflow_workflow_leases;
+                """ : """
+                WITH numbers AS (SELECT TOP (300000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
+                    FROM sys.all_objects a CROSS JOIN sys.all_objects b)
+                INSERT INTO dbo.IxIFlowWorkflowInstances
+                    (InstanceId, WorkflowName, WorkflowVersion, CreatedAtUtc, Status, RunnableAtUtc, StateJson, Revision, LastHostId,
+                     DemandSetId, PinnedHost, PinExpiresAtUtc)
+                SELECT CONVERT(nvarchar(100), n), 'budget', 1, SYSUTCDATETIME(), 'Running', DATEADD(MILLISECOND, -CONVERT(int, n), SYSUTCDATETIME()), '{"WorkflowVersion":1}', 1,
+                    CASE n % 3 WHEN 0 THEN @HostId WHEN 1 THEN NULL ELSE @OtherHost END,
+                    CASE WHEN n % 10000 = 0 THEN @Cuda ELSE @Metal END,
+                    CASE WHEN n % 5 = 0 THEN CONVERT(nvarchar(100), @OtherHost) END,
+                    CASE WHEN n % 5 = 0 THEN DATEADD(MINUTE,
+                        CASE WHEN n % 7 = 0 AND n % 10000 <> 0 THEN 60 ELSE -1 END, SYSUTCDATETIME()) END FROM numbers;
+                INSERT INTO dbo.IxIFlowWorkflowLeases (InstanceId, Token, ExpiresAtUtc, Epoch, CrashCount)
+                SELECT InstanceId, 'live', DATEADD(HOUR, 1, SYSUTCDATETIME()), NEXT VALUE FOR dbo.IxIFlowExecutionEpoch, 0
+                FROM dbo.IxIFlowWorkflowInstances WHERE CONVERT(int, InstanceId) % 10000 = 0 AND CONVERT(int, InstanceId) <= 50000;
+                UPDATE STATISTICS dbo.IxIFlowWorkflowInstances WITH FULLSCAN;
+                UPDATE STATISTICS dbo.IxIFlowDemandSets WITH FULLSCAN;
+                UPDATE STATISTICS dbo.IxIFlowDemandSetRows WITH FULLSCAN;
+                UPDATE STATISTICS dbo.IxIFlowWorkflowLeases WITH FULLSCAN;
+                """, new { HostId = hostId, OtherHost = otherHost, Cuda = cuda.Id, Metal = metal.Id }, commandTimeout: 180);
+            Assert.Equal(4, await connection.ExecuteScalarAsync<int>(postgres
+                ? "SELECT count(*) FROM ixiflow_demand_set_rows" : "SELECT count(*) FROM dbo.IxIFlowDemandSetRows"));
+            Assert.Equal(60000, await connection.ExecuteScalarAsync<int>(postgres
+                ? "SELECT count(*) FROM ixiflow_workflow_instances WHERE pinned_host IS NOT NULL"
+                : "SELECT count(*) FROM dbo.IxIFlowWorkflowInstances WHERE PinnedHost IS NOT NULL"));
+            var count = await connection.ExecuteScalarAsync<int>(postgres
+                ? "SELECT count(*) FROM ixiflow_workflow_instances" : "SELECT count(*) FROM dbo.IxIFlowWorkflowInstances");
+            Assert.Equal(300000, count);
+
+            var measurements = new List<(string Scenario, TimeSpan Elapsed)>();
+            foreach (var scenario in new[] { "zero", "sparse", "large", "dense" })
+            {
+                var capabilities = new Dictionary<string, string> { ["region"] = "eu" };
+                if (scenario != "zero") capabilities["gpu"] = scenario == "dense" ? "metal" : "cuda";
+                if (scenario == "large")
+                    for (var index = 0; index < 512; index++) capabilities.Add("extra-" + index, "value");
+                var query = new ClaimQuery(hostId, capabilities, 32);
+                await store.GetRunnableInstancesAsync(query); // warm connection pool and plan
+                var clock = Stopwatch.StartNew();
+                var found = await store.GetRunnableInstancesAsync(query);
+                clock.Stop();
+                output.WriteLine($"{scenario}: {capabilities.Count} capabilities, {found.Count} rows, {clock.Elapsed.TotalMilliseconds:F1} ms");
+                measurements.Add((scenario, clock.Elapsed));
+                Assert.Equal(scenario == "zero" ? 0 : scenario == "dense" ? 32 : 25, found.Count);
+                Assert.Equal(found.Count, found.Select(row => row.InstanceId).Distinct().Count());
+                await PrintPlanAsync(store, connection, query, scenario, postgres);
+            }
+            // Include a concurrently locked candidate without changing the providers' execution-lock policy.
+            await using var held = await connection.BeginTransactionAsync();
+            await connection.ExecuteAsync(postgres
+                ? "SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = '300000' FOR UPDATE"
+                : "SELECT 1 FROM dbo.IxIFlowWorkflowInstances WITH (XLOCK, HOLDLOCK, ROWLOCK) WHERE InstanceId = '300000'",
+                transaction: held);
+            var lockedClock = Stopwatch.StartNew();
+            var lockedScan = store.GetRunnableInstancesAsync(new ClaimQuery(hostId,
+                new Dictionary<string, string> { ["gpu"] = "cuda", ["region"] = "eu" }, 32));
+            await Task.Delay(100);
+            await held.RollbackAsync();
+            var lockedRows = await lockedScan;
+            lockedClock.Stop();
+            Assert.Equal(25, lockedRows.Count);
+            output.WriteLine($"locked candidate (released after 100 ms): {lockedClock.Elapsed.TotalMilliseconds:F1} ms");
+            measurements.Add(("locked candidate (including 100 ms hold)", lockedClock.Elapsed));
+            // Keep every scenario's plans even when an earlier scan exceeds the budget.
+            Assert.All(measurements, measurement => Assert.True(measurement.Elapsed < ScanBudget,
+                $"{measurement.Scenario} exceeded the 500 ms scan budget: {measurement.Elapsed}"));
+        }
+        finally
+        {
+            if (postgres) await PostgreSqlTestServer.DropDatabaseAsync(connectionString);
+            else await SqlServerTestServer.DropDatabaseAsync(connectionString);
+        }
+    }
+
+    // Read the real provider builders so plans cannot silently diverge from the shipping scan.
+    private async Task PrintPlanAsync(IWorkflowStateRepository store, DbConnection connection, ClaimQuery query,
+        string scenario, bool postgres)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var sql = (string)store.GetType().GetProperty("RunnableSql", flags)!.GetValue(store)!;
+        var parameters = (DynamicParameters)store.GetType().GetMethod("PlacementParameters", flags)!
+            .Invoke(store, [query, DateTime.UtcNow, query.Limit])!;
+        output.WriteLine($"{scenario}, complete production scan");
+        if (postgres)
+        {
+            await using var transaction = await PostgreSqlPeriodicPlan.BeginAsync(store, connection, "RunnableRead");
+            var plan = string.Join(Environment.NewLine, await connection.QueryAsync<string>(
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) " + sql, parameters, transaction, commandTimeout: 60));
+            Assert.Contains("Execution Time", plan);
+            output.WriteLine(plan);
+            Assert.DoesNotContain("JIT:", plan);
+            var json = await connection.QuerySingleAsync<string>(
+                "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, parameters, transaction, commandTimeout: 60);
+            using var document = JsonDocument.Parse(json);
+            var scans = Nodes(document.RootElement[0].GetProperty("Plan"))
+                .Where(node => node.TryGetProperty("Relation Name", out var relation) &&
+                    relation.GetString() == "ixiflow_workflow_instances").ToArray();
+            Assert.NotEmpty(scans);
+            Assert.All(scans, node =>
+            {
+                Assert.Contains(node.GetProperty("Node Type").GetString(), new[] { "Index Scan", "Index Only Scan" });
+                Assert.Contains("demand_set_id", node.GetProperty("Index Cond").GetString()!);
+                if (scenario is "sparse" or "large")
+                {
+                    var rows = node.GetProperty("Actual Rows").GetDouble();
+                    if (node.TryGetProperty("Rows Removed by Filter", out var removed)) rows += removed.GetDouble();
+                    if (node.TryGetProperty("Rows Removed by Index Recheck", out var rechecked)) rows += rechecked.GetDouble();
+                    var rowsRead = rows * node.GetProperty("Actual Loops").GetDouble();
+                    // Only 30 instances belong to the matching set, including five live leases.
+                    Assert.True(rowsRead <= 30, $"A claim access read {rowsRead} rows outside the sparse set: {node}");
+                }
+            });
+        }
+        else
+        {
+            using var results = await connection.QueryMultipleAsync("SET STATISTICS XML ON; " + sql + "; SET STATISTICS XML OFF;",
+                parameters, commandTimeout: 60);
+            // Snapshot insertion, matching-set materialization and selection each
+            // emit a plan. Drain all grids, including the selected instance rows.
+            var planCount = 0;
+            while (!results.IsConsumed)
+                foreach (IDictionary<string, object> row in await results.ReadAsync())
+                    foreach (var value in row.Values)
+                        if (value is string plan && plan.Contains("<ShowPlanXML", StringComparison.Ordinal))
+                        {
+                            output.WriteLine(plan);
+                            planCount++;
+                        }
+            Assert.True(planCount >= 3, $"Expected snapshot, set and selection plans; received {planCount}.");
+        }
+    }
+
+    private static IEnumerable<JsonElement> Nodes(JsonElement node)
+    {
+        yield return node;
+        if (node.TryGetProperty("Plans", out var plans))
+            foreach (var child in plans.EnumerateArray())
+                foreach (var descendant in Nodes(child)) yield return descendant;
+    }
+}
+
+/// <summary>Only the budget tests skip when Docker cannot be reached; ordinary integration tests retain their policy.</summary>
+public sealed class DockerBudgetFactAttribute : FactAttribute
+{
+    private static readonly Lazy<bool> Available = new(() =>
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo("docker", "info --format {{.ServerVersion}}")
+            { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true });
+            if (process == null) return false;
+            if (!process.WaitForExit(5000)) { process.Kill(entireProcessTree: true); return false; }
+            return process.ExitCode == 0;
+        }
+        catch { return false; }
+    });
+
+    public DockerBudgetFactAttribute()
+    { if (!Available.Value) Skip = "Docker is unavailable; actual query-plan and 300,000-row budget tests require Docker."; }
+}

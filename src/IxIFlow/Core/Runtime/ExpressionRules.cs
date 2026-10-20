@@ -52,6 +52,27 @@ internal static class ExpressionRules
         .Where(property => typeof(Delegate).IsAssignableFrom(property.PropertyType))
         .ToArray();
 
+    internal static void CheckDemand(WorkflowDemand demand)
+    {
+        Check(new WorkflowStep { Name = "DemandFrom(" + demand.Key + ")" }, demand.Expression);
+        var clock = new DemandClock();
+        clock.Visit(demand.Expression);
+        if (clock.Found)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"DemandFrom '{demand.Key}' cannot read the workflow clock; use start data");
+    }
+
+    private sealed class DemandClock : ExpressionVisitor
+    {
+        internal bool Found;
+        protected override Expression VisitMember(MemberExpression node)
+        {
+            if (node.Member.Name == "UtcNow" && node.Member.DeclaringType?.IsGenericType == true &&
+                node.Member.DeclaringType.GetGenericTypeDefinition() == typeof(WorkflowContext<>)) Found = true;
+            return base.VisitMember(node);
+        }
+    }
+
     private static void Check(WorkflowStep step, LambdaExpression? expression)
     {
         if (expression == null)

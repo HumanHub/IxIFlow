@@ -1,0 +1,6 @@
+workflow: {name: Placement, dataType: FlowData}
+demands:
+  - {key: gpu, value: cuda, inherit: false}
+  - {key: region, from: {path: workflow.Region}, inherit: true}
+  - {key: disk}
+definitions: []

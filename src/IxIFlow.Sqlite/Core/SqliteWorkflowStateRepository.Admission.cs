@@ -13,6 +13,7 @@ public sealed partial class SqliteWorkflowStateRepository
             workflow_name TEXT COLLATE BINARY NOT NULL,
             workflow_version integer NOT NULL,
             expires_at_utc TEXT NOT NULL,
+            notice_json TEXT NULL,
             PRIMARY KEY (sender, trigger_id, request_key)
         );
         CREATE INDEX ix_ixiflow_admissions_expiry ON ixiflow_workflow_admissions (expires_at_utc);
@@ -31,6 +32,7 @@ public sealed partial class SqliteWorkflowStateRepository
             payload_hash BLOB NOT NULL,
             sequence BIGINT NOT NULL,
             rejection SMALLINT NULL,
+            notice_json TEXT NULL,
             expires_at_utc TEXT NOT NULL
         );
         CREATE INDEX ix_ixiflow_webhook_deliveries_expiry ON ixiflow_webhook_deliveries (expires_at_utc);
@@ -40,13 +42,13 @@ public sealed partial class SqliteWorkflowStateRepository
     {
         Statement.AdmissionLock => null,
         Statement.AdmissionRead => """
-            SELECT incarnation AS "Incarnation", sender AS "Sender", trigger_id AS "Trigger", request_key AS "Key", fingerprint AS "Fingerprint", instance_id AS "InstanceId", workflow_name AS "WorkflowName", workflow_version AS "WorkflowVersion", expires_at_utc AS "ExpiresAtUtc" FROM ixiflow_workflow_admissions WHERE sender=@Sender AND trigger_id=@Trigger AND request_key=@Key AND expires_at_utc>@Now
+            SELECT incarnation AS "Incarnation", sender AS "Sender", trigger_id AS "Trigger", request_key AS "Key", fingerprint AS "Fingerprint", instance_id AS "InstanceId", workflow_name AS "WorkflowName", workflow_version AS "WorkflowVersion", expires_at_utc AS "ExpiresAtUtc", notice_json AS "NoticeJson" FROM ixiflow_workflow_admissions WHERE sender=@Sender AND trigger_id=@Trigger AND request_key=@Key AND expires_at_utc>@Now
             """,
         Statement.AdmissionDelete => """
             DELETE FROM ixiflow_workflow_admissions WHERE sender=@Sender AND trigger_id=@Trigger AND request_key=@Key
             """,
         Statement.AdmissionInsert => """
-            INSERT INTO ixiflow_workflow_admissions (incarnation, sender, trigger_id, request_key, fingerprint, instance_id, workflow_name, workflow_version, expires_at_utc) VALUES (@Incarnation, @Sender, @Trigger, @Key, @Fingerprint, @InstanceId, @WorkflowName, @WorkflowVersion, @ExpiresAtUtc)
+            INSERT INTO ixiflow_workflow_admissions (incarnation, sender, trigger_id, request_key, fingerprint, instance_id, workflow_name, workflow_version, expires_at_utc, notice_json) VALUES (@Incarnation, @Sender, @Trigger, @Key, @Fingerprint, @InstanceId, @WorkflowName, @WorkflowVersion, @ExpiresAtUtc, @NoticeJson)
             """,
         Statement.OwnershipDelete => """
             DELETE FROM ixiflow_workflow_ownership WHERE instance_id=@InstanceId
@@ -64,13 +66,13 @@ public sealed partial class SqliteWorkflowStateRepository
             DELETE FROM ixiflow_workflow_ownership WHERE instance_id IN (SELECT o.instance_id FROM ixiflow_workflow_ownership o WHERE NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances i WHERE i.instance_id=o.instance_id AND i.incarnation=o.incarnation) AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_tombstones t WHERE t.instance_id=o.instance_id AND t.expires_at_utc>@Now) LIMIT @Limit)
             """,
         Statement.WebhookDeliveryRead => """
-            SELECT payload_hash AS PayloadHash, sequence AS "Sequence", rejection AS Rejection FROM ixiflow_webhook_deliveries WHERE delivery_identity=@DeliveryIdentity AND expires_at_utc>@Now
+            SELECT payload_hash AS PayloadHash, sequence AS "Sequence", rejection AS Rejection, notice_json AS "NoticeJson" FROM ixiflow_webhook_deliveries WHERE delivery_identity=@DeliveryIdentity AND expires_at_utc>@Now
             """,
         Statement.WebhookDeliveryDelete => """
             DELETE FROM ixiflow_webhook_deliveries WHERE delivery_identity=@DeliveryIdentity
             """,
         Statement.WebhookDeliveryInsert => """
-            INSERT INTO ixiflow_webhook_deliveries (delivery_identity, payload_hash, sequence, rejection, expires_at_utc) VALUES (@DeliveryIdentity, @PayloadHash, @Sequence, @Rejection, @Expires)
+            INSERT INTO ixiflow_webhook_deliveries (delivery_identity, payload_hash, sequence, rejection, expires_at_utc, notice_json) VALUES (@DeliveryIdentity, @PayloadHash, @Sequence, @Rejection, @Expires, @NoticeJson)
             """,
         Statement.WebhookDeliveryExpire => """
             DELETE FROM ixiflow_webhook_deliveries WHERE delivery_identity IN (SELECT delivery_identity FROM ixiflow_webhook_deliveries WHERE expires_at_utc<=@Now ORDER BY expires_at_utc LIMIT @Limit)

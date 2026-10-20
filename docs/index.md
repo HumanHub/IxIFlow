@@ -19,6 +19,7 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [Sagas](sagas.md) | Compensation, saved faults and retry scopes |
 | [Reply tokens](reply-tokens.md) | Capability tokens, safe handling and reply authorization |
 | [Hosting](coordinator-and-hosts.md) | The core host, slots, store selection, recovery and shutdown |
+| [Coordinators](coordinators.md) | Local matching services, host links, awaits, discovery and fallback |
 | [Workflow operations](operations.md) | Instance search, wait inspection, trace pages and hard termination |
 | [Operations over HTTP](operations-http.md) | Management endpoints, policies, query scope, actors and bounded waits |
 | [Stores](stores.md) | Memory, SQLite, SQL Server and PostgreSQL |

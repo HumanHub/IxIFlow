@@ -296,7 +296,7 @@ public sealed class ResourceLimitTests
         var loss = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var watch = new CancellationWatch(store, time);
         await using var lease = (await WorkflowExecutionLease.TryAcquireAsync(store, instance, settings,
-            watch, error => loss.TrySetResult(error), _ => { }, _ => { }, time))!;
+            watch, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), error => loss.TrySetResult(error), _ => { }, _ => { }, time))!;
         store.Hang = true;
 
         var started = time.GetUtcNow();
@@ -459,21 +459,21 @@ public sealed class ResourceLimitTests
                 InstanceId = instanceId, WorkflowName = "PoolReservation", Status = WorkflowStatus.Running,
                 WorkflowDataJson = "{}"
             }, (await StoreTestSupport.LeaseAsync(store, instanceId)).Epoch, 0))).Status);
-        Assert.True(await StoreTestSupport.ReleaseAsync(store, instanceId));
+        Assert.True((await StoreTestSupport.ReleaseAsync(store, instanceId)).Released);
 
         await using (var hog = newConnection(connectionString))
         {
             await hog.OpenAsync();
             await Assert.ThrowsAnyAsync<Exception>(() => store.GetWorkflowInstanceAsync(instanceId));
 
-            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience));
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             Assert.True(await store.RenewExecutionLeaseAsync(instanceId, "owner", Patience));
             Assert.Empty(await store.GetCancellationRequestsAsync([instanceId]));
-            Assert.True(await store.RequestCancellationAsync(instanceId,
-                new CancellationReason { ReasonCode = "operator" }));
+            Assert.True((await store.RequestCancellationAsync(instanceId,
+                new CancellationReason { ReasonCode = "operator" })).Accepted);
             Assert.Equal("operator", (await store.GetCancellationRequestAsync(instanceId))?.ReasonCode);
             Assert.Single(await store.GetCancellationRequestsAsync([instanceId]));
-            Assert.True(await store.ReleaseExecutionLeaseAsync(instanceId, "owner"));
+            Assert.True((await store.ReleaseExecutionLeaseAsync(instanceId, "owner")).Released);
         }
         await store.DeleteWorkflowInstanceAsync(instanceId);
     }

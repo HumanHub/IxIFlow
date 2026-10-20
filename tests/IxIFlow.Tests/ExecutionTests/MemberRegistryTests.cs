@@ -154,10 +154,10 @@ public sealed class MemberRegistryTests
         var store = new InMemoryWorkflowStateRepository(time);
         var member = MemberRegistryContract.Registration();
         await store.RegisterMemberAsync(member);
-        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync("work", "owner", TimeSpan.FromMinutes(2)));
+        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync("work", "owner", TimeSpan.FromMinutes(2), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         time.Advance(TimeSpan.FromSeconds(16));
         Assert.Empty(await store.GetLiveMembersAsync());
-        Assert.Null(await store.TryAcquireExecutionLeaseAsync("work", "other", TimeSpan.FromMinutes(2)));
+        Assert.Null(await store.TryAcquireExecutionLeaseAsync("work", "other", TimeSpan.FromMinutes(2), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         await store.UnregisterMemberAsync(member.Id);
         Assert.True(await store.RenewExecutionLeaseAsync("work", "owner", TimeSpan.FromMinutes(2)));
     }

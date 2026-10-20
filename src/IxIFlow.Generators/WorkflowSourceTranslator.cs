@@ -181,6 +181,14 @@ public static class WorkflowSourceTranslator
             Line(initial is ActivityStepDocument or ActivityReferenceStepDocument
                 ? $"var builder0 = Workflow.Create<{data}>({Quote(name)}, {workflow.Version});"
                 : $"var builder0 = new WorkflowBuilder<{data}, object>(new(), {Quote(name)}, {workflow.Version});");
+            foreach (var demand in document.Demands)
+            {
+                Locate(demand);
+                var inherit = demand.Inherit ? "true" : "false";
+                Line(demand.From != null
+                    ? $"builder0.DemandFrom({Quote(demand.Key)}, ctx => {Expression(demand.From)}, inherit: {inherit});"
+                    : $"builder0.Demand({Quote(demand.Key)}, {(demand.Value == null ? "null" : Quote(demand.Value))}, inherit: {inherit});");
+            }
             var last = Steps(document.Definitions, "builder0", "root");
             Line("#line default");
             Line($"var definition = {last}.Build();");

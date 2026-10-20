@@ -658,8 +658,14 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         try
         {
             // The request's start opens its reply wait without a deadline; its WaitFor arms it.
-            var instance = await CommitAsync(store, instanceId, null,
-                new OpenedWait("reply", WaitKind.Reply, "payment", "Payment", null));
+            var instance = new WorkflowInstance
+            { InstanceId = instanceId, WorkflowName = "StoreClock", Status = WorkflowStatus.Running,
+                ExecutionStateJson = StoreTestSupport.CheckpointJson, WorkflowDataJson = "{}" };
+            var started = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance,
+                (await StoreTestSupport.LeaseAsync(store, instanceId)).Epoch, 0,
+                openedWaits: [new OpenedWait("reply", WaitKind.Reply, "payment", "Payment", null)]));
+            Assert.Equal(WorkflowCommitStatus.Applied, started.Status);
+            instance.Revision = started.Revision;
             Assert.Null((await store.GetWaitAsync(instanceId, "reply"))!.DeadlineUtc);
             var arming = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, instance.Revision, commitId: "arm",
                 armedWaits: [new ArmedWait("reply", TimeSpan.FromHours(1))]);

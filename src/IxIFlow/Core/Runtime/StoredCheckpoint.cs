@@ -13,9 +13,10 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class StoredCheckpoint
 {
-    private StoredCheckpoint(string trunk, Dictionary<string, string> parts, PartMarks marks)
+    private StoredCheckpoint(string trunk, string updateTrunk, Dictionary<string, string> parts, PartMarks marks)
     {
         Trunk = trunk;
+        UpdateTrunk = updateTrunk;
         Parts = parts;
         Marks = marks;
     }
@@ -31,6 +32,9 @@ internal sealed class StoredCheckpoint
 
     /// <summary>The validated execution checkpoint's trunk, as JSON.</summary>
     public string Trunk { get; }
+
+    /// <summary>An update carries no demands: the store keeps the set saved at creation.</summary>
+    public string UpdateTrunk { get; }
 
     /// <summary>Every part by key, the workflow data's included.</summary>
     public Dictionary<string, string> Parts { get; }
@@ -76,10 +80,14 @@ internal sealed class StoredCheckpoint
         };
         var branchIds = BranchIds(checkpoint);
         string trunk;
+        string updateTrunk;
         try
         {
             checkpoint.SplitBranches = branchIds;
             trunk = JsonSerializer.Serialize(checkpoint, Stored);
+            // Keep the full trunk for local readers, including child inheritance. Project updates from
+            // the typed checkpoint here, rather than reparsing every commit's JSON to strip demands.
+            updateTrunk = JsonSerializer.Serialize(checkpoint, Update);
         }
         finally
         {
@@ -119,7 +127,7 @@ internal sealed class StoredCheckpoint
             foreach (var (chunk, bits) in state.Finished?.Chunks() ?? [])
                 parts[FinishedKey(state.Id, chunk)] = JsonSerializer.Serialize(bits);
         }
-        return new StoredCheckpoint(trunk, parts, marks);
+        return new StoredCheckpoint(trunk, updateTrunk, parts, marks);
     }
 
     /// <summary>
@@ -213,6 +221,17 @@ internal sealed class StoredCheckpoint
     {
         TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { StoredForm } }
     };
+
+    private static readonly JsonSerializerOptions Update = new()
+    {
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { StoredForm, OmitDemands } }
+    };
+
+    private static void OmitDemands(JsonTypeInfo type)
+    {
+        if (type.Type == typeof(ExecutionCheckpoint))
+            type.Properties.Remove(type.Properties.Single(property => property.Name == nameof(ExecutionCheckpoint.Demands)));
+    }
 
     private static void StoredForm(JsonTypeInfo type)
     {

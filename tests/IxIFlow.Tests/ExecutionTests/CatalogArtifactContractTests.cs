@@ -138,7 +138,7 @@ public sealed class CatalogArtifactContractTests
                 if (scenario == Scenario.UnfinishedParents)
                 {
                     parent = Instance(caller.Name);
-                    await store.SeedAsync(parent);
+                    await store.SeedAsync(parent, wakeAfter: TimeSpan.Zero);
                 }
                 await store.SetWorkflowVersionStateAsync(caller.Name, 1, WorkflowVersionState.Retired);
                 if (parent != null)
@@ -177,7 +177,7 @@ public sealed class CatalogArtifactContractTests
             case Scenario.RecursiveParent:
                 await store.RegisterWorkflowVersionAsync(Row() with { Dependencies = [new(name, 1)] });
                 var recursive = Instance(name);
-                await store.SeedAsync(recursive);
+                await store.SeedAsync(recursive, wakeAfter: TimeSpan.Zero);
                 await Refused(() => catalog.RetireWorkflowVersionAsync(name, 1), WorkflowErrorKind.InvalidState);
                 recursive.Status = WorkflowStatus.Completed;
                 await store.SeedAsync(recursive);
@@ -383,7 +383,7 @@ public sealed class CatalogArtifactContractTests
     private static async Task ConcurrentStartAsync(IWorkflowStateRepository store, string name, bool child)
     {
         var instance = Instance(child ? name + "-parent" : name);
-        if (child) await store.SeedAsync(instance);
+        if (child) await store.SeedAsync(instance, wakeAfter: TimeSpan.Zero);
         var lease = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
         var started = Instance(name);
         if (child)

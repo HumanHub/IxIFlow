@@ -74,6 +74,7 @@ public sealed class SnapshotViewTests
         var checkpoint = JsonNode.Parse(instance.ExecutionStateJson)!;
         checkpoint["StructureHash"] = new WorkflowScopeCatalog(definition).StructureHash;
         instance.ExecutionStateJson = checkpoint.ToJsonString();
+        await repository.AppendEventAsync(new(instanceId, "snapshot-edit", typeof(ViewEvent).AssemblyQualifiedName!, "{}", Key: "go"));
         await repository.SeedAsync(instance);
         var checkpointJson = (await repository.GetWorkflowInstanceAsync(instanceId))!.ExecutionStateJson;
         var differs = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,

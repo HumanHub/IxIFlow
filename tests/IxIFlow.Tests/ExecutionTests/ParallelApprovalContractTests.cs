@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
 using IxIFlow.Tests.Infrastructure;
+using Moq;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -311,15 +312,18 @@ public class ParallelApprovalContractTests
             .WaitFor<ApprovalReply>("finance")
             .Build();
         var started = await engine.RunAsync(definition, new ApprovalData());
+        // The delivery makes the next execution pass due before its owner claims it.
+        await repository.AppendEventAsync(new WorkflowEvent(started.InstanceId, "reply-1",
+            typeof(ApprovalReply).AssemblyQualifiedName!, System.Text.Json.JsonSerializer.Serialize(Reply("finance", true)), "finance"));
         // Another host owns the instance and is running it.
         var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         saved.Status = WorkflowStatus.Running;
         var claimed = await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
+            CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId, await StoreTestSupport.ClaimAsync(services))).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
         Assert.Equal(WorkflowCommitStatus.Applied, claimed.Status);
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
         Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(started.InstanceId, "other-host",
-            TimeSpan.FromMinutes(1)));
+            TimeSpan.FromMinutes(1), await StoreTestSupport.ClaimAsync(services)));
 
         // The event is stored at once, and the caller waits for the owner to decide it.
         var sent = engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true), "reply-1");
@@ -329,7 +333,7 @@ public class ParallelApprovalContractTests
         Assert.False(sent.IsCompleted);
 
         // The owner goes, and the next one takes the event at its first pass.
-        Assert.True(await repository.ReleaseExecutionLeaseAsync(started.InstanceId, "other-host"));
+        Assert.True((await repository.ReleaseExecutionLeaseAsync(started.InstanceId, "other-host")).Released);
         await engine.RecoverAsync(started.InstanceId);
         var resumed = await sent.WaitAsync(TimeSpan.FromSeconds(10));
         EventAssert.Consumed(resumed);
@@ -511,6 +515,60 @@ public class ParallelApprovalContractTests
     [Fact]
     public async Task RecoveryRejectsChangedDefinitionWithoutLosingTheCheckpoint()
     {
+        using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var recording = new RecordingRepository();
+        using (var firstProvider = CreateServices(recording))
+        {
+            var started = await firstProvider.GetRequiredService<IWorkflowClient>()
+                .RunAsync(CreateRecoverWorkflow(),
+                    new ApprovalData { RequestId = "request-1" }, cancellationToken: patience.Token);
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        }
+
+        var saved = recording.Initial!;
+        var repository = new InMemoryWorkflowStateRepository();
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")));
+        await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
+        var before = (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!;
+        var noExecution = new Mock<IActivityExecutor>(MockBehavior.Strict);
+        // Keep the wrong-code host capability test separate from durable catalog registration.
+        var wrongServices = new ServiceCollection().AddLogging();
+        wrongServices.AddSingleton<IWorkflowStateRepository>(repository);
+        wrongServices.AddIxIFlow();
+        wrongServices.AddSingleton<IWorkflowCatalog>(new WorkflowCatalog());
+        wrongServices.AddSingleton<IActivityExecutor>(noExecution.Object);
+        using (var wrongProvider = wrongServices.BuildServiceProvider())
+        {
+            var changed = Workflow.Create<ApprovalData>("RecoverApproval")
+                .Step<StartActivity>()
+                .WaitFor<ApprovalReply>("finance")
+                .Build();
+            await wrongProvider.GetRequiredService<IWorkflowCatalog>()
+                .RegisterWorkflowAsync(changed);
+            var rejected = await wrongProvider.GetRequiredService<IWorkflowClient>()
+                .RecoverAsync(saved.InstanceId, patience.Token).WaitAsync(patience.Token);
+            Assert.Equal(WorkflowExecutionStatus.Scheduled, rejected.Status);
+        }
+        noExecution.VerifyNoOtherCalls();
+
+        var stillSaved = await repository.GetWorkflowInstanceAsync(saved.InstanceId);
+        Assert.Equal(WorkflowStatus.Running, stillSaved!.Status);
+        Assert.Equal(before.ExecutionStateJson, stillSaved.ExecutionStateJson);
+        Assert.Equal(before.WorkflowDataJson, stillSaved.WorkflowDataJson);
+        Assert.Equal(before.Revision, stillSaved.Revision);
+        Assert.Equal(before.LastHostId, stillSaved.LastHostId);
+        using var correctProvider = CreateServices(repository);
+        await correctProvider.GetRequiredService<IWorkflowCatalog>()
+            .RegisterWorkflowAsync(CreateRecoverWorkflow());
+        var recovered = await correctProvider.GetRequiredService<IWorkflowClient>()
+            .RecoverAsync(saved.InstanceId, patience.Token).WaitAsync(patience.Token);
+        Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
+        Assert.Equal(1, GetData(recovered).FinanceStarted);
+    }
+
+    [Fact]
+    public async Task CatalogRecoveryRejectsChangedDefinitionWithoutLosingTheCheckpoint()
+    {
         var recording = new RecordingRepository();
         using (var firstProvider = CreateServices(recording))
         {
@@ -540,7 +598,7 @@ public class ParallelApprovalContractTests
             var checkpoint = JsonNode.Parse(instance.ExecutionStateJson)!;
             checkpoint["StructureHash"] = new WorkflowScopeCatalog(changed).StructureHash;
             instance.ExecutionStateJson = checkpoint.ToJsonString();
-            await repository.SeedAsync(instance);
+            await repository.SeedAsync(instance, query: await StoreTestSupport.ClaimAsync(wrongProvider));
             checkpointJson = (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.ExecutionStateJson;
             var rejected = await wrongProvider.GetRequiredService<IWorkflowClient>()
                 .RecoverAsync(saved.InstanceId);
@@ -551,10 +609,10 @@ public class ParallelApprovalContractTests
         Assert.Equal(WorkflowStatus.Running, stillSaved!.Status);
         Assert.Equal(checkpointJson, stillSaved.ExecutionStateJson);
         stillSaved.ExecutionStateJson = saved.ExecutionStateJson;
-        await repository.SeedAsync(stillSaved);
         using var correctProvider = CreateServices(repository);
         await correctProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(CreateRecoverWorkflow());
+        await repository.SeedAsync(stillSaved, query: await StoreTestSupport.ClaimAsync(correctProvider));
         var recovered = await correctProvider.GetRequiredService<IWorkflowClient>()
             .RecoverAsync(saved.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
@@ -1356,13 +1414,14 @@ public class ParallelApprovalContractTests
         BranchProgress.ReadAsync<ApprovalData>(services.GetRequiredService<IWorkflowStateRepository>(),
             result.InstanceId, branch);
 
-    private static ServiceProvider CreateServices(IWorkflowStateRepository? repository = null)
+    private static ServiceProvider CreateServices(IWorkflowStateRepository? repository = null, IActivityExecutor? executor = null)
     {
         var services = new ServiceCollection();
         services.AddLogging();
         if (repository != null)
             services.AddSingleton(repository);
         services.AddIxIFlow();
+        if (executor != null) services.AddSingleton(executor);
         return services.BuildServiceProvider();
     }
 
@@ -1688,6 +1747,15 @@ public class ParallelApprovalContractTests
             _inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
         public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
             _inner.UnregisterMemberAsync(memberId, cancellationToken);
+        public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
+            _inner.GetWorkflowDemandsAsync(instanceId);
+
+        public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetUnschedulableAsync(limit, cursor, cancellationToken);
+        public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
+            _inner.CanScheduleAsync(demands, cancellationToken);
+
         public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
             _inner.GetLiveMembersAsync(cancellationToken);
 
@@ -1736,17 +1804,17 @@ public class ParallelApprovalContractTests
             _inner.GetOpenWaitsAsync(query);
 
         private readonly InMemoryWorkflowStateRepository _inner = new();
-        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
             _inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
-        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
-            _inner.GetRunnableInstancesAsync(limit);
-        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
+            _inner.GetRunnableInstancesAsync(query);
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
+            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
-        public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
 
         public WorkflowInstance? Initial { get; private set; }

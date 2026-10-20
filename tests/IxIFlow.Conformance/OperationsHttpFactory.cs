@@ -7,6 +7,7 @@ using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -43,6 +44,7 @@ internal sealed class OperationsHttpFactory(IWorkflowStateRepository repository,
     protected override IHostBuilder CreateHostBuilder() => Host.CreateDefaultBuilder().ConfigureLogging(logging => logging.ClearProviders()).ConfigureWebHostDefaults(web =>
         web.ConfigureServices(services =>
         {
+            services.AddSingleton<IDataProtectionProvider>(new EphemeralDataProtectionProvider());
             services.AddIxIFlow(o => { o.PollInterval = TimeSpan.FromMilliseconds(30); o.Slots = Slots; });
             services.Replace(ServiceDescriptor.Singleton(repository));
             services.Replace(ServiceDescriptor.Singleton(registry ?? new WorkflowCatalog()));

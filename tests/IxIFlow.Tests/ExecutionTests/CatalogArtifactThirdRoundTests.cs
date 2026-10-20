@@ -114,7 +114,7 @@ public sealed class CatalogArtifactThirdRoundTests
         async Task SeedAsync(string name, int version)
         {
             var instance = Instance(name, version);
-            await store.SeedAsync(instance);
+            await store.SeedAsync(instance, wakeAfter: TimeSpan.Zero);
             instances.Add(instance);
         }
 
