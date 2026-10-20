@@ -20,7 +20,7 @@ public partial class InMemoryWorkflowStateRepository
 
     public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         lock (_claimLock)
         {

@@ -395,7 +395,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         lock (_claimLock)
         {
@@ -447,7 +447,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     public virtual Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         lock (_claimLock)
         {
             return Task.FromResult(_cancellations.TryGetValue(instanceId, out var reason)
@@ -462,9 +462,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         lock (_claimLock)
         {
             var now = Now;
+            var excluded = query.ExcludedInstanceIds.ToHashSet(StringComparer.Ordinal);
             var matchingSets = _demandSets.Where(set => DemandMatching.Meets(set.Value, query, now) && HasDueMembers(set.Key, now));
             var runnable = matchingSets.SelectMany(set => DueMembers(set.Key, now)).Select(id => _instances[id])
-                .Where(instance => instance.RunnableAtUtc <= now &&
+                .Where(instance => !excluded.Contains(instance.InstanceId) && instance.RunnableAtUtc <= now &&
                     (_placement[instance.InstanceId].Pin is not { } pin || DemandMatching.Meets([pin], query, now)) &&
                     !(_leases.TryGetValue(instance.InstanceId, out var lease) && lease.ExpiresAtUtc > now))
                 .OrderByDescending(instance => instance.LastHostId == query.HostId)
@@ -480,6 +481,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
     {
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(query);
         if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
         ValidateLeaseArguments(instanceId, token, duration);
@@ -544,7 +546,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         lock (_claimLock)
         {
@@ -1033,7 +1035,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentOutOfRangeException.ThrowIfNegative(limit);
         lock (_claimLock)
         {
@@ -1056,6 +1058,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId)
     {
+        InstanceIds.Validate(instanceId);
         lock (_claimLock)
             return Task.FromResult(_events.TryGetValue((instanceId, eventId), out var stored)
                 ? stored.Event : null);
@@ -1064,6 +1067,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
+        InstanceIds.ValidateAll(instanceIds);
         lock (_claimLock)
             return Task.FromResult<IReadOnlyDictionary<string, long>>(instanceIds
                 .Where(_instances.ContainsKey)
@@ -1073,6 +1077,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId)
     {
+        InstanceIds.Validate(instanceId);
         lock (_claimLock)
             return Task.FromResult(_waits.TryGetValue(instanceId, out var waits)
                 ? waits.GetValueOrDefault(waitId) : null);
@@ -1081,6 +1086,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
+        if (query.InstanceId != null) InstanceIds.Validate(query.InstanceId);
+        if (query.InstanceIds != null) InstanceIds.ValidateAll(query.InstanceIds);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(query.Limit);
         if (query.InstanceIds?.Count > 1000) throw new ArgumentException("At most 1000 instance IDs", nameof(query));
         lock (_claimLock)
@@ -1117,12 +1124,14 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         lock (_claimLock)
             return Task.FromResult<IReadOnlyList<WorkflowDemand>>(SavedDemands(instanceId).ToArray());
     }
 
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         lock (_claimLock)
             return Task.FromResult(_instances.TryGetValue(instanceId, out var instance)
                 ? SnapshotStructured(instance) : null);
@@ -1130,6 +1139,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         lock (_claimLock)
         {
             if (!_instances.TryGetValue(instanceId, out var instance))
@@ -1145,6 +1155,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
         int limit = 1000)
     {
+        InstanceIds.Validate(instanceId);
         ArgumentOutOfRangeException.ThrowIfNegative(afterSequence);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         lock (_claimLock)
@@ -1158,6 +1169,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     public async Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)
     {
+        InstanceIds.Validate(instanceId);
         var period = tombstoneRetention ?? RetentionSettings.Default.TombstoneRetention;
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(period, TimeSpan.Zero);
         while (!await DeleteWithPayloadsAsync(instanceId, period)) { }
@@ -1265,7 +1277,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     private static void ValidateLeaseArguments(string instanceId, string token, TimeSpan duration)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         if (duration <= TimeSpan.Zero || duration.TotalMilliseconds > int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(duration));

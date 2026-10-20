@@ -17,6 +17,7 @@ internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions opt
     private readonly Dictionary<string, Subscription> _subscriptions = new(StringComparer.Ordinal);
     private long _sequence;
     private bool _ready;
+    private int? _pendingCapacity;
     internal Task RunTask { get; private set; } = Task.CompletedTask;
     internal bool Connected { get { lock (_gate) return _ready; } }
     private sealed record Subscription(long Sequence, bool Replay, long Started)
@@ -34,7 +35,28 @@ internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions opt
     internal void Ready()
     {
         lock (_gate)
-            if (_ready && !_queue!.TrySend(new(HostMessageKind.Ready, FreeSlots: host.FreeSlots))) AbortSession();
+        {
+            if (!_ready) return;
+            // One queued marker carries the latest value, even while the sender is blocked.
+            if (_pendingCapacity == null && !_queue!.TrySend(new(HostMessageKind.Ready))) AbortSession();
+            _pendingCapacity = host.FreeSlots;
+        }
+    }
+
+    internal async Task WriteAsync(SendQueue<HostMessage> queue, IClientStreamWriter<HostMessage> sender,
+        CancellationToken token)
+    {
+        await foreach (var queued in queue.ReadAsync(token))
+        {
+            var message = queued;
+            if (message.Kind == HostMessageKind.Ready)
+                lock (_gate)
+                {
+                    message = message with { FreeSlots = _pendingCapacity ?? message.FreeSlots };
+                    _pendingCapacity = null;
+                }
+            await sender.WriteAsync(message, token);
+        }
     }
     internal void Subscribe(string id, bool replay)
     {
@@ -127,10 +149,10 @@ internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions opt
         var queue = new SendQueue<HostMessage>(options.SendQueueCapacity);
         var capabilities = new Dictionary<string, string>(await settings.GetCapabilitiesAsync(registry));
         queue.TrySend(Hello(capabilities));
-        lock (_gate) { _queue = queue; _session = stop; }
+        lock (_gate) { _queue = queue; _session = stop; _pendingCapacity = null; }
         long lastSeen = time.GetTimestamp();
         var reading = ReadAsync();
-        var writing = WriteAsync();
+        var writing = WriteAsync(queue, call.RequestStream, stop.Token);
         var heartbeat = HeartbeatAsync();
         try { await await Task.WhenAny(reading, writing, heartbeat); }
         finally
@@ -141,7 +163,7 @@ internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions opt
             lock (_gate)
             {
                 foreach (var subscription in _subscriptions.Values) subscription.Ack.TrySetResult();
-                _subscriptions.Clear(); _queue = null; _session = null;
+                _subscriptions.Clear(); _queue = null; _session = null; _pendingCapacity = null;
             }
             stop.Cancel();
             call.Dispose();
@@ -190,10 +212,6 @@ internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions opt
             }
         }
         void connectionWake() => Wake?.Invoke();
-        async Task WriteAsync()
-        {
-            await foreach (var message in queue.ReadAsync(stop.Token)) await call.RequestStream.WriteAsync(message, stop.Token);
-        }
         async Task HeartbeatAsync()
         {
             using var timer = new PeriodicTimer(options.LinkHeartbeatInterval, time);

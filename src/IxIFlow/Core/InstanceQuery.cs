@@ -25,6 +25,8 @@ public sealed record InstanceQuery(
 {
     internal (DateTime Created, string Id)? Validate()
     {
+        if (InstanceId != null) InstanceIds.Validate(InstanceId);
+        if (ParentInstanceId != null) InstanceIds.Validate(ParentInstanceId);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(Limit);
         if (Statuses?.Any(status => !Enum.IsDefined(status)) == true || StopKind is { } kind && !Enum.IsDefined(kind))
             throw new ArgumentException("Unknown status or stop kind");
@@ -36,6 +38,7 @@ public sealed record InstanceQuery(
             var cursor = JsonSerializer.Deserialize<Cursor>(Convert.FromBase64String(After));
             if (cursor is not { Version: 1 } || cursor.Scope != Scope() || string.IsNullOrEmpty(cursor.Id))
                 throw new FormatException();
+            InstanceIds.Validate(cursor.Id);
             return (new DateTime(cursor.Ticks, DateTimeKind.Utc), cursor.Id);
         }
         catch (Exception error) when (error is FormatException or JsonException or ArgumentException)
