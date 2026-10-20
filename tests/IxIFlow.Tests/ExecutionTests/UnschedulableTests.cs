@@ -12,7 +12,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "host")]
 [Trait("Spec", "C-10")]
-public sealed class UnschedulableTests
+public sealed class UnschedulableTests : IClassFixture<SqliteTestDatabase<UnschedulableTests>>, IClassFixture<SqliteTestDatabase<UnschedulableTests.UnschedulableClock>>, IClassFixture<SqliteTestDatabase<UnschedulableTests.UnschedulableFail>>
 {
     [Fact]
     public Task MemoryContract() => Contract(new InMemoryWorkflowStateRepository());
@@ -213,8 +213,8 @@ public sealed class UnschedulableTests
         Assert.Equal(WorkflowErrorKind.Unschedulable, error.Kind);
     }
 
-    private sealed class UnschedulableClock;
-    private sealed class UnschedulableFail;
+    internal sealed class UnschedulableClock;
+    internal sealed class UnschedulableFail;
     public sealed class HashData;
     public sealed class HashEvent;
     public sealed class HashNoop : IAsyncActivity
