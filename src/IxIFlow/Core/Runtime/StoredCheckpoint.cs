@@ -13,10 +13,11 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class StoredCheckpoint
 {
-    private StoredCheckpoint(StoredJson trunk, Dictionary<string, StoredJson> parts, PartMarks marks)
+    private StoredCheckpoint(StoredJson trunk, string updateTrunk, Dictionary<string, StoredJson> parts, PartMarks marks)
     {
         Trunk = trunk.InlineText;
         _trunk = trunk;
+        UpdateTrunk = updateTrunk;
         Parts = parts;
         Marks = marks;
     }
@@ -35,11 +36,14 @@ internal sealed class StoredCheckpoint
     private readonly StoredJson _trunk;
     public IReadOnlyList<PayloadReference> PayloadReferences => CheckpointPayloads.References(_trunk, Parts);
 
+    /// <summary>An update carries no demands: the store keeps the set saved at creation.</summary>
+    public string UpdateTrunk { get; }
+
     /// <summary>Every part by key, the workflow data's included.</summary>
     public Dictionary<string, StoredJson> Parts { get; }
 
     /// <summary>The size a checkpoint limit applies to: the trunk and every part, as UTF-8.</summary>
-    public long Bytes => Encoding.UTF8.GetByteCount(Trunk) +
+    public long Bytes => Encoding.UTF8.GetByteCount(UpdateTrunk) +
                          Parts.Values.Sum(part => part.CheckpointBytes);
 
     public static string BranchKey(string continuationId) => $"c/{continuationId}";
@@ -122,7 +126,12 @@ internal sealed class StoredCheckpoint
             checkpoint.PayloadRetries = checkpoint.Continuations.Where(c => c.ParentJoinId != null &&
                 parts[BranchKey(c.Id)].Reference != null).Select(c => new PayloadRetry { Id = c.Id, RetryAfterUtc = c.RetryAfterUtc }).ToList();
             if (checkpoint.PayloadRetries.Count == 0) checkpoint.PayloadRetries = null;
-            return new StoredCheckpoint(Serialize(checkpoint, Stored), parts, marks);
+            var trunk = Serialize(checkpoint, Stored);
+            // Demands are the final top-level property of this typed, engine-written trunk. Slice
+            // that projection once: updates omit placement without a second serialization or parse.
+            var demandStart = trunk.InlineText.LastIndexOf(",\"Demands\":", StringComparison.Ordinal);
+            var updateTrunk = trunk.InlineText[..demandStart] + "}";
+            return new StoredCheckpoint(trunk, updateTrunk, parts, marks);
         }
         finally { checkpoint.SplitBranches = null; checkpoint.PayloadRetries = null; }
     }
@@ -246,6 +255,9 @@ internal sealed class StoredCheckpoint
             foreach (var property in type.Properties)
                 switch (property.Name)
                 {
+                    case nameof(ExecutionCheckpoint.Demands):
+                        property.Order = int.MaxValue;
+                        break;
                     case nameof(ExecutionCheckpoint.Debug):
                         property.ShouldSerialize = (_, value) => value is DebugCheckpoint { IsEmpty: false };
                         break;

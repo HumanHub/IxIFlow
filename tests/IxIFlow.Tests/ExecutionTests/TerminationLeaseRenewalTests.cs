@@ -56,14 +56,14 @@ public sealed class TerminationLeaseRenewalTests : IClassFixture<SqliteTestDatab
         {
             const string owner = "original-owner";
             var duration = TimeSpan.FromSeconds(30);
-            var original = await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, owner, duration);
+            var original = await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, owner, duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.NotNull(original);
             Assert.True(await store.RenewExecutionLeaseAsync(instance.InstanceId, owner, duration));
             Assert.True((await store.RequestTerminationAsync(instance.InstanceId, new CancellationReason { ReasonCode = "hard-stop" })).Accepted);
             Assert.False(await store.RenewExecutionLeaseAsync(instance.InstanceId, owner, duration));
-            Assert.Null(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "takeover", duration));
+            Assert.Null(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "takeover", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             await expire(instance.InstanceId); // Advance the store clock/expiry; never release the original lease.
-            var takeover = await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "takeover", duration);
+            var takeover = await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "takeover", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.NotNull(takeover);
             Assert.True(takeover.Epoch > original.Epoch);
             var saved = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;

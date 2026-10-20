@@ -69,6 +69,17 @@ public partial class InMemoryWorkflowStateRepository
         var removed = 0;
         foreach (var id in candidates)
             if (await DeleteWithPayloadsAsync(id, tombstoneRetention, cutoff, cancellationToken)) removed++;
+        lock (_claimLock)
+        {
+            foreach (var setId in _demandSetMembers.Where(set => set.Value.Count == 0)
+                         .Select(set => set.Key).Order(StringComparer.Ordinal).Take(batchSize).ToArray())
+            {
+                _demandSetMembers.Remove(setId);
+                _runnableSetMembers.Remove(setId);
+                _pinnedSetMembers.Remove(setId);
+                _demandSets.Remove(setId);
+            }
+        }
         return new RetentionResult(removed, expiredCount) { SkippedUnattemptedByPublisher = blocked };
     }
 }

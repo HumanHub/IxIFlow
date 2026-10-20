@@ -86,7 +86,7 @@ public sealed class AssignmentRequestTests
         Assert.Equal(CheckpointReplyKind.Ack, (await run.Host.CheckpointAsync(new(run.Identity, commit))).Kind);
         // Another store owner has taken over, even though this host has not observed the loss yet.
         await run.ReleaseOwnerAsync();
-        var grant = await run.Store.TryAcquireExecutionLeaseAsync(run.Instance.InstanceId, "takeover", TimeSpan.FromHours(1));
+        var grant = await run.Store.TryAcquireExecutionLeaseAsync(run.Instance.InstanceId, "takeover", TimeSpan.FromHours(1), await StoreTestSupport.ClaimAsync(run.Services));
         Assert.NotNull(grant);
         Assert.Equal(ConflictReason.NotAssigned, (await run.Host.CheckpointAsync(new(run.Identity, commit))).Conflict);
         Assert.Equal(WorkflowCommitStatus.StaleEpoch, (await run.Store.CommitWorkflowInstanceAsync(commit)).Status);
@@ -356,7 +356,7 @@ public sealed class AssignmentRequestTests
             var instance = (await proxy.GetWorkflowInstanceAsync(assign.Instance.InstanceId))!;
             var watch = new CancellationWatch(proxy, time);
             var owner = (await WorkflowExecutionLease.TryAcquireAsync(proxy, instance,
-                new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, _ => { }, _ => { }, _ => { }, time))!;
+                new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, await StoreTestSupport.ClaimAsync(services), _ => { }, _ => { }, _ => { }, time))!;
             var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(), proxy,
                 services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), timeProvider: time, limits: limits);
             var identity = Guid.NewGuid();

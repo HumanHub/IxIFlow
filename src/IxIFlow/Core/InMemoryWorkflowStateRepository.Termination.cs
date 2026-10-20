@@ -24,14 +24,16 @@ public partial class InMemoryWorkflowStateRepository
         ArgumentNullException.ThrowIfNull(reason);
         lock (_claimLock)
         {
+            var now = Now;
             var command = JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!;
             command.Mode = WorkflowControlMode.Terminate;
             var accepted = (expectedIncarnation == null ||
                 _instances.GetValueOrDefault(instanceId)?.Incarnation == expectedIncarnation) &&
-                RequestCancellation(instanceId, command, Now);
+                RequestCancellation(instanceId, command, now);
             return Task.FromResult(new WorkflowControlReceipt(accepted,
                 accepted ? _cancellations[instanceId].CommandVersion : 0,
-                _instances.GetValueOrDefault(instanceId)?.Incarnation ?? Guid.Empty));
+                _instances.GetValueOrDefault(instanceId)?.Incarnation ?? Guid.Empty)
+            { Notice = accepted && Notice(instanceId, now) is { Claimable: true } notice ? notice : null });
         }
     }
 }

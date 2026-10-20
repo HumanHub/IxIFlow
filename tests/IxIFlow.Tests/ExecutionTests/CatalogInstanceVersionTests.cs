@@ -95,7 +95,7 @@ public sealed class CatalogInstanceVersionTests
         var name = "VersionWrites";
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton(store);
-        services.AddSingleton(Workflow.Create<Data>(name, 3).Step<Noop>().Build());
+        services.AddSingleton(Workflow.Create<Data>(name, 3).Step<Noop>().WaitFor<Data>("continue").Build());
         services.AddIxIFlow();
         await using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
@@ -104,10 +104,13 @@ public sealed class CatalogInstanceVersionTests
         await client.AwaitAsync(id);
 
         var parent = (await store.GetWorkflowInstanceAsync(id))!;
+        await store.AppendEventAsync(new(id, "continue", typeof(Data).AssemblyQualifiedName!, "{}", Key: "continue"));
         parent.Status = WorkflowStatus.Suspended;
         parent.ExecutionStateJson = StoreTestSupport.CheckpointJson;
-        var lease = await StoreTestSupport.LeaseAsync(store, id);
-        var committed = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, lease.Epoch, parent.Revision));
+        var host = await StoreTestSupport.ClaimAsync(provider);
+        var lease = await StoreTestSupport.LeaseAsync(store, id, host);
+        var committed = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, lease.Epoch, parent.Revision,
+            wakeAfter: TimeSpan.Zero));
         Assert.Equal(WorkflowCommitStatus.Applied, committed.Status);
         parent.Revision = committed.Revision;
         await AssertVersionAsync(id, 3);
@@ -119,7 +122,7 @@ public sealed class CatalogInstanceVersionTests
         child.ParentWaitId = "child-wait";
         child.Status = WorkflowStatus.Running;
         parent.Status = WorkflowStatus.Suspended;
-        lease = await StoreTestSupport.LeaseAsync(store, id);
+        lease = await StoreTestSupport.LeaseAsync(store, id, host);
         committed = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, lease.Epoch, parent.Revision,
             openedWaits: [new("child-wait", WaitKind.Child, "child", ChildCompleted.EventType, null)],
             childStarts: [new(child.InstanceId, JsonSerializer.Serialize(child), "child-wait")]));
@@ -186,27 +189,31 @@ public sealed class CatalogInstanceVersionTests
             Status = i < 6000 ? terminals[i % terminals.Length] : "Suspended"
         });
         // Malformed JSON makes any accidental payload read fail, even on a matching caller name.
+        var demandSetId = DemandSet.Create([]).Id;
+        await connection.ExecuteAsync(profile == "sqlserver"
+            ? "INSERT INTO dbo.IxIFlowDemandSets (DemandSetId) VALUES (@Id)"
+            : "INSERT INTO ixiflow_demand_sets (demand_set_id) VALUES (@Id)", new { Id = demandSetId });
         await connection.ExecuteAsync(profile switch
         {
             "sqlserver" => """
-                INSERT INTO dbo.IxIFlowWorkflowInstances (InstanceId, WorkflowName, WorkflowVersion, CreatedAtUtc, Status, StateJson, Revision)
-                SELECT Id, Name, Version, '2026-01-01T00:00:00', Status, 'not-json', 1
+                INSERT INTO dbo.IxIFlowWorkflowInstances (InstanceId, WorkflowName, WorkflowVersion, CreatedAtUtc, Status, StateJson, Revision, DemandSetId)
+                SELECT Id, Name, Version, '2026-01-01T00:00:00', Status, 'not-json', 1, @DemandSetId
                 FROM OPENJSON(@Rows) WITH (Id nvarchar(100), Name nvarchar(200), Version int, Status nvarchar(50));
                 UPDATE STATISTICS dbo.IxIFlowWorkflowInstances WITH FULLSCAN;
                 """,
             "postgresql" => """
-                INSERT INTO ixiflow_workflow_instances (instance_id, workflow_name, workflow_version, created_at_utc, status, state_json, revision)
-                SELECT "Id", "Name", "Version", TIMESTAMPTZ '2026-01-01 00:00:00+00', "Status", 'not-json', 1
+                INSERT INTO ixiflow_workflow_instances (instance_id, workflow_name, workflow_version, created_at_utc, status, state_json, revision, demand_set_id)
+                SELECT "Id", "Name", "Version", TIMESTAMPTZ '2026-01-01 00:00:00+00', "Status", 'not-json', 1, @DemandSetId
                 FROM jsonb_to_recordset(CAST(@Rows AS jsonb)) AS row("Id" text, "Name" text, "Version" integer, "Status" text);
                 ANALYZE ixiflow_workflow_instances;
                 """,
             _ => """
-                INSERT INTO ixiflow_workflow_instances (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, status, state_json, revision)
+                INSERT INTO ixiflow_workflow_instances (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, status, state_json, revision, demand_set_id)
                 SELECT json_extract(value, '$.Id'), @Incarnation, json_extract(value, '$.Name'),
-                    json_extract(value, '$.Version'), '2026-01-01 00:00:00.0000000', json_extract(value, '$.Status'), 'not-json', 1 FROM json_each(@Rows);
+                    json_extract(value, '$.Version'), '2026-01-01 00:00:00.0000000', json_extract(value, '$.Status'), 'not-json', 1, @DemandSetId FROM json_each(@Rows);
                 ANALYZE ixiflow_workflow_instances;
                 """
-        }, new { Rows = JsonSerializer.Serialize(rows), Incarnation = Guid.NewGuid().ToString() });
+        }, new { Rows = JsonSerializer.Serialize(rows), Incarnation = Guid.NewGuid().ToString(), DemandSetId = demandSetId });
 
         var method = store.GetType().GetMethod("CatalogSql", BindingFlags.Static | BindingFlags.NonPublic)!;
         var statement = Enum.Parse(method.GetParameters()[0].ParameterType, "CatalogUnfinishedCallers");
@@ -225,6 +232,8 @@ public sealed class CatalogInstanceVersionTests
             new { Callers = JsonSerializer.Serialize(new[] { new WorkflowVersionReference(caller.ToLowerInvariant(), 3) }) }));
         foreach (var terminal in Enum.GetValues<WorkflowStatus>().Where(status => terminals.Contains(status.ToString())))
         {
+            await store.DeleteWorkflowInstanceAsync(matching.InstanceId);
+            matching = Instance(caller, 3);
             matching.Status = terminal;
             await store.SeedAsync(matching);
             await AssertQueryAsync(false);

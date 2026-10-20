@@ -8,6 +8,9 @@ public sealed partial class WorkflowHost
 {
     internal sealed partial class InstanceOperations
     {
+        public Task<UnschedulablePage> GetUnschedulableAsync(int limit, UnschedulableCursor? cursor, CancellationToken cancellationToken) =>
+            _store.GetUnschedulableAsync(limit, cursor, cancellationToken);
+
         public async Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName) =>
             await _store.GetDeliveryAsync(eventId, publisherName) is { } delivery ? InspectionRedactionPolicy.Default.Delivery(DeliverySummary.From(delivery)) : null;
         public async Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query)
@@ -27,12 +30,17 @@ public sealed partial class WorkflowHost
         public Task<IReadOnlyList<StoredTraceEntry>> GetTracePageAsync(string instanceId, long after, int limit) =>
             _store.GetTraceAsync(instanceId, after, limit);
 
-        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, string reasonCode, string? description, string? actor, Guid? expectedIncarnation = null) =>
-            _store.RequestTerminationAsync(instanceId, new CancellationReason
+        public async Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, string reasonCode, string? description, string? actor, Guid? expectedIncarnation = null)
+        {
+            var receipt = await _store.RequestTerminationAsync(instanceId, new CancellationReason
             {
                 Mode = WorkflowControlMode.Terminate, ReasonCode = reasonCode, Description = description ?? "",
                 RequestedBy = actor ?? _defaultActor ?? "", RequestedAt = Now
             }, expectedIncarnation);
+            _notifications?.Publish(receipt.Notice);
+            if (receipt.Notice?.Claimable == true) _control.Runnable(instanceId);
+            return receipt;
+        }
 
         // Also used by recovery before looking up a definition or deserializing user data. A remote owner
         // stops renewing after termination, so an activity that hangs cannot keep its lease indefinitely.
@@ -47,7 +55,7 @@ public sealed partial class WorkflowHost
             if (prepared == null) return false;
             using var signals = Executor.PrepareAssignment(Guid.NewGuid());
             using var recycle = _control.Register(signals.AssignmentId, Executor.Deliver);
-            await using var owner = await AcquireAsync(prepared.Saved, signals);
+            await using var owner = await AcquireAsync(prepared.Saved, signals, ExecutionClaimKind.Termination);
             if (owner == null) return false;
             using var assignment = Admit(prepared.Saved, owner, signals.AssignmentId);
             var commit = prepared.Commit(owner.Epoch);
@@ -113,6 +121,7 @@ public sealed partial class WorkflowHost
             instance.LastErrorStackTrace = null;
             var state = JsonNode.Parse(instance.ExecutionStateJson)!;
             state["OperatorStop"] = null;
+            state.AsObject().Remove(nameof(ExecutionCheckpoint.Demands));
             // Termination closes activities, preserving operator-authored records and the latest failure.
             var prior = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
             var operatorIds = (prior.OperatorDiagnosticIds ?? []).ToHashSet(StringComparer.Ordinal);

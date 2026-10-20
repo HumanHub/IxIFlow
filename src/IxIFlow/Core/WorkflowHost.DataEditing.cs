@@ -39,7 +39,7 @@ public sealed partial class WorkflowHost
                 ?? throw EditRefused("Workflow instance does not exist");
             RequireIncarnation(instance, incarnation);
             using var signals = Executor.PrepareAssignment(Guid.NewGuid());
-            await using var owner = await AcquireAsync(instance, signals);
+            await using var owner = await AcquireAsync(instance, signals, ExecutionClaimKind.Operator);
             if (owner == null)
             {
                 var concurrent = (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId);

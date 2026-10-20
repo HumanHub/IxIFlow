@@ -9,6 +9,7 @@ using IxIFlow.Core.Runtime;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Time.Testing;
 using static IxIFlow.Tests.Conformance.OperationsHttpFactory;
 
@@ -178,7 +179,8 @@ public sealed class OperationsHttpTests
         await using var factory = new OperationsHttpFactory(store);
         using var http = factory.Operator();
         await SeedQuarantine(factory, store, Workflow.Create<Data>("BusyRelease").Step<Noop>().Build(), "busy");
-        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync("busy", "other-owner", TimeSpan.FromMinutes(1)));
+        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync("busy", "other-owner", TimeSpan.FromMinutes(1),
+            await StoreTestSupport.ClaimAsync(factory.Services), ExecutionClaimKind.Operator));
         try
         {
             using var response = await http.PostAsync("/ops/instances/busy/release", null);
@@ -218,9 +220,14 @@ public sealed class OperationsHttpTests
         var store = new InMemoryWorkflowStateRepository();
         await using var factory = new OperationsHttpFactory(store);
         using var http = factory.Operator();
+        // The fixture makes the row due for a trace-only checkpoint. Keep the background scanner
+        // from consuming that setup transition before its explicit owner has acquired the lease.
+        foreach (var scanner in factory.Services.GetServices<IHostedService>().OfType<WorkflowRecoveryService>())
+            await scanner.StopAsync(default);
         var id = (await factory.Engine.RunAsync(Waiting(), new Data())).InstanceId;
         var saved = (await store.GetWorkflowInstanceAsync(id))!;
-        var grant = await StoreTestSupport.LeaseAsync(store, id);
+        await store.RequestCancellationAsync(id, new CancellationReason { ReasonCode = "test" });
+        var grant = await StoreTestSupport.LeaseAsync(store, id, await StoreTestSupport.ClaimAsync(factory.Services));
         await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, grant.Epoch, saved.Revision,
             traceEntries: [new ExecutionTraceEntry { StackTrace = "private-stack", Metadata = new() { ["secret"] = "private-metadata" } }]));
         await StoreTestSupport.ReleaseAsync(store, id);

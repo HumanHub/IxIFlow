@@ -56,7 +56,7 @@ public sealed partial class DebugPayloadFixTests
         var instance = (await store.GetWorkflowInstanceAsync(initial.InstanceId))!;
         await using var watch = new CancellationWatch(store);
         await using var owner = (await WorkflowExecutionLease.TryAcquireAsync(store, instance,
-            ExecutionLeaseSettings.Default, watch, _ => { }, _ => { }, _ => { }))!;
+            ExecutionLeaseSettings.Default, watch, await StoreTestSupport.ClaimAsync(services), _ => { }, _ => { }, _ => { }))!;
         var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
             store, catalog, new InProcessInstanceGate(), watch: watch);
         var identity = Guid.NewGuid();

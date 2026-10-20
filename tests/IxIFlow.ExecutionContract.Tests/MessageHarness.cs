@@ -55,7 +55,7 @@ internal sealed class MessageHarness : IDisposable
                 Continuations = new[] { new { Id = "root", Stack = new[] { new { ScopeId = "root" } } } }
             })
         };
-        var lease = await Host.Store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "message-harness", TimeSpan.FromHours(1));
+        var lease = await Host.Store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "message-harness", TimeSpan.FromHours(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
         var initial = CheckpointCommit.Create(instance, lease!.Epoch, 0);
         Assert.Equal(WorkflowCommitStatus.Applied, (await Host.Store.CommitWorkflowInstanceAsync(initial)).Status);
         var saved = (await Host.Store.GetWorkflowInstanceAsync(instance.InstanceId))!;

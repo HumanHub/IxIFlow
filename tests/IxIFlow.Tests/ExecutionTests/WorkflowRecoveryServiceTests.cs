@@ -25,6 +25,7 @@ public sealed class WorkflowRecoveryServiceTests
         var engine = new BlockingRecoveryEngine();
         var services = new ServiceCollection();
         services.AddSingleton<IWorkflowClient>(engine);
+        services.AddSingleton<IWorkflowCatalog>(new WorkflowCatalog());
         using var provider = services.BuildServiceProvider();
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
@@ -128,6 +129,7 @@ public sealed class WorkflowRecoveryServiceTests
         var engine = new RecordingEngine();
         var services = new ServiceCollection();
         services.AddSingleton<IWorkflowClient>(engine);
+        services.AddSingleton<IWorkflowCatalog>(new WorkflowCatalog());
         using var provider = services.BuildServiceProvider();
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
@@ -155,8 +157,8 @@ public sealed class WorkflowRecoveryServiceTests
         var started = await provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new RecoveryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
-            new CancellationReason { ReasonCode = "withdrawn" }));
+        Assert.True((await repository.RequestCancellationAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -184,15 +186,15 @@ public sealed class WorkflowRecoveryServiceTests
             .Build();
         var started = await provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new RecoveryData());
-        Assert.True(await repository.RequestCancellationAsync(started.InstanceId,
-            new CancellationReason { ReasonCode = "withdrawn" }));
+        Assert.True((await repository.RequestCancellationAsync(started.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
         await scanner.RecoverOnceAsync(CancellationToken.None);
         var waiting = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         Assert.Equal(WorkflowStatus.Suspended, waiting.Status);
-        Assert.Empty(await repository.GetRunnableInstancesAsync(100));
+        Assert.Empty(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)));
 
         await scanner.RecoverOnceAsync(CancellationToken.None);
 
@@ -222,8 +224,8 @@ public sealed class WorkflowRecoveryServiceTests
         await engine.RecoverAsync(saved.InstanceId);
         Assert.Equal(WorkflowStatus.NeedsResolution,
             (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
-        Assert.True(await repository.RequestCancellationAsync(saved.InstanceId,
-            new CancellationReason { ReasonCode = "withdrawn" }));
+        Assert.True((await repository.RequestCancellationAsync(saved.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -243,6 +245,9 @@ public sealed class WorkflowRecoveryServiceTests
 
     private sealed class RecordingEngine : IWorkflowClient
     {
+        public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         public Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
@@ -315,6 +320,9 @@ public sealed class WorkflowRecoveryServiceTests
 
     private sealed class BlockingRecoveryEngine : IWorkflowClient
     {
+        public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         public Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();

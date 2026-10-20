@@ -35,7 +35,7 @@ public sealed class SerializedHostAdmissionTests
         // Background control reads bypass the probe; every call by the host is still counted.
         await using var watch = new CancellationWatch(probe.Inner, time);
         await using var owner = (await WorkflowExecutionLease.TryAcquireAsync(store, instance,
-            new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, _ => { }, _ => { }, _ => { }, time))!;
+            new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, await StoreTestSupport.ClaimAsync(services), _ => { }, _ => { }, _ => { }, time))!;
         var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
             store, registry, new InProcessInstanceGate(), timeProvider: time);
         var identity = Guid.NewGuid();

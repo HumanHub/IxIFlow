@@ -422,8 +422,8 @@ public sealed class ActivityRecoveryTests
         var running = Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)));
         await engine.RecoverAsync(running.InstanceId);
         var pending = Assert.Single(await engine.GetPendingActivitiesAsync(running.InstanceId));
-        Assert.True(await store.RequestCancellationAsync(running.InstanceId,
-            new CancellationReason { ReasonCode = "withdrawn" }));
+        Assert.True((await store.RequestCancellationAsync(running.InstanceId,
+            new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
         var awaitingResolution = await engine.RecoverAsync(running.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, awaitingResolution.Status);
         Assert.Null((await store.GetWorkflowInstanceAsync(running.InstanceId))!.RunnableAtUtc);
@@ -618,6 +618,8 @@ public sealed class ActivityRecoveryTests
         var started = await engine.RunAsync(definition, new ChargeData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
+        await repository.AppendEventAsync(new WorkflowEvent(started.InstanceId, "winning",
+            typeof(RecoveryReply).AssemblyQualifiedName!, "{}", "b"));
         var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);
         var losingWait = checkpoint.Waits.Single(wait => wait.Key == "a");
@@ -640,7 +642,8 @@ public sealed class ActivityRecoveryTests
         saved.Status = WorkflowStatus.Running;
         saved.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         var committed = await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
+            CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId, await StoreTestSupport.ClaimAsync(provider))).Epoch, saved.Revision, Guid.NewGuid().ToString("N"),
+                settlements: [new EventSettlement("winning", EventOutcome.Consumed, winningWait.Id)], inboxReadThrough: 1));
         Assert.Equal(WorkflowCommitStatus.Applied, committed.Status);
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
 
@@ -914,6 +917,15 @@ public sealed class ActivityRecoveryTests
             _inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
         public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
             _inner.UnregisterMemberAsync(memberId, cancellationToken);
+        public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
+            _inner.GetWorkflowDemandsAsync(instanceId);
+
+        public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetUnschedulableAsync(limit, cursor, cancellationToken);
+        public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
+            _inner.CanScheduleAsync(demands, cancellationToken);
+
         public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
             _inner.GetLiveMembersAsync(cancellationToken);
 
@@ -962,17 +974,17 @@ public sealed class ActivityRecoveryTests
             _inner.GetOpenWaitsAsync(query);
 
         private readonly InMemoryWorkflowStateRepository _inner = new();
-        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
             _inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
-        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
-            _inner.GetRunnableInstancesAsync(limit);
-        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
+            _inner.GetRunnableInstancesAsync(query);
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
+            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
-        public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
         public int FailNextCommits { get; set; }
         public int FailStartAfterApply { get; set; }

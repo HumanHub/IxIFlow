@@ -65,7 +65,7 @@ public sealed class IncomingWebhookAdmissionTests
             Assert.All(race, r => Assert.Equal(winner, r.Admission));
             foreach (var commit in commits.Skip(2))
                 Assert.Equal(winner, (await store.AdmitWorkflowInstanceAsync(commit, Request())).Admission);
-            Assert.Equal(winner.InstanceId, Assert.Single(await repository.GetRunnableInstancesAsync(100)).InstanceId);
+            Assert.Equal(winner.InstanceId, Assert.Single(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100))).InstanceId);
             var saved = await repository.GetWorkflowInstanceAsync(winner.InstanceId);
             Assert.Equal(1, saved!.Revision);
             Assert.Equal(7, saved.WorkflowVersion);

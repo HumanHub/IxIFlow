@@ -46,7 +46,8 @@ public sealed partial class DebugPayloadFixTests
             Assert.Equal(WorkflowExecutionStatus.Paused, paused.Status);
             Assert.Equal("committed", Assert.IsType<Data>(paused.WorkflowData).Text);
             Assert.Equal(0, probe.After);
-            Assert.NotNull(await h.Store.TryAcquireExecutionLeaseAsync(id, "inspect", TimeSpan.FromSeconds(10)));
+            Assert.NotNull(await h.Store.TryAcquireExecutionLeaseAsync(id, "inspect", TimeSpan.FromSeconds(10),
+                await StoreTestSupport.ClaimAsync(h.Services), ExecutionClaimKind.Operator));
             await h.Store.ReleaseExecutionLeaseAsync(id, "inspect");
             Assert.Equal(WorkflowExecutionStatus.Success, (await h.Services.GetRequiredService<IWorkflowOperations>()
                 .ContinueAsync(id, "writer")).Status);

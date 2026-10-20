@@ -31,5 +31,8 @@ public enum WorkflowErrorKind
     InstanceRemoved,
 
     /// <summary>A referenced payload is missing or corrupt. Restore it and release the operator stop.</summary>
-    PayloadUnavailable
+    PayloadUnavailable,
+
+    /// <summary>No live host advertises all demands at start admission.</summary>
+    Unschedulable
 }

@@ -29,7 +29,9 @@ public sealed partial class DebugPayloadFixTests
         var saved = (await h.Store.GetWorkflowInstanceAsync(first.InstanceId))!;
         Assert.Contains(saved.SavedParts!, p => p.Key.StartsWith("c/") && p.Value.Reference != null);
         Assert.Contains(saved.SavedParts!, p => p.Key.StartsWith("r/") && p.Value.Reference != null);
-        var lease = (await h.Store.TryAcquireExecutionLeaseAsync(first.InstanceId, "crash", TimeSpan.FromSeconds(1)))!;
+        var (interrupted, lease) = await h.RecreateForClaimAsync(first.InstanceId, "crash", TimeSpan.FromSeconds(1));
+        first.InstanceId = interrupted.InstanceId;
+        saved = interrupted;
         saved.Status = WorkflowStatus.Running;
         Assert.Equal(WorkflowCommitStatus.Applied, (await h.Store.CommitWorkflowInstanceAsync(
             CheckpointCommit.FromFields(CommittedInstance.Of(saved), JsonSerializer.Serialize(saved), [], [], false,
@@ -182,6 +184,36 @@ public sealed partial class DebugPayloadFixTests
             configureServices?.Invoke(services);
             Services = services.BuildServiceProvider();
         }
+        // Idle rows cannot be claimed just to fabricate a crash. Recreate their saved trunk,
+        // parts and open waits under a new ID, then claim through the normal placement contract.
+        public async Task<(WorkflowInstance Instance, ExecutionLeaseGrant Lease)> RecreateForClaimAsync(
+            string instanceId, string token, TimeSpan duration, bool suspended = false)
+        {
+            var saved = (await Store.GetWorkflowInstanceAsync(instanceId))!;
+            var waits = await Store.GetOpenWaitsAsync(new(InstanceId: instanceId));
+            var parts = saved.SavedParts!;
+            saved.InstanceId = Guid.NewGuid().ToString("N");
+            saved.Incarnation = Guid.NewGuid();
+            saved.Revision = 0;
+            saved.Status = suspended ? WorkflowStatus.Suspended : WorkflowStatus.Running;
+            var claim = await StoreTestSupport.ClaimAsync(Services);
+            var lease = (await Store.TryAcquireExecutionLeaseAsync(saved.InstanceId, token, duration, claim))!;
+            var opened = waits.Select(wait => new OpenedWait(wait.WaitId, wait.Kind, wait.Key, wait.EventType,
+                wait.DeadlineUtc - Clock.GetUtcNow().UtcDateTime, wait.DefaultPayloadJson)).ToArray();
+            var commit = CheckpointCommit.FromFields(CommittedInstance.Of(saved),
+                JsonSerializer.Serialize(saved.AsTrunk(saved.ExecutionStateJson)),
+                parts.OrderBy(part => part.Key, StringComparer.Ordinal).Select(part => new CheckpointPart(part.Key, part.Value)).ToArray(),
+                [], true, saved.Incarnation, lease.Epoch, Guid.NewGuid().ToString("N"), 0, true, false,
+                [], null, opened, [], [], suspended ? TimeSpan.Zero : null, false, [], [], null, [], [], null,
+                CheckpointPayloads.References(saved.ExecutionStateJson, parts));
+            Assert.Equal(WorkflowCommitStatus.Applied, (await Store.CommitWorkflowInstanceAsync(commit)).Status);
+            // New owners pin the same immutable bodies before the old fixture releases its owners.
+            await Store.DeleteWorkflowInstanceAsync(instanceId);
+            if (suspended)
+                lease = (await Store.TryAcquireExecutionLeaseAsync(saved.InstanceId, token, duration, claim))!;
+            return ((await Store.GetWorkflowInstanceAsync(saved.InstanceId))!, lease);
+        }
+
         public async ValueTask DisposeAsync()
         {
             await Services.DisposeAsync();

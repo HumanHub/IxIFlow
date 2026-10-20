@@ -120,10 +120,11 @@ public sealed class RunReceiptLifecycleTests
             var (instance, checkpoint, _) = WorkflowInstances.NewInstance(Definition,
                 new Data { Value = "old incarnation" }, new(), _time.GetUtcNow().UtcDateTime);
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+            var claim = await StoreTestSupport.ClaimAsync(_services);
             for (var index = 0; index < 64; index++)
-                await Store.SeedAsync(instance);
+                await Store.SeedAsync(instance, query: claim);
             var duration = TimeSpan.FromSeconds(1);
-            Assert.NotNull(await Store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "crashed", duration));
+            Assert.NotNull(await Store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "crashed", duration, claim));
             _time.Advance(duration * 2);
             return (await Store.GetWorkflowInstanceAsync(instance.InstanceId))!;
         }

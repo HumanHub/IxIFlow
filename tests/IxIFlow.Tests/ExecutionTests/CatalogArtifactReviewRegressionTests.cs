@@ -196,7 +196,8 @@ public sealed class CatalogArtifactReviewRegressionTests
 
                     async Task<WorkflowEngineException> RaceAsync(Func<Task> held, Func<int, Task> queued, Func<Task> release)
                     {
-                        var starting = Task.Run(() => store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, lease.Epoch, 0)));
+                        var starting = Task.Run(() => store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, lease.Epoch, 0,
+                            wakeAfter: TimeSpan.Zero)));
                         Task? retiringCaller = null;
                         Task? retiringChild = null;
                         try
@@ -385,7 +386,7 @@ public sealed class CatalogArtifactReviewRegressionTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var parent = Instance("Memory-lock-scope");
-        await store.SeedAsync(parent);
+        await store.SeedAsync(parent, wakeAfter: TimeSpan.Zero);
         var lease = await StoreTestSupport.LeaseAsync(store, parent.InstanceId);
         var barrier = new BarrierArtifacts();
         var holding = store.PurgeArtifactsAsync(barrier, TimeSpan.FromDays(90), 1);

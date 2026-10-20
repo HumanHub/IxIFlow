@@ -50,7 +50,8 @@ public abstract partial class RelationalWorkflowStateRepository
         if (pending?.Mode == WorkflowControlMode.Terminate)
         {
             madeRunnable?.Add(instanceId);
-            return new(true, pending.CommandVersion, row.Incarnation);
+            return new(true, pending.CommandVersion, row.Incarnation)
+            { Notice = await NoticeAsync(connection, transaction, instanceId, now) is { Claimable: true } replay ? replay : null };
         }
         var command = JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!;
         command.Mode = WorkflowControlMode.Terminate;
@@ -58,7 +59,8 @@ public abstract partial class RelationalWorkflowStateRepository
         var values = WithTimes(new { InstanceId = instanceId, ReasonJson = JsonSerializer.Serialize(command) }, ("Now", now));
         await connection.ExecuteAsync(RequiredSql(Statement.TerminationRequest), values, transaction);
         madeRunnable?.Add(instanceId);
-        return new(true, command.CommandVersion, row.Incarnation);
+        return new(true, command.CommandVersion, row.Incarnation)
+        { Notice = await NoticeAsync(connection, transaction, instanceId, now) is { Claimable: true } notice ? notice : null };
     }
 
     private sealed class TerminationRow

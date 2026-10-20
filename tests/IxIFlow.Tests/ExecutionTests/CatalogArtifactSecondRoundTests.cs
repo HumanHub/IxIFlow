@@ -268,6 +268,7 @@ public sealed class CatalogArtifactSecondRoundTests
 
     private sealed class PausedLatestCatalog(IWorkflowCatalog inner) : IWorkflowCatalog
     {
+        public long DefinitionRevision => inner.DefinitionRevision;
         private int _calls;
         public int? SelectedVersion;
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

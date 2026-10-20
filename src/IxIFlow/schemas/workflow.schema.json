@@ -53,6 +53,13 @@
         "$ref": "#/definitions/step"
       },
       "description": "The workflow steps in execution order."
+    },
+    "demands": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/workflowDemand"
+      },
+      "description": "Placement constraints resolved once against the workflow start data."
     }
   },
   "required": [
@@ -2051,6 +2058,36 @@
       "required": [
         "language",
         "source"
+      ]
+    },
+    "workflowDemand": {
+      "type": "object",
+      "description": "A capability required by the workflow, optionally inherited by its children.",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "The capability key."
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A literal capability value, or null for a key-only demand."
+        },
+        "from": {
+          "$ref": "#/definitions/expression",
+          "description": "A pure expression evaluated against start data instead of a literal value."
+        },
+        "inherit": {
+          "type": "boolean",
+          "description": "Whether children inherit this residency constraint.",
+          "default": false
+        }
+      },
+      "required": [
+        "key"
       ]
     }
   }

@@ -5,7 +5,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 internal static class StateRepositoryContract
 {
-    internal static async Task VerifySuspendedDeadlineRecoveryScan(IWorkflowStateRepository repository)
+    internal static async Task VerifySuspendedDeadlineRecoveryScan(IWorkflowStateRepository repository, Func<string, Task> makeDue)
     {
         var instanceId = Guid.NewGuid().ToString("N");
         try
@@ -17,17 +17,16 @@ internal static class StateRepositoryContract
                 RunnableAtUtc = DateTime.UtcNow.AddMinutes(1)
             };
             await repository.SeedAsync(instance, TimeSpan.FromMinutes(1));
-            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
+            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 candidate => candidate.InstanceId == instanceId);
 
-            instance.RunnableAtUtc = DateTime.UtcNow.AddMinutes(-1);
-            await repository.SeedAsync(instance, TimeSpan.Zero);
-            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
+            await makeDue(instanceId);
+            Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 candidate => candidate.InstanceId == instanceId);
 
             instance.Status = WorkflowStatus.NeedsResolution;
             await repository.SeedAsync(instance, TimeSpan.Zero);
-            Assert.Contains(await repository.GetRunnableInstancesAsync(100),
+            Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 candidate => candidate.InstanceId == instanceId);
         }
         finally
@@ -61,7 +60,10 @@ internal static class StateRepositoryContract
                 parameter.ParameterName = connection is Npgsql.NpgsqlConnection ? "InstanceId" : "@InstanceId";
                 parameter.Value = instanceId;
                 read.Parameters.Add(parameter);
-                Assert.Equal(commit.Payload, (string?)await read.ExecuteScalarAsync());
+                // Placement is interned; every other payload field is retained exactly.
+                var expected = System.Text.Json.Nodes.JsonNode.Parse(commit.Payload)!;
+                expected["ExecutionStateJson"]!.AsObject().Remove("Demands");
+                Assert.Equal(expected.ToJsonString(), (string?)await read.ExecuteScalarAsync());
             }
             // The payload says revision 0 and a runnable time years away; the columns say what the store set.
             var stored = (await repository.GetWorkflowInstanceAsync(instanceId))!;
@@ -109,7 +111,7 @@ internal static class StateRepositoryContract
                 CorrelationId = "correlation-1",
                 WorkflowDataJson = StoredJson.Inline("{\"Value\":42}")
             };
-            await firstRepository.SeedAsync(instance);
+            await firstRepository.SeedAsync(instance, TimeSpan.Zero);
 
             var secondRepository = newRepository();
             var restored = await secondRepository.GetWorkflowInstanceAsync(instanceId);
