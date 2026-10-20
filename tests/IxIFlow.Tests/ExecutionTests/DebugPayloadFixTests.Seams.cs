@@ -87,7 +87,7 @@ public sealed partial class DebugPayloadFixTests
     {
         await using var h = new Harness(sqlite);
         var firstBytes = JsonSerializer.Serialize(new Data { Text = Large });
-        var arrival = new WorkflowEvent("absent", "event", typeof(Data).AssemblyQualifiedName!, firstBytes, "data")
+        var arrival = new WorkflowEvent("absent", "event", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)), firstBytes, "data")
             { PayloadThresholdBytes = 64 };
         Assert.Equal(EventAppendStatus.NotFound, (await h.Store.AppendEventAsync(arrival)).Status);
         Assert.Null(await h.Store.PayloadStore.GetAsync(PayloadReference.Of(System.Text.Encoding.UTF8.GetBytes(firstBytes))));

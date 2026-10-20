@@ -34,7 +34,7 @@ internal static class WorkflowHttp
             ? null : Results.Problem(statusCode: 403, title: "Workflow access denied");
     }
 
-    internal static async ValueTask<object?> HandleErrorsAsync(Func<ValueTask<object?>> next)
+    internal static async ValueTask<object?> HandleErrorsAsync(Func<ValueTask<object?>> next, bool inspectionRead = false)
     {
         try { return await next(); }
         catch (BadHttpRequestException error)
@@ -48,6 +48,7 @@ internal static class WorkflowHttp
                 WorkflowErrorKind.InvalidRequest => (400, "Invalid workflow request"),
                 WorkflowErrorKind.InvalidState => (409, "Invalid workflow state"),
                 WorkflowErrorKind.InstanceRemoved => (410, "Workflow removed"),
+                WorkflowErrorKind.ResourceExhausted when inspectionRead => (503, "Workflow bundle exceeds the configured read limit"),
                 WorkflowErrorKind.ResourceExhausted => (413, "Workflow request exceeds the configured limit"),
                 WorkflowErrorKind.ArtifactUnavailable => (503, "Workflow version unavailable"),
                 _ => (503, "Workflow service unavailable")

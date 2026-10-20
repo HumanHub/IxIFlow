@@ -314,7 +314,7 @@ public class ParallelApprovalContractTests
         var started = await engine.RunAsync(definition, new ApprovalData());
         // The delivery makes the next execution pass due before its owner claims it.
         await repository.AppendEventAsync(new WorkflowEvent(started.InstanceId, "reply-1",
-            typeof(ApprovalReply).AssemblyQualifiedName!, System.Text.Json.JsonSerializer.Serialize(Reply("finance", true)), "finance"));
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(ApprovalReply)), System.Text.Json.JsonSerializer.Serialize(Reply("finance", true)), "finance"));
         // Another host owns the instance and is running it.
         var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         saved.Status = WorkflowStatus.Running;

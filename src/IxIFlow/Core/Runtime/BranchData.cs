@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Collections;
 using System.Reflection;
 using System.Text.Json;
@@ -90,7 +91,7 @@ internal static class BranchData
                 return current => Equals(value, current);
             if (!type.IsValueType && !seen.Add(value)) return current => ReferenceEquals(value, current);
             var info = Info(type);
-            if (info.Kind == JsonTypeInfoKind.Object && info.Converter.GetType().Assembly == typeof(JsonSerializer).Assembly)
+            if (info.Kind == JsonTypeInfoKind.Object && info.Converter.GetType().Assembly == typeof(System.Text.Json.JsonSerializer).Assembly)
             {
                 var properties = info.Properties.Where(p => p.Get != null).ToArray();
                 if (properties.Any(p => p.CustomConverter != null)) return _ => false;
@@ -98,7 +99,7 @@ internal static class BranchData
                 return current => current != null && current.GetType() == type &&
                     (type.IsValueType || ReferenceEquals(value, current)) && members.All(p => p.Same(p.Property.Get!(current)));
             }
-            if (info.Kind == JsonTypeInfoKind.Dictionary && info.Converter.GetType().Assembly == typeof(JsonSerializer).Assembly &&
+            if (info.Kind == JsonTypeInfoKind.Dictionary && info.Converter.GetType().Assembly == typeof(System.Text.Json.JsonSerializer).Assembly &&
                 value is IDictionary dictionary)
             {
                 var entries = Entries().Select(p => (p.Key, Same: Capture(p.Value))).ToArray();
@@ -152,7 +153,7 @@ internal static class BranchData
         var node = Node(baseline);
         foreach (var change in changes)
             Lay(node, change);
-        return node.Deserialize(baseline.GetType(), Options)!;
+        return JsonSerializer.Deserialize(node.ToJsonString(), baseline.GetType(), Options)!;
     }
 
     /// <summary>Validates property paths before patching a detached JSON copy and reading it whole.</summary>
@@ -181,14 +182,14 @@ internal static class BranchData
             else target[patch.Path[^1]] = JsonNode.Parse(patch.Value.GetRawText());
         }
         // All converters, required properties and setters see the complete candidate together.
-        return node.Deserialize(data.GetType(), Options)
+        return JsonSerializer.Deserialize(node.ToJsonString(), data.GetType(), Options)
             ?? throw new ArgumentException("Workflow data cannot be null");
     }
 
     private static JsonPropertyInfo EditableProperty(JsonTypeInfo info, string name, bool leaf = true)
     {
         // Dictionary keys are values, so accepting them would also expose them in audit paths.
-        if (info.Kind != JsonTypeInfoKind.Object || info.Converter.GetType().Assembly != typeof(JsonSerializer).Assembly)
+        if (info.Kind != JsonTypeInfoKind.Object || info.Converter.GetType().Assembly != typeof(System.Text.Json.JsonSerializer).Assembly)
             throw new ArgumentException("An edit path must contain only contract properties, without dictionary keys or indices");
         var property = PropertyNamed(info, name);
         if (property?.Get == null || property.IsExtensionData || property.Set == null &&
@@ -271,7 +272,7 @@ internal static class BranchData
         object merged;
         try
         {
-            merged = node.Deserialize(type, Options)!;
+            merged = JsonSerializer.Deserialize(node.ToJsonString(), type, Options)!;
         }
         catch (Exception error) when (error is not (OutOfMemoryException or WorkflowEngineException))
         {
@@ -528,7 +529,7 @@ internal static class BranchData
             target[change.Path[^1]] = JsonNode.Parse(change.Value?.InlineText ?? "null");
     }
 
-    private static JsonTypeInfo Info(Type type) => Options.GetTypeInfo(type);
+    private static JsonTypeInfo Info(Type type) => WorkflowJson.Options(Options, type).GetTypeInfo(type);
 
     /// <summary>
     /// True when a value of this contract is compared and merged per member: a class whose properties are

@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Text.Json;
 using IxIFlow.Core.Runtime;
 
@@ -57,8 +58,10 @@ public sealed partial class WorkflowHost
             var checkpoint = await ReadCheckpointAsync(current, reader);
             if (checkpoint.Debug.PauseGeneration != request.Target.PauseGeneration)
                 throw EditRefused("The pause generation changed");
-            var definition = await registry.GetWorkflowDefinitionAsync(current.WorkflowName, current.WorkflowVersion)
-                ?? throw EditRefused("Workflow definition is unavailable");
+            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(current.WorkflowName,
+                current.WorkflowVersion, current.BundleDigest, cancellationToken);
+            using var types = definitionLease.EnterTypes();
+            var definition = definitionLease.Definition;
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             if (scopes.StructureHash != checkpoint.StructureHash) throw EditRefused("Workflow structure differs");
             var first = latest.Commands.FirstOrDefault(c => c.AcknowledgedRevision == null);

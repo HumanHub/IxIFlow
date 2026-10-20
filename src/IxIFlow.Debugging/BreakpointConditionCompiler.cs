@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 using System.Reflection;
+using System.Reflection.Metadata;
+using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using IxIFlow.Core;
 using Microsoft.CodeAnalysis;
@@ -13,47 +15,144 @@ namespace IxIFlow.Debugging;
 public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, IDisposable
 {
     private const int Capacity = 128;
-    private readonly Dictionary<BreakpointConditionRequest, LinkedListNode<(BreakpointConditionRequest Key, CacheEntry Entry)>> _cache = [];
-    private readonly LinkedList<(BreakpointConditionRequest Key, CacheEntry Entry)> _recency = [];
+    // Runtime bindings between collectible assemblies can keep the type key alive. Clear a
+    // bundle's strong cache when its loader requests unloading, rather than waiting for GC.
+    private readonly ConditionalWeakTable<Type, ConditionCache> _caches = new();
+    private readonly ConditionalWeakTable<AssemblyLoadContext, ConditionCache> _collectibleCaches = new();
+    private readonly List<WeakReference<AssemblyLoadContext>> _contexts = [];
+    private readonly bool _hasFrameworkIdentities;
+    private readonly Func<AssemblyName, bool> _isFrameworkAssembly;
     private bool _disposed;
+
+    public BreakpointConditionCompiler()
+        : this(WorkflowSharedAssemblies.HasFrameworkIdentities, WorkflowSharedAssemblies.IsFrameworkAssembly) { }
+
+    internal BreakpointConditionCompiler(IReadOnlyDictionary<string, AssemblyName> frameworkIdentities)
+        : this(frameworkIdentities.Count != 0, name => WorkflowSharedAssemblies.IsFrameworkAssembly(name, frameworkIdentities)) { }
+
+    internal BreakpointConditionCompiler(bool hasFrameworkIdentities, Func<AssemblyName, bool> isFrameworkAssembly)
+        => (_hasFrameworkIdentities, _isFrameworkAssembly) = (hasFrameworkIdentities, isFrameworkAssembly);
+
+    private sealed class ConditionCache
+    {
+        internal readonly Dictionary<BreakpointConditionRequest, LinkedListNode<(BreakpointConditionRequest Key, CacheEntry Entry)>> Entries = [];
+        internal readonly LinkedList<(BreakpointConditionRequest Key, CacheEntry Entry)> Recency = [];
+        internal Action<AssemblyLoadContext>? Unloading;
+        internal int Retired;
+    }
 
     public BreakpointConditionCompilation Compile(BreakpointConditionRequest request)
     {
         CacheEntry compiled;
         CacheEntry? evicted = null;
-        lock (_cache)
+        lock (_caches)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_cache.TryGetValue(request, out var hit))
+            var owners = new[] { request.DataType, request.PreviousType, request.ItemType }
+                .SelectMany(CollectibleContexts).Distinct().ToArray();
+            // A single owner's retirement cannot release types from other independent contexts.
+            var cache = owners.Length switch
             {
-                _recency.Remove(hit); _recency.AddFirst(hit);
+                0 => _caches.GetValue(typeof(object), _ => new()),
+                1 => BundleCache(owners[0]),
+                _ => null
+            };
+            if (cache != null && cache.Entries.TryGetValue(request, out var hit))
+            {
+                cache.Recency.Remove(hit); cache.Recency.AddFirst(hit);
                 return hit.Value.Entry.Compilation;
             }
             compiled = CompileCore(request);
-            _cache.Add(request, _recency.AddFirst((request, compiled)));
-            if (_cache.Count > Capacity)
+            _contexts.RemoveAll(reference => !reference.TryGetTarget(out _));
+            if (compiled.LoadContext != null) _contexts.Add(new(compiled.LoadContext));
+            if (cache == null || Volatile.Read(ref cache.Retired) != 0)
+                evicted = compiled; // The returned delegate remains usable after requesting unload.
+            else
             {
-                var oldest = _recency.Last!;
-                _recency.RemoveLast(); _cache.Remove(oldest.Value.Key);
-                evicted = oldest.Value.Entry;
+                cache.Entries.Add(request, cache.Recency.AddFirst((request, compiled)));
+                if (cache.Entries.Count > Capacity)
+                {
+                    var oldest = cache.Recency.Last!;
+                    cache.Recency.RemoveLast(); cache.Entries.Remove(oldest.Value.Key);
+                    evicted = oldest.Value.Entry;
+                }
             }
         }
-        // Unload is deferred by the runtime while an in-flight evaluation still holds its delegate.
+        // Unload is deferred while an in-flight evaluation still holds its delegate.
         evicted?.LoadContext?.Unload();
         return compiled.Compilation;
     }
 
+    private ConditionCache? BundleCache(AssemblyLoadContext context)
+    {
+        // External contexts (including authoring scratch contexts) may have already
+        // raised Unloading before we saw them. Only bundle contexts track that lifetime.
+        if (context is not BundleLoadContext bundle) return null;
+        if (!_collectibleCaches.TryGetValue(context, out var cache))
+        {
+            cache = new();
+            var created = cache;
+            created.Unloading = owner => ReleaseBundle(owner, created);
+            // Subscribe before publishing the cache. The callback can retire it even while
+            // waiting for the compiler lock; registration refuses an already-retired owner.
+            try
+            {
+                if (!bundle.TryRegisterUnloading(created.Unloading)) Volatile.Write(ref created.Retired, 1);
+            }
+            catch (InvalidOperationException) { Volatile.Write(ref created.Retired, 1); }
+            _collectibleCaches.Add(context, created);
+        }
+        return Volatile.Read(ref cache.Retired) == 0 ? cache : null;
+    }
+
+    private static IEnumerable<AssemblyLoadContext> CollectibleContexts(Type? type)
+    {
+        if (type == null || !type.IsCollectible) yield break;
+        var context = AssemblyLoadContext.GetLoadContext(type.Assembly);
+        if (context?.IsCollectible == true) yield return context;
+        // A framework generic/array can contain bundle types although its own assembly is shared.
+        if (type.HasElementType)
+            foreach (var owner in CollectibleContexts(type.GetElementType())) yield return owner;
+        foreach (var owner in type.GetGenericArguments().SelectMany(CollectibleContexts)) yield return owner;
+    }
+
+    private void ReleaseBundle(AssemblyLoadContext context, ConditionCache cache)
+    {
+        Interlocked.Exchange(ref cache.Retired, 1);
+        AssemblyLoadContext[] conditions;
+        lock (_caches)
+        {
+            conditions = cache.Entries.Values.Select(entry => entry.Value.Entry.LoadContext)
+                .OfType<AssemblyLoadContext>().ToArray();
+            cache.Entries.Clear();
+            cache.Recency.Clear();
+            // Retain only the empty retirement state so a later compile cannot recreate a cache.
+            Detach(context, cache);
+        }
+        foreach (var condition in conditions) condition.Unload();
+    }
+
+    private static void Detach(AssemblyLoadContext context, ConditionCache cache)
+    {
+        try { ((BundleLoadContext)context).UnregisterUnloading(cache.Unloading); }
+        catch (InvalidOperationException) { /* The runtime has already retired this context. */ }
+    }
+
     public void Dispose()
     {
-        CacheEntry[] entries;
-        lock (_cache)
+        AssemblyLoadContext[] contexts;
+        lock (_caches)
         {
             if (_disposed) return;
             _disposed = true;
-            entries = _recency.Select(item => item.Entry).ToArray();
-            _cache.Clear(); _recency.Clear();
+            contexts = _contexts.Select(reference => reference.TryGetTarget(out var context) ? context : null)
+                .OfType<AssemblyLoadContext>().ToArray();
+            _contexts.Clear();
+            _caches.Clear();
+            foreach (var entry in _collectibleCaches) Detach(entry.Key, entry.Value);
+            _collectibleCaches.Clear();
         }
-        foreach (var entry in entries) entry.LoadContext?.Unload();
+        foreach (var context in contexts) context.Unload();
     }
 
     private sealed class CacheEntry(Func<object, object?, object?, int?, DateTimeOffset, bool>? evaluate,
@@ -63,8 +162,11 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, 
         public AssemblyLoadContext? LoadContext { get; } = loadContext;
     }
 
-    private static CacheEntry CompileCore(BreakpointConditionRequest request)
+    private CacheEntry CompileCore(BreakpointConditionRequest request)
     {
+        if (!_hasFrameworkIdentities)
+            return new(null, [Positioned("BPC003", "Shared framework identities are unavailable on this host",
+                0, request.Text.Length, request.Text)]);
         // Parse the user's text as one expression before embedding it. In particular, directives and
         // trailing tokens cannot escape the expression into the generated method or assembly.
         var expression = SyntaxFactory.ParseExpression(request.Text, options: new CSharpParseOptions(LanguageVersion.CSharp14),
@@ -92,8 +194,21 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, 
             """ + "\n";
         var source = prefix + request.Text + "\n);\n}\n}";
         var tree = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.CSharp14));
-        var references = References(request).ToArray();
-        var compilation = CSharpCompilation.Create("IxIFlowCondition_" + Guid.NewGuid().ToString("N"), [tree], references,
+        ConditionReferences? references = null;
+        ConditionAllowlist allowlist;
+        try
+        {
+            references = new ConditionReferences(request);
+            allowlist = new ConditionAllowlist(request.Text, prefix.Length, references.Assemblies.Values, _isFrameworkAssembly);
+        }
+        catch (Exception error) when (error is InvalidOperationException or FileLoadException or BadImageFormatException or FileNotFoundException)
+        {
+            references?.Dispose();
+            return new(null, [Positioned("BPC003", $"Condition references could not be resolved: {error.Message}",
+                0, request.Text.Length, request.Text)]);
+        }
+        using var referenceLifetime = references;
+        var compilation = CSharpCompilation.Create("IxIFlowCondition_" + Guid.NewGuid().ToString("N"), [tree], references.Metadata,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, optimizationLevel: OptimizationLevel.Release,
                 allowUnsafe: false, checkOverflow: true));
         var errors = compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).ToArray();
@@ -103,7 +218,6 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, 
         var returned = tree.GetRoot().DescendantNodes().OfType<ReturnStatementSyntax>().First();
         var operation = (model.GetOperation(returned) as IReturnOperation)?.ReturnedValue
             ?? throw new InvalidOperationException("Roslyn did not bind the condition's return value");
-        var allowlist = new ConditionAllowlist(request.Text, prefix.Length);
         allowlist.Visit(operation);
         if (allowlist.Diagnostics.Count != 0) return new(null, allowlist.Diagnostics.Distinct().ToArray());
         using var stream = new MemoryStream();
@@ -113,7 +227,7 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, 
                 d.Location.SourceSpan.Length, request.Text)).ToArray());
         stream.Position = 0;
         // The cache owns the collectible context until eviction or compiler disposal.
-        var loadContext = new AssemblyLoadContext(compilation.AssemblyName!, isCollectible: true);
+        var loadContext = new ConditionLoadContext(compilation.AssemblyName!, references.Assemblies);
         try
         {
             var assembly = loadContext.LoadFromStream(stream);
@@ -124,27 +238,81 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, 
         catch { loadContext.Unload(); throw; }
     }
 
-    private static IEnumerable<MetadataReference> References(BreakpointConditionRequest request)
+    private sealed class ConditionLoadContext(string name, IReadOnlyDictionary<string, Assembly> assemblies)
+        : AssemblyLoadContext(name, isCollectible: true)
     {
-        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") is string platform)
-            foreach (var path in platform.Split(Path.PathSeparator)) paths.Add(path);
-        var seen = new HashSet<Assembly>();
-        void Add(Assembly assembly)
+        protected override Assembly? Load(AssemblyName name) =>
+            assemblies.TryGetValue(name.Name!, out var assembly) ? assembly : null;
+    }
+
+    private sealed class ConditionReferences : IDisposable
+    {
+        internal readonly Dictionary<string, Assembly> Assemblies = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly List<MetadataReference> Metadata = [];
+        private readonly List<AssemblyMetadata> _owned = [];
+
+        internal ConditionReferences(BreakpointConditionRequest request)
         {
-            if (!seen.Add(assembly) || assembly.IsDynamic || string.IsNullOrEmpty(assembly.Location)) return;
-            paths.Add(assembly.Location);
+            try
+            {
+                Add(typeof(BreakpointConditionContext<,,>));
+                Add(request.DataType);
+                if (request.PreviousType != null) Add(request.PreviousType);
+                if (request.ItemType != null) Add(request.ItemType);
+                // Bundle references take precedence over a same-named application assembly in TPA.
+                if (AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") is string platform)
+                    foreach (var path in platform.Split(Path.PathSeparator))
+                        if (!Assemblies.ContainsKey(Path.GetFileNameWithoutExtension(path)))
+                            Metadata.Add(MetadataReference.CreateFromFile(path));
+                foreach (var assembly in Assemblies.Values) Metadata.Add(Reference(assembly));
+            }
+            catch { Dispose(); throw; }
+        }
+
+        private void Add(Type type)
+        {
+            Add(type.Assembly);
+            if (type.HasElementType) Add(type.GetElementType()!);
+            if (type.IsConstructedGenericType)
+                foreach (var argument in type.GetGenericArguments()) Add(argument);
+        }
+
+        private void Add(Assembly assembly)
+        {
+            if (assembly.IsDynamic) return;
+            var name = assembly.GetName().Name!;
+            if (Assemblies.TryGetValue(name, out var previous))
+            {
+                if (previous != assembly) throw new InvalidOperationException("Condition inputs use different assembly versions");
+                return;
+            }
+            Assemblies.Add(name, assembly);
+            var context = AssemblyLoadContext.GetLoadContext(assembly)!;
             foreach (var reference in assembly.GetReferencedAssemblies())
             {
-                try { Add(Assembly.Load(reference)); }
+                try { Add(context.LoadFromAssemblyName(reference)); }
                 catch (FileNotFoundException) { /* Roslyn diagnoses unavailable metadata at the expression. */ }
             }
         }
-        Add(typeof(BreakpointConditionContext<,,>).Assembly);
-        Add(request.DataType.Assembly);
-        if (request.PreviousType != null) Add(request.PreviousType.Assembly);
-        if (request.ItemType != null) Add(request.ItemType.Assembly);
-        foreach (var path in paths) yield return MetadataReference.CreateFromFile(path);
+
+        private unsafe MetadataReference Reference(Assembly assembly)
+        {
+            if (!string.IsNullOrEmpty(assembly.Location)) return MetadataReference.CreateFromFile(assembly.Location);
+            // Verified bundles are loaded from streams. Borrow runtime-owned metadata while
+            // Assemblies holds the source assembly alive, and dispose Roslyn's view after emit.
+            if (!assembly.TryGetRawMetadata(out var metadata, out var length))
+                throw new InvalidOperationException("Condition input metadata is unavailable");
+            var owned = AssemblyMetadata.Create(ModuleMetadata.CreateFromMetadata((nint)metadata, length));
+            _owned.Add(owned);
+            return owned.GetReference();
+        }
+
+        public void Dispose()
+        {
+            foreach (var metadata in _owned) metadata.Dispose();
+            _owned.Clear();
+            GC.KeepAlive(Assemblies);
+        }
     }
 
     private static string TypeName(Type type)
@@ -176,9 +344,15 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, 
     }
 }
 
-internal sealed class ConditionAllowlist(string text, int offset) : OperationWalker
+internal sealed class ConditionAllowlist(string text, int offset, IEnumerable<Assembly> assemblies,
+    Func<AssemblyName, bool> isFrameworkAssembly) : OperationWalker
 {
     public List<BreakpointConditionDiagnostic> Diagnostics { get; } = [];
+    private readonly HashSet<AssemblyIdentity> _applicationAssemblies = assemblies
+        .Where(assembly => !isFrameworkAssembly(assembly.GetName()))
+        .Select(assembly => AssemblyIdentity.TryParseDisplayName(assembly.FullName!, out var identity) ? identity
+            : throw new InvalidOperationException("Condition input assembly identity is unavailable"))
+        .ToHashSet();
 
     private static readonly ImmutableHashSet<string> MathMembers = ["Abs", "Acos", "Acosh", "Asin", "Asinh", "Atan", "Atan2", "Atanh",
         "BitDecrement", "BitIncrement", "Cbrt", "Ceiling", "Clamp", "CopySign", "Cos", "Cosh", "Exp", "Floor", "FusedMultiplyAdd",
@@ -225,26 +399,23 @@ internal sealed class ConditionAllowlist(string text, int offset) : OperationWal
     private void Refuse(IOperation operation, string message) => Diagnostics.Add(
         BreakpointConditionCompiler.Positioned("BPC001", message, operation.Syntax.SpanStart - offset, operation.Syntax.Span.Length, text));
 
-    private static bool Bcl(ITypeSymbol type) => type.ContainingAssembly?.Identity.Name is
-        "System.Private.CoreLib" or "System.Runtime" or "System.Collections" or "System.Linq" or "System.Runtime.Extensions";
-    private static bool Application(ITypeSymbol type)
-    {
-        var assembly = type.ContainingAssembly?.Identity.Name ?? "";
-        return assembly is not ("mscorlib" or "netstandard") &&
-            !assembly.StartsWith("System", StringComparison.Ordinal) &&
-            !assembly.StartsWith("Microsoft.", StringComparison.Ordinal);
-    }
+    private bool Bcl(ITypeSymbol type) => type.ContainingAssembly is { } assembly &&
+        isFrameworkAssembly(new AssemblyName(assembly.Identity.GetDisplayName()));
+    private bool Application(ITypeSymbol type) => type.ContainingAssembly is { } assembly &&
+        _applicationAssemblies.Contains(assembly.Identity);
     private static string Name(ITypeSymbol type) => type.OriginalDefinition.ToDisplayString();
-    private static bool Numeric(ITypeSymbol type) => Bcl(type) && type.SpecialType is >= SpecialType.System_SByte and <= SpecialType.System_Decimal;
-    private static bool PureOperator(IMethodSymbol method) => Bcl(method.ContainingType) &&
+    private bool Numeric(ITypeSymbol type) => Bcl(type) && type.SpecialType is >= SpecialType.System_SByte and <= SpecialType.System_Decimal;
+    private bool PureOperator(IMethodSymbol method) => Bcl(method.ContainingType) &&
         (Numeric(method.ContainingType) || Name(method.ContainingType) is "string" or "System.DateTime" or "System.DateTimeOffset" or "System.TimeSpan");
 
-    private static bool Property(IPropertyReferenceOperation property)
+    private bool Property(IPropertyReferenceOperation property)
     {
         var symbol = property.Property;
         var type = symbol.ContainingType;
         var name = Name(type);
-        if (name == "IxIFlow.Core.BreakpointConditionContext<TData, TPrevious, TItem>") return !symbol.IsStatic;
+        if (name == "IxIFlow.Core.BreakpointConditionContext<TData, TPrevious, TItem>" &&
+            type.ContainingAssembly.Identity.GetDisplayName() == typeof(BreakpointConditionContext<,,>).Assembly.FullName)
+            return !symbol.IsStatic;
         if (!Bcl(type)) return Application(type) && !symbol.IsStatic && property.Instance != null && Rooted(property.Instance);
         if (name == "string") return symbol.Name == "Length" || symbol.IsIndexer;
         if (name == "System.Array") return symbol.Name is "Length" or "LongLength" or "Rank";
@@ -256,7 +427,7 @@ internal sealed class ConditionAllowlist(string text, int offset) : OperationWal
         return InMemory(type) && (symbol.IsIndexer || symbol.Name is "Count" or "Length" or "Keys" or "Values" or "Key" or "Value");
     }
 
-    private static bool Field(IFieldReferenceOperation field)
+    private bool Field(IFieldReferenceOperation field)
     {
         var symbol = field.Field;
         var type = symbol.ContainingType;
@@ -268,7 +439,7 @@ internal sealed class ConditionAllowlist(string text, int offset) : OperationWal
             Name(type) is "System.DateTime" or "System.DateTimeOffset" && DateMembers.Contains(symbol.Name);
     }
 
-    private static bool Method(IInvocationOperation invocation)
+    private bool Method(IInvocationOperation invocation)
     {
         var method = invocation.TargetMethod;
         var type = method.ContainingType;
@@ -312,12 +483,12 @@ internal sealed class ConditionAllowlist(string text, int offset) : OperationWal
         i.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T) ||
         type.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T;
 
-    private static bool InMemory(ITypeSymbol type) => type is IArrayTypeSymbol || Bcl(type) && Name(type) is
+    private bool InMemory(ITypeSymbol type) => type is IArrayTypeSymbol || Bcl(type) && Name(type) is
         "System.Collections.Generic.List<T>" or "System.Collections.Generic.Dictionary<TKey, TValue>" or
         "System.Collections.Generic.Dictionary<TKey, TValue>.KeyCollection" or "System.Collections.Generic.Dictionary<TKey, TValue>.ValueCollection" or
         "System.Collections.Generic.HashSet<T>" or "System.Collections.Generic.KeyValuePair<TKey, TValue>";
 
-    private static bool MemorySource(IOperation operation) => operation is IConversionOperation c ? MemorySource(c.Operand) :
+    private bool MemorySource(IOperation operation) => operation is IConversionOperation c ? MemorySource(c.Operand) :
         operation is IInvocationOperation call && Name(call.TargetMethod.ContainingType) == "System.Linq.Enumerable" ||
         operation.Type != null && InMemory(operation.Type);
 

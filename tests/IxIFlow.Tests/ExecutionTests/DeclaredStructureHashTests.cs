@@ -281,7 +281,7 @@ public sealed class DeclaredStructureHashTests
             else
             {
                 if (operation == "recover")
-                    await store.AppendEventAsync(new WorkflowEvent(id, "ready", typeof(StructureHashAnswer).AssemblyQualifiedName!, "{}", "go"));
+                    await store.AppendEventAsync(new WorkflowEvent(id, "ready", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(StructureHashAnswer)), "{}", "go"));
                 result = await client.RecoverAsync(id, patience.Token).WaitAsync(patience.Token);
             }
             Assert.Equal(WorkflowExecutionStatus.Scheduled, result.Status);
@@ -366,7 +366,7 @@ public sealed class DeclaredStructureHashTests
             else
             {
                 if (operation == "recover")
-                    await store.AppendEventAsync(new WorkflowEvent(id, "ready", typeof(StructureHashAnswer).AssemblyQualifiedName!, "{}", "go"));
+                    await store.AppendEventAsync(new WorkflowEvent(id, "ready", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(StructureHashAnswer)), "{}", "go"));
                 result = await client.RecoverAsync(id);
             }
             Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);

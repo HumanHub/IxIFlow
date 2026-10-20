@@ -40,7 +40,7 @@ public sealed class UnschedulableTests : IClassFixture<SqliteTestDatabase<Unsche
         var instance = new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "UnschedulableContract", WorkflowVersion = 7,
-            Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = typeof(object).AssemblyQualifiedName!,
+            Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
             ExecutionStateJson = JsonSerializer.Serialize(new ExecutionCheckpoint
             {
                 StructureHash = "saved-hash", Demands = demands.ToList(),

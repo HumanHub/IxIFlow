@@ -19,7 +19,7 @@ public sealed class IncomingWebhookStoreScenarios
         {
             var cases = new TheoryData<string, string>();
             foreach (var profile in new[] { "sqlite", "sqlserver", "postgresql" })
-                foreach (var part in new[] { "admissions", "ownership", "deliveries", "owner-kind", "old-column", "outbox", "epoch" })
+                foreach (var part in new[] { "admissions", "ownership", "deliveries", "owner-kind", "old-column", "bundle-digest", "outbox", "epoch" })
                     cases.Add(profile, part);
             return cases;
         }
@@ -107,6 +107,9 @@ public sealed class IncomingWebhookStoreScenarios
         var sql = missing switch
         {
             "owner-kind" => $"ALTER TABLE {database.Table("ownership")} DROP COLUMN {(database.SqlServer ? "OwnerKind" : "owner_kind")}",
+            "bundle-digest" => database.SqlServer
+                ? "DROP INDEX IX_IxIFlowWorkflowInstances_BundleDigest ON dbo.IxIFlowWorkflowInstances; ALTER TABLE dbo.IxIFlowWorkflowInstances DROP COLUMN BundleDigest"
+                : $"DROP INDEX ix_ixiflow_instances_bundle_digest; ALTER TABLE {database.Table("instances")} DROP COLUMN bundle_digest",
             "old-column" => $"ALTER TABLE {database.Table("instances")} DROP COLUMN {(database.SqlServer ? "StateJson" : "state_json")}",
             "outbox" => "DROP TABLE " + (database.SqlServer ? "dbo.IxIFlowOutboxDeliveries" : "ixiflow_outbox_deliveries"),
             "epoch" => profile == "sqlite" ? "DROP TABLE ixiflow_execution_epoch"
@@ -119,6 +122,27 @@ public sealed class IncomingWebhookStoreScenarios
         {
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => second.GetWorkflowInstanceAsync("missing"));
             Assert.Contains("earlier build", error.Message);
+            Assert.Contains("must be recreated", error.Message);
+        }
+        finally { await DisposeRepositoryAsync(second); }
+    }
+
+    [Theory]
+    [MemberData(nameof(SqlStores))]
+    public async Task ADatabaseMissingOnlyTheBundleDigestIndexIsRefused(string profile)
+    {
+        await using var database = await CreateAsync(profile);
+        var first = database.Repository();
+        try { Assert.Null(await first.GetWorkflowInstanceAsync("missing")); }
+        finally { await DisposeRepositoryAsync(first); }
+        await database.Connection.ExecuteAsync(database.SqlServer
+            ? "DROP INDEX IX_IxIFlowWorkflowInstances_BundleDigest ON dbo.IxIFlowWorkflowInstances"
+            : "DROP INDEX ix_ixiflow_instances_bundle_digest");
+        var second = database.Repository();
+        try
+        {
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => second.GetWorkflowInstanceAsync("missing"));
+            Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
             Assert.Contains("must be recreated", error.Message);
         }
         finally { await DisposeRepositoryAsync(second); }
@@ -148,7 +172,7 @@ public sealed class IncomingWebhookStoreScenarios
             var instance = new WorkflowInstance
             {
                 InstanceId = "signed-owner", WorkflowName = "Receipt", WorkflowVersion = 1, Status = WorkflowStatus.Running,
-                WorkflowDataType = typeof(object).AssemblyQualifiedName!, WorkflowDataJson = StoredJson.Inline("{}"),
+                WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), WorkflowDataJson = StoredJson.Inline("{}"),
                 ExecutionStateJson = StoreTestSupport.CheckpointJson
             };
             var request = new WorkflowAdmission("vendor", "trigger", "delivery", new string('A', 64), "vendor",

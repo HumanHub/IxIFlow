@@ -520,7 +520,7 @@ public sealed class CatalogArtifactReviewRegressionTests
     {
         InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = name, WorkflowVersion = 1,
         Status = WorkflowStatus.Suspended, ExecutionStateJson = StoreTestSupport.CheckpointJson,
-        WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = typeof(Data).AssemblyQualifiedName!
+        WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data))
     };
     public sealed class Data;
     public sealed class Noop : IAsyncActivity

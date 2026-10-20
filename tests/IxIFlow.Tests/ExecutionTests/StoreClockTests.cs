@@ -710,7 +710,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         new(instanceId, eventId, "Approval", "{}", key, targetWaitId);
 
     private static WorkflowEvent ApprovalEvent(string instanceId, string eventId) =>
-        new(instanceId, eventId, typeof(Approval).AssemblyQualifiedName!,
+        new(instanceId, eventId, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)),
             JsonSerializer.Serialize(new Approval { Decision = "approved" }), "approval");
 
     private static WorkflowDefinition ApprovalWorkflow(string name) =>
@@ -840,7 +840,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
-            WorkflowDataType = typeof(ClockData).AssemblyQualifiedName!,
+            WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(ClockData)),
             WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(data)),
             Status = WorkflowStatus.Running,
             CreatedAt = now,
