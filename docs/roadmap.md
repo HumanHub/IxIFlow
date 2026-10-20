@@ -26,7 +26,7 @@ Conformance covers memory, SQLite and distributed SQL Server/PostgreSQL, includi
 | Area | Planned work |
 | --- | --- |
 | Execution and scheduling | Commit resend backoff, batched host lease renewal and completion of demand-aware local-first start/resume admission; execution-claim skip-locked policy remains open |
-| Workflow publishing/versioning | Activity-package dependency resolution and digest pinning, template dependencies; Azure Blob Storage and S3 artifact providers; draft, upload and publishing HTTP APIs |
+| Workflow publishing/versioning | Activity-package dependency resolution and digest pinning, template dependencies; draft, upload and publishing HTTP APIs |
 | Catalog and authoring services | Unified workflow/activity catalog API with input/output metadata, remaining placement and inspection parity for code-defined workflows, published activity packages and YAML code activities, inline workflow calls, explicit workflow input/output contracts and local activity registration |
 | Debugger and audit | Breakpoints and their commits, all-stop pause, stepping through loops, audited data edits, Debug Adapter Protocol and inspection/replay tooling. Timers will keep running while paused; edits will record actor, time, revision and paths |
 | Large payloads | Opt-in storage by reference for workflow data, events and child inputs/results, with transactional reference tracking and collection; bodies stay in the state store |
