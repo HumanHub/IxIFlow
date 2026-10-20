@@ -35,6 +35,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
     {
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(workflowData);
+        if (options?.InstanceId != null) InstanceIds.Validate(options.InstanceId);
         return UntilIdleAsync(host.RunAsync(options?.InstanceId,
             (client, _, token) => client.RunAsync(definition, workflowData, options, token), cancellationToken),
             cancellationToken);
@@ -44,6 +45,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class
     {
         WorkflowCatalogRules.ValidateName(name);
+        if (options?.InstanceId != null) InstanceIds.Validate(options.InstanceId);
         var versionOmitted = version == null;
         if (version == null && options?.InstanceId is { } instanceId &&
             await repository.GetWorkflowInstanceSummaryAsync(instanceId) is { } existing)
@@ -91,6 +93,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(workflowData);
         options ??= new WorkflowOptions();
+        if (options.InstanceId != null) InstanceIds.Validate(options.InstanceId);
         // Inside a slot the start runs inline, so it cannot return before the run ends. The host
         // decides inline or queued once, so a run that ends meanwhile cannot change the choice.
         if (host.TryRunInline((client, _, token) => client.RunAsync(definition, workflowData, options, token, versionOmitted),
@@ -149,7 +152,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
     private Task<WorkflowExecutionResult> SendAsync<TEventData>(string instanceId, string? key,
         TEventData @event, string eventId, CancellationToken cancellationToken) where TEventData : class
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(@event);
         return DecideAsync(instanceId, eventId,
             client => client.DeliverAsync(instanceId, key, @event, eventId), cancellationToken);
@@ -173,6 +176,8 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
     public async Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
+        if (query.InstanceId != null) InstanceIds.Validate(query.InstanceId);
+        if (query.InstanceIds != null) InstanceIds.ValidateAll(query.InstanceIds);
         // Only waits without a request are listed: a request's answer goes to the token the request
         // sent, and a child's waits shown on its parent are listed on the child (D-33). The store
         // applies the filter, so paging by wait reference never skips a listed wait.
@@ -269,15 +274,15 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
     public Task<WorkflowExecutionResult> RecoverAsync(string instanceId,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         return host.RunAsync(instanceId,
-            (client, _, token) => client.RecoverAsync(instanceId, token), cancellationToken);
+            (client, _, token) => client.RecoverAsync(instanceId, token), cancellationToken, recoveryProbe: true);
     }
 
     public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId, string? actor = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         return UntilIdleAsync(host.RunAsync(instanceId,
             (client, _, token) => client.ReleaseAsync(instanceId, actor, token), cancellationToken),
             cancellationToken);
@@ -288,7 +293,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
     public async Task<WorkflowExecutionResult> CancelAsync(string instanceId, CancellationReason reason,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         var requested = await host.ReadAsync(client =>
             client.RequestCancellationAsync(instanceId, reason, cancellationToken));
@@ -304,7 +309,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
     public Task<WorkflowExecutionResult> ResolveAsync(string instanceId, string invocationId,
         ActivityResolution resolution, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         return UntilIdleAsync(host.RunAsync(instanceId,
             (client, _, token) => client.ResolveAsync(instanceId, invocationId, resolution, token),
             cancellationToken), cancellationToken);
@@ -337,7 +342,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
     public async Task<WorkflowExecutionResult> AwaitAsync(string instanceId,
         WorkflowAwaitCondition until = WorkflowAwaitCondition.Idle, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         while (true)
         {
             // Watch before reading, so work that finishes in between is not missed. Only work on

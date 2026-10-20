@@ -17,6 +17,7 @@ public partial class InMemoryWorkflowStateRepository
 
     public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         lock (_claimLock)
             return Task.FromResult(ActiveTombstone(instanceId, Now));
     }

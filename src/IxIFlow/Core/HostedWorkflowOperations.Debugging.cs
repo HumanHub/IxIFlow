@@ -12,7 +12,7 @@ internal sealed partial class HostedWorkflowOperations
     public async Task<string> LaunchAsync(string instanceId, string workflow, int version, System.Text.Json.JsonElement input,
         bool stopOnEntry, string actor, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         if (!(hostSettings ?? Runtime.HostSettings.Default).Debugging) throw new InvalidOperationException("Debugging is disabled");
         return await client.StartAsync(workflow, version, (object)input.Clone(), new WorkflowOptions

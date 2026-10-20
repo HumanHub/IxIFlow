@@ -11,7 +11,7 @@ public sealed partial class WorkflowHost
         public async Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
             DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken, Guid? expectedIncarnation = null)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(editId);
             ArgumentException.ThrowIfNullOrWhiteSpace(actor);
             ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);

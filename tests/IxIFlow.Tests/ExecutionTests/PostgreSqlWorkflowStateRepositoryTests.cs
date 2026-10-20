@@ -52,11 +52,12 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
 
     // A row that does not exist cannot be locked, so a first commit, a claim and a delete of one instance take a lock
     // on its ID instead, which SQL Server's range locks give it: a claim cannot grant a lease while a commit made
-    // without one is being applied, and a delete cannot interleave with a first commit.
+    // without one is being applied (it returns no grant at once instead of waiting, C-11), and a delete cannot
+    // interleave with a first commit.
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "C-11")]
-    public Task CommitsClaimsAndDeletesOfANewInstanceWaitForEachOther() => VerifyNewInstanceSerialization(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString), instanceId => HoldIdentityAsync(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString, instanceId));
+    public Task CommitsClaimsAndDeletesOfANewInstanceWaitForEachOther() => VerifyNewInstanceSerialization(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString), instanceId => HoldIdentityAsync(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString, instanceId), claimsSkip: true);
 
     // A delete reads the parent to tell before it takes its locks. A child its parent starts in between is found
     // under the locks, and the delete starts over, so the parent's wait still ends as the child's termination.
@@ -81,6 +82,8 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
     private sealed class IdentityHold(System.Data.Common.DbConnection connection, System.Data.Common.DbTransaction transaction)
         : IAsyncDisposable
     {
+        public int BackendProcessId => ((Npgsql.NpgsqlConnection)connection).ProcessID;
+
         public async ValueTask DisposeAsync()
         {
             await transaction.DisposeAsync();
@@ -214,30 +217,86 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         // The running parent keeps its lease and suspends in the commit that starts its child.
         parent.Revision = 1;
         parent.Status = WorkflowStatus.Suspended;
+        Task<WorkflowCommitResult>? creating = null;
+        Task? deleting = null;
+        Exception? primaryFailure = null;
         try
         {
-            Task deleting;
+            await using var observer = new Npgsql.NpgsqlConnection(connectionString);
+            await observer.OpenAsync();
             await using (var holder = await HoldIdentityAsync(connectionString, child.InstanceId))
             {
-                deleting = repository.DeleteWorkflowInstanceAsync(child.InstanceId);
-                await Task.Delay(TimeSpan.FromMilliseconds(500));
-                Assert.False(deleting.IsCompleted);
-                Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
+                // Queue creation first, but keep the child absent until the delete has read it.
+                creating = repository.CommitWorkflowInstanceAsync(
                     CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(repository, parent.InstanceId)).Epoch, 1,
                         openedWaits: [new OpenedWait("child", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)],
-                        childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child")])))
-                    .Status);
+                        childStarts: [new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child")]));
+                var creator = await WaitForChildIdentityWaiterAsync(observer,
+                    holder.BackendProcessId, holder.BackendProcessId);
+                Assert.False(creating.IsCompleted);
+                Assert.Null(await repository.GetWorkflowInstanceAsync(child.InstanceId));
+
+                deleting = repository.DeleteWorkflowInstanceAsync(child.InstanceId);
+                // A soft blocker proves creation is ahead of deletion on this very ID lock.
+                await WaitForChildIdentityWaiterAsync(observer, holder.BackendProcessId, creator);
+                Assert.False(deleting.IsCompleted);
             }
+            // Release the holder before awaiting creation. The queued creator commits first;
+            // deletion then sees a new incarnation, rolls back, and retries with its parent.
+            Assert.Equal(WorkflowCommitStatus.Applied, (await creating).Status);
             await deleting;
 
             Assert.Null(await repository.GetWorkflowInstanceAsync(child.InstanceId));
             Assert.Equal("child",
                 (await repository.GetEventAsync(parent.InstanceId, $"child-completed-{child.InstanceId}"))!.TargetWaitId);
         }
+        catch (Exception error)
+        {
+            primaryFailure = error;
+            throw;
+        }
         finally
         {
-            await repository.DeleteWorkflowInstanceAsync(child.InstanceId);
-            await repository.DeleteWorkflowInstanceAsync(parent.InstanceId);
+            // The holder is gone. Join both operations before deleting either fixture.
+            Exception? drainFailure = null;
+            try
+            {
+                await Task.WhenAll(new Task?[] { creating, deleting }.OfType<Task>());
+            }
+            catch (Exception error) { drainFailure = error; }
+            finally
+            {
+                try
+                {
+                    await repository.DeleteWorkflowInstanceAsync(child.InstanceId);
+                    await repository.DeleteWorkflowInstanceAsync(parent.InstanceId);
+                }
+                catch when (primaryFailure != null || drainFailure != null) { }
+            }
+            if (primaryFailure == null && drainFailure != null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(drainFailure).Throw();
+        }
+    }
+
+    private static async Task<int> WaitForChildIdentityWaiterAsync(
+        Npgsql.NpgsqlConnection observer, int holder, int ahead)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (true)
+        {
+            var waiter = await observer.QuerySingleOrDefaultAsync<int?>(new CommandDefinition("""
+                SELECT waiting.pid
+                FROM pg_locks AS held
+                JOIN pg_locks AS waiting
+                  USING (locktype, database, classid, objid, objsubid)
+                WHERE held.pid = @Holder
+                  AND held.locktype = 'advisory'
+                  AND held.mode = 'ExclusiveLock' AND held.granted
+                  AND waiting.mode = 'ExclusiveLock' AND NOT waiting.granted
+                  AND @Ahead = ANY(pg_blocking_pids(waiting.pid))
+                """, new { Holder = holder, Ahead = ahead }, cancellationToken: timeout.Token));
+            if (waiter is { } pid) return pid;
+            await Task.Delay(10, timeout.Token);
         }
     }
 
@@ -317,10 +376,11 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
     public async Task SqliteCommitsClaimsAndDeletesWaitForTheDatabaseWriter()
     {
         await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString);
-        await VerifyNewInstanceSerialization(repository, HoldSqliteIdentityAsync);
+        await VerifyNewInstanceSerialization(repository, HoldSqliteIdentityAsync, claimsSkip: false);
     }
 
-    private static async Task VerifyNewInstanceSerialization(IWorkflowStateRepository repository, Func<string, Task<IdentityHold>> holdIdentity)
+    private static async Task VerifyNewInstanceSerialization(IWorkflowStateRepository repository, Func<string, Task<IdentityHold>> holdIdentity,
+        bool claimsSkip)
     {
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
@@ -331,10 +391,12 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         await repository.GetWorkflowInstanceAsync(instance.InstanceId);
         var grant = await StoreTestSupport.LeaseAsync(repository, instance.InstanceId);
         var transition = CheckpointCommit.Create(instance, grant.Epoch, 0);
+        Task<WorkflowCommitResult>? commit = null;
+        Task<ExecutionLeaseGrant?>? claim = null;
+        Task? deleting = null;
+        Exception? primaryFailure = null;
         try
         {
-            Task<WorkflowCommitResult> commit;
-            Task<ExecutionLeaseGrant?> claim;
             await using (var holder = await holdIdentity(instance.InstanceId))
             {
                 commit = repository is SqliteWorkflowStateRepository
@@ -344,13 +406,18 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
                     ? Task.Run(() => repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))
                     : repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
                 await Task.Delay(TimeSpan.FromMilliseconds(500));
-                Assert.False(commit.IsCompleted || claim.IsCompleted);
+                if (claimsSkip)
+                {
+                    // The claim skips the held ID and returns no grant while the holder still holds it.
+                    Assert.Null(await claim.WaitAsync(TimeSpan.FromSeconds(5)));
+                    Assert.False(commit.IsCompleted);
+                }
+                else Assert.False(commit.IsCompleted || claim.IsCompleted);
             }
             // The granted owner commits; the contending claim cannot replace its active lease.
             Assert.Null(await claim);
             Assert.Equal(WorkflowCommitStatus.Applied, (await commit).Status);
 
-            Task deleting;
             await using (var holder = await holdIdentity(instance.InstanceId))
             {
                 deleting = repository is SqliteWorkflowStateRepository
@@ -362,9 +429,27 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
             await deleting;
             Assert.Null(await repository.GetWorkflowInstanceAsync(instance.InstanceId));
         }
+        catch (Exception error)
+        {
+            primaryFailure = error;
+            throw;
+        }
         finally
         {
-            await repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
+            // Both await-using holders have released their transactions before draining.
+            Exception? drainFailure = null;
+            try
+            {
+                await Task.WhenAll(new Task?[] { commit, claim, deleting }.OfType<Task>());
+            }
+            catch (Exception error) { drainFailure = error; }
+            finally
+            {
+                try { await repository.DeleteWorkflowInstanceAsync(instance.InstanceId); }
+                catch when (primaryFailure != null || drainFailure != null) { }
+            }
+            if (primaryFailure == null && drainFailure != null)
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(drainFailure).Throw();
         }
     }
 
