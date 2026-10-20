@@ -259,10 +259,44 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
             Assert.Equal(WorkflowExecutionStatus.Scheduled, result.Status);
             Assert.NotNull(await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId));
             var error = await logger.Errors.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
-            if (block) Assert.IsType<TimeoutException>(error);
-            else Assert.IsType<IOException>(error);
+            if (block) Assert.Contains("System.TimeoutException", error);
+            else Assert.Contains("System.IO.IOException", error);
         }
         finally { release.Set(); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AThrowingNotifierLogsRawExceptionsOnlyWithSensitiveDiagnosticsEnabled(bool optIn)
+    {
+        var capture = new LogCapture();
+        var error = new IOException("sensitive notifier failure");
+        var drained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var services = new ServiceCollection();
+        services.AddLogging(logging => logging.AddProvider(capture));
+        services.AddSingleton<IRunnableNotifier>(new CallbackNotifier((_, _) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1) throw error;
+            drained.TrySetResult();
+            return Task.CompletedTask;
+        }));
+        services.AddIxIFlow(options => options.EnableSensitiveDiagnostics = optIn);
+        await using var provider = services.BuildServiceProvider();
+        var notifications = provider.GetRequiredService<RunnableNotifications>();
+        var notice = new RunnableNotice("instance", "set", null, null, true, false);
+        notifications.Publish(notice);
+        notifications.Publish(notice);
+        // The second call starts only after the first call's ordinary and sensitive logs finish.
+        await drained.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var ordinary = Assert.Single(capture.Entries, entry => entry.Category == typeof(RunnableNotifications).FullName);
+        Assert.Null(ordinary.Error);
+        Assert.Contains("System.IO.IOException", ordinary.Text);
+        Assert.DoesNotContain(error.Message, ordinary.Text);
+        var sensitive = capture.Entries.Where(entry => entry.Category == InspectionRedactionPolicy.SensitiveDiagnosticsCategory);
+        if (optIn) Assert.Same(error, Assert.Single(sensitive).Error);
+        else Assert.Empty(sensitive);
     }
 
     [Fact]
@@ -398,7 +432,7 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
                 for (var i = 0; i < 1000; i++) notifications.Publish(notice);
             }).WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(logger.Dropped > 0);
-            Assert.IsType<TimeoutException>(await logger.Errors.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Contains("System.TimeoutException", await logger.Errors.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
             Assert.Equal(1, Volatile.Read(ref calls));
         }
         finally { release.TrySetResult(); }
@@ -521,9 +555,24 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
         public Task NotifyAsync(RunnableNotice notice, CancellationToken cancellationToken) => notify(notice, cancellationToken);
     }
 
+    private sealed class LogCapture : ILoggerProvider
+    {
+        public readonly ConcurrentQueue<(string Category, string Text, Exception? Error)> Entries = new();
+        public ILogger CreateLogger(string categoryName) => new Logger(categoryName, Entries);
+        public void Dispose() { }
+
+        private sealed class Logger(string category, ConcurrentQueue<(string Category, string Text, Exception? Error)> entries) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter) => entries.Enqueue((category, formatter(state, exception), exception));
+        }
+    }
+
     private sealed class ErrorLogger : ILogger<RunnableNotifications>
     {
-        public readonly Channel<Exception> Errors = Channel.CreateUnbounded<Exception>();
+        public readonly Channel<string> Errors = Channel.CreateUnbounded<string>();
         public int Dropped;
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
@@ -531,7 +580,7 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
             Func<TState, Exception?, string> formatter)
         {
             if (logLevel == LogLevel.Warning) Interlocked.Increment(ref Dropped);
-            if (exception != null) Errors.Writer.TryWrite(exception);
+            if (logLevel == LogLevel.Error) Errors.Writer.TryWrite(formatter(state, exception));
         }
     }
 }

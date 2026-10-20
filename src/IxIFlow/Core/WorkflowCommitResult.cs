@@ -302,7 +302,8 @@ public sealed class CheckpointCommit
         // Stamp the caller too, so later checkpoints use the same incarnation as this immutable first commit.
         if (expectedRevision == 0)
             instance.Incarnation = Guid.NewGuid();
-        return FromFields(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(stored.Trunk)),
+        var trunk = expectedRevision == 0 ? stored.Trunk : stored.UpdateTrunk;
+        return FromFields(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(trunk)),
             written, deleted, saved == null, instance.Incarnation, epoch, commitId,
             expectedRevision, clearsCrashCount, parks, settlements ?? [], inboxReadThrough,
             openedWaits ?? [], armedWaits ?? [], closedWaits ?? [], wakeAfter, stopped,

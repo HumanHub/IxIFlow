@@ -1033,6 +1033,9 @@ public sealed partial class WorkflowHost
                 previous.Diagnostics = null;
                 proposed.ResultDiagnostic = null;
                 previous.ResultDiagnostic = null;
+                // Updates omit the immutable placement set; it is not an execution-state change.
+                proposed.Demands = [];
+                previous.Demands = [];
                 if (JsonSerializer.Serialize(proposed) == JsonSerializer.Serialize(previous)) return;
             }
             if (sameData && commit.Instance.Status == WorkflowStatus.Failed && proposed.Continuations.Count == 0 &&
