@@ -68,9 +68,10 @@ public sealed class WaitRecipeScenarios
         await fraud.Entered.Task.WaitAsync(Patience);
 
         // The provider calls back while the fraud check runs: first "pending", then "paid".
-        var pending = engine.ReplyAsync(payments.Token, new PaymentReceived { Status = "pending" });
-        var paid = engine.ReplyAsync(payments.Token, new PaymentReceived { Status = "paid" });
-        await WaitUntilStoredAsync(cluster, started, 2);
+        var pending = engine.ReplyAsync(payments.Token, new PaymentReceived { Status = "pending" }, "callback-pending");
+        await WaitUntilStoredAsync(cluster, started, "callback-pending");
+        var paid = engine.ReplyAsync(payments.Token, new PaymentReceived { Status = "paid" }, "callback-paid");
+        await WaitUntilStoredAsync(cluster, started, "callback-paid");
         fraud.Release.TrySetResult();
 
         EventAssert.Rejected(await pending.WaitAsync(Patience), EventRejection.NotMatched);
@@ -357,15 +358,16 @@ public sealed class WaitRecipeScenarios
             services.AddSingleton<IShipping>(shipping ?? GatedShipping.Open());
         });
 
-    // The owner is busy, so an event sent now is stored and waits for its next pass.
-    private static async Task WaitUntilStoredAsync(ConformanceCluster cluster, string instanceId, int count)
+    // The reply returns only once the event is decided, so the scenario waits until it is stored. The
+    // owner may decide it at once, while its activity runs, or at its next pass (D-17).
+    private static async Task WaitUntilStoredAsync(ConformanceCluster cluster, string instanceId, string eventId)
     {
         var inbox = cluster.NewRepository();
         var deadline = DateTime.UtcNow + Patience;
-        while ((await inbox.GetPendingEventsAsync(instanceId, 0, 10)).Events.Count < count)
+        while (await inbox.GetEventAsync(instanceId, eventId) == null)
         {
             if (DateTime.UtcNow > deadline)
-                throw new TimeoutException($"Fewer than {count} events were stored for '{instanceId}'");
+                throw new TimeoutException($"Event '{eventId}' was not stored for '{instanceId}'");
             await Task.Delay(10);
         }
     }
