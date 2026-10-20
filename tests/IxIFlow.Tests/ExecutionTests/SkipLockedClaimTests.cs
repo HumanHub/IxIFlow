@@ -12,6 +12,7 @@ using IxIFlow.Tests.Infrastructure;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using Npgsql;
@@ -79,7 +80,15 @@ public sealed class SkipLockedClaimTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlServerUnrelatedAbsentIdsInTheSameGapCanBeClaimed()
     {
-        var (store, connect) = Provider(false);
+        // Gap/page-lock assertions need an otherwise idle database, including under suite load.
+        var connectionString = await SqlServerTestServer.CreateDatabaseAsync("IxIFlow_SkipLockedGap");
+        try { await UnrelatedAbsentIdsInTheSameGapCanBeClaimed(connectionString); }
+        finally { await SqlServerTestServer.DropDatabaseAsync(connectionString); }
+    }
+
+    private static async Task UnrelatedAbsentIdsInTheSameGapCanBeClaimed(string connectionString)
+    {
+        var (store, connect) = Provider(false, connectionString);
         var prefix = "gap-" + Guid.NewGuid().ToString("N");
         var lower = Instance(prefix + "-0");
         var upper = Instance(prefix + "-z");
@@ -501,6 +510,9 @@ public sealed class SkipLockedClaimTests
                 Assert.Equal(WorkflowStatus.Completed, (await store.GetWorkflowInstanceAsync(free.InstanceId))!.Status);
                 Assert.Equal(WorkflowStatus.Running, (await store.GetWorkflowInstanceAsync(locked.InstanceId))!.Status);
             }
+            // A refusal sits out one following pass, then is revisited even on an immediate wake.
+            await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
+            Assert.Equal(WorkflowStatus.Running, (await store.GetWorkflowInstanceAsync(locked.InstanceId))!.Status);
             await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
             Assert.Equal(WorkflowStatus.Completed, (await store.GetWorkflowInstanceAsync(locked.InstanceId))!.Status);
         }
@@ -551,10 +563,27 @@ public sealed class SkipLockedClaimTests
             .Returns<string, CancellationToken>((id, _) =>
             {
                 tried.Add(id);
-                return Task.FromResult(new WorkflowExecutionResult { InstanceId = id, Status = WorkflowExecutionStatus.Running });
+                return Task.FromResult(new WorkflowExecutionResult { InstanceId = id,
+                    Status = id == candidates[^1].InstanceId ? WorkflowExecutionStatus.Success : WorkflowExecutionStatus.Running });
             });
         using var provider = RecoveryProvider(client.Object);
-        using var scanner = Scanner(provider, candidates, 1);
+        var discoveries = 0;
+        var store = new Mock<IWorkflowStateRepository>();
+        store.Setup(s => s.GetRunnableInstancesAsync(It.IsAny<ClaimQuery>())).Returns<ClaimQuery>(query =>
+        {
+            discoveries++;
+            return Task.FromResult<IReadOnlyList<RunnableInstance>>(candidates.Take(query.Limit).ToArray());
+        });
+        using var scanner = new WorkflowRecoveryService(provider.GetRequiredService<IServiceScopeFactory>(), store.Object,
+            NullLogger<WorkflowRecoveryService>.Instance, settings: HostSettings.Default with { Slots = 1 });
+        await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
+        Assert.Equal(candidates.Take(WorkflowRecoveryService.MaxCandidatesPerPass).Select(c => c.InstanceId), tried);
+        Assert.Equal(1 + (WorkflowRecoveryService.MaxCandidatesPerPass - 1 + WorkflowRecoveryService.RefillPageSize - 1)
+            / WorkflowRecoveryService.RefillPageSize, discoveries);
+        tried.Clear();
+        await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
+        Assert.Equal([candidates[^1].InstanceId], tried);
+        tried.Clear();
         await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
         Assert.Equal(candidates.Take(WorkflowRecoveryService.MaxCandidatesPerPass).Select(c => c.InstanceId), tried);
     }
@@ -590,6 +619,111 @@ public sealed class SkipLockedClaimTests
         client.Verify(c => c.RecoverAsync("busy", It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task RefillDiscoveryFailureDoesNotCancelASiblingRun()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finish = new TaskCompletionSource<WorkflowExecutionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken siblingToken = default;
+        var client = new Mock<IWorkflowClient>();
+        client.Setup(c => c.RecoverAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>(async (id, token) =>
+            {
+                if (id == "slow")
+                {
+                    siblingToken = token;
+                    entered.TrySetResult();
+                    return await finish.Task.WaitAsync(token);
+                }
+                await entered.Task;
+                return new WorkflowExecutionResult { InstanceId = id, Status = WorkflowExecutionStatus.Running };
+            });
+        var store = new Mock<IWorkflowStateRepository>();
+        store.SetupSequence(s => s.GetRunnableInstancesAsync(It.IsAny<ClaimQuery>()))
+            .ReturnsAsync(new[] { "slow", "busy" }.Select(id => new RunnableInstance(id, DateTime.UtcNow)).ToArray())
+            .ThrowsAsync(new InvalidOperationException("refill failed"));
+        var log = new RefillLog();
+        using var provider = RecoveryProvider(client.Object);
+        using var scanner = new WorkflowRecoveryService(provider.GetRequiredService<IServiceScopeFactory>(), store.Object,
+            log, settings: HostSettings.Default with { Slots = 2 });
+        var pass = scanner.RecoverOnceAsync(CancellationToken.None);
+        try
+        {
+            await log.Failed.Task.WaitAsync(ClaimBound);
+            Assert.False(siblingToken.IsCancellationRequested);
+            Assert.False(pass.IsCompleted);
+        }
+        finally
+        {
+            finish.TrySetResult(new WorkflowExecutionResult { InstanceId = "slow", Status = WorkflowExecutionStatus.Success });
+            await pass.WaitAsync(DrainBound);
+        }
+        Assert.Contains("Could not refill workflows for recovery", Assert.Single(log.Errors));
+    }
+
+    private sealed class RefillLog : ILogger<WorkflowRecoveryService>
+    {
+        internal readonly TaskCompletionSource Failed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly System.Collections.Concurrent.ConcurrentQueue<string> Errors = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? error,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (level != LogLevel.Error) return;
+            Errors.Enqueue(formatter(state, error));
+            Failed.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task OverlappingPassesKeepEachOthersReservations()
+    {
+        var firstEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var laterEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstRun = new TaskCompletionSource<WorkflowExecutionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var laterRun = new TaskCompletionSource<WorkflowExecutionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var client = new Mock<IWorkflowClient>();
+        client.Setup(c => c.RecoverAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((id, _) =>
+            {
+                if (id == "a")
+                {
+                    if (Interlocked.Increment(ref attempts) == 1)
+                        return Task.FromResult(new WorkflowExecutionResult { InstanceId = id, Status = WorkflowExecutionStatus.Running });
+                    laterEntered.TrySetResult();
+                    return laterRun.Task;
+                }
+                firstEntered.TrySetResult();
+                return firstRun.Task;
+            });
+        using var provider = RecoveryProvider(client.Object);
+        using var scanner = Scanner(provider,
+            new[] { "a", "b" }.Select(id => new RunnableInstance(id, DateTime.UtcNow)).ToArray(), 2);
+        var first = scanner.RecoverOnceAsync(CancellationToken.None);
+        Task? later = null;
+        try
+        {
+            await firstEntered.Task.WaitAsync(ClaimBound);
+            await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound); // a sits out this pass
+            later = scanner.RecoverOnceAsync(CancellationToken.None);
+            await laterEntered.Task.WaitAsync(ClaimBound);
+            firstRun.TrySetResult(new WorkflowExecutionResult { InstanceId = "b", Status = WorkflowExecutionStatus.Success });
+            await first.WaitAsync(ClaimBound);
+            // Finishing the old pass must leave the later pass's a reservation intact.
+            await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
+            Assert.Equal(2, Volatile.Read(ref attempts));
+            Assert.False(later.IsCompleted);
+        }
+        finally
+        {
+            firstRun.TrySetResult(new WorkflowExecutionResult { Status = WorkflowExecutionStatus.Success });
+            laterRun.TrySetResult(new WorkflowExecutionResult { Status = WorkflowExecutionStatus.Success });
+            await Task.WhenAll(new[] { first, later ?? Task.CompletedTask }).WaitAsync(DrainBound);
+        }
+    }
+
     private static ServiceProvider RecoveryProvider(IWorkflowClient client) => new ServiceCollection()
         .AddSingleton(client).AddSingleton<IWorkflowCatalog>(new WorkflowCatalog()).BuildServiceProvider();
 
@@ -603,26 +737,27 @@ public sealed class SkipLockedClaimTests
     }
 
     [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
-    public async Task PostgreSqlChildIdentityConflictRetriesTheWholeParentCommit()
+    public Task PostgreSqlChildCreationWaitsForTheIdentityLock() => ChildCreationWaitsForTheIdentityLock(true);
+
+    [SqlServerFact, Trait("Category", "SqlIntegration")]
+    public Task SqlServerChildCreationWaitsForTheIdentityLock() => ChildCreationWaitsForTheIdentityLock(false);
+
+    private static async Task ChildCreationWaitsForTheIdentityLock(bool postgres)
     {
-        var (store, connect) = Provider(true);
+        var (store, connect) = Provider(postgres);
         var (parent, child, commit) = await ChildCreationAsync(store);
         Task<WorkflowCommitResult>? attempt = null;
         try
         {
             await using (var hold = await HoldAsync(connect))
             {
-                await HoldPostgreSqlIdentityAsync(hold, child.InstanceId);
+                await HoldIdentityAsync(hold, child.InstanceId);
                 attempt = store.CommitWorkflowInstanceAsync(commit);
-                Assert.Equal(WorkflowCommitStatus.Retry, (await attempt.WaitAsync(ClaimBound)).Status);
+                await WaitForBlockedSessionAsync(connect, hold);
+                Assert.False(attempt.IsCompleted);
                 Assert.Null(await store.GetWorkflowInstanceAsync(child.InstanceId));
-                // A deleter holding the child identity can now take the parent: no inverted wait
-                // survives the failed commit, nor does any part of the parent revision advance.
-                Assert.Equal(parent.Revision, await hold.Connection.ExecuteScalarAsync<long>("""
-                    SELECT revision FROM ixiflow_workflow_instances WHERE instance_id = @Id FOR UPDATE NOWAIT
-                    """, new { Id = parent.InstanceId }, hold.Transaction));
             }
-            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
+            Assert.Equal(WorkflowCommitStatus.Applied, (await attempt.WaitAsync(DrainBound)).Status);
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
             Assert.NotNull(await ClaimAsync(store, child.InstanceId));
         }
@@ -702,12 +837,144 @@ public sealed class SkipLockedClaimTests
         }
     }
 
-    private static async Task<(WorkflowInstance Parent, WorkflowInstance Child, CheckpointCommit Commit)> ChildCreationAsync(IWorkflowStateRepository store)
+    [SqlServerFact, Trait("Category", "SqlIntegration")]
+    public async Task SqlServerInsertionAfterTheClaimProbeWaitsWithEitherSnapshotSetting()
+    {
+        foreach (var snapshot in new[] { false, true })
+        {
+            var cs = await SqlServerTestServer.CreateDatabaseAsync("IxIFlow_SkipLockedInsertion");
+            try
+            {
+                await using (var connection = new SqlConnection(cs))
+                {
+                    await connection.OpenAsync();
+                    if (snapshot) await connection.ExecuteAsync($"ALTER DATABASE [{connection.Database}] SET READ_COMMITTED_SNAPSHOT ON");
+                    Assert.Equal(snapshot, await connection.ExecuteScalarAsync<bool>(
+                        "SELECT is_read_committed_snapshot_on FROM sys.databases WHERE name = DB_NAME()"));
+                }
+                var (store, connect) = Provider(false, cs);
+                var (parent, child, commit) = await ChildCreationAsync(store, demandingChild: true);
+                Task<ExecutionLeaseGrant?>? claim = null;
+                Task<WorkflowCommitResult>? creation = null;
+                try
+                {
+                    // A pre-existing, expired lease gives the real claim a permitted wait after
+                    // its absent-key probe and eligibility read, while it retains the ID lock.
+                    Assert.NotNull(await ClaimAsync(store, child.InstanceId));
+                    await store.ReleaseExecutionLeaseAsync(child.InstanceId, "claim");
+                    await using (var hold = await HoldAsync(connect))
+                    {
+                        await hold.Connection.ExecuteAsync("""
+                            UPDATE dbo.IxIFlowWorkflowLeases WITH (ROWLOCK) SET Token=Token WHERE InstanceId=@Id
+                            """, new { Id = child.InstanceId }, hold.Transaction);
+                        claim = ClaimAsync(store, child.InstanceId);
+                        var claimant = await WaitForBlockedSessionAsync(connect, hold);
+                        creation = store.CommitWorkflowInstanceAsync(commit);
+                        await WaitForBlockedSessionAsync(connect, claimant, postgres: false);
+                        Assert.False(creation.IsCompleted);
+                    }
+                    // Creation cannot insert during the probe/stamp gap. The absent-ID claim
+                    // completes first; once the child exists its unmet demand refuses a new claim.
+                    Assert.NotNull(await claim.WaitAsync(ClaimBound));
+                    Assert.Equal(WorkflowCommitStatus.Applied, (await creation.WaitAsync(DrainBound)).Status);
+                    await store.ReleaseExecutionLeaseAsync(child.InstanceId, "claim");
+                    Assert.Null(await ClaimAsync(store, child.InstanceId));
+                }
+                finally
+                {
+                    try { await Task.WhenAll(new Task[] { claim ?? Task.CompletedTask, creation ?? Task.CompletedTask }).WaitAsync(DrainBound); }
+                    finally
+                    {
+                        await store.DeleteWorkflowInstanceAsync(child.InstanceId);
+                        await store.DeleteWorkflowInstanceAsync(parent.InstanceId);
+                    }
+                }
+            }
+            finally { await SqlServerTestServer.DropDatabaseAsync(cs); }
+        }
+    }
+
+    [SqlServerFact, Trait("Category", "SqlIntegration")]
+    public Task SqlServerCreationDeleteAndPurgeWaitForClaimIdentity() => CreationDeleteAndPurgeWaitForClaimIdentity(false);
+
+    [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
+    public Task PostgreSqlCreationDeleteAndPurgeWaitForClaimIdentity() => CreationDeleteAndPurgeWaitForClaimIdentity(true);
+
+    private static async Task CreationDeleteAndPurgeWaitForClaimIdentity(bool postgres)
+    {
+        var (store, connect) = Provider(postgres);
+        foreach (var operation in new[] { "create", "delete", "purge" })
+        {
+            var instance = Instance();
+            Task? writing = null;
+            try
+            {
+                CheckpointCommit? commit = null;
+                if (operation == "create")
+                {
+                    var lease = await StoreTestSupport.LeaseAsync(store, instance.InstanceId, Query);
+                    commit = CheckpointCommit.Create(instance, lease.Epoch, 0);
+                }
+                else
+                {
+                    if (operation == "purge") instance.Status = WorkflowStatus.Completed;
+                    await store.SeedAsync(instance, query: Query);
+                    if (operation == "purge")
+                    {
+                        await using var connection = connect();
+                        await connection.OpenAsync();
+                        await connection.ExecuteAsync(postgres
+                            ? "UPDATE ixiflow_workflow_instances SET ended_at_utc=clock_timestamp()-interval '2 days' WHERE instance_id=@Id"
+                            : "UPDATE dbo.IxIFlowWorkflowInstances SET EndedAtUtc=DATEADD(day,-2,SYSUTCDATETIME()) WHERE InstanceId=@Id",
+                            new { Id = instance.InstanceId });
+                    }
+                }
+                await using (var hold = await HoldAsync(connect))
+                {
+                    // Execute the provider's actual claim-ID statement, retaining its transaction
+                    // at that boundary. No instance-row hold can mask a missing ID-lock protocol.
+                    var sqlMethod = store.GetType().GetMethod("Sql", BindingFlags.NonPublic | BindingFlags.Instance)!;
+                    var statement = Enum.Parse(sqlMethod.GetParameters()[0].ParameterType, "TryLockClaimIdentity");
+                    var sql = (string)sqlMethod.Invoke(store, [statement])!;
+                    Assert.True(await hold.Connection.ExecuteScalarAsync<bool>(sql,
+                        new { instance.InstanceId }, hold.Transaction));
+                    writing = operation switch
+                    {
+                        "create" => Create(),
+                        "delete" => store.DeleteWorkflowInstanceAsync(instance.InstanceId),
+                        _ => store.PurgeAsync(TimeSpan.FromDays(1), TimeSpan.FromDays(7), 1000)
+                    };
+                    await WaitForBlockedSessionAsync(connect, hold);
+                    Assert.False(writing.IsCompleted);
+                }
+                await writing.WaitAsync(DrainBound);
+                if (operation == "create") Assert.NotNull(await store.GetWorkflowInstanceAsync(instance.InstanceId));
+                else Assert.Null(await store.GetWorkflowInstanceAsync(instance.InstanceId));
+
+                async Task Create() => Assert.Equal(WorkflowCommitStatus.Applied,
+                    (await store.CommitWorkflowInstanceAsync(commit!)).Status);
+            }
+            finally
+            {
+                try { if (writing != null) await writing.WaitAsync(DrainBound); }
+                finally { await store.DeleteWorkflowInstanceAsync(instance.InstanceId); }
+            }
+        }
+    }
+
+    private static async Task<(WorkflowInstance Parent, WorkflowInstance Child, CheckpointCommit Commit)> ChildCreationAsync(
+        IWorkflowStateRepository store, bool demandingChild = false)
     {
         var parent = Instance();
         await store.SeedAsync(parent, query: Query);
         var lease = await StoreTestSupport.LeaseAsync(store, parent.InstanceId, Query);
         var child = Instance();
+        if (demandingChild)
+        {
+            var checkpoint = JsonSerializer.Deserialize<ExecutionCheckpoint>(child.ExecutionStateJson)!;
+            checkpoint.Demands = [new WorkflowDemand("gpu", "required")];
+            child.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+        }
         child.ParentInstanceId = parent.InstanceId;
         child.ParentWaitId = Guid.NewGuid().ToString("N");
         return (parent, child, CheckpointCommit.Create(parent, lease.Epoch, parent.Revision,
@@ -717,6 +984,39 @@ public sealed class SkipLockedClaimTests
 
     private static Task HoldPostgreSqlIdentityAsync(LockHold hold, string id) => hold.Connection.ExecuteAsync(
         "SELECT pg_advisory_xact_lock(hashtextextended(@Id, 0))", new { Id = id }, hold.Transaction);
+
+    private static Task HoldIdentityAsync(LockHold hold, string id) => hold.Connection is NpgsqlConnection
+        ? HoldPostgreSqlIdentityAsync(hold, id)
+        : hold.Connection.ExecuteAsync("""
+            DECLARE @result int, @resource nvarchar(255) = N'IxIFlow.Instance/' + @Id;
+            EXEC @result = sys.sp_getapplock @Resource=@resource,
+                @LockMode='Exclusive', @LockOwner='Transaction', @LockTimeout=-1;
+            IF @result < 0 THROW 51000, 'Could not hold instance identity', 1;
+            """, new { Id = id }, hold.Transaction);
+
+    private static async Task<int> WaitForBlockedSessionAsync(Func<DbConnection> connect, LockHold hold)
+    {
+        var postgres = hold.Connection is NpgsqlConnection;
+        var holder = await hold.Connection.ExecuteScalarAsync<int>(postgres ? "SELECT pg_backend_pid()" : "SELECT @@SPID",
+            transaction: hold.Transaction);
+        return await WaitForBlockedSessionAsync(connect, holder, postgres);
+    }
+
+    private static async Task<int> WaitForBlockedSessionAsync(Func<DbConnection> connect, int holder, bool postgres)
+    {
+        await using var observer = connect();
+        await observer.OpenAsync();
+        using var timeout = new CancellationTokenSource(ClaimBound);
+        while (true)
+        {
+            var waiter = await observer.ExecuteScalarAsync<int?>(new CommandDefinition(postgres
+                ? "SELECT pid FROM pg_stat_activity WHERE @Holder=ANY(pg_blocking_pids(pid)) LIMIT 1"
+                : "SELECT TOP (1) session_id FROM sys.dm_exec_requests WHERE blocking_session_id=@Holder AND wait_type LIKE 'LCK_M%'",
+                new { Holder = holder }, cancellationToken: timeout.Token));
+            if (waiter is { } session) return session;
+            await Task.Delay(10, timeout.Token);
+        }
+    }
 
     private static async Task<LockHold> HoldRowAsync(Func<DbConnection> connect, string id, bool exclusive)
     {

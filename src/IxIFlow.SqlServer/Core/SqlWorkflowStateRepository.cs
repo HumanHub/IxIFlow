@@ -48,7 +48,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
 
     // Lock and revalidate the instance before its lease and tombstone, including absent-key admission.
     internal override string DeleteRevalidationSql => """
-        SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
+        SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
         WHERE InstanceId = @InstanceId
         """;
     internal override object LeaseParameters(string instanceId, DateTime now) => new { InstanceId = instanceId };
@@ -60,7 +60,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     internal override DateTime ReadTime(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
     internal override int StatementBatchSize => StatementBatch;
     internal override int OwnershipReadBatchSize => 1000;
-    // sp_getapplock reports a deadlock through its return code, translated to 51001 by interning.
+    // sp_getapplock reports a deadlock through its return code, translated to 51001.
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 or 51001 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
         operation is Operation.Catalog or Operation.Termination or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.RunnableRead or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease or Operation.LeaseRenew
@@ -460,7 +460,21 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 SELECT InstanceId, CancellationJson FROM dbo.IxIFlowWorkflowInstances
                 WHERE InstanceId IN @InstanceIds AND CancellationJson IS NOT NULL
                 """,
-        // Lock the key without a range lock: unrelated absent IDs must not contend on a gap.
+        Statement.LockIdentity => """
+            DECLARE @result int, @resource nvarchar(255) = N'IxIFlow.Instance/' + @InstanceId;
+            EXEC @result = sys.sp_getapplock @Resource = @resource,
+                @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = -1;
+            IF @result = -3 THROW 51001, 'Instance identity lock deadlock', 1;
+            IF @result < 0 THROW 51000, 'Could not lock instance identity', 1;
+            """,
+        Statement.TryLockClaimIdentity => """
+            DECLARE @result int, @resource nvarchar(255) = N'IxIFlow.Instance/' + @InstanceId;
+            EXEC @result = sys.sp_getapplock @Resource = @resource,
+                @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 0;
+            SELECT CAST(CASE WHEN @result >= 0 THEN 1 ELSE 0 END AS bit);
+            """,
+        // The ID lock protects absence through eligibility, lease arbitration and host stamping.
+        // Lock the row without a range lock: unrelated absent IDs must not contend on a gap.
         // A held row or uncommitted insert/delete raises 1222; C# rolls back and returns no grant.
         // Genuine absence retains the existing lease-row fencing of concurrent first claims.
         Statement.Running => """
@@ -515,11 +529,11 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
                 WHERE InstanceId = @InstanceId
                 """,
-        // A first commit must exclude another insertion of this ID. Read the clock in the next
+        // The ID application lock excludes another insertion. Read the clock in the next
         // statement, after any lock wait, so the captured commit time cannot predate the lock (D-35).
         Statement.CommitState => """
             SELECT StateJson, Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence, RunnableAtUtc
-            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
+            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId;
             SELECT SYSUTCDATETIME();
             """,
