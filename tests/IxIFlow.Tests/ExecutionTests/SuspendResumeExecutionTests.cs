@@ -611,7 +611,7 @@ public class SuspendResumeExecutionTests
         // The open wait records what it waits for
         var wait = Assert.Single(await _stateRepository.GetOpenWaitsAsync(new WaitQuery(InstanceId: result.InstanceId)));
         Assert.Equal("Waiting for approval with timeout", wait.Key);
-        Assert.Equal(WorkflowTypeIdentity.StableName(typeof(ApprovalEvent)), wait.EventType);
+        Assert.Equal(WorkflowTypeIdentity.SavedName(typeof(ApprovalEvent)), wait.EventType);
     }
 
     [Fact]
