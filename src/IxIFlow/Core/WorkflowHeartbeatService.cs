@@ -30,7 +30,9 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
         foreach (var definition in await registry.GetWorkflowDefinitionsAsync())
             if (await registry.GetWorkflowStructureHashAsync(definition.Name, definition.Version) is { } hash)
                 capabilities.Add($"workflow:{definition.Name}@{definition.Version}", hash);
-        if (settings.BundleHostingEnabled)
+        if (settings.BundleHostingEnabled && !WorkflowSharedAssemblies.IsUsable)
+            settings.Compatibility.WarnUnusableProfile(settings.CapabilityLogger);
+        else if (settings.BundleHostingEnabled)
         {
             capabilities.Add("bundle-host", "");
             var rows = await registry.GetWorkflowVersionsAsync();
@@ -46,6 +48,15 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
     internal sealed class CompatibilityMemo
     {
         private readonly ConcurrentDictionary<string, Lazy<bool>> _entries = new(StringComparer.Ordinal);
+        private int _unusableProfileWarned;
+
+        // Without a profile this host can load no bundle, so it must not claim published work.
+        internal void WarnUnusableProfile(ILogger? logger)
+        {
+            if (Interlocked.Exchange(ref _unusableProfileWarned, 1) == 0)
+                logger?.LogWarning("Bundle hosting is configured but this process has no usable shared compatibility profile " +
+                    "(a self-contained single-file process, or unreadable runtime metadata); it does not advertise bundle-host");
+        }
 
         internal bool Compatible(string? json, ISet<string> retained, ILogger? logger)
         {
