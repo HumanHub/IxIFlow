@@ -4,46 +4,26 @@ namespace IxIFlow.Core;
 
 /// <summary>Separate ownership domains prevent a checkpoint from releasing concurrent inbox/child/reader pins.</summary>
 public sealed record PayloadOwner(string Kind, string Id);
-/// <summary>A durable upload ticket. An empty token means the generation is already published; no new upload is authorized.</summary>
-public sealed record PayloadReservation(PayloadReference Reference, long Generation, string Token, DateTime ExpiresAtUtc);
-public sealed record PayloadDeletion(PayloadReference Reference, long Generation);
 
 /// <summary>
-/// Immutable, content-addressed data, separate from code artifacts. Publication is atomic and durably readable
-/// after acknowledgement. Get verifies BOTH length and SHA-256, throwing InvalidDataException on corruption.
-///
-/// D-51 protocol: each digest has durable Uploading/Available/Deleting/Deleted state and a monotonically
-/// increasing generation. Reserve durably records an upload BEFORE any external I/O; the external object key
-/// includes digest AND generation. Publish must validate token, generation and unexpired store-time deadline
-/// under the same lock used by pin acquisition and collection. An expired uploader cannot publish or pin.
-/// Collection changes state to Deleting only with no pins and no live reservation; new pins then fail.
-/// Delete must conditionally delete only the selected generation, never an object keyed solely by digest.
-/// Keep catalog tombstones after deletion (and instance purge), so generations can never be reused.
-///
-/// A referencing write takes pins in its OWN transaction, using InTransactionAsync or Enlist, before making
-/// references visible. Failed transactions roll back pins. Pins include the immutable transitive dependency
-/// closure recorded at publication. Owners distinguish checkpoints, each inbox event, child starts/notices,
-/// retained results and active readers; release only the retiring owner's pins in its retiring transaction.
-/// A lost acknowledgement never releases committed pins. Readers hold their own pins through hydration.
-/// External providers must use the state-store catalog and generation-specific objects; collection discovers
-/// expired reservations from that catalog, without listing the external store. A grace period is only a policy,
-/// never the synchronization mechanism. Checkpoint writes acquire their own owner pins transactionally.
-/// External providers retain a ledger of EVERY reserved generation, including retired generations: a delayed
-/// upload can finish after its reservation expired and after an earlier delete succeeded. That generation must
-/// remain discoverable for another fenced delete. Never overwrite its sole catalog entry with a replacement
-/// generation. The fence must select the physical generation-specific object, not just guard catalog cleanup.
-/// Table providers replace/delete the body atomically in the catalog transaction, with no outstanding body I/O.
+/// Immutable, content-addressed bodies in the state store. Get verifies length and SHA-256 and throws
+/// InvalidDataException on corruption. Put records a body and its immutable transitive dependency closure;
+/// repeating the same put is harmless and can restore damaged bytes. An outer body retains its dependencies.
+/// Referencing writes put new bodies and acquire owner pins in their own transaction, using
+/// InTransactionAsync or Enlist. Failed transactions roll back bodies and pins together with the references.
+/// Pins include the dependency closure. Owners distinguish checkpoints, inbox events, children, retained
+/// results and readers; release only the retiring owner's pins. Lost acknowledgements retain committed pins.
+/// Readers keep pins until they hold a verified snapshot. Collection deletes an unpinned body past its grace
+/// period atomically under the same digest lock used by puts and pins. Concurrent pins either prevent deletion
+/// or fail because the body is missing. Discovery is advisory; collection rechecks eligibility under the lock.
 /// </summary>
 public interface IPayloadStore
 {
-    ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> utf8Json, CancellationToken ct = default);
-    ValueTask<ReadOnlyMemory<byte>?> GetAsync(PayloadReference reference, CancellationToken ct = default);
-    ValueTask<PayloadReservation> ReserveAsync(PayloadReference reference, TimeSpan lifetime, CancellationToken ct = default);
-    ValueTask<bool> PublishAsync(PayloadReservation reservation, ReadOnlyMemory<byte> utf8Json,
+    ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> utf8Json,
         IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken ct = default);
-    ValueTask<PayloadDeletion?> TryCollectAsync(PayloadReference reference, TimeSpan grace, CancellationToken ct = default);
-    ValueTask<bool> DeleteAsync(PayloadDeletion deletion, CancellationToken ct = default);
-    /// <summary>Catalog-only discovery, including abandoned reservations; candidates must still be claimed with TryCollectAsync.</summary>
+    ValueTask<ReadOnlyMemory<byte>?> GetAsync(PayloadReference reference, CancellationToken ct = default);
+    ValueTask<bool> CollectAsync(PayloadReference reference, TimeSpan grace, CancellationToken ct = default);
+    /// <summary>Finds possible unpinned bodies; CollectAsync rechecks eligibility before deleting.</summary>
     ValueTask<IReadOnlyList<PayloadReference>> FindCollectionCandidatesAsync(int limit, TimeSpan grace, CancellationToken ct = default);
     ValueTask InTransactionAsync(Func<IPayloadTransaction, CancellationToken, ValueTask> action, CancellationToken ct = default);
     /// <summary>Enlists pins in an existing referencing database transaction; does not commit or dispose it.</summary>
@@ -59,6 +39,9 @@ public interface IPayloadStore
 public interface IPayloadTransaction
 {
     DbTransaction? DatabaseTransaction { get; }
+    /// <summary>Records a body and its dependency closure in this referencing transaction.</summary>
+    ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> utf8Json,
+        IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken ct = default);
     /// <summary>Acquires checkpoint payload locks before instance locks, without changing pins.</summary>
     ValueTask LockAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default);
     ValueTask PinAsync(PayloadOwner owner, PayloadReference reference, CancellationToken ct = default);
@@ -85,6 +68,3 @@ public sealed class PayloadStoreSettings
         if (length > MaxPayloadBytes) throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "MaxPayloadBytes exceeded");
     }
 }
-
-/// <summary>The state repository's payload provider; external bodies still require this durable catalog.</summary>
-public interface IPayloadStoreProvider { IPayloadStore PayloadStore { get; } }

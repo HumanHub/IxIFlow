@@ -66,7 +66,7 @@ public abstract partial class RelationalWorkflowStateRepository
         admission.ValidateCommit(commit);
         await EnsureSchemaAsync();
         try { return await ExecuteOperationAsync(Operation.Commit, () => CommitAsync(commit, admission)); }
-        catch (Exception error) when (IsRetryableCommit(error)) { return new(WorkflowCommitStatus.Retry, 0); }
+        catch (Exception error) when (IsRetryableCommit(error) || error is PayloadLockUnavailableException) { return new(WorkflowCommitStatus.Retry, 0); }
     }
 
     private async Task<WorkflowAdmissionRecord?> ReadAdmissionAsync(DbConnection connection, DbTransaction? transaction,

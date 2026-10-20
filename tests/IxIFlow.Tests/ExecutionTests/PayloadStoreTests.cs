@@ -26,8 +26,7 @@ public sealed class PayloadStoreTests
         var store = repository.PayloadStore;
         var rows = () => (Dictionary<string, PayloadRecord>)store.GetType().GetField("_rows", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
         return new PayloadStoreContract(store,
-            (reference, body) => { rows()[reference.Digest].Body = body; return Task.CompletedTask; },
-            _ => { time.Advance(TimeSpan.FromMinutes(2)); return Task.CompletedTask; }).VerifyAsync();
+            (reference, body) => { rows()[reference.Digest].Body = body; return Task.CompletedTask; }).VerifyAsync();
     }
 
     [Fact]
@@ -72,18 +71,6 @@ public sealed class PayloadStoreTests
             var column = connection is SqlConnection ? "Body" : "body";
             var digest = connection is SqlConnection ? "Digest" : "digest";
             await connection.ExecuteAsync($"UPDATE {table} SET {column}=@Body WHERE {digest}=@Digest", new { Body = body, reference.Digest });
-        }, async reference =>
-        {
-            await using var connection = open();
-            var sqlServer = connection is SqlConnection;
-            var table = sqlServer ? "dbo.IxIFlowWorkflowPayloads" : "ixiflow_workflow_payloads";
-            var column = sqlServer ? "StateJson" : "state_json";
-            var digest = sqlServer ? "Digest" : "digest";
-            var row = JsonSerializer.Deserialize<PayloadRecord>(await connection.QuerySingleAsync<string>(
-                $"SELECT {column} FROM {table} WHERE {digest}=@Digest", new { reference.Digest }))!;
-            row.ExpiresAtUtc = DateTime.UnixEpoch;
-            await connection.ExecuteAsync($"UPDATE {table} SET {column}=@Json WHERE {digest}=@Digest",
-                new { Json = JsonSerializer.Serialize(row), reference.Digest });
         }).VerifyAsync();
 
         // Enlist uses the caller's transaction: rollback and commit decide pin visibility together with
@@ -99,30 +86,26 @@ public sealed class PayloadStoreTests
             await pins.PinAsync(new("reader", "enlisted"), reference);
             await transaction.RollbackAsync();
         }
-        Assert.NotNull(await store.TryCollectAsync(reference, TimeSpan.Zero));
+        Assert.True(await store.CollectAsync(reference, TimeSpan.Zero));
         await store.PutAsync(body);
         await using (var transaction = await connection.BeginTransactionAsync())
         {
             await store.Enlist(transaction).PinAsync(new("reader", "enlisted"), reference);
             await transaction.CommitAsync();
         }
-        Assert.Null(await store.TryCollectAsync(reference, TimeSpan.Zero));
+        Assert.False(await store.CollectAsync(reference, TimeSpan.Zero));
     }
 
     [Fact]
-    public void BuilderDefaultsAndOverride()
+    public void BuilderDefaultsUseTheStateStore()
     {
         var services = new ServiceCollection();
-        var builder = services.AddIxIFlow(options => options.MaxPayloadBytes = 17);
+        services.AddIxIFlow(options => options.MaxPayloadBytes = 17);
         using var provider = services.BuildServiceProvider();
         Assert.Equal(256 * 1024, provider.GetRequiredService<PayloadStoreSettings>().PayloadThresholdBytes);
         Assert.Equal(17, provider.GetRequiredService<PayloadStoreSettings>().MaxPayloadBytes);
-        Assert.Same(((IPayloadStoreProvider)provider.GetRequiredService<IWorkflowStateRepository>()).PayloadStore,
+        Assert.Same(provider.GetRequiredService<IWorkflowStateRepository>().PayloadStore,
             provider.GetRequiredService<IPayloadStore>());
-        var custom = new InMemoryWorkflowStateRepository().PayloadStore;
-        builder.UsePayloadStore(custom);
-        using var replaced = services.BuildServiceProvider();
-        Assert.Same(custom, replaced.GetRequiredService<IPayloadStore>());
         Assert.Equal(64L * 1024 * 1024, new IxIFlowOptions().MaxPayloadBytes);
         Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(o => o.MaxPayloadBytes = 0));
         Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(o => o.PayloadThresholdBytes = -1));

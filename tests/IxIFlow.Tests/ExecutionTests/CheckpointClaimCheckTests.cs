@@ -64,7 +64,7 @@ public sealed class CheckpointClaimCheckTests
         Assert.Empty(stop.Parts);
         Assert.False(stop.ReplacesParts);
         Assert.Equal(EventOutcome.Pending, (await repository.GetEventAsync(first.InstanceId, "go-1"))!.Outcome);
-        Assert.Null(await repository.PayloadStore.TryCollectAsync(before.WorkflowDataJson.Reference!, TimeSpan.Zero));
+        Assert.False(await repository.PayloadStore.CollectAsync(before.WorkflowDataJson.Reference!, TimeSpan.Zero));
         probe.Broken = null;
         var released = await client.ReleaseAsync(first.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.Success, released.Status);
@@ -112,12 +112,12 @@ public sealed class CheckpointClaimCheckTests
         var saved = (await repository.GetWorkflowInstanceAsync(first.InstanceId))!;
         var reference = saved.WorkflowDataJson.Reference!;
         var original = (await repository.PayloadStore.GetAsync(reference))!.Value.ToArray();
-        var rows = (Dictionary<string, PayloadRecord>)repository.PayloadStore.GetType()
-            .GetField("_rows", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(repository.PayloadStore)!;
+        var rows = (Dictionary<string, PayloadRecord>)repository.InnerPayloadStore.GetType()
+            .GetField("_rows", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(repository.InnerPayloadStore)!;
         rows[reference.Digest].Body = corrupt ? new byte[original.Length] : null;
         var stopped = await client.ResumeAsync(first.InstanceId, "go", new Go(), "repair-event");
         Assert.Equal(WorkflowErrorKind.PayloadUnavailable, stopped.ErrorKind);
-        Assert.Null(await repository.PayloadStore.TryCollectAsync(reference, TimeSpan.Zero));
+        Assert.False(await repository.PayloadStore.CollectAsync(reference, TimeSpan.Zero));
         Assert.Equal(reference, await repository.PayloadStore.PutAsync(original));
         Assert.Equal(WorkflowExecutionStatus.Success, (await client.ReleaseAsync(first.InstanceId)).Status);
     }
@@ -282,10 +282,10 @@ public sealed class CheckpointClaimCheckTests
         {
             await store.InTransactionAsync(async (pins, ct) => await pins.PinAsync(new("checkpoint", "second"), second, ct))
                 .AsTask().WaitAsync(TimeSpan.FromSeconds(2));
-            Assert.Null(await store.TryCollectAsync(second, TimeSpan.Zero));
+            Assert.False(await store.CollectAsync(second, TimeSpan.Zero));
         }
         finally { release.SetResult(); await held; }
-        Assert.Null(await store.TryCollectAsync(first, TimeSpan.Zero));
+        Assert.False(await store.CollectAsync(first, TimeSpan.Zero));
     }
 
     [Fact]
@@ -304,7 +304,7 @@ public sealed class CheckpointClaimCheckTests
 
     private static async Task DifferentDigestCommits(IWorkflowStateRepository repository)
     {
-        var payloads = ((IPayloadStoreProvider)repository).PayloadStore;
+        var payloads = repository.PayloadStore;
         var a = await payloads.PutAsync("\"first\""u8.ToArray());
         var b = await payloads.PutAsync("\"second\""u8.ToArray());
         var first = await Commit("digest-a-" + Guid.NewGuid().ToString("N"), a);
@@ -323,7 +323,7 @@ public sealed class CheckpointClaimCheckTests
         WorkflowCommitResult result;
         do { result = await repository.CommitWorkflowInstanceAsync(first); } while (result.Status == WorkflowCommitStatus.Retry);
         Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
-        Assert.Null(await payloads.TryCollectAsync(a, TimeSpan.Zero));
+        Assert.False(await payloads.CollectAsync(a, TimeSpan.Zero));
 
         async Task<CheckpointCommit> Commit(string id, PayloadReference reference)
         {
@@ -351,7 +351,7 @@ public sealed class CheckpointClaimCheckTests
             var repository = services.GetRequiredService<IWorkflowStateRepository>();
             var saved = (await repository.GetWorkflowInstanceAsync(result.InstanceId))!;
             Assert.NotNull(saved.WorkflowDataJson.Reference);
-            Assert.Null(await ((IPayloadStoreProvider)repository).PayloadStore.TryCollectAsync(saved.WorkflowDataJson.Reference, TimeSpan.Zero));
+            Assert.False(await repository.PayloadStore.CollectAsync(saved.WorkflowDataJson.Reference, TimeSpan.Zero));
         }
         finally { await SqliteTestFiles.DeleteAsync(folder); }
     }
@@ -383,7 +383,7 @@ public sealed class CheckpointClaimCheckTests
     }
 
     [Fact]
-    public async Task LostAcknowledgementReputsTheBodyAndPinsTheCheckpointOnce()
+    public async Task LostAcknowledgementReplaysTheBodyAndPinsTheCheckpointOnce()
     {
         var repository = new RecordingRepository { LoseLargeAcknowledgement = true };
         var probe = new ProbeStore(repository.PayloadStore);
@@ -392,9 +392,9 @@ public sealed class CheckpointClaimCheckTests
             Workflow.Create<Data>("payload-lost-ack").Step<Noop>().Build(), new Data { Text = Large });
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var data = repository.Commits[0].Parts.Single(p => p.Key == "d").Json.Reference!;
-        Assert.Equal(2, probe.Puts[data.Digest]);
-        var rows = (Dictionary<string, PayloadRecord>)repository.PayloadStore.GetType()
-            .GetField("_rows", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(repository.PayloadStore)!;
+        Assert.Equal(1, probe.Puts[data.Digest]);
+        var rows = (Dictionary<string, PayloadRecord>)repository.InnerPayloadStore.GetType()
+            .GetField("_rows", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(repository.InnerPayloadStore)!;
         Assert.Single(rows[data.Digest].Owners.Where(o => o.Kind == "checkpoint"));
     }
 
@@ -429,12 +429,12 @@ public sealed class CheckpointClaimCheckTests
             await pins.PinAsync(other, first, ct);
         });
         await store.InTransactionAsync(async (pins, ct) => await pins.ReplaceAsync(checkpoint, [second], ct));
-        Assert.Null(await store.TryCollectAsync(first, TimeSpan.Zero));
+        Assert.False(await store.CollectAsync(first, TimeSpan.Zero));
         await store.InTransactionAsync(async (pins, ct) => await pins.ReleaseAsync(reader, ct));
-        Assert.Null(await store.TryCollectAsync(first, TimeSpan.Zero));
+        Assert.False(await store.CollectAsync(first, TimeSpan.Zero));
         await store.InTransactionAsync(async (pins, ct) => await pins.ReleaseAsync(other, ct));
-        Assert.NotNull(await store.TryCollectAsync(first, TimeSpan.Zero));
-        Assert.Null(await store.TryCollectAsync(second, TimeSpan.Zero));
+        Assert.True(await store.CollectAsync(first, TimeSpan.Zero));
+        Assert.False(await store.CollectAsync(second, TimeSpan.Zero));
     }
 
     [Fact]
@@ -445,16 +445,14 @@ public sealed class CheckpointClaimCheckTests
         var reference = await store.PutAsync(body);
         var probe = new ProbeStore(store)
         {
-            BeforeGet = async r => Assert.Null(await store.TryCollectAsync(r, TimeSpan.Zero))
+            BeforeGet = async r => Assert.False(await store.CollectAsync(r, TimeSpan.Zero))
         };
         var assignmentId = Guid.NewGuid();
         var reply = await new ExecutionPayloadTransfer(probe, ExecutionLimits.Default)
             .ReadAsync(new(assignmentId, "snapshot", reference));
         Assert.Equal(assignmentId, reply.AssignmentId);
         Assert.Null(reply.Refusal);
-        var deletion = await store.TryCollectAsync(reference, TimeSpan.Zero);
-        Assert.NotNull(deletion);
-        Assert.True(await store.DeleteAsync(deletion));
+        Assert.True(await store.CollectAsync(reference, TimeSpan.Zero));
         Assert.Null(await store.GetAsync(reference));
         Assert.Equal(body, reply.Body);
         reference.Verify(reply.Body!);
@@ -477,7 +475,8 @@ public sealed class CheckpointClaimCheckTests
     private static ServiceProvider Services(RecordingRepository repository, IPayloadStore payloads, Action<IxIFlowOptions>? configure = null)
     {
         var services = new ServiceCollection().AddLogging();
-        services.AddIxIFlow(configure ?? (_ => { })).UsePayloadStore(payloads);
+        repository.Probe = payloads;
+        services.AddIxIFlow(configure ?? (_ => { }));
         services.AddSingleton<IWorkflowStateRepository>(repository);
         services.AddTransient<Noop>(); services.AddTransient<Echo>();
         services.AddSingleton<TokenBox>();
@@ -485,6 +484,9 @@ public sealed class CheckpointClaimCheckTests
     }
     private sealed class RecordingRepository : InMemoryWorkflowStateRepository
     {
+        public IPayloadStore? Probe { get; set; }
+        public override IPayloadStore PayloadStore => Probe ?? base.PayloadStore;
+        public IPayloadStore InnerPayloadStore => base.PayloadStore;
         public List<CheckpointCommit> Commits { get; } = [];
         public bool LoseLargeAcknowledgement { get; set; }
         public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
@@ -505,20 +507,31 @@ public sealed class CheckpointClaimCheckTests
         public PayloadReference? Broken { get; set; }
         public bool Corrupt { get; set; }
         public Func<PayloadReference, Task>? BeforeGet { get; init; }
-        public async ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> body, CancellationToken ct = default)
-        { var r = await inner.PutAsync(body, ct); Puts[r.Digest] = Puts.GetValueOrDefault(r.Digest) + 1; return r; }
+        public async ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> body, IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken ct = default)
+        { var r = await inner.PutAsync(body, dependencies, ct); Puts[r.Digest] = Puts.GetValueOrDefault(r.Digest) + 1; return r; }
         public async ValueTask<ReadOnlyMemory<byte>?> GetAsync(PayloadReference r, CancellationToken ct = default)
         {
             if (BeforeGet != null) await BeforeGet(r);
             return r == Broken ? Corrupt ? new byte[(int)r.Bytes] : null : await inner.GetAsync(r, ct);
         }
-        public ValueTask<PayloadReservation> ReserveAsync(PayloadReference r, TimeSpan lifetime, CancellationToken ct = default) => inner.ReserveAsync(r, lifetime, ct);
-        public ValueTask<bool> PublishAsync(PayloadReservation r, ReadOnlyMemory<byte> body, IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken ct = default) => inner.PublishAsync(r, body, dependencies, ct);
-        public ValueTask<PayloadDeletion?> TryCollectAsync(PayloadReference r, TimeSpan grace, CancellationToken ct = default) => inner.TryCollectAsync(r, grace, ct);
-        public ValueTask<bool> DeleteAsync(PayloadDeletion deletion, CancellationToken ct = default) => inner.DeleteAsync(deletion, ct);
+        public ValueTask<bool> CollectAsync(PayloadReference r, TimeSpan grace, CancellationToken ct = default) => inner.CollectAsync(r, grace, ct);
         public ValueTask<IReadOnlyList<PayloadReference>> FindCollectionCandidatesAsync(int limit, TimeSpan grace, CancellationToken ct = default) => inner.FindCollectionCandidatesAsync(limit, grace, ct);
-        public ValueTask InTransactionAsync(Func<IPayloadTransaction, CancellationToken, ValueTask> action, CancellationToken ct = default) => inner.InTransactionAsync(action, ct);
-        public IPayloadTransaction Enlist(DbTransaction transaction) => inner.Enlist(transaction);
+        public ValueTask InTransactionAsync(Func<IPayloadTransaction, CancellationToken, ValueTask> action, CancellationToken ct = default) => inner.InTransactionAsync((tx, token) => action(new ProbeTransaction(this, tx), token), ct);
+        public IPayloadTransaction Enlist(DbTransaction transaction) => new ProbeTransaction(this, inner.Enlist(transaction));
+        private sealed class ProbeTransaction(ProbeStore probe, IPayloadTransaction inner) : IPayloadTransaction
+        {
+            public DbTransaction? DatabaseTransaction => inner.DatabaseTransaction;
+            public async ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> body, IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken ct = default)
+            {
+                var reference = await inner.PutAsync(body, dependencies, ct);
+                probe.Puts[reference.Digest] = probe.Puts.GetValueOrDefault(reference.Digest) + 1;
+                return reference;
+            }
+            public ValueTask LockAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default) => inner.LockAsync(owner, references, ct);
+            public ValueTask PinAsync(PayloadOwner owner, PayloadReference reference, CancellationToken ct = default) => inner.PinAsync(owner, reference, ct);
+            public ValueTask ReplaceAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default) => inner.ReplaceAsync(owner, references, ct);
+            public ValueTask ReleaseAsync(PayloadOwner owner, CancellationToken ct = default) => inner.ReleaseAsync(owner, ct);
+        }
     }
     public sealed class Data
     {

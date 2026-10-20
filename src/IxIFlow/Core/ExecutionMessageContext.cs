@@ -61,7 +61,7 @@ internal sealed record CheckpointCommitFields(CommittedInstance Instance, string
     IReadOnlyList<ClosedWait> ClosedWaits, TimeSpan? WakeAfter, bool Stopped,
     IReadOnlyList<ChildStart> ChildStarts, IReadOnlyList<ChildCancellation> ChildCancellations,
     ParentNotice? ParentNotice, IReadOnlyList<string> TraceEntries, byte[] ContentHash,
-    IReadOnlyList<PayloadReference> PayloadReferences, bool PreservesPayloadPins);
+    IReadOnlyList<PayloadReference> PayloadReferences, bool PreservesPayloadPins, IReadOnlyList<PayloadBody> PayloadBodies);
 
 internal sealed class CheckpointCommitJsonConverter : JsonConverter<CheckpointCommit>
 {
@@ -75,7 +75,7 @@ internal sealed class CheckpointCommitJsonConverter : JsonConverter<CheckpointCo
                 fields.ReplacesParts, fields.Incarnation, fields.Epoch, fields.CommitId, fields.ExpectedRevision,
                 fields.ClearsCrashCount, fields.Parks, fields.Settlements, fields.InboxReadThrough, fields.OpenedWaits,
                 fields.ArmedWaits, fields.ClosedWaits, fields.WakeAfter, fields.Stopped, fields.ChildStarts,
-                fields.ChildCancellations, fields.ParentNotice, fields.TraceEntries, fields.PayloadReferences, fields.PreservesPayloadPins);
+                fields.ChildCancellations, fields.ParentNotice, fields.TraceEntries, fields.PayloadReferences, fields.PreservesPayloadPins, fields.PayloadBodies);
             if (fields.ContentHash == null || !commit.ContentHash.AsSpan().SequenceEqual(fields.ContentHash))
                 throw new JsonException("Checkpoint content hash differs from its fields");
             return commit;
@@ -89,5 +89,5 @@ internal sealed class CheckpointCommitJsonConverter : JsonConverter<CheckpointCo
             value.ExpectedRevision, value.ClearsCrashCount, value.Parks, value.Settlements, value.InboxReadThrough,
             value.OpenedWaits, value.ArmedWaits, value.ClosedWaits, value.WakeAfter, value.Stopped, value.ChildStarts,
             value.ChildCancellations, value.ParentNotice, value.TraceEntries, value.ContentHash,
-            value.PayloadReferences, value.PreservesPayloadPins), CheckpointCommitContext.Default.CheckpointCommitFields);
+            value.PayloadReferences, value.PreservesPayloadPins, value.PayloadBodies), CheckpointCommitContext.Default.CheckpointCommitFields);
 }

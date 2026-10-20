@@ -14,7 +14,7 @@ public abstract partial class RelationalWorkflowStateRepository
     internal abstract PayloadDialect PayloadSqlDialect { get; }
     private IPayloadStore? _payloadStore;
     private PayloadStoreSettings _payloadSettings = new();
-    internal IPayloadStore Payloads => LazyInitializer.EnsureInitialized(ref _payloadStore,
+    public IPayloadStore PayloadStore => LazyInitializer.EnsureInitialized(ref _payloadStore,
         () => new RelationalPayloadStore(this, _payloadSettings));
 
     // Acquire digest locks before instance/inbox locks. A transaction never waits for another digest while
@@ -90,10 +90,10 @@ public abstract partial class RelationalWorkflowStateRepository
                 await Lock(digest, ct);
                 if (rows.TryGetValue(digest, out var cached)) return cached;
                 var stored = await connection.QuerySingleOrDefaultAsync<PayloadRow>(new CommandDefinition(
-                    $"SELECT {C("StateJson", "state_json")} AS StateJson FROM {Table} WHERE {C("Digest", "digest")}=@Digest",
+                    $"SELECT {C("MetadataJson", "metadata_json")} AS MetadataJson FROM {Table} WHERE {C("Digest", "digest")}=@Digest",
                     new { Digest = digest }, transaction, cancellationToken: ct));
                 if (stored is null) { rows[digest] = null; return null; }
-                var row = JsonSerializer.Deserialize<PayloadRecord>(stored.StateJson)!;
+                var row = JsonSerializer.Deserialize<PayloadRecord>(stored.MetadataJson)!;
                 row.Owners = (await connection.QueryAsync<PayloadOwner>(new CommandDefinition(
                     $"SELECT {C("OwnerKind", "owner_kind")} AS Kind, {C("OwnerId", "owner_id")} AS Id FROM {Refs} WHERE {C("Digest", "digest")}=@Digest",
                     new { Digest = digest }, transaction, cancellationToken: ct))).ToHashSet();
@@ -104,14 +104,14 @@ public abstract partial class RelationalWorkflowStateRepository
             {
                 await Lock(row.Reference.Digest, ct);
                 rows[row.Reference.Digest] = row;
-                var values = new { row.Reference.Digest, row.Reference.Bytes, row.Generation, row.Body,
-                    StateJson = JsonSerializer.Serialize(row), Created = repository.At(row.TouchedAtUtc) };
+                var values = new { row.Reference.Digest, row.Reference.Bytes, row.Body,
+                    MetadataJson = JsonSerializer.Serialize(row) };
                 var changed = await connection.ExecuteAsync(new CommandDefinition(
-                    $"UPDATE {Table} SET {C("Bytes", "bytes")}=@Bytes, {C("Generation", "generation")}=@Generation, {(row.BodyChanged ? C("Body", "body") + "=@Body," : "")} {C("StateJson", "state_json")}=@StateJson WHERE {C("Digest", "digest")}=@Digest",
+                    $"UPDATE {Table} SET {C("Bytes", "bytes")}=@Bytes, {(row.BodyChanged ? C("Body", "body") + "=@Body," : "")} {C("MetadataJson", "metadata_json")}=@MetadataJson WHERE {C("Digest", "digest")}=@Digest",
                     values, transaction, cancellationToken: ct));
                 if (changed == 0)
                     await connection.ExecuteAsync(new CommandDefinition(
-                        $"INSERT INTO {Table} ({C("Digest", "digest")}, {C("Bytes", "bytes")}, {C("Generation", "generation")}, {C("Body", "body")}, {C("StateJson", "state_json")}, {C("CreatedAtUtc", "created_at_utc")}) VALUES (@Digest,@Bytes,@Generation,@Body,@StateJson,@Created)",
+                        $"INSERT INTO {Table} ({C("Digest", "digest")}, {C("Bytes", "bytes")}, {C("Body", "body")}, {C("MetadataJson", "metadata_json")}) VALUES (@Digest,@Bytes,@Body,@MetadataJson)",
                         values, transaction, cancellationToken: ct));
                 await connection.ExecuteAsync(new CommandDefinition($"DELETE FROM {Refs} WHERE {C("Digest", "digest")}=@Digest",
                     values, transaction, cancellationToken: ct));
@@ -120,13 +120,16 @@ public abstract partial class RelationalWorkflowStateRepository
                         $"INSERT INTO {Refs} ({C("Digest", "digest")}, {C("OwnerKind", "owner_kind")}, {C("OwnerId", "owner_id")}) VALUES (@Digest,@Kind,@Id)",
                         new { row.Reference.Digest, owner.Kind, owner.Id }, transaction, cancellationToken: ct));
             }
-            async ValueTask<IReadOnlyList<PayloadRecord>> All(CancellationToken ct)
+            async ValueTask Delete(string digest, CancellationToken ct)
             {
-                var digests = (await connection.QueryAsync<string>(new CommandDefinition(
-                    $"SELECT {C("Digest", "digest")} FROM {Table}", transaction: transaction, cancellationToken: ct))).ToArray();
-                var rows = new List<PayloadRecord>();
-                foreach (var digest in digests.Order(StringComparer.Ordinal)) rows.Add((await Read(digest, ct))!);
-                return rows;
+                await Lock(digest, ct);
+                await connection.ExecuteAsync(new CommandDefinition(
+                    $"DELETE FROM {Refs} WHERE {C("Digest", "digest")}=@Digest",
+                    new { Digest = digest }, transaction, cancellationToken: ct));
+                await connection.ExecuteAsync(new CommandDefinition(
+                    $"DELETE FROM {Table} WHERE {C("Digest", "digest")}=@Digest",
+                    new { Digest = digest }, transaction, cancellationToken: ct));
+                rows[digest] = null;
             }
             async ValueTask<IReadOnlyList<PayloadRecord>> Owned(PayloadOwner owner, CancellationToken ct)
             {
@@ -146,18 +149,17 @@ public abstract partial class RelationalWorkflowStateRepository
             {
                 now = await repository.OutboxNowAsync(connection, transaction);
                 var json = await connection.QueryAsync<string>(new CommandDefinition(
-                    $"SELECT p.{C("StateJson", "state_json")} FROM {Table} p {(SqlServer ? "WITH (READPAST, READCOMMITTEDLOCK)" : "")} WHERE NOT EXISTS " +
+                    $"SELECT p.{C("MetadataJson", "metadata_json")} FROM {Table} p {(SqlServer ? "WITH (READPAST, READCOMMITTEDLOCK)" : "")} WHERE NOT EXISTS " +
                     $"(SELECT 1 FROM {Refs} r WHERE r.{C("Digest", "digest")}=p.{C("Digest", "digest")})",
                     transaction: transaction, cancellationToken: ct));
                 return json.Select(text => JsonSerializer.Deserialize<PayloadRecord>(text)!).ToArray();
             }
-            return new PayloadCatalog(Read, Write, All, () => now, Settings, transaction, Owned, Body, Discover);
+            return new PayloadCatalog(Read, Write, Delete, () => now, Settings, transaction, Owned, Body, Discover);
         }
 
         private sealed class PayloadRow
         {
-            public string StateJson { get; set; } = "";
-            public byte[]? Body { get; set; }
+            public string MetadataJson { get; set; } = "";
         }
     }
     private sealed class PayloadLockUnavailableException : Exception;
