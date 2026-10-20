@@ -21,6 +21,7 @@ public sealed record ClaimQuery
     internal ClaimQuery Excluding(IEnumerable<string> ids, int limit)
     {
         var excluded = ids.Distinct(StringComparer.Ordinal).ToArray();
+        if (excluded.Any(id => id is null)) throw new ArgumentNullException(nameof(ids));
         ArgumentOutOfRangeException.ThrowIfGreaterThan(excluded.Length, MaxExcludedInstanceIds);
         return this with { ExcludedInstanceIds = Array.AsReadOnly(excluded), Limit = limit };
     }
