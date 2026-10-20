@@ -101,6 +101,14 @@ public static class ActivityPackageFixture
             using IxIFlow.Core;
             using IxIFlow.ActivitySdk;
             namespace NativeFixture;
+            public sealed class Data
+            {
+                [DllImport("fixture_native", EntryPoint="fixture_value")]
+                private static extern int GetValue();
+                public int NativeValue => GetValue();
+                public string Value { get; set; } = "";
+                public string Result { get; set; } = "";
+            }
             [WorkflowActivity("fixture.native-call", Version="1.0")]
             public sealed class Echo : IAsyncActivity
             {
@@ -138,8 +146,7 @@ public static class ActivityPackageFixture
         if (framework == "netstandard2.0")
             root = Path.Combine(AppContext.BaseDirectory, "PackageDownloads", "netstandard.library", "2.0.3", "build", framework, "ref");
         else
-            root = Directory.EnumerateDirectories(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(typeof(object).Assembly.Location))))!, "packs", "Microsoft.NETCore.App.Ref"), "8.*")
-                .Order(StringComparer.Ordinal).Last() + Path.DirectorySeparatorChar + Path.Combine("ref", "net8.0");
+            root = Path.Combine(AppContext.BaseDirectory, "PackageDownloads", "microsoft.netcore.app.ref", "8.0.0", "ref", framework);
         var references = Directory.EnumerateFiles(root, "*.dll").Select(path => MetadataReference.CreateFromFile(path));
         var compilation = CSharpCompilation.Create("Lower.Reference." + framework,
             [CSharpSyntaxTree.ParseText("public sealed class LowerReference { public System.Collections.Generic.List<string> Values { get; } = new(); public string Value { get; set; } = \"\"; public string Result { get; set; } = \"\"; }")], references,

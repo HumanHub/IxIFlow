@@ -1,6 +1,7 @@
 using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using IxIFlow.Authoring;
@@ -45,7 +46,11 @@ public sealed class ActivityPackageRound2Tests : IDisposable
     private static Dictionary<string, (ReadOnlyMemory<byte> Bytes, ArtifactDigest Hash)> Images(params string[] names) =>
         names.ToDictionary(name => name + Extension, name =>
         { var bytes = ActivityPackageFixture.NativeLibraryBytes(name); return ((ReadOnlyMemory<byte>)bytes, ArtifactDigest.Of(bytes)); });
-    private static List<nint> Handles(BundleLoadContext context) => (List<nint>)typeof(BundleLoadContext).GetField("_ownedNative", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(context)!;
+    private static List<nint> Handles(BundleLoadContext context)
+    {
+        var lifetime = typeof(BundleLoadContext).GetField("_nativeLifetime", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(context)!;
+        return (List<nint>)lifetime.GetType().GetField("Handles", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(lifetime)!;
+    }
     private static int Call(BundleLoadContext context, string library, string entry)
     {
         var compiled = WorkflowCompilation.Compile($$"""
@@ -60,20 +65,30 @@ public sealed class ActivityPackageRound2Tests : IDisposable
     [NativeFact]
     public async Task DeclaredTransitiveImportsArePreloadedAndAllHandlesAreReleased()
     {
-        var context = await Context();
+        await Bundle.Value;
         var cache = Folder();
+        var retired = LoadAndRetire(cache);
+        await Collected(retired.Context);
+        Assert.Empty(retired.Handles);
+        foreach (var path in retired.Paths) File.Delete(path); // Windows module and verification handles must both be closed.
+        if (OperatingSystem.IsLinux()) Assert.DoesNotContain(cache, await File.ReadAllTextAsync("/proc/self/maps"));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (WeakReference Context, List<nint> Handles, string[] Paths) LoadAndRetire(string cache)
+    {
+        var context = Context().GetAwaiter().GetResult();
         try
         {
-            await new BundleCache(new InMemoryWorkflowStateRepository(), cache, new(), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5))
-                .LoadNativeAsync(ArtifactDigest.Of([71]), Images("fixture_primary", "fixture_helper"), context, default);
+            new BundleCache(new InMemoryWorkflowStateRepository(), cache, new(), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5))
+                .LoadNativeAsync(ArtifactDigest.Of([71]), Images("fixture_primary", "fixture_helper"), context, default).GetAwaiter().GetResult();
             Assert.Equal(2, Handles(context).Count); // Eager loading, before any P/Invoke.
             Assert.Equal(42, Call(context, "fixture_primary", "fixture_primary"));
             var paths = Directory.GetFiles(Path.Combine(cache, "native"), "*", SearchOption.AllDirectories);
             Assert.Equal(2, paths.Length);
             context.Unload();
-            Assert.Empty(Handles(context));
-            foreach (var path in paths) File.Delete(path); // Windows module and verification handles must both be closed.
-            if (OperatingSystem.IsLinux()) Assert.DoesNotContain(cache, await File.ReadAllTextAsync("/proc/self/maps"));
+            Assert.Equal(2, Handles(context).Count);
+            return (new(context, true), Handles(context), paths);
         }
         finally { context.Unload(); }
     }
@@ -121,7 +136,18 @@ public sealed class ActivityPackageRound2Tests : IDisposable
     [NativeFact]
     public async Task PartialEagerLoadFailureReleasesEarlierHandles()
     {
-        var context = await Context();
+        await Bundle.Value;
+        var cache = Folder();
+        var retired = FailAndRetire(cache);
+        await Collected(retired.Context);
+        Assert.Empty(retired.Handles);
+        foreach (var file in Directory.GetFiles(Path.Combine(cache, "native"), "*", SearchOption.AllDirectories)) File.Delete(file);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (WeakReference Context, List<nint> Handles) FailAndRetire(string cache)
+    {
+        var context = Context().GetAwaiter().GetResult();
         try
         {
             var images = Images("fixture_native");
@@ -129,12 +155,22 @@ public sealed class ActivityPackageRound2Tests : IDisposable
             if (OperatingSystem.IsWindows()) { var pe = BitConverter.ToInt32(invalid, 0x3c); invalid[pe + 4] = 0x64; invalid[pe + 5] = 0xaa; }
             else { invalid[18] = 0xb7; invalid[19] = 0; }
             images.Add("wrong_arch" + Extension, (invalid, ArtifactDigest.Of(invalid)));
-            await Assert.ThrowsAnyAsync<Exception>(() => new BundleCache(new InMemoryWorkflowStateRepository(), Folder(), new(), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5))
-                .LoadNativeAsync(ArtifactDigest.Of([73]), images, context, default));
-            Assert.Empty(Handles(context));
-            foreach (var file in Directory.GetFiles(Path.Combine(_root, "cache", "native"), "*", SearchOption.AllDirectories)) File.Delete(file);
+            Assert.ThrowsAny<Exception>(() => new BundleCache(new InMemoryWorkflowStateRepository(), cache, new(), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5))
+                .LoadNativeAsync(ArtifactDigest.Of([73]), images, context, default).GetAwaiter().GetResult());
+            return (new(context, true), Handles(context));
         }
         finally { context.Unload(); }
+    }
+
+    private static async Task Collected(WeakReference context)
+    {
+        for (var index = 0; index < 100 && context.IsAlive; index++)
+        {
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            await Task.Delay(20);
+        }
+        Assert.False(context.IsAlive);
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }
 
     [LinuxNativeFact]
@@ -474,5 +510,10 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         protected override void Dispose(bool disposing) { if (disposing) { Cache.Dispose(); } base.Dispose(disposing); }
     }
 
-    void IDisposable.Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
+    void IDisposable.Dispose()
+    {
+        // Retired native contexts release their file ownership through collection.
+        for (var index = 0; index < 4; index++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
+        if (Directory.Exists(_root)) Directory.Delete(_root, true);
+    }
 }

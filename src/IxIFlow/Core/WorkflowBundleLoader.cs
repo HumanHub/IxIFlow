@@ -3,6 +3,7 @@ using System.Runtime.Loader;
 using System.Security.Cryptography;
 using System.Text.Json;
 using IxIFlow.Core.Runtime;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core;
 
@@ -136,9 +137,9 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
                     paths.Add(name, path);
                 }
             }
-            context.LoadNative(paths, native.ToDictionary(pair => pair.Key, pair => pair.Value.Bytes, comparer));
             context.OwnNativeFiles(opened.Values.ToArray(), privateRoot);
             opened.Clear(); privateRoot = null;
+            context.LoadNative(paths, native.ToDictionary(pair => pair.Key, pair => pair.Value.Bytes, comparer));
         }
         finally
         {
@@ -297,14 +298,16 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
     private bool _unloading;
     private Action<AssemblyLoadContext>? _onUnloading;
 
-    private readonly List<nint> _ownedNative = [];
-    private readonly List<FileStream> _nativeFiles = [];
-    private string? _privateNativeRoot;
+    private readonly NativeLifetime _nativeLifetime;
+    private readonly ILogger? _logger;
     private readonly object _nativeGate = new();
 
     internal BundleLoadContext(WorkflowBundle bundle, ArtifactDigest digest,
-        IEnumerable<KeyValuePair<string, ReadOnlyMemory<byte>>> packageAssemblies, IReadOnlyDictionary<string, string> native) : base(digest.Value, isCollectible: true)
+        IEnumerable<KeyValuePair<string, ReadOnlyMemory<byte>>> packageAssemblies, IReadOnlyDictionary<string, string> native,
+        ILogger? logger = null) : base(digest.Value, isCollectible: true)
     {
+        _logger = logger;
+        _nativeLifetime = new(this, logger);
         // Observe retirement before the context is exposed. The runtime's public event
         // permits subscriptions after it has fired, so late subscribers need this state.
         Unloading += _ =>
@@ -316,8 +319,12 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
                 release = _onUnloading;
                 _onUnloading = null;
             }
-            try { release?.Invoke(this); }
-            finally { ReleaseNative(); }
+            if (release != null)
+                foreach (Action<AssemblyLoadContext> registration in release.GetInvocationList())
+                {
+                    try { registration(this); }
+                    catch (Exception error) { LogCleanupFailure(_logger, error, "unloading registration"); }
+                }
         };
         _shared = WorkflowSharedAssemblies.Validate(bundle.Manifest);
         foreach (var (path, bytes) in bundle.Entries.Where(pair => pair.Key.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)).Concat(packageAssemblies))
@@ -373,31 +380,72 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
                     else LoadSystem(import);
                 }
                 var handle = WorkflowNativeLibraries.Load(paths[name]);
-                _ownedNative.Add(handle); _native.Add(name, handle);
+                _nativeLifetime.Handles.Add(handle); _native.Add(name, handle);
                 visiting.Remove(name);
             }
-            try { foreach (var name in images.Keys) Load(name); }
-            catch { ReleaseNative(); throw; }
+            foreach (var name in images.Keys) Load(name);
         }
     }
 
     internal void OwnNativeFiles(IEnumerable<FileStream> files, string? privateRoot)
-    { _nativeFiles.AddRange(files); _privateNativeRoot = privateRoot; }
+    { _nativeLifetime.Files.AddRange(files); _nativeLifetime.PrivateRoot = privateRoot; }
 
-    internal void ReleaseNative()
+    // Unloading is only a request: delegates, objects and even their finalizers may
+    // still call P/Invoke. The runtime retains the context until its loader allocator
+    // dies. A long weak reference also covers resurrection/finalizer ordering.
+    private sealed class NativeLifetime(BundleLoadContext context, ILogger? logger)
     {
-        lock (_nativeGate)
+        private readonly WeakReference<BundleLoadContext> _context = new(context, trackResurrection: true);
+        internal readonly List<nint> Handles = [];
+        internal readonly List<FileStream> Files = [];
+        internal string? PrivateRoot;
+        private int _released;
+
+        ~NativeLifetime()
         {
-            for (var i = _ownedNative.Count - 1; i >= 0; i--) System.Runtime.InteropServices.NativeLibrary.Free(_ownedNative[i]);
-            _ownedNative.Clear(); _native.Clear();
-            foreach (var file in _nativeFiles) file.Dispose();
-            _nativeFiles.Clear();
-            if (_privateNativeRoot != null)
+            if (_context.TryGetTarget(out _))
             {
-                try { Directory.Delete(_privateNativeRoot, true); }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
-                _privateNativeRoot = null;
+                GC.ReRegisterForFinalize(this);
+                return;
             }
+            Release();
+        }
+
+        private void Release()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0) return;
+            for (var i = Handles.Count - 1; i >= 0; i--)
+                try { System.Runtime.InteropServices.NativeLibrary.Free(Handles[i]); }
+                catch (Exception error) { LogCleanupFailure(logger, error, "native module release"); }
+            Handles.Clear();
+            foreach (var file in Files)
+                try { file.Dispose(); }
+                catch (Exception error) { LogCleanupFailure(logger, error, "native file release"); }
+            Files.Clear();
+            if (PrivateRoot != null)
+                try { Directory.Delete(PrivateRoot, true); }
+                catch (Exception error) { LogCleanupFailure(logger, error, "private native directory release"); }
+            PrivateRoot = null;
+        }
+    }
+
+    internal static void LogCleanupFailure(ILogger? logger, Exception error, string phase)
+    {
+        // Cleanup, including finalizer cleanup, must also survive a failing logger.
+        try { logger?.LogWarning("Bundle cleanup failed during {Phase} ({ErrorType})", phase, error.GetType().FullName); }
+        catch (Exception) { }
+    }
+
+    internal static void UnloadSafely(AssemblyLoadContext context, ILogger? logger)
+    {
+        try { context.Unload(); }
+        catch (Exception error)
+        {
+            LogCleanupFailure(logger, error, "runtime unload");
+            // The runtime clears the public event before invoking it. If a public
+            // handler throws, a second call completes the interrupted transition.
+            try { context.Unload(); }
+            catch (Exception retry) { LogCleanupFailure(logger, retry, "runtime unload retry"); }
         }
     }
 
@@ -419,7 +467,7 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
                 if (!_native.ContainsKey(import)) LoadSystem(import, loading);
         }
         var handle = WorkflowNativeLibraries.Load(path);
-        _ownedNative.Add(handle); _native.Add(name, handle);
+        _nativeLifetime.Handles.Add(handle); _native.Add(name, handle);
         return handle;
     }
 
@@ -618,7 +666,7 @@ internal sealed class LoadedBundle(BundleLoadContext context, WorkflowDefinition
     internal WorkflowDefinition Definition { get; } = definition;
 }
 
-internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBundleOptions options) : IDisposable
+internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBundleOptions options, ILogger? logger = null) : IDisposable
 {
     private readonly object _gate = new();
     private readonly BundleCache _cache = new(artifacts, options.CacheDirectory, options.ReadLimits, options.FetchTimeout, options.CacheLockTimeout);
@@ -687,7 +735,7 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
                         throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, $"Duplicate native package asset '{path}'");
                 }
             }
-            var context = new BundleLoadContext(bundle, digest, managed, new Dictionary<string, string>());
+            var context = new BundleLoadContext(bundle, digest, managed, new Dictionary<string, string>(), logger);
             try
             {
                 await _cache.LoadNativeAsync(digest, native, context, token);
@@ -715,7 +763,7 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
                 token.ThrowIfCancellationRequested();
                 return new(context, definition);
             }
-            catch { WorkflowJson.Release(context); context.ReleaseNative(); context.Unload(); throw; }
+            catch { Retire(context); throw; }
         }
         catch (Exception error) when (error is not (WorkflowEngineException or OperationCanceledException or OutOfMemoryException))
         { throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Could not load bundle {digest}: {error.GetBaseException().Message}", error); }
@@ -752,20 +800,27 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
         }
         foreach (var entry in retired)
         {
-            entry.Stop.Cancel();
+            try { entry.Stop.Cancel(); }
+            catch (Exception error) { BundleLoadContext.LogCleanupFailure(logger, error, "load cancellation"); }
             using (ExecutionContextFlow.SuppressIfNeeded())
                 _ = entry.Load.Value.ContinueWith(task =>
                 {
-                    if (task.IsCompletedSuccessfully)
+                    try
                     {
-                        WorkflowJson.Release(task.Result.Context);
-                        task.Result.Context.ReleaseNative();
-                        task.Result.Context.Unload();
+                        if (task.IsCompletedSuccessfully) Retire(task.Result.Context);
+                        else _ = task.Exception;
                     }
-                    else _ = task.Exception;
-                    entry.Stop.Dispose();
+                    catch (Exception error) { BundleLoadContext.LogCleanupFailure(logger, error, "bundle retirement"); }
+                    finally { entry.Stop.Dispose(); }
                 }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
+    }
+
+    private void Retire(BundleLoadContext context)
+    {
+        try { WorkflowJson.Release(context); }
+        catch (Exception error) { BundleLoadContext.LogCleanupFailure(logger, error, "JSON profile release"); }
+        BundleLoadContext.UnloadSafely(context, logger);
     }
 
     public void Dispose()
