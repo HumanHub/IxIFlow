@@ -137,8 +137,8 @@ public class FaultInjectingRepository : IWorkflowStateRepository
         _inner.GetRunnableInstancesAsync(query);
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
         _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
-    public virtual Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-        _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
+    public virtual Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
+        _inner.RenewExecutionLeasesAsync(leases);
     public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         _inner.ReleaseExecutionLeaseAsync(instanceId, token);
 

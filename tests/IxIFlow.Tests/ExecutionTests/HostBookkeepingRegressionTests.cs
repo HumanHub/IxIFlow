@@ -290,10 +290,10 @@ public sealed class HostBookkeepingRegressionTests
             ? new(WorkflowCommitStatus.Retry, 0)
             : throw new IOException("The commit reply was lost");
 
-        public override async Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
+        public override async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
         {
-            var renewed = await base.RenewExecutionLeaseAsync(id, token, duration);
-            if (!renewed) Interlocked.Increment(ref RejectedRenewals);
+            var renewed = await base.RenewExecutionLeasesAsync(leases);
+            Interlocked.Add(ref RejectedRenewals, renewed.Count(result => result.Status != ExecutionLeaseRenewalStatus.Renewed));
             return renewed;
         }
     }

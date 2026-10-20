@@ -194,7 +194,7 @@ public sealed class TerminationRenewalRefusalTests
         }
     }
 
-    // The shared batch watch is held independently of the renewal's single-instance lookup.
+    // The shared watch is held independently of reading the renewal batch's per-lease outcome.
     private sealed class DelayedWatchStore(TimeProvider time) : FaultInjectingRepository(time)
     {
         public TaskCompletionSource WatchStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -224,12 +224,33 @@ public sealed class TerminationRenewalRefusalTests
             return DelayCancellationRead ? CancellationReply.Task : base.GetCancellationRequestAsync(instanceId);
         }
 
-        public override async Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration)
+        public override async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+            IReadOnlyList<ExecutionLeaseRenewal> leases)
         {
             Interlocked.Increment(ref _renewalCalls);
-            var renewed = !RefuseRenewal && await base.RenewExecutionLeaseAsync(instanceId, token, duration);
-            if (!renewed) RenewalRefused.TrySetResult();
-            return renewed;
+            if (!RefuseRenewal)
+            {
+                var results = await base.RenewExecutionLeasesAsync(leases);
+                if (results.Any(result => result.Status != ExecutionLeaseRenewalStatus.Renewed)) RenewalRefused.TrySetResult();
+                return results;
+            }
+            RenewalRefused.TrySetResult();
+            var replies = new List<ExecutionLeaseRenewalResult>();
+            foreach (var lease in leases)
+            {
+                try
+                {
+                    var reason = await GetCancellationRequestAsync(lease.InstanceId);
+                    replies.Add(reason?.Mode == WorkflowControlMode.Terminate
+                        ? new(ExecutionLeaseRenewalStatus.TerminationRequested, reason)
+                        : new(ExecutionLeaseRenewalStatus.Refused));
+                }
+                catch (Exception error)
+                {
+                    replies.Add(new(ExecutionLeaseRenewalStatus.Refused) { Error = error });
+                }
+            }
+            return replies;
         }
 
         public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)

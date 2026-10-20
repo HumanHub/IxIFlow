@@ -159,6 +159,6 @@ public sealed class MemberRegistryTests
         Assert.Empty(await store.GetLiveMembersAsync());
         Assert.Null(await store.TryAcquireExecutionLeaseAsync("work", "other", TimeSpan.FromMinutes(2), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         await store.UnregisterMemberAsync(member.Id);
-        Assert.True(await store.RenewExecutionLeaseAsync("work", "owner", TimeSpan.FromMinutes(2)));
+        Assert.True((await store.RenewExecutionLeasesAsync([new("work", "owner", TimeSpan.FromMinutes(2))]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
     }
 }
