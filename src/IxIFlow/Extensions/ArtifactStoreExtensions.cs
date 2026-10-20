@@ -11,7 +11,16 @@ public static class ArtifactStoreExtensions
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(cacheDirectory);
         ArgumentOutOfRangeException.ThrowIfNegative(maxCachedBundles);
-        builder.Services.Replace(ServiceDescriptor.Singleton(new WorkflowBundleOptions(Path.GetFullPath(cacheDirectory), maxCachedBundles)));
+        return builder.UseWorkflowBundles(new WorkflowBundleOptions(Path.GetFullPath(cacheDirectory), maxCachedBundles));
+    }
+
+    public static IIxIFlowBuilder UseWorkflowBundles(this IIxIFlowBuilder builder, WorkflowBundleOptions options)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(options.CacheDirectory);
+        ArgumentOutOfRangeException.ThrowIfNegative(options.MaxCachedBundles);
+        options.ReadLimits.Validate();
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.FetchTimeout, TimeSpan.Zero);
+        builder.Services.Replace(ServiceDescriptor.Singleton(options));
         return builder;
     }
     /// <summary>Chooses immutable files for artifacts on a single host.</summary>

@@ -102,7 +102,8 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
                 var step = scopes.Step(invocation.StepId);
                 using var childLease = invocation.ChildBundleDigest == null ? null
                     : await ((IWorkflowDefinitionSource)services.GetService(typeof(IWorkflowDefinitionSource))!)
-                        .AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, invocation.ChildBundleDigest);
+                        .AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, invocation.ChildBundleDigest,
+                            checkpoint.Signals?.AcquisitionToken ?? default);
                 using var childTypes = WorkflowTypeIdentity.Enter(childLease?.Definition.BundleContext);
                 if (WorkflowTypeIdentity.Resolve(invocation.ChildDataType) == null)
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,

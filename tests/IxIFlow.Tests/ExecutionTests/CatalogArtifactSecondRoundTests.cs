@@ -268,8 +268,8 @@ public sealed class CatalogArtifactSecondRoundTests
 
     private sealed class PausedLatestCatalog(IWorkflowCatalog inner) : IWorkflowCatalog
     {
-        public Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest) => inner.AcquireWorkflowDefinitionAsync(name, version, digest);
-        public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version) => inner.ResolveWorkflowDefinitionAsync(name, version);
+        public Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest, CancellationToken cancellationToken = default) => inner.AcquireWorkflowDefinitionAsync(name, version, digest, cancellationToken);
+        public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version, CancellationToken cancellationToken = default) => inner.ResolveWorkflowDefinitionAsync(name, version, cancellationToken);
 
         public long DefinitionRevision => inner.DefinitionRevision;
         private int _calls;

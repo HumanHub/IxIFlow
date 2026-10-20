@@ -43,7 +43,8 @@ public interface IWorkflowCatalogStore
 /// <summary>Persistent version catalog and the code definitions this host can execute.</summary>
 public interface IWorkflowCatalog : IWorkflowCatalogStore, IWorkflowDefinitionSource
 {
-    /// <summary>Monotonically increases after a new local executable definition is registered.</summary>
+    Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version);
+    /// <summary>Monotonically increases after a local catalog mutation or executable registration.</summary>
     long DefinitionRevision { get; }
     Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync();
     Task RegisterWorkflowAsync(WorkflowDefinition definition);
@@ -77,6 +78,8 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(bundles.CacheDirectory);
             ArgumentOutOfRangeException.ThrowIfNegative(bundles.MaxCachedBundles);
+            bundles.ReadLimits.Validate();
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(bundles.FetchTimeout, TimeSpan.Zero);
             _bundles = new(artifacts ?? throw new ArgumentException("Bundle loading requires an artifact store"), bundles);
         }
         foreach (var definition in definitions ?? [])
@@ -119,15 +122,16 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
         return Task.FromResult(_definitions.GetValueOrDefault((name, version)));
     }
 
-    public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? bundleDigest)
+    public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? bundleDigest, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         WorkflowCatalogRules.ValidateName(name);
         if (bundleDigest == null)
             return new(await GetWorkflowDefinitionAsync(name, version)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Workflow definition not found: {name} v{version}; it is unavailable on this host"));
         if (_bundles == null)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "This host has no bundle cache configured");
-        var lease = await _bundles.AcquireAsync(bundleDigest.Value);
+        var lease = await _bundles.AcquireAsync(bundleDigest.Value, cancellationToken);
         if (lease.Definition.Name == name && lease.Definition.Version == version) return lease;
         lease.Dispose();
         throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Bundle identity differs from the saved workflow identity");
@@ -135,8 +139,8 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
 
     public void Dispose() => _bundles?.Dispose();
 
-    public async Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version) =>
-        await AcquireWorkflowDefinitionAsync(name, version, (await _store.GetWorkflowVersionAsync(name, version))?.ArtifactDigest);
+    public async Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version, CancellationToken cancellationToken = default) =>
+        await AcquireWorkflowDefinitionAsync(name, version, (await _store.GetWorkflowVersionAsync(name, version))?.ArtifactDigest, cancellationToken);
 
     public async Task<string?> GetWorkflowStructureHashAsync(string name, int version) =>
         _registrations.TryGetValue((name, version), out var local) ? local.StructureHash
@@ -151,14 +155,24 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
     public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _store.GetDefinitionAsync(name, version);
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
         _store.SaveDefinitionAsync(definition, expectedRevision);
-    public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
-        _store.RegisterWorkflowVersionAsync(version, artifacts ?? _artifacts);
-    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) =>
-        _store.PublishDefinitionAsync(draftId, version, artifacts ?? _artifacts);
+    public async Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null)
+    {
+        await _store.RegisterWorkflowVersionAsync(version, artifacts ?? _artifacts);
+        Interlocked.Increment(ref _definitionRevision);
+    }
+    public async Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null)
+    {
+        var published = await _store.PublishDefinitionAsync(draftId, version, artifacts ?? _artifacts);
+        Interlocked.Increment(ref _definitionRevision);
+        return published;
+    }
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _store.GetWorkflowVersionAsync(name, version);
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _store.GetWorkflowVersionsAsync(name);
-    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>
-        _store.SetWorkflowVersionStateAsync(name, version, state, artifacts ?? _artifacts);
+    public async Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null)
+    {
+        await _store.SetWorkflowVersionStateAsync(name, version, state, artifacts ?? _artifacts);
+        Interlocked.Increment(ref _definitionRevision);
+    }
     public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default) => _store.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
 }

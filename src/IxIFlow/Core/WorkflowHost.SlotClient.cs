@@ -95,7 +95,7 @@ public sealed partial class WorkflowHost
         public Task<EventReceipt?> ReadEventAsync(string instanceId, string eventId) =>
             _runner.ReadEventAsync(instanceId, eventId);
 
-        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) => _runner.GetOpenWaitsAsync(query);
+        public Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query) => _runner.GetOpenWaitsAsync(query);
 
         public Task<WorkflowExecutionResult> RecoverAsync(
             string instanceId,

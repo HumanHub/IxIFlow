@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace IxIFlow.Core;
@@ -18,6 +19,25 @@ public sealed record WorkflowBundleManifest(
 }
 
 public sealed record WorkflowBundle(WorkflowBundleManifest Manifest, IReadOnlyDictionary<string, ReadOnlyMemory<byte>> Entries);
+
+/// <summary>Resource bounds applied before allocation and throughout archive and entry reads.</summary>
+public sealed record WorkflowBundleReadLimits
+{
+    public long MaxArchiveBytes { get; init; } = 64 * 1024 * 1024;
+    public int MaxManifestBytes { get; init; } = 1024 * 1024;
+    public int MaxEntries { get; init; } = 1024;
+    public int MaxEntryBytes { get; init; } = 32 * 1024 * 1024;
+    public long MaxExpandedBytes { get; init; } = 256 * 1024 * 1024;
+
+    internal void Validate()
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxArchiveBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxManifestBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxEntries);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxEntryBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxExpandedBytes);
+    }
+}
 
 /// <summary>Creates and verifies archives without loading or executing any code.</summary>
 public static class WorkflowBundleArchive
@@ -45,22 +65,75 @@ public static class WorkflowBundleArchive
     }
 
     public static async Task<WorkflowBundle> ReadAsync(Stream archive, ArtifactDigest expectedDigest,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, WorkflowBundleReadLimits? limits = null)
     {
-        using var buffer = new MemoryStream();
-        await archive.CopyToAsync(buffer, cancellationToken);
-        var bytes = buffer.ToArray();
-        if (ArtifactDigest.Of(bytes) != expectedDigest) throw Mismatch("The bundle archive digest differs from the published digest");
+        limits ??= new();
+        limits.Validate();
+        await using var buffer = new FileStream(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".bundle"),
+            FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 81920,
+            FileOptions.Asynchronous | FileOptions.DeleteOnClose);
+        await CopyArchiveAsync(archive, buffer, expectedDigest, limits, cancellationToken);
+        return await ReadVerifiedAsync(buffer, limits, cancellationToken);
+    }
+
+    internal static async Task CopyArchiveAsync(Stream archive, Stream destination, ArtifactDigest expectedDigest,
+        WorkflowBundleReadLimits limits, CancellationToken token)
+    {
+        if (archive.CanSeek && archive.Length - archive.Position > limits.MaxArchiveBytes)
+            throw Mismatch("Bundle archive exceeds the configured size limit");
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[81920];
+        long size = 0;
+        int read;
+        while ((read = await archive.ReadAsync(buffer, token)) != 0)
+        {
+            size += read;
+            if (size > limits.MaxArchiveBytes) throw Mismatch("Bundle archive exceeds the configured size limit");
+            hash.AppendData(buffer, 0, read);
+            await destination.WriteAsync(buffer.AsMemory(0, read), token);
+        }
+        if ("sha256:" + Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant() != expectedDigest.Value)
+            throw Mismatch("The bundle archive digest differs from the published digest");
+        destination.Position = 0;
+    }
+
+    internal static async Task<WorkflowBundle> ReadVerifiedAsync(Stream buffer, WorkflowBundleReadLimits limits,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            using var zip = new ZipArchive(buffer, ZipArchiveMode.Read);
+            using var zip = new ZipArchive(buffer, ZipArchiveMode.Read, leaveOpen: true);
+            if (zip.Entries.Count > limits.MaxEntries) throw Mismatch("Bundle entry count exceeds the configured limit");
             var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            long expanded = 0;
             foreach (var entry in zip.Entries)
+            {
                 if (!SafePath(entry.FullName) || !paths.Add(entry.FullName))
                     throw Mismatch($"Duplicate or unsafe bundle path '{entry.FullName}'");
+                var maximum = entry.FullName == ManifestPath ? limits.MaxManifestBytes : limits.MaxEntryBytes;
+                if (entry.Length > maximum || entry.Length > limits.MaxExpandedBytes - expanded)
+                    throw Mismatch("Bundle expanded size exceeds the configured limit");
+                expanded += entry.Length;
+            }
             var manifestEntry = zip.GetEntry(ManifestPath) ?? throw Mismatch("The bundle has no manifest");
-            using var manifestStream = manifestEntry.Open();
-            using var manifestJson = await JsonDocument.ParseAsync(manifestStream, cancellationToken: cancellationToken);
+            long actualExpanded = 0;
+            async Task<byte[]> ReadEntry(ZipArchiveEntry entry, int maximum)
+            {
+                using var input = entry.Open();
+                using var output = new MemoryStream();
+                var chunk = new byte[81920];
+                int count;
+                while ((count = await input.ReadAsync(chunk, cancellationToken)) != 0)
+                {
+                    actualExpanded += count;
+                    if (output.Length + count > maximum || output.Length + count > entry.Length || actualExpanded > limits.MaxExpandedBytes)
+                        throw Mismatch("Bundle expanded size exceeds the configured limit");
+                    await output.WriteAsync(chunk.AsMemory(0, count), cancellationToken);
+                }
+                if (output.Length != entry.Length) throw Mismatch("Bundle entry length differs from its declaration");
+                return output.ToArray();
+            }
+            using var manifestJson = JsonDocument.Parse(await ReadEntry(manifestEntry, limits.MaxManifestBytes));
             CheckJsonProperties(manifestJson.RootElement);
             var manifest = manifestJson.RootElement.Deserialize<WorkflowBundleManifest>()
                 ?? throw Mismatch("The bundle manifest is empty");
@@ -70,10 +143,7 @@ public static class WorkflowBundleArchive
             foreach (var (path, digest) in manifest.Entries)
             {
                 var entry = zip.GetEntry(path) ?? throw Mismatch($"Missing bundle entry '{path}'");
-                using var input = entry.Open();
-                using var entryBuffer = new MemoryStream();
-                await input.CopyToAsync(entryBuffer, cancellationToken);
-                var data = entryBuffer.ToArray();
+                var data = await ReadEntry(entry, limits.MaxEntryBytes);
                 if (ArtifactDigest.Of(data) != digest) throw Mismatch($"Hash mismatch for bundle entry '{path}'");
                 content.Add(path, data);
             }

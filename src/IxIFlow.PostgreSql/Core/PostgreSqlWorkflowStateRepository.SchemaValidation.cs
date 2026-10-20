@@ -89,6 +89,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 "ix_ixiflow_instances_workflow_creation",
                 "ix_ixiflow_instances_workflow_status_creation",
                 "ix_ixiflow_instances_workflow_version_creation",
+                "ix_ixiflow_instances_bundle_digest",
                 "ix_ixiflow_outbox_deliveries_listing",
                 "ix_ixiflow_outbox_deliveries_pending",
                 "ix_ixiflow_outbox_deliveries_publisher_listing",

@@ -4,5 +4,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <AssemblyName>System.Payments</AssemblyName>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/IxIFlow.Abstractions/IxIFlow.Abstractions.csproj" />
+  </ItemGroup>
 </Project>

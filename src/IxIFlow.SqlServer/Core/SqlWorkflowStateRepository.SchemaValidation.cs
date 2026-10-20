@@ -75,6 +75,7 @@ public sealed partial class SqlWorkflowStateRepository
                 "IX_IxIFlowWorkflowInstances_workflow_creation",
                 "IX_IxIFlowWorkflowInstances_workflow_status_creation",
                 "IX_IxIFlowWorkflowInstances_workflow_version_creation",
+                "IX_IxIFlowWorkflowInstances_BundleDigest",
                 "IX_IxIFlowWorkflowLeases_ExpiresAt",
                 "IX_IxIFlowWorkflowWaits_Open",
                 "IX_IxIFlowWorkflowWaits_Page",
