@@ -200,18 +200,16 @@ For time-dependent mappings and conditions, use `ctx.UtcNow`. Tests can register
 
 ## Status and roadmap
 
-Available foundations include the public executor/host message contract, [demands, pins, affinity and unschedulable-work inspection](docs/coordinator-and-hosts.md), coordinator discovery and secured links, incoming webhooks, and [redaction](docs/redaction.md). The persistent catalog, digest-addressed artifacts, verified immutable YAML bundles, draft publishing, version lifecycle and unreferenced artifact retention are implemented. Hosts configured with `UseWorkflowBundles` fetch, verify and load published bundles by digest. See the [roadmap](docs/roadmap.md) for the available subset and [residency](docs/coordinator-and-hosts.md#placement-and-data-residency) for regional deployment.
+Available foundations include the public executor/host message contract, [demands, pins, affinity and unschedulable-work inspection](docs/coordinator-and-hosts.md), coordinator discovery and secured links, incoming webhooks, and [redaction](docs/redaction.md). The debugger (breakpoints, all-stop pause, stepping, audited data edits, the Debug Adapter Protocol, inspection and replay) and opt-in [large-payload](docs/large-payloads.md) storage by reference are available; see [debugging](docs/debugging.md). The persistent catalog, digest-addressed artifacts, verified immutable YAML bundles, draft publishing, version lifecycle and unreferenced artifact retention are implemented. Hosts configured with `UseWorkflowBundles` fetch, verify and load published bundles by digest. See the [roadmap](docs/roadmap.md) for the available subset and [residency](docs/coordinator-and-hosts.md#placement-and-data-residency) for regional deployment.
 
 The following work is planned for 1.0 and is **not yet available**, or has an implemented subset with the remaining work stated here:
 
 | Area | Remaining 1.0 work |
 | --- | --- |
-| Execution and scheduling | Commit resend backoff, batched host lease renewal and completion of demand-aware local-first start/resume admission; execution-claim skip-locked policy remains open |
+| Execution and scheduling | Execution claims that skip rows other transactions hold on SQL Server and PostgreSQL |
 | Publishing and versioning | Activity-package dependency resolution and digest pinning, template dependencies; draft, upload and publishing HTTP APIs |
-| Authoring and catalog | Unified workflow/activity catalog API with input/output metadata, remaining placement and inspection parity for code-defined workflows, published activity packages and YAML code activities, inline workflow calls, explicit workflow input/output contracts and local activity registration |
-| Debugger and audit | Breakpoints and their commits, all-stop pause, stepping including loops, audited data edits, Debug Adapter Protocol and inspection/replay tooling. Timers will keep running while paused; edits will record actor, time, revision and paths |
-| Large payloads | Opt-in storage by reference for workflow data, events and child inputs/results, with transactional reference tracking and collection; bodies stay in the state store |
-| Verification | Identity-test traceability and conformance, fault-injection and commit-budget coverage for the remaining publishing, debugger and payload paths. Coordinator races, nested joins and crash quarantine already have conformance coverage |
+| Authoring and catalog | Unified workflow/activity catalog API with input/output metadata, published activity packages and YAML code activities, inline workflow calls, explicit workflow input/output contracts and local activity registration |
+| Verification | Identity-test traceability and conformance, fault-injection and commit-budget coverage for the remaining publishing and authoring paths. Coordinator races, nested joins and crash quarantine already have conformance coverage |
 
 After 1.0: process isolation (process slots, executor programs, pipe transport, liveness, hard timeouts and process resource accounting), Native AOT for compiled-in workflows, broker publisher/consumer samples for RabbitMQ or Azure Service Bus, and a distributed map that pages external input, runs bounded child work and stores results outside the parent checkpoint. Process memory limits belong to the deployment. SQLite single-host durability is implemented.
 
