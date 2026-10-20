@@ -38,10 +38,11 @@ public sealed partial class SqliteWorkflowStateRepository
         FROM matched CROSS JOIN ixiflow_workflow_instances AS instance INDEXED BY ix_ixiflow_instances_set_runnable
         WHERE instance.demand_set_id = matched.demand_set_id AND instance.runnable_at_utc <= @Now
           AND {PinMatches}
+          AND instance.instance_id NOT IN (SELECT value FROM json_each(@ExcludedInstanceIds))
           AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_leases AS lease
               WHERE lease.instance_id = instance.instance_id AND lease.expires_at_utc > @Now)
         ORDER BY CASE WHEN instance.last_host_id = @HostId THEN 0 ELSE 1 END,
-            instance.runnable_at_utc, instance.instance_id LIMIT @Limit OFFSET @ScanOffset
+            instance.runnable_at_utc, instance.instance_id LIMIT @Limit
         """;
 
     internal override string ClaimEligibilitySql => $"""
@@ -70,8 +71,8 @@ public sealed partial class SqliteWorkflowStateRepository
 
     internal override DynamicParameters PlacementParameters(ClaimQuery query, DateTime now, int limit)
     {
-        return WithScan(WithTimes(new { query.HostId, Limit = limit, CapabilityHost = query.Capabilities.GetValueOrDefault("host"),
+        return WithExclusions(WithTimes(new { query.HostId, Limit = limit, CapabilityHost = query.Capabilities.GetValueOrDefault("host"),
             Capabilities = JsonSerializer.Serialize(query.Capabilities.Select(item => new { item.Key, item.Value })) },
-            ("Now", now)), query, limit);
+            ("Now", now)), query);
     }
 }

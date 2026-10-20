@@ -25,11 +25,19 @@ internal sealed partial class WorkflowRecoveryService(
     private readonly object _lock = new();
     // Only entries actually taken by a worker are reserved across overlapping passes.
     private readonly Dictionary<string, object> _recovering = new(StringComparer.Ordinal);
-    // Recent refusals are an ordering hint, never an exclusion (including on a wake).
-    private readonly Dictionary<string, long> _refused = new(StringComparer.Ordinal);
-    private long _passNumber;
-    private long _scanOffset;
-    private readonly SemaphoreSlim _scan = new(1, 1);
+    // Dictionary insertion order is not an eviction contract; keep oldest-first explicitly.
+    private readonly Dictionary<string, DateTime> _refused = new(StringComparer.Ordinal);
+    private readonly Queue<string> _refusalOrder = new();
+    internal const int RefusedCapacity = 1024;
+    internal static readonly TimeSpan RefusalInterval = TimeSpan.FromSeconds(1);
+    private readonly Channel<bool> _wakes = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
+    {
+        FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true
+    });
+    private readonly Channel<bool> _refusalChanges = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
+    {
+        FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true
+    });
     private readonly Dictionary<string, (DateTime Until, int Times)> _deferred = new(StringComparer.Ordinal);
     // Bound contention work even when discovery keeps finding more due instances.
     internal const int MaxCandidatesPerPass = 256;
@@ -51,12 +59,12 @@ internal sealed partial class WorkflowRecoveryService(
         await await ClaimAsync(cancellationToken);
 
     // Lists the instances this host may claim now and reserves them; the task returned recovers them.
-    private async Task<Task> ClaimAsync(CancellationToken cancellationToken, bool wakeDriven = false)
+    private async Task<Task> ClaimAsync(CancellationToken cancellationToken)
     {
         var handedOff = false;
         try
         {
-            var pass = await ReserveAsync(cancellationToken, wakeDriven);
+            var pass = await ReserveAsync(cancellationToken);
             handedOff = true;
             return CompletePassAsync(pass);
         }
@@ -73,8 +81,9 @@ internal sealed partial class WorkflowRecoveryService(
         finally { _coordination.CompleteClaimPass(); }
     }
 
-    private async Task<Task> ReserveAsync(CancellationToken cancellationToken, bool wakeDriven)
+    private async Task<Task> ReserveAsync(CancellationToken cancellationToken)
     {
+        lock (_lock) ExpireRefusals();
         // A host claims only what it has slots for (D-10); the rest waits for the next pass or another host.
         int limit;
         using (var probe = scopes.CreateScope())
@@ -87,9 +96,6 @@ internal sealed partial class WorkflowRecoveryService(
         var owner = new object();
         lock (_lock)
         {
-            var passNumber = ++_passNumber;
-            foreach (var expired in _refused.Where(item => item.Value < passNumber).Select(item => item.Key).ToArray())
-                _refused.Remove(expired);
             var now = _time.GetUtcNow().UtcDateTime;
             foreach (var stale in _deferred.Where(item => now - item.Value.Until > TimeSpan.FromMinutes(10))
                          .Select(item => item.Key).ToArray())
@@ -99,33 +105,48 @@ internal sealed partial class WorkflowRecoveryService(
         using (var probe = scopes.CreateScope())
             query = new ClaimQuery(_settings.Id, await _settings.GetCapabilitiesAsync(
                 probe.ServiceProvider.GetRequiredService<IWorkflowCatalog>()), limit);
-        // A wake probes the head immediately without resetting the continuing scan. Its small
-        // page leaves budget for scan progress even under a continuous stream of wakes.
-        var first = await ReadCandidatesAsync(query, wakeDriven ? Math.Min(RefillPageSize, limit) : limit,
-            cancellationToken, head: wakeDriven);
+        var first = await ReadCandidatesAsync(query, limit, [], cancellationToken);
         return RecoverCandidatesAsync(first, query, limit, owner, cancellationToken);
     }
 
-    private async Task<IReadOnlyList<RunnableInstance>> ReadCandidatesAsync(ClaimQuery query, int limit,
-        CancellationToken cancellationToken, bool head = false)
+    private Task<IReadOnlyList<RunnableInstance>> ReadCandidatesAsync(ClaimQuery query, int limit,
+        IEnumerable<string> attempted, CancellationToken cancellationToken)
     {
-        // Continue the ordered scan across passes, even if every earlier candidate keeps refusing.
-        // Serialize cursor advancement, not recovery. Changes in the runnable set are picked up
-        // on wraparound. A page is only a prefetch; it owns no recovery reservations.
-        await _scan.WaitAsync(cancellationToken);
-        try
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_lock)
         {
-            var candidates = await repository.GetRunnableInstancesAsync(query.Continue(head ? 0 : _scanOffset, limit));
-            if (!head && candidates.Count == 0 && _scanOffset != 0)
-            {
-                _scanOffset = 0;
-                candidates = await repository.GetRunnableInstancesAsync(query.Continue(0, limit));
-            }
-            if (!head) _scanOffset = candidates.Count < limit ? 0 : _scanOffset + candidates.Count;
-            lock (_lock)
-                return candidates.OrderBy(candidate => _refused.ContainsKey(candidate.InstanceId)).ToArray();
+            ExpireRefusals();
+            query = query.Excluding(_refused.Keys.Concat(attempted), limit);
         }
-        finally { _scan.Release(); }
+        return repository.GetRunnableInstancesAsync(query);
+    }
+
+    // Called only under _lock. Expiries are fixed at refusal and therefore oldest-first.
+    private void ExpireRefusals()
+    {
+        var now = _time.GetUtcNow().UtcDateTime;
+        while (_refusalOrder.TryPeek(out var id) && _refused[id] <= now)
+        {
+            _refusalOrder.Dequeue();
+            _refused.Remove(id);
+        }
+    }
+
+    private void Refuse(string id)
+    {
+        bool schedule;
+        lock (_lock)
+        {
+            ExpireRefusals();
+            if (_refused.ContainsKey(id)) return;
+            schedule = _refused.Count == 0;
+            if (_refused.Count == RefusedCapacity) _refused.Remove(_refusalOrder.Dequeue());
+            _refusalOrder.Enqueue(id);
+            _refused.Add(id, _time.GetUtcNow().UtcDateTime +
+                (_settings.PollInterval < RefusalInterval ? _settings.PollInterval : RefusalInterval));
+        }
+        // A refusal can arrive while ExecuteAsync is already waiting on a ten-second poll.
+        if (schedule) _refusalChanges.Writer.TryWrite(true);
     }
 
     private async Task RecoverCandidatesAsync(IReadOnlyList<RunnableInstance> first, ClaimQuery query, int slots,
@@ -135,7 +156,9 @@ internal sealed partial class WorkflowRecoveryService(
         var page = new Queue<RunnableInstance>(first);
         var seen = new HashSet<string>(first.Select(candidate => candidate.InstanceId), StringComparer.Ordinal);
         var remaining = MaxCandidatesPerPass - first.Count;
-        var exhausted = first.Count == 0;
+        var exhausted = first.Count < slots;
+        int refusalsAtStart;
+        lock (_lock) refusalsAtStart = _refused.Count;
         try
         {
             await Parallel.ForEachAsync(Enumerable.Range(0, slots), new ParallelOptions
@@ -156,18 +179,29 @@ internal sealed partial class WorkflowRecoveryService(
                             {
                                 if (page.Count == 0)
                                 {
-                                    if (remaining == 0 || exhausted) return;
-                                    var next = await ReadCandidatesAsync(query, Math.Min(RefillPageSize, remaining), token);
+                                    if (remaining == 0)
+                                    {
+                                        // Fill the bounded refusal set across immediate passes, before
+                                        // the poll could expire it. Once full, eviction cannot busy-loop.
+                                        lock (_lock)
+                                            if (_refused.Count > refusalsAtStart) _wakes.Writer.TryWrite(true);
+                                        return;
+                                    }
+                                    if (exhausted) return;
+                                    var requested = Math.Min(RefillPageSize, remaining);
+                                    var next = await ReadCandidatesAsync(query, requested, seen, token);
                                     remaining -= next.Count;
+                                    exhausted = next.Count < requested;
                                     foreach (var candidate in next)
                                         if (seen.Add(candidate.InstanceId)) page.Enqueue(candidate);
-                                    // A wrapped page with no new entries ends this pass.
-                                    if (page.Count == 0) { exhausted = true; return; }
+                                    if (page.Count == 0 && exhausted) return;
                                 }
                                 var candidateToTake = page.Dequeue();
                                 lock (_lock)
                                     if ((!_deferred.TryGetValue(candidateToTake.InstanceId, out var deferred) ||
                                          deferred.Until <= _time.GetUtcNow().UtcDateTime) &&
+                                        (!_refused.TryGetValue(candidateToTake.InstanceId, out var expiry) ||
+                                         expiry <= _time.GetUtcNow().UtcDateTime) &&
                                         _recovering.TryAdd(candidateToTake.InstanceId, owner))
                                         instance = candidateToTake;
                             }
@@ -214,12 +248,13 @@ internal sealed partial class WorkflowRecoveryService(
             if (result.Status is WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.NeedsResolution or WorkflowExecutionStatus.Paused)
                 Defer(instance.InstanceId);
             else
+            {
                 lock (_lock)
                 {
                     _deferred.Remove(instance.InstanceId);
-                    if (result.Status == WorkflowExecutionStatus.Running)
-                        _refused[instance.InstanceId] = _passNumber + 1;
                 }
+                if (result.Status == WorkflowExecutionStatus.Running) Refuse(instance.InstanceId);
+            }
             return result.Status != WorkflowExecutionStatus.Running;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -248,32 +283,20 @@ internal sealed partial class WorkflowRecoveryService(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var passes = new List<Task>();
-        var wakes = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
-        {
-            FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true
-        });
-        void Wake() => wakes.Writer.TryWrite(true);
+        void Wake() => _wakes.Writer.TryWrite(true);
         _coordination.Wake += Wake;
         var listening = wakeSource == null ? Task.CompletedTask : ListenAsync(wakeSource, Wake, stoppingToken);
         var diagnostics = UnschedulableAsync(stoppingToken);
         // A pass runs until the work it handed out is idle or parked; the next tick does not wait for
         // it, and skips the instances it is still recovering.
-        var wakeDriven = false;
         try
         {
             do
             {
-                try { Track(passes, PassAsync(await ClaimAsync(stoppingToken, wakeDriven), stoppingToken)); }
+                try { Track(passes, PassAsync(await ClaimAsync(stoppingToken), stoppingToken)); }
                 catch (Exception error) when (error is not OperationCanceledException)
                 { (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not scan running workflows for recovery"); }
-                using var wait = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                var tick = Task.Delay(_coordination.Connected ? _coordination.PollInterval : _settings.PollInterval,
-                    _time, wait.Token);
-                var wake = wakes.Reader.ReadAsync(wait.Token).AsTask();
-                await Task.WhenAny(wake, tick);
-                wakeDriven = wake.IsCompletedSuccessfully;
-                wait.Cancel();
-                stoppingToken.ThrowIfCancellationRequested();
+                await WaitForPassAsync(stoppingToken);
             } while (true);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -286,6 +309,27 @@ internal sealed partial class WorkflowRecoveryService(
         lock (passes)
             running = passes.ToArray();
         await Task.WhenAll(running);
+    }
+
+    private async Task WaitForPassAsync(CancellationToken stoppingToken)
+    {
+        var pollAt = _time.GetUtcNow() + (_coordination.Connected ? _coordination.PollInterval : _settings.PollInterval);
+        while (true)
+        {
+            using var wait = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+            var delay = pollAt - _time.GetUtcNow();
+            lock (_lock)
+                if (_refusalOrder.TryPeek(out var id))
+                    delay = TimeSpan.FromTicks(Math.Min(delay.Ticks, (_refused[id] - _time.GetUtcNow().UtcDateTime).Ticks));
+            var tick = Task.Delay(delay > TimeSpan.Zero ? delay : TimeSpan.Zero, _time, wait.Token);
+            var wake = _wakes.Reader.ReadAsync(wait.Token).AsTask();
+            var changed = _refusalChanges.Reader.ReadAsync(wait.Token).AsTask();
+            await Task.WhenAny(wake, tick, changed);
+            wait.Cancel();
+            stoppingToken.ThrowIfCancellationRequested();
+            if (wake.IsCompletedSuccessfully || tick.IsCompletedSuccessfully) return;
+            // A late refusal changes the expiry timer, without starting an overlapping pass.
+        }
     }
 
     private static void Track(List<Task> passes, Task pass)

@@ -5,6 +5,7 @@ public partial class InMemoryWorkflowStateRepository
     public virtual async Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
+        InstanceIds.ValidateAll(instanceIds);
         var ids = instanceIds.Distinct(StringComparer.Ordinal).ToArray();
         var cancellations = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
         var failures = new List<Exception>();
@@ -30,7 +31,7 @@ public partial class InMemoryWorkflowStateRepository
     private IReadOnlyList<DebugCommand> CommandsOf(string id) => _debugCommands.TryGetValue(id, out var commands) ? commands : [];
     public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(command);
         lock (_claimLock)
         {
@@ -48,6 +49,7 @@ public partial class InMemoryWorkflowStateRepository
     public virtual Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
+        InstanceIds.ValidateAll(instanceIds);
         lock (_claimLock)
         {
             var result = new Dictionary<string, WorkflowDebugState>(StringComparer.Ordinal);

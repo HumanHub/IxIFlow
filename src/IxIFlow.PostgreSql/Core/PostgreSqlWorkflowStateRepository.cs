@@ -80,6 +80,14 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             """;
 
     internal override bool ReleaseReturnsDue => true;
+    internal override async Task<int> ReadClaimStateAsync(DbConnection connection, DbTransaction transaction, string instanceId)
+    {
+        using var results = await connection.QueryMultipleAsync(Sql(Statement.Running)!, new { InstanceId = instanceId }, transaction);
+        var acquired = await results.ReadSingleAsync<bool>();
+        var state = await results.ReadSingleAsync<int>();
+        // Both probes are nonwaiting. A failed ID probe always refuses, even if the row was available.
+        return acquired ? state : -1;
+    }
     // In key order, so two commits that start the same children wait for each other rather than deadlock.
     internal override bool SortChildStarts => true;
     internal override bool IsRetryableCommit(Exception error) =>
@@ -466,19 +474,16 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             SELECT instance_id, cancellation_json FROM ixiflow_workflow_instances
             WHERE instance_id = ANY(@InstanceIds) AND cancellation_json IS NOT NULL
             """,
-        // A statement snapshot distinguishes an absent row from one skipped by the locking read.
-        // The claim's advisory lock protects absent-ID admission against commits and deletes.
+        // Two statements in one round trip: row visibility must be sampled AFTER ID acquisition.
         Statement.Running => """
-            WITH identity AS MATERIALIZED (
-                SELECT pg_try_advisory_xact_lock(hashtextextended(@InstanceId COLLATE "C", 0)) AS acquired
-            ), locked AS MATERIALIZED (
+            SELECT pg_try_advisory_xact_lock(hashtextextended(@InstanceId COLLATE "C", 0));
+            WITH locked AS MATERIALIZED (
                 SELECT status FROM ixiflow_workflow_instances
-                WHERE instance_id = @InstanceId AND (SELECT acquired FROM identity) FOR UPDATE SKIP LOCKED
+                WHERE instance_id = @InstanceId FOR UPDATE SKIP LOCKED
             )
-            SELECT CASE WHEN NOT (SELECT acquired FROM identity) THEN -1 ELSE
-                COALESCE((SELECT CASE WHEN status = 'Running' THEN 1 ELSE 0 END FROM locked),
+            SELECT COALESCE((SELECT CASE WHEN status = 'Running' THEN 1 ELSE 0 END FROM locked),
                 CASE WHEN EXISTS (SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId)
-                    THEN -1 ELSE 0 END) END
+                    THEN -1 ELSE 0 END)
             """,
         Statement.ClaimLease => """
             INSERT INTO ixiflow_workflow_leases AS lease (instance_id, token, expires_at_utc, epoch, crash_count)
