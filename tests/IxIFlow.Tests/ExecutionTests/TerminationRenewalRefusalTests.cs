@@ -177,6 +177,74 @@ public sealed class TerminationRenewalRefusalTests
         }
     }
 
+    [Fact]
+    public async Task ATerminationRefusingRenewalEscalatesAGracefulRequestAlreadyDelivered()
+    {
+        var time = new TimerRecordingClock();
+        var store = new DelayedWatchStore(time);
+        var instance = await OperationsTests.SeedAsync(store, WorkflowStatus.Running);
+        using var watch = new CancellationWatch(store, time);
+        var lost = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reasons = new ConcurrentQueue<CancellationReason>();
+        var graceful = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var terminated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, Claim,
+            error => lost.TrySetResult(error), reason =>
+            {
+                reasons.Enqueue(reason);
+                (reason.Mode == WorkflowControlMode.Terminate ? terminated : graceful).TrySetResult();
+            }, _ => { }, time);
+        Assert.NotNull(lease);
+        try
+        {
+            await store.WatchStarted.Task.WaitAsync(Patience);
+            var request = new CancellationReason { ReasonCode = "graceful" };
+            Assert.True((await store.RequestCancellationAsync(instance.InstanceId, request)).Accepted);
+            store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason> { [instance.InstanceId] = request });
+            await graceful.Task.WaitAsync(Patience);
+
+            // The operator escalates while the owner runs its graceful cleanup; the watch no longer reads for it.
+            Assert.True((await store.RequestTerminationAsync(instance.InstanceId,
+                new CancellationReason { ReasonCode = "stop" })).Accepted);
+            time.Advance(Settings.RenewalInterval);
+
+            await terminated.Task.WaitAsync(Patience);
+            Assert.Equal([WorkflowControlMode.Cancel, WorkflowControlMode.Terminate], reasons.Select(reason => reason.Mode));
+            Assert.False(lost.Task.IsCompleted);
+            lease.ThrowIfLost();
+        }
+        finally { store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason>()); }
+    }
+
+    [Fact]
+    public void ATerminationReplacesAGracefulRequestButNothingReplacesATermination()
+    {
+        var id = Guid.NewGuid();
+        using var signals = new ExecutionSignals(id, _ => { });
+        var graceful = new CancellationReason { ReasonCode = "graceful" };
+        var terminate = new CancellationReason { ReasonCode = "stop", Mode = WorkflowControlMode.Terminate };
+
+        var first = signals.Changed;
+        signals.Deliver(new Cancel(id, CancelKind.Workflow, graceful));
+        Assert.True(first.IsCompleted);
+        Assert.Same(graceful, signals.Cancellation);
+
+        var second = signals.Changed;
+        signals.Deliver(new Cancel(id, CancelKind.Workflow, new CancellationReason { ReasonCode = "again" }));
+        Assert.False(second.IsCompleted);
+        Assert.Same(graceful, signals.Cancellation);
+
+        signals.Deliver(new Cancel(id, CancelKind.Workflow, terminate));
+        Assert.True(second.IsCompleted);
+        Assert.Same(terminate, signals.Cancellation);
+
+        var third = signals.Changed;
+        signals.Deliver(new Cancel(id, CancelKind.Workflow, graceful));
+        signals.Deliver(new Cancel(id, CancelKind.Workflow, new CancellationReason { Mode = WorkflowControlMode.Terminate }));
+        Assert.False(third.IsCompleted);
+        Assert.Same(terminate, signals.Cancellation);
+    }
+
     public sealed class Probe
     {
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
