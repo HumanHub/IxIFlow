@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using IxIFlow.Core.Runtime;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core;
 
@@ -74,7 +75,7 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
         : this(new InMemoryWorkflowStateRepository(), definitions) { }
 
     public WorkflowCatalog(IWorkflowCatalogStore store, IEnumerable<WorkflowDefinition>? definitions = null,
-        IArtifactStore? artifacts = null, WorkflowBundleOptions? bundles = null)
+        IArtifactStore? artifacts = null, WorkflowBundleOptions? bundles = null, ILogger<WorkflowCatalog>? logger = null)
     {
         _store = store;
         _artifacts = artifacts;
@@ -85,7 +86,7 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
             bundles.ReadLimits.Validate();
             ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(bundles.FetchTimeout, TimeSpan.Zero);
             ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(bundles.CacheLockTimeout, TimeSpan.Zero);
-            _bundles = new(artifacts ?? throw new ArgumentException("Bundle loading requires an artifact store"), bundles);
+            _bundles = new(artifacts ?? throw new ArgumentException("Bundle loading requires an artifact store"), bundles, logger);
         }
         foreach (var definition in definitions ?? [])
             RegisterWorkflowAsync(definition).GetAwaiter().GetResult();
