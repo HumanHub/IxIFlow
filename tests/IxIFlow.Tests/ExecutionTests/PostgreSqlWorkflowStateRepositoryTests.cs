@@ -52,11 +52,12 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
 
     // A row that does not exist cannot be locked, so a first commit, a claim and a delete of one instance take a lock
     // on its ID instead, which SQL Server's range locks give it: a claim cannot grant a lease while a commit made
-    // without one is being applied, and a delete cannot interleave with a first commit.
+    // without one is being applied (it returns no grant at once instead of waiting, C-11), and a delete cannot
+    // interleave with a first commit.
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "C-11")]
-    public Task CommitsClaimsAndDeletesOfANewInstanceWaitForEachOther() => VerifyNewInstanceSerialization(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString), instanceId => HoldIdentityAsync(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString, instanceId));
+    public Task CommitsClaimsAndDeletesOfANewInstanceWaitForEachOther() => VerifyNewInstanceSerialization(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString), instanceId => HoldIdentityAsync(PostgreSqlTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString, instanceId), claimsSkip: true);
 
     // A delete reads the parent to tell before it takes its locks. A child its parent starts in between is found
     // under the locks, and the delete starts over, so the parent's wait still ends as the child's termination.
@@ -317,10 +318,11 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
     public async Task SqliteCommitsClaimsAndDeletesWaitForTheDatabaseWriter()
     {
         await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<PostgreSqlWorkflowStateRepositoryTests>.ConnectionString);
-        await VerifyNewInstanceSerialization(repository, HoldSqliteIdentityAsync);
+        await VerifyNewInstanceSerialization(repository, HoldSqliteIdentityAsync, claimsSkip: false);
     }
 
-    private static async Task VerifyNewInstanceSerialization(IWorkflowStateRepository repository, Func<string, Task<IdentityHold>> holdIdentity)
+    private static async Task VerifyNewInstanceSerialization(IWorkflowStateRepository repository, Func<string, Task<IdentityHold>> holdIdentity,
+        bool claimsSkip)
     {
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
@@ -344,7 +346,13 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
                     ? Task.Run(() => repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))
                     : repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
                 await Task.Delay(TimeSpan.FromMilliseconds(500));
-                Assert.False(commit.IsCompleted || claim.IsCompleted);
+                if (claimsSkip)
+                {
+                    // The claim skips the held ID and returns no grant while the holder still holds it.
+                    Assert.Null(await claim.WaitAsync(TimeSpan.FromSeconds(5)));
+                    Assert.False(commit.IsCompleted);
+                }
+                else Assert.False(commit.IsCompleted || claim.IsCompleted);
             }
             // The granted owner commits; the contending claim cannot replace its active lease.
             Assert.Null(await claim);
