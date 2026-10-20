@@ -11,6 +11,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     private Exception? _loss;
     private long _expiresAtUtcTicks;
     private readonly Action<Exception> _lost;
+    private readonly Action<CancellationReason> _cancelled;
     private readonly TaskCompletionSource<CancellationReason> _cancellation =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _renewal;
@@ -23,11 +24,8 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         Action<CancellationReason> cancellation, Action<long> arrivals)
     {
         _lost = lost;
-        _ = _cancellation.Task.ContinueWith(task =>
-        {
-            if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested)
-                cancellation(task.Result);
-        },
+        _cancelled = cancellation;
+        _ = _cancellation.Task.ContinueWith(task => Deliver(task.Result),
             CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         Epoch = grant.Epoch;
         CrashCount = grant.CrashCount;
@@ -36,12 +34,19 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         _instanceId = instanceId;
         _token = token;
         _expiresAtUtcTicks = requestedAtUtc.Add(settings.Duration).Ticks;
-        _renewal = RenewUntilStoppedAsync(settings, requestedAtUtc.Add(settings.Duration));
+        // Watch first: a refused first renewal may already observe a termination through it.
         _cancellationWatch = watch.Watch(instanceId, _cancellation,
             Lose, settings.Duration, settings.RenewalInterval, sequence =>
             {
                 if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested) arrivals(sequence);
             });
+        _renewal = RenewUntilStoppedAsync(settings, requestedAtUtc.Add(settings.Duration));
+    }
+
+    private void Deliver(CancellationReason reason)
+    {
+        if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested)
+            _cancelled(reason);
     }
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
@@ -88,7 +93,10 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     /// <summary>Records a cancellation request learned outside the watch, such as from a commit.</summary>
     public void ObserveCancellation(CancellationReason reason)
     {
-        _cancellation.TrySetResult(reason);
+        // A termination escalates a graceful request already delivered; the run applies the stronger one.
+        if (!_cancellation.TrySetResult(reason) && reason.Mode == WorkflowControlMode.Terminate &&
+            _cancellation.Task.Result.Mode != WorkflowControlMode.Terminate)
+            Deliver(reason);
         // The request is known; a later outage of the watch's reads must not end this ownership.
         _cancellationWatch.Dispose();
     }
@@ -138,6 +146,25 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                         _time, _stop.Token);
                     if (!renewed)
                     {
+                        try
+                        {
+                            var request = _repository.GetCancellationRequestAsync(_instanceId);
+                            remaining = expiresAtUtc - Now;
+                            var reason = await request.WaitAsync(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero,
+                                _time, _stop.Token);
+                            if (reason?.Mode == WorkflowControlMode.Terminate && Now < expiresAtUtc)
+                            {
+                                // Termination refuses renewal but leaves the current lease valid until
+                                // expiry, so its owner can still acknowledge the hard stop at a commit.
+                                ObserveCancellation(reason);
+                                return;
+                            }
+                        }
+                        catch (Exception error) when (error is not OperationCanceledException and not TimeoutException)
+                        {
+                            Lose(error);
+                            return;
+                        }
                         Lose(new InvalidOperationException(
                             $"Execution lease for workflow instance '{_instanceId}' was lost"));
                         return;
