@@ -56,7 +56,11 @@ public sealed partial class DebugPayloadFixTests
     {
         await using var h = new Harness(sqlite);
         var started = await h.Client.RunAsync(Workflow.Create<Data>("controls-without-trunk").Step<Noop>().WaitFor<Go>("go").Build(), new Data());
-        await h.Store.RequestDebugCommandAsync(started.InstanceId, new("pending-pause", DebugCommandKind.Pause, 0, "owner"));
+        var operations = h.Services.GetRequiredService<IWorkflowOperations>();
+        await operations.PauseAsync(started.InstanceId, "owner");
+        await operations.ContinueAsync(started.InstanceId, "owner");
+        Assert.Equal(1, (await h.Store.GetDebugStatesAsync([started.InstanceId]))[started.InstanceId].PauseGeneration);
+        await h.Store.RequestDebugCommandAsync(started.InstanceId, new("pending-pause", DebugCommandKind.Pause, 1, "owner"));
         await h.Store.RequestCancellationAsync(started.InstanceId, new() { ReasonCode = "cancel", RequestedBy = "owner" });
         if (sqlite)
         {
@@ -75,7 +79,9 @@ public sealed partial class DebugPayloadFixTests
         }
         var controls = await h.Store.GetControlRequestsAsync([started.InstanceId]);
         Assert.Equal("cancel", controls.Cancellations[started.InstanceId].ReasonCode);
-        Assert.Equal("pending-pause", Assert.Single(controls.DebugStates[started.InstanceId].Commands).Id);
-        Assert.Equal(1, controls.DebugStates[started.InstanceId].Version);
+        Assert.Equal("pending-pause", Assert.Single(controls.DebugStates[started.InstanceId].Commands,
+            c => c.AcknowledgedRevision == null).Id);
+        Assert.Equal(5, controls.DebugStates[started.InstanceId].Version);
+        if (!sqlite) Assert.Equal(1, controls.DebugStates[started.InstanceId].PauseGeneration);
     }
 }

@@ -10,6 +10,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "durability")]
 public sealed partial class DebugPayloadFixTests
 {
     private static readonly string Large = new('x', 300_000);
@@ -166,7 +167,8 @@ public sealed partial class DebugPayloadFixTests
         public string ConnectionString => "Data Source=" + Path.Combine(_folder, "state.db");
         public IWorkflowClient Client => Services.GetRequiredService<IWorkflowClient>();
         public RecoveryProbe Probe { get; } = new();
-        public Harness(bool sqlite, Func<IWorkflowStateRepository, IWorkflowStateRepository>? decorate = null)
+        public Harness(bool sqlite, Func<IWorkflowStateRepository, IWorkflowStateRepository>? decorate = null,
+            Action<IServiceCollection>? configureServices = null)
         {
             Directory.CreateDirectory(_folder);
             _sqlite = sqlite ? new("Data Source=" + Path.Combine(_folder, "state.db"), Clock) : null;
@@ -177,6 +179,7 @@ public sealed partial class DebugPayloadFixTests
             services.AddSingleton(Store);
             services.AddSingleton(Probe);
             services.AddIxIFlow(o => { o.PayloadThresholdBytes = 64; o.MaxCrashes = 1; o.Debugging = true; });
+            configureServices?.Invoke(services);
             Services = services.BuildServiceProvider();
         }
         public async ValueTask DisposeAsync()

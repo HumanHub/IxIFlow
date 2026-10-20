@@ -35,6 +35,7 @@ public sealed partial class DebugPayloadFixTests
     }
 }
 
+[Trait("Feature", "durability")]
 public sealed class DebugPayloadContentionServerTests
 {
     [SqlServerFact]

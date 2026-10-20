@@ -437,25 +437,35 @@ public sealed class CheckpointClaimCheckTests
         Assert.False(await store.CollectAsync(second, TimeSpan.Zero));
     }
 
-    [Fact]
-    public async Task WholeReadPinsUntilSnapshotAndSurvivesCollectionAfterReply()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task WholeReadUsesATransactionSnapshotAndAllowsCollectionAfterReply(bool sqlite)
     {
-        var store = new InMemoryWorkflowStateRepository().PayloadStore;
-        var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(Large));
-        var reference = await store.PutAsync(body);
-        var probe = new ProbeStore(store)
+        var folder = Path.Combine(Path.GetTempPath(), "IxIFlowReadSnapshot", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
         {
-            BeforeGet = async r => Assert.False(await store.CollectAsync(r, TimeSpan.Zero))
-        };
-        var assignmentId = Guid.NewGuid();
-        var reply = await new ExecutionPayloadTransfer(probe, ExecutionLimits.Default)
-            .ReadAsync(new(assignmentId, "snapshot", reference));
-        Assert.Equal(assignmentId, reply.AssignmentId);
-        Assert.Null(reply.Refusal);
-        Assert.True(await store.CollectAsync(reference, TimeSpan.Zero));
-        Assert.Null(await store.GetAsync(reference));
-        Assert.Equal(body, reply.Body);
-        reference.Verify(reply.Body!);
+            await using var database = sqlite
+                ? new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "read.db")) : null;
+            var store = database?.PayloadStore ?? new InMemoryWorkflowStateRepository().PayloadStore;
+            var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(Large));
+            var reference = await store.PutAsync(body);
+            var probe = new ProbeStore(store);
+            var assignmentId = Guid.NewGuid();
+            var reply = await new ExecutionPayloadTransfer(probe, ExecutionLimits.Default)
+                .ReadAsync(new(assignmentId, "snapshot", reference));
+            Assert.Equal(assignmentId, reply.AssignmentId);
+            Assert.Null(reply.Refusal);
+            // Get copies verified bytes under its transaction's digest lock. No durable reader
+            // owner extends protection past that transaction, so this unowned body is reclaimable.
+            Assert.Equal(0, probe.ReaderPins);
+            Assert.True(await store.CollectAsync(reference, TimeSpan.Zero));
+            Assert.Null(await store.GetAsync(reference));
+            Assert.Equal(body, reply.Body);
+            reference.Verify(reply.Body!);
+        }
+        finally { await SqliteTestFiles.DeleteAsync(folder); }
     }
 
     [Fact]
@@ -510,12 +520,11 @@ public sealed class CheckpointClaimCheckTests
         public Dictionary<string, int> Puts { get; } = [];
         public PayloadReference? Broken { get; set; }
         public bool Corrupt { get; set; }
-        public Func<PayloadReference, Task>? BeforeGet { get; init; }
+        public int ReaderPins { get; private set; }
         public async ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> body, IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken ct = default)
         { var r = await inner.PutAsync(body, dependencies, ct); Puts[r.Digest] = Puts.GetValueOrDefault(r.Digest) + 1; return r; }
         public async ValueTask<ReadOnlyMemory<byte>?> GetAsync(PayloadReference r, CancellationToken ct = default)
         {
-            if (BeforeGet != null) await BeforeGet(r);
             return r == Broken ? Corrupt ? new byte[(int)r.Bytes] : null : await inner.GetAsync(r, ct);
         }
         public ValueTask<bool> CollectAsync(PayloadReference r, TimeSpan grace, CancellationToken ct = default) => inner.CollectAsync(r, grace, ct);
@@ -532,7 +541,8 @@ public sealed class CheckpointClaimCheckTests
                 return reference;
             }
             public ValueTask LockAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default) => inner.LockAsync(owner, references, ct);
-            public ValueTask PinAsync(PayloadOwner owner, PayloadReference reference, CancellationToken ct = default) => inner.PinAsync(owner, reference, ct);
+            public ValueTask PinAsync(PayloadOwner owner, PayloadReference reference, CancellationToken ct = default)
+            { if (owner.Kind == "reader") probe.ReaderPins++; return inner.PinAsync(owner, reference, ct); }
             public ValueTask ReplaceAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default) => inner.ReplaceAsync(owner, references, ct);
             public ValueTask ReleaseAsync(PayloadOwner owner, CancellationToken ct = default) => inner.ReleaseAsync(owner, ct);
         }

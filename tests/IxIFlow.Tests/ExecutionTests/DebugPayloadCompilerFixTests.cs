@@ -5,6 +5,7 @@ using IxIFlow.Debugging;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "durability")]
 public sealed class DebugPayloadCompilerFixTests
 {
     [Fact]

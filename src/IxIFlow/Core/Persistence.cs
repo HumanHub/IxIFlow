@@ -544,6 +544,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             // One store time for the whole commit: its deadlines, its runnable time and its records (D-35).
             var now = Now;
             var debugCommands = WorkflowDebugRules.Acknowledge(stored, snapshot, CommandsOf(commit.InstanceId), snapshot.Revision, commit.TraceEntries);
+            var pauseGeneration = WorkflowDebugRules.Checkpoint(snapshot).PauseGeneration;
             var debugWake = WorkflowDebugRules.NeedsWake(snapshot.Status, debugCommands);
             var unacknowledged = _cancellations.ContainsKey(commit.InstanceId) &&
                 !_acknowledgedCancellations.Contains(commit.InstanceId);
@@ -601,6 +602,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             foreach (var part in commit.Parts) parts[part.Key] = part.Json;
             snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
             _instances[commit.InstanceId] = snapshot;
+            _pauseGenerations[commit.InstanceId] = pauseGeneration;
             if (debugCommands.Count > 0) _debugCommands[commit.InstanceId] = debugCommands.ToList();
             _summaries[commit.InstanceId] = InstanceSummary.Of(snapshot) with
             { EndedAtUtc = WorkflowStoreRules.IsTerminal(snapshot.Status) ? _endedAt.GetValueOrDefault(commit.InstanceId, now) : null };
@@ -631,6 +633,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 child.Revision = 1;
                 child.RunnableAtUtc = now;
                 _instances[child.InstanceId] = child;
+                _pauseGenerations[child.InstanceId] = WorkflowDebugRules.Checkpoint(child).PauseGeneration;
                 _summaries[child.InstanceId] = InstanceSummary.Of(child);
                 _parts.Remove(child.InstanceId);
                 madeRunnable.Add(child.InstanceId);
@@ -990,6 +993,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         _endedAt.Remove(instanceId);
         _cancellations.Remove(instanceId);
         _debugCommands.Remove(instanceId);
+        _pauseGenerations.Remove(instanceId);
         _acknowledgedCancellations.Remove(instanceId);
         DeleteOutbox(instanceId);
         foreach (var key in _events.Keys.Where(key => key.InstanceId == instanceId).ToArray())
