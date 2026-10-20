@@ -12,13 +12,16 @@ public sealed partial class SqlWorkflowStateRepository
         try
         {
             using var schema = await connection.QueryMultipleAsync("""
+                SELECT InstanceId, CommandId, CommandOrder, CommandJson FROM dbo.IxIFlowWorkflowDebugCommands WHERE 1=0;
+                SELECT Digest, Bytes, Body, MetadataJson FROM dbo.IxIFlowWorkflowPayloads WHERE 1=0;
+                SELECT Digest, OwnerKind, OwnerId FROM dbo.IxIFlowWorkflowPayloadRefs WHERE 1=0;
                 SELECT Name, Version, Kind, Source, Revision, State FROM dbo.IxIFlowDefinitions WHERE 1=0;
                 SELECT Name, Version, StructureHash, State, ArtifactDigest, MetadataJson FROM dbo.IxIFlowWorkflowVersions WHERE 1=0;
                 SELECT Digest, Kind, Content, CreatedAtUtc FROM dbo.IxIFlowArtifacts WHERE 1=0;
                 SELECT [InstanceId], [WorkflowName], [WorkflowVersion], [CreatedAtUtc], [StopKind], [StopCrashCount], [Status], [CorrelationId], [RunnableAtUtc], [EndedAtUtc], [StateJson], [CancellationJson], [CancellationAcknowledged], [Revision], [InboxSequence], [InboxReadThrough], [Incarnation], [ParentInstanceId], [ParentWaitId], [LastHostId], [DemandSetId], [PinnedHost], [PinExpiresAtUtc], [PinInherit] FROM dbo.IxIFlowWorkflowInstances WHERE 1=0;
-                SELECT [InstanceId], [EventId], [Sequence], [EventType], [EventKey], [TargetWaitId], [Subject], [PayloadJson], [PayloadHash], [ReceivedAtUtc], [Outcome], [WaitId], [Rejection], [SettledAtUtc], [NoticeJson] FROM dbo.IxIFlowWorkflowEvents WHERE 1=0;
+                SELECT [InstanceId], [EventId], [Sequence], [EventType], [EventKey], [TargetWaitId], [Subject], [StoredPayloadJson], [PayloadHash], [ReceivedAtUtc], [Outcome], [WaitId], [Rejection], [SettledAtUtc], [NoticeJson] FROM dbo.IxIFlowWorkflowEvents WHERE 1=0;
                 SELECT [InstanceId], [PartKey], [Json] FROM dbo.IxIFlowWorkflowParts WHERE 1=0;
-                SELECT [InstanceId], [Sequence], [EntryJson] FROM dbo.IxIFlowWorkflowTraces WHERE 1=0;
+                SELECT [InstanceId], [Sequence], [EntryJson], [Revision], [CommitEndSequence], [CommitStatus] FROM dbo.IxIFlowWorkflowTraces WHERE 1=0;
                 SELECT InstanceId, DiagnosticId, DiagnosticJson FROM dbo.IxIFlowWorkflowDiagnostics WHERE 1=0;
                 SELECT [InstanceId], [WaitId], [WaitRef], [Kind], [WaitKey], [EventType], [DefaultPayloadJson], [DeadlineUtc], [OpenedSequence], [OpenedAtUtc], [CloseReason], [ClosedAtUtc] FROM dbo.IxIFlowWorkflowWaits WHERE 1=0;
                 SELECT [InstanceId], [CommitId], [ExpectedRevision], [Revision], [PayloadHash], [NoticeJson], [MadeRunnableJson] FROM dbo.IxIFlowWorkflowCommits WHERE 1=0;
@@ -36,6 +39,8 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT DemandSetId, DemandKey, DemandValue, ExpiresAtUtc, ValueExpiresAtUtc, Inherit, DemandKeyBytes FROM dbo.IxIFlowDemandSetRows WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
+            if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sys.indexes WHERE object_id=OBJECT_ID('dbo.IxIFlowWorkflowPayloadRefs') AND name='IX_IxIFlowPayloadRefs_Owner'", transaction: transaction) != 1)
+                throw EarlierBuild();
             if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.IxIFlowWorkflowInstances') AND name=N'IX_IxIFlowInstances_SetPin'", transaction: transaction) != 1)
                 throw EarlierBuild();
             // Opening an existing database must retain catalog, operations and outbox access paths.

@@ -19,7 +19,7 @@ public static class IxIFlowSqlServerExtensions
         builder.ChooseStore("SQL Server");
         builder.Services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(
             provider => new SqlWorkflowStateRepository(connectionString,
-                outboxSettings: provider.GetRequiredService<OutboxSettings>())));
+                outboxSettings: provider.GetRequiredService<OutboxSettings>(), payloadSettings: provider.GetRequiredService<PayloadStoreSettings>())));
         return builder;
     }
 }

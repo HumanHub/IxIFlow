@@ -12,7 +12,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "host")]
 [Trait("Spec", "C-10")]
-public sealed class UnschedulableTests
+public sealed class UnschedulableTests : IClassFixture<SqliteTestDatabase<UnschedulableTests>>, IClassFixture<SqliteTestDatabase<UnschedulableTests.UnschedulableClock>>, IClassFixture<SqliteTestDatabase<UnschedulableTests.UnschedulableFail>>
 {
     [Fact]
     public Task MemoryContract() => Contract(new InMemoryWorkflowStateRepository());
@@ -40,7 +40,7 @@ public sealed class UnschedulableTests
         var instance = new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "UnschedulableContract", WorkflowVersion = 7,
-            Status = WorkflowStatus.Running, WorkflowDataJson = "{}", WorkflowDataType = typeof(object).AssemblyQualifiedName!,
+            Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = typeof(object).AssemblyQualifiedName!,
             ExecutionStateJson = JsonSerializer.Serialize(new ExecutionCheckpoint
             {
                 StructureHash = "saved-hash", Demands = demands.ToList(),
@@ -213,8 +213,8 @@ public sealed class UnschedulableTests
         Assert.Equal(WorkflowErrorKind.Unschedulable, error.Kind);
     }
 
-    private sealed class UnschedulableClock;
-    private sealed class UnschedulableFail;
+    internal sealed class UnschedulableClock;
+    internal sealed class UnschedulableFail;
     public sealed class HashData;
     public sealed class HashEvent;
     public sealed class HashNoop : IAsyncActivity
@@ -222,4 +222,3 @@ public sealed class UnschedulableTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 }
-

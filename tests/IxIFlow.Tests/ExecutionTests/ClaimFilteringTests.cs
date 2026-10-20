@@ -10,7 +10,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Spec", "C-02")]
 [Trait("Spec", "C-08")]
 [Trait("Spec", "C-09")]
-public sealed class ClaimFilteringTests
+public sealed class ClaimFilteringTests : IClassFixture<SqliteTestDatabase<ClaimFilteringTests>>
 {
     [Fact]
     public Task MemoryClaimContract() => Contract(new InMemoryWorkflowStateRepository());
@@ -47,7 +47,7 @@ public sealed class ClaimFilteringTests
             var instance = new WorkflowInstance
             {
                 InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "ClaimContract", Status = status,
-                WorkflowDataJson = "{}", WorkflowDataType = typeof(object).AssemblyQualifiedName!,
+                WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = typeof(object).AssemblyQualifiedName!,
                 ExecutionStateJson = JsonSerializer.Serialize(new ExecutionCheckpoint
                 {
                     StructureHash = "claim-contract", Demands = demands.ToList(),
@@ -203,4 +203,3 @@ public sealed class ClaimFilteringTests
         Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "due", TimeSpan.FromMinutes(1), second));
     }
 }
-

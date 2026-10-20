@@ -159,8 +159,9 @@ public sealed class DefinitionValidationTests
             Status = WorkflowStatus.Running, ExecutionStateJson = System.Text.Json.JsonSerializer.Serialize(checkpoint)
         };
         await repository.SeedAsync(instance);
+        await using var renewer = new ExecutionLeaseRenewer(repository);
         var operations = new WorkflowHost.InstanceOperations(provider, provider.GetRequiredService<IActivityExecutor>(),
-            repository, new UncheckedRegistry(definition), new InProcessInstanceGate());
+            repository, new UncheckedRegistry(definition), new InProcessInstanceGate(), renewer);
 
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => operations.RecoverAsync(instance.InstanceId,
             CancellationToken.None));
@@ -222,7 +223,7 @@ public sealed class DefinitionValidationTests
             .AddSingleton<IWorkflowDefinitionSource>(new UncheckedRegistry(definition)).BuildServiceProvider();
         var executor = new WorkflowExecutor(uncheckedProvider, null!);
         var instance = new WorkflowInstance { WorkflowName = definition.Name, WorkflowVersion = definition.Version,
-            WorkflowDataType = typeof(RegistrationData).AssemblyQualifiedName!, WorkflowDataJson = JsonSerializer.Serialize(data),
+            WorkflowDataType = typeof(RegistrationData).AssemblyQualifiedName!, WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(data)),
             ExecutionStateJson = JsonSerializer.Serialize(checkpoint) };
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => executor.ExecuteAsync(new(Guid.NewGuid(),
             instance, null, checkpoint.StructureHash, 1, 0, ExecutionLimits.Default, false, []), CancellationToken.None));

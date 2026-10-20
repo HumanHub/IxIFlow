@@ -23,7 +23,7 @@ internal static class InstanceSearchStoreContract
             {
                 InstanceId = name + suffix, WorkflowName = name, WorkflowVersion = version, Status = status,
                 CreatedAt = created, CorrelationId = name, ParentInstanceId = "parent-" + name,
-                WorkflowDataJson = "{\"private\":42}", ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
+                WorkflowDataJson = StoredJson.Inline("{\"private\":42}"), ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
             };
             var lease = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
             var commit = CheckpointCommit.Create(instance, lease.Epoch, 0, stopped: stop != null,
@@ -114,7 +114,7 @@ public sealed class InstanceSearchStoreTests : IClassFixture<SqliteTestDatabase<
         var cs = SqliteTestDatabase<InstanceSearchStoreTests>.ConnectionString;
         await using var store = new SqliteWorkflowStateRepository(cs);
         var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "RowOnly", WorkflowVersion = 4,
-            CreatedAt = DateTime.UtcNow, Status = WorkflowStatus.Suspended, WorkflowDataJson = "{}", ExecutionStateJson = StoreTestSupport.CheckpointJson };
+            CreatedAt = DateTime.UtcNow, Status = WorkflowStatus.Suspended, WorkflowDataJson = StoredJson.Inline("{}"), ExecutionStateJson = StoreTestSupport.CheckpointJson };
         await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0));
         try
         {

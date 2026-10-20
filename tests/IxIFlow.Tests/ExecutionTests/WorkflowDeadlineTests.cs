@@ -210,7 +210,7 @@ public sealed class WorkflowDeadlineTests
 
         var saved = await repository.GetWorkflowInstanceAsync(instanceId);
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-        Assert.Equal("timeout", JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.Outcome);
+        Assert.Equal("timeout", JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson.InlineText)!.Outcome);
     }
 
     [Fact]
@@ -329,7 +329,7 @@ public sealed class WorkflowDeadlineTests
             if (saved!.Status == WorkflowStatus.Suspended &&
                 ExecutionCheckpoint.Read(saved.ExecutionStateJson).TimedOut)
             {
-                Assert.False(JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.After);
+                Assert.False(JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson.InlineText)!.After);
                 break;
             }
             Assert.True(DateTime.UtcNow < deadline, "The instance did not stop in its cleanup wait");
@@ -427,6 +427,7 @@ public sealed class WorkflowDeadlineTests
     private sealed class DelayRootCompletionRepository(FakeTimeProvider time, TimeSpan delay)
         : IWorkflowStateRepository
     {
+        public IPayloadStore PayloadStore => _inner.PayloadStore;
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
             _inner.GetDefinitionAsync(name, version);
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
@@ -543,16 +544,19 @@ public sealed class WorkflowDeadlineTests
             _inner.GetRunnableInstancesAsync(query);
         public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
-        public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
+        public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
+            _inner.RenewExecutionLeasesAsync(leases);
         public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
             _inner.GetWorkflowInstanceSummaryAsync(instanceId);
-        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-            IReadOnlyCollection<string> instanceIds) =>
-            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
+        public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
+            _inner.GetControlRequestsAsync(instanceIds);
+        public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+            _inner.RequestDebugCommandAsync(instanceId, command);
+        public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
+            _inner.GetDebugStatesAsync(instanceIds);
 
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);

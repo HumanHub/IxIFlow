@@ -16,7 +16,7 @@ internal sealed class DataChange
     public List<string> Path { get; set; } = [];
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Value { get; set; }
+    public StoredJson? Value { get; set; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Removed { get; set; }
@@ -74,6 +74,56 @@ internal static class BranchData
     /// <summary>The data as JSON, the form a fork copies from.</summary>
     public static string Snapshot(object data) => JsonSerializer.Serialize(data, data.GetType(), Options);
 
+    /// <summary>Observes mutable data without serializing or hashing immutable leaves again.</summary>
+    internal static Func<object, bool> Observe(object data)
+    {
+        var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        var unchanged = Capture(data);
+        return current => unchanged(current);
+
+        Func<object?, bool> Capture(object? value)
+        {
+            if (value == null) return current => current == null;
+            var type = value.GetType();
+            if (value is string) return current => ReferenceEquals(value, current);
+            if (type.IsPrimitive || type.IsEnum || value is decimal or DateTime or DateTimeOffset or Guid or TimeSpan)
+                return current => Equals(value, current);
+            if (!type.IsValueType && !seen.Add(value)) return current => ReferenceEquals(value, current);
+            var info = Info(type);
+            if (info.Kind == JsonTypeInfoKind.Object && info.Converter.GetType().Assembly == typeof(JsonSerializer).Assembly)
+            {
+                var properties = info.Properties.Where(p => p.Get != null).ToArray();
+                if (properties.Any(p => p.CustomConverter != null)) return _ => false;
+                var members = properties.Select(p => (Property: p, Same: Capture(p.Get!(value)))).ToArray();
+                return current => current != null && current.GetType() == type &&
+                    (type.IsValueType || ReferenceEquals(value, current)) && members.All(p => p.Same(p.Property.Get!(current)));
+            }
+            if (info.Kind == JsonTypeInfoKind.Dictionary && info.Converter.GetType().Assembly == typeof(JsonSerializer).Assembly &&
+                value is IDictionary dictionary)
+            {
+                var entries = Entries().Select(p => (p.Key, Same: Capture(p.Value))).ToArray();
+                return current => ReferenceEquals(value, current) && dictionary.Count == entries.Length &&
+                    Entries().Zip(entries).All(p => Equals(p.First.Key, p.Second.Key) && p.Second.Same(p.First.Value));
+                IEnumerable<DictionaryEntry> Entries()
+                { foreach (DictionaryEntry entry in dictionary) yield return entry; }
+            }
+            if (info.Kind == JsonTypeInfoKind.Enumerable && value is IEnumerable sequence)
+            {
+                var items = sequence.Cast<object?>().Select(Capture).ToArray();
+                return current => ReferenceEquals(value, current) && SameItems();
+                bool SameItems()
+                {
+                    var index = 0;
+                    foreach (var item in sequence)
+                        if (index == items.Length || !items[index++](item)) return false;
+                    return index == items.Length;
+                }
+            }
+            // Custom converters and opaque mutable shapes remain conservatively dirty.
+            return _ => false;
+        }
+    }
+
     /// <summary>A branch's own copy of <paramref name="data"/>.</summary>
     public static object Copy(object data) => Copy(Snapshot(data), data.GetType());
 
@@ -103,6 +153,48 @@ internal static class BranchData
         foreach (var change in changes)
             Lay(node, change);
         return node.Deserialize(baseline.GetType(), Options)!;
+    }
+
+    /// <summary>Validates property paths before patching a detached JSON copy and reading it whole.</summary>
+    public static object Patch(object data, IReadOnlyList<DataPatch> patches)
+    {
+        var node = Node(data);
+        foreach (var patch in patches)
+        {
+            if (patch.Path.Count == 0 || patch.Path.Any(string.IsNullOrEmpty))
+                throw new ArgumentException("An edit requires a nonempty property path");
+            var info = Info(data.GetType());
+            JsonNode? owner = node;
+            foreach (var segment in patch.Path.Take(patch.Path.Count - 1))
+            {
+                var property = EditableProperty(info, segment, leaf: false);
+                if (property.CustomConverter != null)
+                    throw new ArgumentException("An edit cannot traverse a property converter");
+                owner = (owner as JsonObject)?[segment];
+                if (owner == null) throw new ArgumentException("An edit cannot traverse null or absent data");
+                info = Info(property.PropertyType);
+            }
+            _ = EditableProperty(info, patch.Path[^1]);
+            if (owner is not JsonObject target || !target.ContainsKey(patch.Path[^1]))
+                throw new ArgumentException("The edited property does not exist");
+            if (patch.Remove) target.Remove(patch.Path[^1]);
+            else target[patch.Path[^1]] = JsonNode.Parse(patch.Value.GetRawText());
+        }
+        // All converters, required properties and setters see the complete candidate together.
+        return node.Deserialize(data.GetType(), Options)
+            ?? throw new ArgumentException("Workflow data cannot be null");
+    }
+
+    private static JsonPropertyInfo EditableProperty(JsonTypeInfo info, string name, bool leaf = true)
+    {
+        // Dictionary keys are values, so accepting them would also expose them in audit paths.
+        if (info.Kind != JsonTypeInfoKind.Object || info.Converter.GetType().Assembly != typeof(JsonSerializer).Assembly)
+            throw new ArgumentException("An edit path must contain only contract properties, without dictionary keys or indices");
+        var property = PropertyNamed(info, name);
+        if (property?.Get == null || property.IsExtensionData || property.Set == null &&
+            (leaf || (property.ObjectCreationHandling ?? info.PreferredPropertyObjectCreationHandling) != JsonObjectCreationHandling.Populate))
+            throw new ArgumentException("An edit path must name an existing settable contract property");
+        return property;
     }
 
     /// <summary>
@@ -173,7 +265,7 @@ internal static class BranchData
             {
                 throw Conflict(path, $"The combined value of '{Display(path)}' could not be written: {error.Message}");
             }
-            Lay(node, new DataChange { Path = path, Value = json });
+            Lay(node, new DataChange { Path = path, Value = StoredJson.Inline(json) });
         }
 
         object merged;
@@ -355,7 +447,7 @@ internal static class BranchData
                     if (beforeObject.TryGetPropertyValue(key, out var old))
                         Compare(old, value, element, PerMember(element), child, changes);
                     else
-                        changes.Add(new DataChange { Path = child, Value = value?.ToJsonString() ?? "null" });
+                        changes.Add(new DataChange { Path = child, Value = StoredJson.Inline(value?.ToJsonString() ?? "null") });
                 }
                 foreach (var (key, _) in beforeObject)
                     if (!afterObject.ContainsKey(key))
@@ -372,7 +464,7 @@ internal static class BranchData
             return;
         }
         if (!JsonNode.DeepEquals(before, after))
-            changes.Add(new DataChange { Path = path, Value = after?.ToJsonString() ?? "null" });
+            changes.Add(new DataChange { Path = path, Value = StoredJson.Inline(after?.ToJsonString() ?? "null") });
     }
 
     // True when a value is still the one a restore would put back: the same object, or for a value type or
@@ -433,7 +525,7 @@ internal static class BranchData
         if (change.Removed)
             target.Remove(change.Path[^1]);
         else
-            target[change.Path[^1]] = JsonNode.Parse(change.Value ?? "null");
+            target[change.Path[^1]] = JsonNode.Parse(change.Value?.InlineText ?? "null");
     }
 
     private static JsonTypeInfo Info(Type type) => Options.GetTypeInfo(type);

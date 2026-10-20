@@ -15,7 +15,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Feature", "host")]
 [Trait("Spec", "C-10")]
 [Trait("Category", "UnschedulableQueryBudget")]
-public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
+public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output) : IClassFixture<SqliteTestDatabase<UnschedulableQueryBudgetTests>>
 {
     [DockerBudgetFact, Trait("Category", "SqlIntegration")]
     public Task SqlServerBudgetAndScaling() => Relational(false);

@@ -23,7 +23,7 @@ public class WorkflowExecutionResult
     
     public string? ErrorMessage { get; set; }
     public string? ErrorType { get; set; }
-    /// <summary>Set only for data-free engine reasons, whose text is safe for operation results and logs.</summary>
+    /// <summary>The engine failure kind, when applicable. Inspection still uses the safe diagnostic identity.</summary>
     public WorkflowErrorKind? ErrorKind { get; set; }
     public string? ErrorStackTrace { get; set; }
     /// <summary>Safe identity for correlating this error with inspection and diagnostics.</summary>

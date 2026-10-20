@@ -5,11 +5,23 @@ namespace IxIFlow.Core;
 
 /// <summary>JSON metadata for every host/executor message and its typed payload.</summary>
 [JsonSourceGenerationOptions(GenerationMode = JsonSourceGenerationMode.Metadata)]
+[JsonSerializable(typeof(InstanceInspection))]
+[JsonSerializable(typeof(InspectionSummary))]
+[JsonSerializable(typeof(InspectionDebugState))]
+[JsonSerializable(typeof(InspectionThread))]
+[JsonSerializable(typeof(InspectionFrame))]
+[JsonSerializable(typeof(InspectionAttempt))]
+[JsonSerializable(typeof(InspectionWait))]
+[JsonSerializable(typeof(InspectionData))]
+[JsonSerializable(typeof(ReplayOriginTrace))]
+[JsonSerializable(typeof(ThreadPositionTrace))]
+[JsonSerializable(typeof(ReplayPosition))]
 [JsonSerializable(typeof(Assign))]
 [JsonSerializable(typeof(Ready))]
 [JsonSerializable(typeof(Cancel))]
 [JsonSerializable(typeof(Arrivals))]
 [JsonSerializable(typeof(Recycle))]
+[JsonSerializable(typeof(DebugCommands))]
 [JsonSerializable(typeof(Checkpoint))]
 [JsonSerializable(typeof(CheckpointReply))]
 [JsonSerializable(typeof(StartChild))]
@@ -18,7 +30,21 @@ namespace IxIFlow.Core;
 [JsonSerializable(typeof(ReadInboxReply))]
 [JsonSerializable(typeof(ReadWait))]
 [JsonSerializable(typeof(ReadWaitReply))]
+[JsonSerializable(typeof(ReadPayload))]
+[JsonSerializable(typeof(ReadPayloadReply))]
 [JsonSerializable(typeof(Breakpoint))]
+[JsonSerializable(typeof(BreakpointSource))]
+[JsonSerializable(typeof(BreakpointStop))]
+[JsonSerializable(typeof(BreakpointHitTrace))]
+[JsonSerializable(typeof(DataEditTarget))]
+[JsonSerializable(typeof(DataPatch))]
+[JsonSerializable(typeof(DataEditRequest))]
+[JsonSerializable(typeof(DataEditResult))]
+[JsonSerializable(typeof(DataEditedTrace))]
+[JsonSerializable(typeof(DebugStepPosition))]
+[JsonSerializable(typeof(DebugStepping))]
+[JsonSerializable(typeof(BreakpointEvaluation))]
+[JsonSerializable(typeof(BreakpointConditionDiagnostic))]
 [JsonSerializable(typeof(RecoveryPreparation))]
 [JsonSerializable(typeof(AcknowledgedCommit))]
 [JsonSerializable(typeof(AssignmentOutcome))]
@@ -34,8 +60,9 @@ internal sealed record CheckpointCommitFields(CommittedInstance Instance, string
     IReadOnlyList<OpenedWait> OpenedWaits, IReadOnlyList<ArmedWait> ArmedWaits,
     IReadOnlyList<ClosedWait> ClosedWaits, TimeSpan? WakeAfter, bool Stopped,
     IReadOnlyList<ChildStart> ChildStarts, IReadOnlyList<ChildCancellation> ChildCancellations,
-    ParentNotice? ParentNotice, IReadOnlyList<string> TraceEntries, IReadOnlyList<WorkflowDiagnostic> Diagnostics,
-    IReadOnlyList<string>? RetainedDiagnosticIds, byte[] ContentHash);
+    ParentNotice? ParentNotice, IReadOnlyList<string> TraceEntries, byte[] ContentHash,
+    IReadOnlyList<WorkflowDiagnostic> Diagnostics, IReadOnlyList<string>? RetainedDiagnosticIds,
+    IReadOnlyList<PayloadReference> PayloadReferences, bool PreservesPayloadPins, IReadOnlyList<PayloadBody> PayloadBodies);
 
 internal sealed class CheckpointCommitJsonConverter : JsonConverter<CheckpointCommit>
 {
@@ -49,7 +76,8 @@ internal sealed class CheckpointCommitJsonConverter : JsonConverter<CheckpointCo
                 fields.ReplacesParts, fields.Incarnation, fields.Epoch, fields.CommitId, fields.ExpectedRevision,
                 fields.ClearsCrashCount, fields.Parks, fields.Settlements, fields.InboxReadThrough, fields.OpenedWaits,
                 fields.ArmedWaits, fields.ClosedWaits, fields.WakeAfter, fields.Stopped, fields.ChildStarts,
-                fields.ChildCancellations, fields.ParentNotice, fields.TraceEntries, fields.Diagnostics, fields.RetainedDiagnosticIds);
+                fields.ChildCancellations, fields.ParentNotice, fields.TraceEntries, fields.Diagnostics, fields.RetainedDiagnosticIds,
+                fields.PayloadReferences, fields.PreservesPayloadPins, fields.PayloadBodies);
             if (fields.ContentHash == null || !commit.ContentHash.AsSpan().SequenceEqual(fields.ContentHash))
                 throw new JsonException("Checkpoint content hash differs from its fields");
             return commit;
@@ -62,5 +90,7 @@ internal sealed class CheckpointCommitJsonConverter : JsonConverter<CheckpointCo
             value.DeletedParts, value.ReplacesParts, value.Incarnation, value.Epoch, value.CommitId,
             value.ExpectedRevision, value.ClearsCrashCount, value.Parks, value.Settlements, value.InboxReadThrough,
             value.OpenedWaits, value.ArmedWaits, value.ClosedWaits, value.WakeAfter, value.Stopped, value.ChildStarts,
-            value.ChildCancellations, value.ParentNotice, value.TraceEntries, value.Diagnostics, value.RetainedDiagnosticIds, value.ContentHash), CheckpointCommitContext.Default.CheckpointCommitFields);
+            value.ChildCancellations, value.ParentNotice, value.TraceEntries, value.ContentHash,
+            value.Diagnostics, value.RetainedDiagnosticIds,
+            value.PayloadReferences, value.PreservesPayloadPins, value.PayloadBodies), CheckpointCommitContext.Default.CheckpointCommitFields);
 }

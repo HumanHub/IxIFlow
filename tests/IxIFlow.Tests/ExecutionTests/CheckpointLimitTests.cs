@@ -57,7 +57,7 @@ public sealed class CheckpointLimitTests
         var stopped = (await repository.GetWorkflowInstanceAsync(instanceId))!;
         Assert.Equal(WorkflowStatus.NeedsResolution, stopped.Status);
         Assert.Null(stopped.RunnableAtUtc);
-        Assert.DoesNotContain(new string('x', GrownLength), stopped.WorkflowDataJson);
+        Assert.DoesNotContain(new string('x', GrownLength), stopped.WorkflowDataJson.InlineText);
         Assert.NotNull(ExecutionCheckpoint.Read(stopped.ExecutionStateJson).OperatorStop);
         Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
             instance => instance.InstanceId == instanceId);

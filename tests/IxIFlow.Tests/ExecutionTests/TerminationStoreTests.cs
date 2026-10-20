@@ -49,7 +49,7 @@ public sealed class TerminationStoreTests : IClassFixture<SqliteTestDatabase<Ter
             Assert.True(accepted.Version > cancellation.CommandVersion);
             Assert.Equal(accepted, repeated);
             Assert.Equal(WorkflowCommitStatus.TerminationRequested, (await store.CommitWorkflowInstanceAsync(completion)).Status);
-            Assert.False(await store.RenewExecutionLeaseAsync(instance.InstanceId, "wrong-owner", TimeSpan.FromSeconds(30)));
+            Assert.False((await store.RenewExecutionLeasesAsync([new(instance.InstanceId, "wrong-owner", TimeSpan.FromSeconds(30))]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
             await StoreTestSupport.ReleaseAsync(store, instance.InstanceId);
             var services = new ServiceCollection(); services.AddLogging(); services.AddIxIFlow(); services.AddSingleton(store);
             // The store remains owned by this fixture; the service scope does not dispose its externally supplied instance.
