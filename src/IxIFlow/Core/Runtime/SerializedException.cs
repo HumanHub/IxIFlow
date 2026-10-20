@@ -12,6 +12,8 @@ internal sealed class SerializedException
     public string Type { get; set; } = "";
     public string Message { get; set; } = "";
     public bool IsRestorable { get; set; } = true;
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IsPolicyTermination { get; set; }
     public string? RestorationFailureReason { get; set; }
     public List<ExceptionArgument> Arguments { get; set; } = [];
     public SerializedValue? Fault { get; set; }
@@ -52,6 +54,7 @@ internal sealed class SerializedException
             }
             var saved = new SerializedException
             {
+                IsPolicyTermination = error is SagaTerminatedException { IsPolicyTermination: true },
                 Type = error.GetType().AssemblyQualifiedName!,
                 Message = error.Message,
                 Arguments = arguments
@@ -70,6 +73,7 @@ internal sealed class SerializedException
         }
         return new SerializedException
         {
+            IsPolicyTermination = error is SagaTerminatedException { IsPolicyTermination: true },
             Type = error.GetType().AssemblyQualifiedName!,
             Message = error.Message,
             IsRestorable = false,
@@ -88,6 +92,7 @@ internal sealed class SerializedException
 
     private SerializedException WithFault(object fault, Type catchType) => new()
     {
+        IsPolicyTermination = IsPolicyTermination,
         Type = Type,
         Message = Message,
         IsRestorable = IsRestorable,

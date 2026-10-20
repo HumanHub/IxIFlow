@@ -66,7 +66,7 @@ public sealed class SqliteOwnershipTests : IClassFixture<SqliteTestDatabase<Sqli
             await first.DisposeAsync();
         }
         await using var restarted = new SqliteWorkflowStateRepository(ConnectionString);
-        await restarted.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended);
+        await Task.WhenAll((await restarted.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Suspended], Limit: int.MaxValue))).Items.Select(async row => (await restarted.GetWorkflowInstanceAsync(row.InstanceId))!));
     }
 
     [Fact]

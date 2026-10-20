@@ -15,11 +15,12 @@ internal static class ExecutionCheckpointWriter
     /// commit that records no progress, such as claiming an activity before it starts. With <paramref name="parkFor"/> the run stops that long and the
     /// store releases its lease; returns true when it did. <paramref name="now"/> is the host's time.
     /// </summary>
-    public static async Task<bool> CommitAsync(IExecutionHost host, WorkflowInstance instance,
+    public static async Task<bool> CommitAsync(ExecutionSession host, WorkflowInstance instance,
         ExecutionCheckpoint checkpoint, object? workflowData, WorkflowScopeCatalog scopes, DateTime now,
         bool preserveSavedWorkflowData = false, bool enforceLimit = true, bool clearsCrashCount = true,
         TimeSpan? parkFor = null, bool preserveContinuationState = false)
     {
+        checkpoint.Signals?.ThrowIfOwnershipLost();
         checkpoint.Trace.Configure(instance, checkpoint, host.Limits, null, scopes);
         var lastCommitted = SavedForm.Of(instance);
         checkpoint.CloseEndedRequests();
@@ -50,7 +51,6 @@ internal static class ExecutionCheckpointWriter
         // The commit carries the run's inbox decisions and the waits it opened, armed and closed (D-33).
         // It says how long, not until when: the store stamps deadlines and the runnable time (D-35).
         var (opened, armed, closed) = checkpoint.Inbox.WaitChanges(checkpoint);
-        var idle = instance.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution;
         // Children start, and are asked to cancel, in the commit that records the parent's waits for
         // them; a child's terminal commit tells its parent (D-17).
         var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision,
@@ -65,43 +65,49 @@ internal static class ExecutionCheckpointWriter
         using var span = Telemetry.Source.StartActivity("commit");
         Telemetry.Tag(span, instance);
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        checkpoint.Signals?.ThrowIfOwnershipLost();
+        // Resends resolve the same immutable commit even if its first attempt released the lease.
         for (var attempt = 1; ; attempt++)
         {
-            var reply = await host.CommitAsync(commit);
+            CheckpointReply reply;
+            try
+            {
+                reply = await host.CheckpointAsync(commit);
+            }
+            catch (CheckpointLimitExceededException)
+            {
+                lastCommitted.RestoreTo(instance);
+                checkpoint.RestoreMarks(stored.Marks);
+                checkpoint.Trace.DiscardPending();
+                throw;
+            }
             switch (reply.Kind)
             {
-                case CheckpointReplyKind.Acknowledged:
+                case CheckpointReplyKind.Ack:
                     var tags = Telemetry.Workflow(instance);
                     Telemetry.CommitDuration.Record(
                         System.Diagnostics.Stopwatch.GetElapsedTime(startedAt).TotalSeconds, tags);
                     Telemetry.CommitSize.Record(size, tags);
                     instance.Revision = reply.Revision;
-                    instance.Saved(commit.StoredParts, reply.Revision);
-                    checkpoint.AcknowledgeTrace();
+                    instance.Saved(commit.ApplyParts(instance.SavedParts), reply.Revision);
+                    checkpoint.Trace.Committed();
                     checkpoint.PendingDiagnostics.Clear();
                     checkpoint.ChildStarts.Clear();
                     checkpoint.ChildCancellations.Clear();
                     checkpoint.Inbox.Acknowledged(checkpoint, reply.UnreadEvents);
                     EstimateDeadlines(checkpoint, opened, armed, now);
-                    // The host looks again when the store will next make the instance runnable; an idle
-                    // instance with arrivals it has not read is due now, and the store keeps it so.
-                    checkpoint.LocalWakeUtc =
-                        reply.UnreadEvents && instance.Status == WorkflowStatus.Suspended ? now
-                        : checkpoint.OperatorStop != null ? null
-                        : instance.Status == WorkflowStatus.Running ? now + parkFor ?? now
-                        : idle ? new[] { checkpoint.NextDeadlineLocal(), now + commit.WakeAfter }.Min()
-                        : null;
-                    if (reply.PendingCancellation != null)
-                        host.ObserveCancellation(reply.PendingCancellation);
+                    if (reply.PendingCancellation != null && checkpoint.Signals is { } signals)
+                        signals.Deliver(new Cancel(signals.AssignmentId, CancelKind.Workflow, reply.PendingCancellation));
                     return reply.Parked;
                 // Only the owner settles its pending events, so a settled one means another owner ran.
-                case CheckpointReplyKind.Conflict or CheckpointReplyKind.EventsChanged:
-                    throw new ExecutionOwnershipLostException(reply.Error!);
+                case CheckpointReplyKind.Conflict:
+                    throw new ExecutionOwnershipLostException(new InvalidOperationException(reply.Error));
                 case CheckpointReplyKind.Retry or CheckpointReplyKind.Unknown when attempt < MaxAttempts:
                     // The commit is immutable, so sending it again cannot apply a different payload.
                     continue;
                 default:
-                    throw reply.Error!;
+                    throw new CheckpointInterruptedException(reply.Error == null ? null :
+                        new WorkflowEngineException(WorkflowErrorKind.Infrastructure, reply.Error));
             }
         }
     }

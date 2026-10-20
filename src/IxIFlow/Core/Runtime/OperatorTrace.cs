@@ -14,6 +14,7 @@ internal static class OperatorTrace
                 Description = reason.Description,
                 RequestedAt = reason.RequestedAt == default ? now : reason.RequestedAt,
                 RequestedBy = string.IsNullOrEmpty(reason.RequestedBy) ? defaultActor ?? "" : reason.RequestedBy,
+                Mode = reason.Mode, CommandVersion = reason.CommandVersion,
                 Metadata = reason.Metadata
             };
 
@@ -55,7 +56,7 @@ internal static class OperatorTrace
                 checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now,
                     EntryType = TraceEntryType.ChildCancellationRequested, Payload = Payload(reason, now) with
                     { ChildInstanceId = command.ChildInstanceId,
-                        WaitRef = WaitReference.Of(instance.InstanceId, command.ParentWaitId) } });
+                        WaitRef = command.ParentWaitId is { } waitId ? WaitReference.Of(instance.InstanceId, waitId) : null } });
         }
     }
 
@@ -66,8 +67,10 @@ internal static class OperatorTrace
     public static void Resolved(ExecutionCheckpoint checkpoint, ActivityInvocationState pending,
         ActivityResolutionState decision, DateTime now)
     {
+        var diagnostic = string.IsNullOrEmpty(decision.Note) ? null : checkpoint.RecordDiagnostic("OperatorNote", decision.Note);
         if (checkpoint.Trace.Accepts(TraceEntryType.ActivityResolved, now))
             checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now, EntryType = TraceEntryType.ActivityResolved,
+                Error = diagnostic,
                 Payload = new ActivityResolutionTrace(pending.Id, pending.StepId, decision.Kind, decision.DecidedBy) });
     }
 

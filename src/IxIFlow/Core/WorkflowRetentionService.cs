@@ -6,12 +6,13 @@ namespace IxIFlow.Core;
 
 /// <summary>One bounded pass per interval; the store serializes retention writers across hosts.</summary>
 internal sealed class WorkflowRetentionService(IWorkflowStateRepository repository, RetentionSettings settings,
-    TimeProvider time, ILogger<WorkflowRetentionService> logger, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null) : BackgroundService
+    TimeProvider time, ILogger<WorkflowRetentionService> logger, IArtifactStore? artifacts = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null) : BackgroundService
 {
     internal async Task<RetentionResult> PurgeOnceAsync(CancellationToken cancellationToken)
     {
         var result = await repository.PurgeAsync(settings.FinishedRetention, settings.TombstoneRetention,
             settings.BatchSize, cancellationToken);
+        await repository.PurgeArtifactsAsync(artifacts ?? repository, settings.ArtifactRetention, settings.BatchSize, cancellationToken);
         foreach (var (publisher, count) in result.SkippedUnattemptedByPublisher)
         {
             Telemetry.RetentionSkippedUnattempted.Add(count,

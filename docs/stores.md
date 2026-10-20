@@ -16,7 +16,7 @@ All four registrations compile in [Hosting.Services](../samples/IxIFlow.Samples/
 
 ## Common contract
 
-`IWorkflowStateRepository` includes revisioned checkpoint commits and receipts, execution leases, instance queries, child instances, inboxes, waits, committed trace history, outbox subscriptions/deliveries, retention, tombstones and the member registry. Provider schemas are created on first use in a transaction. Creation supplies complete tables and indexes; it does not upgrade existing tables or repair their missing indexes. Before 1.0, recreate a database from an earlier schema build rather than reuse it. All relational providers leave the schema alone once the instance table exists.
+`IWorkflowStateRepository` includes revisioned checkpoint commits and receipts, execution leases, row-projected instance search, inboxes, waits, committed trace history, outbox subscriptions/deliveries, retention, tombstones and the member registry. Provider schemas are created on first use in a transaction. Creation supplies complete tables and indexes; it does not upgrade existing tables or repair their missing indexes. Before 1.0, recreate a database from an earlier schema build rather than reuse it. All relational providers leave the schema alone once the instance table exists.
 
 Every commit requires a granted, active execution lease and fences the owner by its positive epoch and expected revision. An epoch is never granted twice in a store, and epochs strictly increase for each instance ID, including across deletions and re-creations. Across instances, epochs follow allocation order, with gaps allowed; grants may complete in a different order. Every commit after the first must also carry the row's incarnation. Instance changes, consumed events, wait transitions, child starts and terminal completion envelopes share the persistence transaction. Publishers use their own per-delivery leases. Cleanup atomically removes operational data and writes a tombstone while preserving the epoch sequence.
 
@@ -42,7 +42,7 @@ The registered `TimeProvider` supplies store time. Run it with the [core host](c
 
 The provider persists state, inboxes, waits, traces, leases, outbox and tombstones in SQL Server. Multiple compatible hosts can share the database; only a fenced lease owner advances an instance.
 
-Instance, event, wait and commit IDs, parent IDs, lease tokens, checkpoint-part keys and outbox publisher identities use `Latin1_General_100_BIN2` comparisons, preserving case distinctions independently of the database default collation. Workflow names, event/wait keys and other descriptive columns retain the database collation.
+Instance, event, wait and commit IDs, parent IDs, lease tokens, checkpoint-part keys and outbox publisher identities use `Latin1_General_100_BIN2` comparisons, preserving case distinctions independently of the database default collation. Workflow names, status, stop kind and correlation IDs also use binary comparisons; event/wait keys and other descriptive columns retain the database collation.
 
 Database time governs event arrival and deadlines. A separate ownership/cancellation connection pool defaults to 16 connections so ordinary workflow traffic does not consume all lease-renewal capacity. For cancellation reads to avoid waiting behind unrelated commits, enable `READ_COMMITTED_SNAPSHOT` in the database.
 
@@ -54,6 +54,6 @@ The provider implements `IRunnableWakeSource` using `LISTEN`/`NOTIFY`. Notificat
 
 ## Store extensions
 
-Set `IxIFlowOptions.UseCustomStateRepository` to the repository type in `AddIxIFlow(options => ...)`; it is registered as a singleton and counts as the chosen store. It must support concurrent calls and the complete public store contract, including inbox, outbox, retention and the [member registry](coordinator-and-hosts.md#host-registry-and-capabilities). It implements batched cancellation reads, instance summaries and child queries directly. Batch cancellation reads preserve successful results when other reads fail and throw `AggregateException` when every read fails. `IxIFlow.Relational` is an internal implementation dependency, not a public provider SDK.
+Set `IxIFlowOptions.UseCustomStateRepository` to the repository type in `AddIxIFlow(options => ...)`; it is registered as a singleton and counts as the chosen store. It must support concurrent calls and the complete public store contract, including inbox, outbox, retention and the [member registry](coordinator-and-hosts.md#host-registry-and-capabilities). It implements batched cancellation reads, instance summaries and combined row search directly. Batch cancellation reads preserve successful results when other reads fail and throw `AggregateException` when every read fails. `IxIFlow.Relational` is an internal implementation dependency, not a public provider SDK.
 
 Read [execution model](execution-model.md), [retention](retention-and-tombstones.md) and [outbox delivery](outbox-and-publishers.md) before implementing a store.

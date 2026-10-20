@@ -19,7 +19,7 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         var repository = new InMemoryWorkflowStateRepository();
         var instance = CreateInstance();
         var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first"));
-        Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1), result);
+        CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1), result);
         Assert.Equal(0, instance.Revision);
         instance.WorkflowDataJson = "changed";
         var saved = (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!;
@@ -49,12 +49,18 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         var first = CreateInstance();
         try
         {
-            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, (await StoreTestSupport.LeaseAsync(repository, first.InstanceId)).Epoch, 0, "first"));
+            var applied = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, (await StoreTestSupport.LeaseAsync(repository, first.InstanceId)).Epoch, 0, "first"));
+            await CommitAssert.SchedulingAsync(repository, first.InstanceId, applied);
             var second = (await repository.GetWorkflowInstanceAsync(first.InstanceId))!;
             second.WorkflowDataJson = "next";
-            await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(second, (await StoreTestSupport.LeaseAsync(repository, second.InstanceId)).Epoch, 1, "second"));
+            var later = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(second, (await StoreTestSupport.LeaseAsync(repository, second.InstanceId)).Epoch, 1, "second"));
+            await CommitAssert.SchedulingAsync(repository, first.InstanceId, later);
+            await Task.Delay(20);
             var repeated = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, (await StoreTestSupport.LeaseAsync(repository, first.InstanceId)).Epoch, 0, "first"));
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 1), repeated);
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 1), repeated);
+            await CommitAssert.SchedulingAsync(repository, first.InstanceId, repeated);
+            Assert.True(repeated.StoreTimeUtc > later.StoreTimeUtc);
+            Assert.Equal(2, (await repository.GetWorkflowInstanceAsync(first.InstanceId))!.Revision);
             Assert.Equal("next", (await repository.GetWorkflowInstanceAsync(first.InstanceId))!.WorkflowDataJson);
         }
         finally { await repository.DeleteWorkflowInstanceAsync(first.InstanceId); }
@@ -270,9 +276,13 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
             Assert.Empty(await repository.GetTraceAsync(instance.InstanceId));
             var result = await repository.CommitWorkflowInstanceAsync(commit);
             Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1), result);
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 1),
-                await repository.CommitWorkflowInstanceAsync(commit));
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1), result);
+            await CommitAssert.SchedulingAsync(repository, instance.InstanceId, result);
+            await Task.Delay(20);
+            var replay = await repository.CommitWorkflowInstanceAsync(commit);
+            CommitAssert.Equal(result with { Status = WorkflowCommitStatus.AlreadyApplied }, replay);
+            await CommitAssert.SchedulingAsync(repository, instance.InstanceId, replay);
+            Assert.True(replay.StoreTimeUtc > result.StoreTimeUtc);
             var saved = (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!;
             Assert.Equal(1, saved.Revision);
             Assert.Equal(instance.WorkflowName, saved.WorkflowName);
@@ -291,14 +301,20 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
         var instance = CreateInstance();
         try
         {
+            WorkflowCommitResult? applied = null;
             async Task LoseAcknowledgment()
             {
-                await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first"));
+                applied = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first"));
                 throw new IOException("The commit succeeded but its acknowledgment was lost");
             }
             await Assert.ThrowsAsync<IOException>(LoseAcknowledgment);
+            Assert.NotNull(applied);
+            await CommitAssert.SchedulingAsync(repository, instance.InstanceId, applied);
+            await Task.Delay(20);
             var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "first"));
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 1), result);
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.AlreadyApplied, 1), result);
+            await CommitAssert.SchedulingAsync(repository, instance.InstanceId, result);
+            Assert.True(result.StoreTimeUtc > applied.StoreTimeUtc);
             Assert.Equal(1, (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.Revision);
         }
         finally
@@ -315,7 +331,7 @@ public class WorkflowCommitTests : IClassFixture<SqliteTestDatabase<WorkflowComm
             await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "winner"));
             instance.WorkflowDataJson = "stale";
             var result = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, "loser"));
-            Assert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1), result);
+            CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1), result);
             Assert.Equal("{}", (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.WorkflowDataJson);
         }
         finally

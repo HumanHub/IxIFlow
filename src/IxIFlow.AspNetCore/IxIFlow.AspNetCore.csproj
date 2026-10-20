@@ -6,7 +6,7 @@
     <Version>1.0.0</Version>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseFile>LICENSE</PackageLicenseFile>
-    <Description>Authorized HTTP triggers and CloudEvents ingress for IxIFlow workflows.</Description>
+    <Description>Authorized HTTP triggers, CloudEvents ingress and workflow operations for IxIFlow.</Description>
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />

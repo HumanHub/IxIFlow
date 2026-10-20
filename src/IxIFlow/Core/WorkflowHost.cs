@@ -326,10 +326,11 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             item.MarkStarted();
             var scope = _scopes.CreateAsyncScope();
             RunContext? context = null;
+            CancellationTokenRegistration recycleRegistration = default;
             try
             {
                 var control = scope.ServiceProvider.GetRequiredService<RunControl>();
-                control.Drain = _draining.Token;
+                recycleRegistration = _draining.Token.Register(control.Recycle);
                 control.OnInstanceKnown(instanceId => Register(item, instanceId));
                 control.OnScheduled(Schedule);
                 control.OnUnscheduled(Unschedule);
@@ -343,7 +344,10 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             {
                 CurrentRun.Value = null;
                 if (context == null)
+                {
+                    recycleRegistration.Dispose();
                     await scope.DisposeAsync();
+                }
                 else
                 {
                     // Inline calls still running in the scope, from work the run left behind, keep the
@@ -356,6 +360,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
                     {
                         try
                         {
+                            recycleRegistration.Dispose();
                             await scope.DisposeAsync();
                         }
                         finally

@@ -13,7 +13,7 @@ public sealed class ActivityActivationTests
     public async Task StartingAndRestoringActivitiesInjectDependenciesIntoFreshObjects()
     {
         var store = new InMemoryWorkflowStateRepository();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var firstProbe = new Probe("first host");
         var secondProbe = new Probe("second host");
         var definition = Workflow.Create<Data>("ActivityActivation")
@@ -44,7 +44,7 @@ public sealed class ActivityActivationTests
 
         ServiceProvider Services(Probe probe) => new ServiceCollection().AddLogging().AddIxIFlow().Services
             .AddSingleton<IWorkflowStateRepository>(store)
-            .AddSingleton<IWorkflowVersionRegistry>(registry)
+            .AddSingleton<IWorkflowCatalog>(registry)
             .AddSingleton(probe).BuildServiceProvider();
     }
 

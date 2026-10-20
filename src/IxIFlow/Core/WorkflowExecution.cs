@@ -59,6 +59,14 @@ public enum WorkflowStatus
 /// </summary>
 public class CancellationReason
 {
+    /// <summary>The durable command mode; termination supersedes cancellation without unwinding.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public WorkflowControlMode Mode { get; set; }
+
+    /// <summary>The version assigned by the store and acknowledged by the terminal commit.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public long CommandVersion { get; set; }
+
     /// <summary>
     ///     Reason code for cancellation
     /// </summary>
@@ -83,7 +91,7 @@ public class CancellationReason
     /// <summary>
     ///     Additional metadata about the cancellation
     /// </summary>
-    public Dictionary<string, object> Metadata { get; set; } = new();
+    public Dictionary<string, System.Text.Json.JsonElement> Metadata { get; set; } = new();
 }
 
 /// <summary>
@@ -223,7 +231,7 @@ public class WorkflowInstance
     /// <summary>
     ///     Custom properties for this instance
     /// </summary>
-    public Dictionary<string, object> Properties { get; set; } = new();
+    public Dictionary<string, System.Text.Json.JsonElement> Properties { get; set; } = new();
 
     /// <summary>Whether trace entries are recorded.</summary>
     public bool TracingEnabled { get; set; } = true;
@@ -566,7 +574,10 @@ public enum TraceEntryType
     SagaRetryStarted,
     StepRetryScheduled,
     CompensationFailed,
-    TraceBudgetReached
+    TraceBudgetReached,
+
+    /// <summary>A versioned hard-stop command was acknowledged.</summary>
+    WorkflowTerminated
 }
 
 /// <summary>

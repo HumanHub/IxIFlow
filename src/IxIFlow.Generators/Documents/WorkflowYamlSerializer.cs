@@ -104,7 +104,10 @@ public static class WorkflowYamlSerializer
         if (value is DocumentNode document)
         {
             document.Location = Location(node);
-            document.Members = entries.ToDictionary(pair => pair.Key, pair => Location(pair.Value), StringComparer.OrdinalIgnoreCase);
+            var locations = entries.ToDictionary(pair => pair.Key, pair => Location(pair.Value), StringComparer.OrdinalIgnoreCase);
+            if (entries.TryGetValue("defaults", out var defaults) && defaults is YamlMappingNode defaultValues)
+                foreach (var pair in Entries(defaultValues)) locations.Add("defaults." + pair.Key, Location(pair.Value));
+            document.Members = locations;
         }
         return value;
     }
