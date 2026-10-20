@@ -185,11 +185,18 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
                     "IxIFlow.ChildCompleted", "{\"Status\":\"Completed\"}"));
             var completed = await store.CommitWorkflowInstanceAsync(completionCommit);
             Check(Assert.Single(completed.MadeRunnable), parent.InstanceId);
-            Assert.Equal(completed with { Status = WorkflowCommitStatus.AlreadyApplied },
-                await store.CommitWorkflowInstanceAsync(completionCommit));
+            // A replay samples a fresh store clock; its notice must replay unchanged.
+            var completedReplay = await store.CommitWorkflowInstanceAsync(completionCommit);
+            CommitAssert.Equal(completed with { Status = WorkflowCommitStatus.AlreadyApplied }, completedReplay);
+            Assert.Equal(completed.Notice, completedReplay.Notice);
+            await CommitAssert.SchedulingAsync(store, child.InstanceId, completedReplay);
+            Assert.True(completedReplay.StoreTimeUtc >= completed.StoreTimeUtc);
             await store.DeleteWorkflowInstanceAsync(child.InstanceId);
-            Assert.Equal(started with { Status = WorkflowCommitStatus.AlreadyApplied },
-                await store.CommitWorkflowInstanceAsync(startCommit));
+            var startedReplay = await store.CommitWorkflowInstanceAsync(startCommit);
+            CommitAssert.Equal(started with { Status = WorkflowCommitStatus.AlreadyApplied }, startedReplay);
+            Assert.Equal(started.Notice, startedReplay.Notice);
+            await CommitAssert.SchedulingAsync(store, parent.InstanceId, startedReplay);
+            Assert.True(startedReplay.StoreTimeUtc >= started.StoreTimeUtc);
         }
         finally
         {

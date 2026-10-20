@@ -77,23 +77,23 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
             var sql = sqlserver ? """
                 WITH numbers AS (SELECT TOP (300000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n FROM sys.all_objects a CROSS JOIN sys.all_objects b)
                 INSERT INTO dbo.IxIFlowWorkflowInstances
-                    (InstanceId, WorkflowName, Status, RunnableAtUtc, StateJson, Revision, DemandSetId, PinnedHost, PinExpiresAtUtc)
-                SELECT CONCAT(@Prefix, n), 'budget', 'Running', DATEADD(MILLISECOND, -CONVERT(int, n), SYSUTCDATETIME()), '{"WorkflowVersion":1}', 1,
+                    (InstanceId, WorkflowName, WorkflowVersion, CreatedAtUtc, Status, RunnableAtUtc, StateJson, Revision, DemandSetId, PinnedHost, PinExpiresAtUtc)
+                SELECT CONCAT(@Prefix, n), 'budget', 1, SYSUTCDATETIME(), 'Running', DATEADD(MILLISECOND, -CONVERT(int, n), SYSUTCDATETIME()), '{"WorkflowVersion":1}', 1,
                     CASE WHEN @Growth = 0 AND n % 10000 = 0 THEN @Cuda ELSE @Metal END,
                     CASE WHEN n % 5 = 0 THEN @Host END,
                     CASE WHEN n % 5 = 0 THEN DATEADD(MINUTE, -1, SYSUTCDATETIME()) END FROM numbers;
                 """ : postgres ? """
                 INSERT INTO ixiflow_workflow_instances
-                    (instance_id, workflow_name, status, runnable_at_utc, state_json, revision, demand_set_id, pinned_host, pin_expires_at_utc)
-                SELECT @Prefix || n::text, 'budget', 'Running', clock_timestamp() - n * INTERVAL '1 millisecond', '{"WorkflowVersion":1}', 1,
+                    (instance_id, workflow_name, workflow_version, created_at_utc, status, runnable_at_utc, state_json, revision, demand_set_id, pinned_host, pin_expires_at_utc)
+                SELECT @Prefix || n::text, 'budget', 1, clock_timestamp(), 'Running', clock_timestamp() - n * INTERVAL '1 millisecond', '{"WorkflowVersion":1}', 1,
                     CASE WHEN NOT @Growth AND n % 10000 = 0 THEN @Cuda ELSE @Metal END,
                     CASE WHEN n % 5 = 0 THEN @Host END,
                     CASE WHEN n % 5 = 0 THEN clock_timestamp() - INTERVAL '1 minute' END FROM generate_series(1, 300000) n;
                 """ : """
                 WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 300000)
                 INSERT INTO ixiflow_workflow_instances
-                    (instance_id, incarnation, workflow_name, status, runnable_at_utc, state_json, revision, demand_set_id, pinned_host, pin_expires_at_utc)
-                SELECT @Prefix || n, '00000000-0000-0000-0000-000000000001', 'budget', 'Running', '2020-01-01 00:00:00.0000000', '{"WorkflowVersion":1}', 1,
+                    (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, status, runnable_at_utc, state_json, revision, demand_set_id, pinned_host, pin_expires_at_utc)
+                SELECT @Prefix || n, '00000000-0000-0000-0000-000000000001', 'budget', 1, '2020-01-01 00:00:00.0000000', 'Running', '2020-01-01 00:00:00.0000000', '{"WorkflowVersion":1}', 1,
                     CASE WHEN @Growth = 0 AND n % 10000 = 0 THEN @Cuda ELSE @Metal END,
                     CASE WHEN n % 5 = 0 THEN @Host END, CASE WHEN n % 5 = 0 THEN '2020-01-01 00:00:00.0000000' END FROM numbers;
                 """;
@@ -136,7 +136,7 @@ public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output)
         {
             // Refresh every backlog input after loading (including leases), at both volumes.
             foreach (var table in sqlserver
-                ? new[] { "IxIFlowWorkflowInstances", "IxIFlowDemandSets", "IxIFlowDemandSetRows", "IxIFlowWorkflowLeases", "ixiflow_hosts", "ixiflow_host_capabilities" }
+                ? new[] { "IxIFlowWorkflowInstances", "IxIFlowDemandSets", "IxIFlowDemandSetRows", "IxIFlowWorkflowLeases", "IxIFlowHosts", "IxIFlowHostCapabilities" }
                 : new[] { "ixiflow_workflow_instances", "ixiflow_demand_sets", "ixiflow_demand_set_rows", "ixiflow_workflow_leases", "ixiflow_hosts", "ixiflow_host_capabilities" })
                 await connection.ExecuteAsync(sqlserver ? $"UPDATE STATISTICS dbo.{table} WITH FULLSCAN" : $"ANALYZE {table}", commandTimeout: 180);
             var failedSetSize = await connection.ExecuteScalarAsync<int>(sqlserver
