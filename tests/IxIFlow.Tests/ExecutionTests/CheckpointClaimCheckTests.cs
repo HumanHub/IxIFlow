@@ -216,7 +216,7 @@ public sealed class CheckpointClaimCheckTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task BoundAndAcceptedRepliesAreReferencedWhileInboxEventsStayInline(bool early)
+    public async Task BoundAndAcceptedRepliesAndInboxEventsAreReferenced(bool early)
     {
         var repository = new RecordingRepository();
         var probe = new ProbeStore(repository.PayloadStore);
@@ -228,7 +228,7 @@ public sealed class CheckpointClaimCheckTests
             : flow.WaitFor<LargeReply>("answer", configure: w => w.Output(r => r.Text).To(c => c.WorkflowData.Text)).Build();
         var started = await client.RunAsync(workflow, new Data());
         var reply = await client.ReplyAsync(services.GetRequiredService<TokenBox>().Token, new LargeReply { Text = Large });
-        Assert.True((await repository.GetEventAsync(started.InstanceId, reply.Event!.EventId))!.PayloadJson.IsInline);
+        Assert.NotNull((await repository.GetEventAsync(started.InstanceId, reply.Event!.EventId))!.PayloadJson.Reference);
         if (early)
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, reply.Status);

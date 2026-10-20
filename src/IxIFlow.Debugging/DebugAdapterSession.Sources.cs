@@ -85,7 +85,7 @@ public sealed partial class DebugAdapterSession
             try
             {
                 await AuthorizeAsync(DebugOperation.Breakpoints, token);
-                var resolved = await _operations.SetBreakpointsAsync(_instanceId!, all, _endpoint.Actor, token);
+                var resolved = await _operations.SetBreakpointsAsync(_instanceId!, all, _endpoint.Actor, token, _incarnation);
                 accepted = resolved.Where(b => accepted.Any(a => a.Id == b.Id)).ToList();
             }
             catch (Exception)

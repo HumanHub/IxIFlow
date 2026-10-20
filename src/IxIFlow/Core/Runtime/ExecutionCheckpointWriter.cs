@@ -121,6 +121,8 @@ internal static class ExecutionCheckpointWriter
                     throw new ExecutionOwnershipLostException(new InvalidOperationException(reply.Error));
                 case CheckpointReplyKind.Retry or CheckpointReplyKind.Unknown when attempt < MaxAttempts:
                     // The commit is immutable, so sending it again cannot apply a different payload.
+                    await Task.Delay(TimeSpan.FromMilliseconds(25 * (1 << (attempt - 1))));
+                    checkpoint.Signals?.ThrowIfOwnershipLost();
                     continue;
                 default:
                     throw new CheckpointInterruptedException(reply.Error == null ? null :

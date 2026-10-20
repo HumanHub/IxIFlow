@@ -19,6 +19,7 @@ public sealed partial class DebugAdapterSession : DebugAdapterBase, IDisposable
     private readonly List<Task> _commands = [];
     private IDisposable? _subscription;
     private string? _instanceId;
+    private Guid? _incarnation;
     private bool _authenticated, _initialized, _configured, _disconnected, _continueOnDisconnect, _terminated;
     private int _lineBase = 1, _columnBase = 1;
     private long _traceSequence, _reportedStop = -1;
@@ -77,7 +78,7 @@ public sealed partial class DebugAdapterSession : DebugAdapterBase, IDisposable
     {
         while (!token.IsCancellationRequested)
         {
-            await _changed.WaitAsync(TimeSpan.FromMilliseconds(250), token);
+            await _changed.WaitAsync(TimeSpan.FromSeconds(2), token);
             await _gate.WaitAsync(token);
             try
             {
@@ -113,8 +114,10 @@ public sealed partial class DebugAdapterSession : DebugAdapterBase, IDisposable
     private async Task<InstanceInspection> InspectAsync(CancellationToken token)
     {
         await AuthorizeAsync(DebugOperation.Inspect, token);
-        return _inspection = await _operations.InspectAsync(_instanceId!, token)
+        var inspection = await _operations.InspectAsync(_instanceId!, token)
             ?? throw new ProtocolException("Instance is unavailable");
+        if (_incarnation != inspection.Summary.Incarnation) throw new ProtocolException("Instance incarnation changed");
+        return _inspection = inspection;
     }
 
     private async Task AttachAsync(JObject args, bool launch, CancellationToken token)
@@ -124,6 +127,9 @@ public sealed partial class DebugAdapterSession : DebugAdapterBase, IDisposable
         _instanceId = launch ? Guid.NewGuid().ToString("N") : Required(args, "instanceId");
         try
         {
+            if (!launch)
+                _incarnation = (await _operations.GetAsync(_instanceId, token)
+                    ?? throw new ProtocolException("Instance is unavailable")).Incarnation;
             await AuthorizeAsync(DebugOperation.Inspect, token);
             if (launch)
             {
@@ -132,6 +138,8 @@ public sealed partial class DebugAdapterSession : DebugAdapterBase, IDisposable
                 await _operations.LaunchAsync(_instanceId, Required(args, "workflow"), args.Value<int?>("version") ?? 1,
                     System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>((args["input"] ?? new JObject()).ToString()),
                     args.Value<bool?>("stopOnEntry") == true, _endpoint.Actor, token);
+                _incarnation = (await _operations.GetAsync(_instanceId, token)
+                    ?? throw new ProtocolException("Instance is unavailable")).Incarnation;
             }
             await InspectAsync(token);
             await AuthorizeAsync(DebugOperation.Inspect, token);

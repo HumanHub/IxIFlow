@@ -13,6 +13,31 @@ public abstract partial class RelationalWorkflowStateRepository
         public DateTime ExpiresAtUtc { get; set; }
     }
 
+    // Advisory identity read precedes digest locks; recheck it after taking the instance lock.
+    private Task<Guid?> DeletionIncarnationAsync(DbConnection connection, DbTransaction transaction, string id) =>
+        connection.QuerySingleOrDefaultAsync<Guid?>($"SELECT {SearchColumn("incarnation")} FROM {InstanceTable} WHERE {SearchColumn("instance_id")}=@InstanceId",
+            new { InstanceId = id }, transaction);
+
+    private static PayloadOwner CheckpointOwner(string id, Guid incarnation) => new("checkpoint", $"{id}/{incarnation:N}");
+
+    private async Task<PayloadReference[]> DeletionReferencesAsync(DbConnection connection, DbTransaction transaction,
+        string id, Guid incarnation, CancellationToken ct = default)
+    {
+        var sqlServer = PayloadSqlDialect == PayloadDialect.SqlServer;
+        var table = sqlServer ? "dbo.IxIFlowWorkflowPayloads" : "ixiflow_workflow_payloads";
+        var refs = sqlServer ? "dbo.IxIFlowWorkflowPayloadRefs" : "ixiflow_workflow_payload_refs";
+        var digest = sqlServer ? "Digest" : "digest";
+        var bytes = sqlServer ? "Bytes" : "bytes";
+        var kind = sqlServer ? "OwnerKind" : "owner_kind";
+        var ownerId = sqlServer ? "OwnerId" : "owner_id";
+        var filter = PayloadSqlDialect == PayloadDialect.PostgreSql ? "= ANY(@Kinds)" : "IN @Kinds";
+        var rows = await connection.QueryAsync<(string Digest, long Bytes)>(new CommandDefinition(
+            $"SELECT DISTINCT p.{digest} AS Digest, p.{bytes} AS Bytes FROM {table} p JOIN {refs} r ON r.{digest}=p.{digest} " +
+            $"WHERE r.{ownerId}=@OwnerId AND r.{kind} {filter} ORDER BY p.{digest}",
+            new { OwnerId = $"{id}/{incarnation:N}", Kinds = new[] { "checkpoint", "inbox" } }, transaction, cancellationToken: ct));
+        return rows.Select(row => new PayloadReference(row.Digest, row.Bytes)).ToArray();
+    }
+
     private async Task<WorkflowTombstone?> TombstoneAsync(DbConnection connection, DbTransaction? transaction,
         string instanceId, DateTime now)
     {
@@ -72,6 +97,13 @@ public abstract partial class RelationalWorkflowStateRepository
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 await using var transaction = (await BeginTransactionAsync(connection, Operation.Purge))!;
+                var incarnation = await DeletionIncarnationAsync(connection, transaction, id);
+                if (incarnation == null) continue;
+                var pins = PayloadStore.Enlist(transaction);
+                var owner = CheckpointOwner(id, incarnation.Value);
+                var references = await DeletionReferencesAsync(connection, transaction, id, incarnation.Value, cancellationToken);
+                await pins.LockAsync(owner, references, cancellationToken);
+                var inboxOwner = InboxPayloads.Owner(id, incarnation.Value);
                 async Task Execute(Statement statement, object? parameters = null) =>
                     await connection.ExecuteAsync(new CommandDefinition(RequiredSql(statement), parameters,
                         transaction, cancellationToken: cancellationToken));
@@ -82,7 +114,7 @@ public abstract partial class RelationalWorkflowStateRepository
                 await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity,
                     new { InstanceId = id }, cancellationToken);
                 var (row, now) = await LockAsync<CommitState>(connection, transaction, Statement.CommitState, id, cancellationToken: cancellationToken);
-                if (row == null)
+                if (row == null || row.Incarnation != incarnation)
                     continue;
                 // Take the lease lock after the instance and before any outbox locks, as commits do.
                 await connection.QuerySingleOrDefaultAsync<LeaseRecord>(new CommandDefinition(
@@ -98,6 +130,11 @@ public abstract partial class RelationalWorkflowStateRepository
                     cancellationToken: cancellationToken));
                 if (eligible != 1)
                     continue;
+                var currentReferences = await DeletionReferencesAsync(connection, transaction, id, incarnation.Value, cancellationToken);
+                if (!references.SequenceEqual(currentReferences))
+                    continue;
+                await pins.ReleaseAsync(owner, cancellationToken);
+                await pins.ReleaseAsync(inboxOwner, cancellationToken);
                 await Execute(Statement.WriteTombstone, WithTimes(new { InstanceId = id },
                     ("Now", now), ("Expires", now + tombstoneRetention)));
                 await Execute(Statement.DeleteLease, new { InstanceId = id });

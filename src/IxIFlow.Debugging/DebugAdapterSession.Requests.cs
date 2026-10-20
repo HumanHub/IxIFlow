@@ -126,18 +126,18 @@ public sealed partial class DebugAdapterSession
                 if (failure == null) throw new ProtocolException("The selected thread is not waiting for failure resolution");
                 return new { exceptionId = failure.Kind ?? "WorkflowFailure", description = failure.Reason, breakMode = "always" };
             case "pause":
-                await ExecuteAsync(ct => _operations.PauseAsync(_instanceId!, _endpoint.Actor, ct), token); return null;
+                await ExecuteAsync(ct => _operations.PauseAsync(_instanceId!, _endpoint.Actor, ct, _incarnation), token); return null;
             case "continue":
                 if (_replay != null) { _replay.Continue(); ClearHandles(); ReplayStopped(true); return new { allThreadsContinued = true }; }
                 if (args.Value<bool?>("singleThread") == true)
                 {
                     var selected = SelectedThread(args).ContinuationId;
-                    await ExecuteAsync(ct => _operations.StepAsync(_instanceId!, selected, DebugStepKind.Run, _endpoint.Actor, ct), token);
+                    await ExecuteAsync(ct => _operations.StepAsync(_instanceId!, selected, DebugStepKind.Run, _endpoint.Actor, ct, _incarnation), token);
                 }
                 else
                 {
                     await AuthorizeAsync(DebugOperation.PauseAndStep, token);
-                    await _operations.RequestContinueAsync(_instanceId!, _endpoint.Actor, token);
+                    await _operations.RequestContinueAsync(_instanceId!, _endpoint.Actor, token, _incarnation);
                     ClearHandles();
                 }
                 var allThreadsContinued = args.Value<bool?>("singleThread") != true;
@@ -148,7 +148,7 @@ public sealed partial class DebugAdapterSession
                 await InspectAsync(token);
                 var branch = SelectedThread(args).ContinuationId;
                 var kind = command == "next" ? DebugStepKind.Over : command == "stepIn" ? DebugStepKind.Into : DebugStepKind.Out;
-                await ExecuteAsync(ct => _operations.StepAsync(_instanceId!, branch, kind, _endpoint.Actor, ct), token);
+                await ExecuteAsync(ct => _operations.StepAsync(_instanceId!, branch, kind, _endpoint.Actor, ct, _incarnation), token);
                 Emit<ContinuedEvent>(new { threadId = ThreadId(branch), allThreadsContinued = false });
                 return null;
             case "stepBack": case "reverseContinue":
@@ -161,7 +161,7 @@ public sealed partial class DebugAdapterSession
                     await AuthorizeAsync(DebugOperation.PauseAndStep, token);
                     var currentState = await InspectAsync(token);
                     if (currentState.Summary.Status == WorkflowStatus.Paused)
-                        await _operations.RequestContinueAsync(_instanceId!, _endpoint.Actor, token);
+                        await _operations.RequestContinueAsync(_instanceId!, _endpoint.Actor, token, _incarnation);
                 }
                 _disconnected = true; _subscription?.Dispose(); ClearHandles(); return null;
             default: throw new ProtocolException("Unsupported debug request");

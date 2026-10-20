@@ -133,7 +133,8 @@ public sealed partial class WorkflowHost
         }
 
         public async Task<WorkflowExecutionResult> RequestDebugAsync(string instanceId, DebugCommandKind kind,
-            string actor, CancellationToken cancellationToken, string? continuationId = null, DebugStepKind? stepKind = null)
+            string actor, CancellationToken cancellationToken, string? continuationId = null, DebugStepKind? stepKind = null,
+            Guid? expectedIncarnation = null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(actor);
@@ -141,6 +142,7 @@ public sealed partial class WorkflowHost
             if (!(hostSettings ?? HostSettings.Default).Debugging)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Debugging is disabled on this host");
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
+            RequireIncarnation(instance, expectedIncarnation);
             if (instance == null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow instance does not exist");
             if (kind == DebugCommandKind.Step)
             {
@@ -154,7 +156,8 @@ public sealed partial class WorkflowHost
                 (state.Commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause) ||
                  WorkflowDebugRules.Checkpoint(instance).Stop != null) ? 1 : 0);
             var requested = await _store.RequestDebugCommandAsync(instanceId,
-                new(Guid.NewGuid().ToString("N"), kind, generation, actor, ContinuationId: continuationId, StepKind: stepKind));
+                new(Guid.NewGuid().ToString("N"), kind, generation, actor, ContinuationId: continuationId, StepKind: stepKind)
+                    { ExpectedIncarnation = instance.Incarnation });
             if (requested.Status is not (DebugCommandStatus.Accepted or DebugCommandStatus.AlreadyAccepted))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, $"Debug command refused: {requested.Status}");
             if (kind != DebugCommandKind.Pause || instance.Status == WorkflowStatus.Running) return await ExistingResult(instance);
@@ -601,7 +604,7 @@ public sealed partial class WorkflowHost
 
         private async Task<EventAppendResult> AppendAsync(WorkflowEvent stored)
         {
-            var appended = await _store.AppendEventAsync(stored);
+            var appended = await _store.AppendEventAsync(stored with { PayloadThresholdBytes = _limits.PayloadThresholdBytes });
             if (appended.Status is EventAppendStatus.Closed or EventAppendStatus.NotFound)
                 await RefuseRemovedAsync(stored.InstanceId);
             return appended.Status == EventAppendStatus.Conflict
@@ -665,7 +668,7 @@ public sealed partial class WorkflowHost
             {
                 if (!(hostSettings ?? HostSettings.Default).Debugging)
                     return await ExistingResult(instance);
-                await EditUnderGateAsync(instanceId, pendingEdit.Id, edit, pendingEdit.Actor, cancellationToken);
+                await EditUnderGateAsync(instanceId, pendingEdit.Id, edit, pendingEdit.Actor, cancellationToken, instance.Incarnation);
                 return await ExistingResult((await _store.GetWorkflowInstanceAsync(instanceId))!);
             }
             var pendingDebug = debugState?.Commands.Any(c => c.AcknowledgedRevision == null) == true;
@@ -729,16 +732,11 @@ public sealed partial class WorkflowHost
             // Only a claim of a running instance can see crashes: every commit that leaves Running
             // records progress and clears the count, and other entry points refuse running instances.
             if (owner.CrashCount >= (hostSettings ?? HostSettings.Default).MaxCrashes)
-                return await QuarantineAsync(instance, checkpoint, scopes, assignment);
+                return await QuarantineAsync(instance, assignment);
             var stopCleared = checkpoint.OperatorStop != null;
-            var reactivated = checkpoint.Continuations.Where(item =>
-                item.PendingActivity is { ChildWorkflowId: null } &&
-                (item.Status == ContinuationStatus.Cancelling ||
-                 item.Status == ContinuationStatus.WaitingResolution && (!forEvent || stopCleared)))
-                .Select(item => item.Id).ToArray();
             return await AssignAsync(instance, assignment, signals, cancellationToken,
-                new RecoveryPreparation(reactivated, newCancellation ? cancellationReason : null,
-                    stopCleared, release, actor));
+                new RecoveryPreparation([], newCancellation ? cancellationReason : null,
+                    stopCleared, release, actor) { ReactivateWaitingActivities = !forEvent || stopCleared });
         }
 
         // An idle instance has work when an event waits for it or the store finds one of its deadlines due
@@ -1034,7 +1032,7 @@ public sealed partial class WorkflowHost
         // it (B-08). Nothing of the workflow runs and its data is not read; the last checkpoint stays.
         // The stop clears the live count, so a released instance gets MaxCrashes new attempts.
         private async Task<WorkflowExecutionResult> QuarantineAsync(WorkflowInstance instance,
-            ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes, HostedRun assignment)
+            HostedRun assignment)
         {
             var owner = assignment.Owner;
             var stop = new OperatorStopState
@@ -1044,13 +1042,15 @@ public sealed partial class WorkflowHost
                 StoppedAtUtc = Now,
                 CrashCount = owner.CrashCount
             };
-            checkpoint.OperatorStop = stop;
-            instance.Status = WorkflowStatus.NeedsResolution;
-            instance.LastError = stop.Reason;
-            instance.LastErrorStackTrace = null;
-            // Like the resource stop, this saves the last checkpoint plus a marker, so no limit applies.
-            await ExecutionCheckpointWriter.CommitAsync(assignment.Session, instance,
-                checkpoint, null, scopes, Now, preserveSavedWorkflowData: true, enforceLimit: false);
+            var commit = CheckpointCommit.StopForOperator(instance, owner.Epoch, stop, clearsCrashCount: true);
+            for (var attempt = 0; ; attempt++)
+            {
+                var reply = await assignment.Session.CheckpointAsync(commit);
+                if (reply.Kind == CheckpointReplyKind.Ack) break;
+                if (reply.Kind == CheckpointReplyKind.Conflict) throw new ExecutionOwnershipLostException(new InvalidOperationException(reply.Error));
+                if (attempt == 2) throw new CheckpointInterruptedException(new IOException(reply.Error));
+                await Task.Delay(25 * (1 << attempt));
+            }
             return Stopped(instance, stop);
         }
 

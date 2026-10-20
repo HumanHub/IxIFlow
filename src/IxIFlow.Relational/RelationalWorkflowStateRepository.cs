@@ -372,24 +372,37 @@ public abstract partial class RelationalWorkflowStateRepository :
         return await ExecuteOperationAsync(Operation.Append, async () =>
         {
             await using var connection = await OpenConnectionAsync();
-            await using var transaction = (await BeginTransactionAsync(connection, Operation.Append))!;
-            if (workflowEvent.DeliveryIdentity is { } delivery)
+            while (true)
             {
-                await ExecuteOptionalAsync(connection, transaction, Statement.AdmissionLock, new { Identity = delivery });
-                if (await ReadWebhookDeliveryAsync(connection, transaction, workflowEvent, hash) is { } duplicate)
+                await using var transaction = (await BeginTransactionAsync(connection, Operation.Append))!;
+                var incarnation = await DeletionIncarnationAsync(connection, transaction, workflowEvent.InstanceId);
+                var payload = InboxPayloads.Prepare(workflowEvent, _payloadSettings);
+                var pins = PayloadStore.Enlist(transaction);
+                if (incarnation is { } seen)
+                    await pins.LockAsync(InboxPayloads.Owner(workflowEvent.InstanceId, seen),
+                        payload.References.Concat(payload.Bodies.SelectMany(b => b.Dependencies)).ToArray());
+                if (workflowEvent.DeliveryIdentity is { } delivery)
                 {
-                    await transaction.CommitAsync();
-                    return duplicate;
+                    await ExecuteOptionalAsync(connection, transaction, Statement.AdmissionLock, new { Identity = delivery });
+                    if (await ReadWebhookDeliveryAsync(connection, transaction, workflowEvent, hash) is { } duplicate)
+                    {
+                        await transaction.CommitAsync();
+                        return duplicate;
+                    }
                 }
+                var (instance, now) = await LockAsync<InboxRow>(connection, transaction, Statement.LockInbox, workflowEvent.InstanceId);
+                if (await DeletionIncarnationAsync(connection, transaction, workflowEvent.InstanceId) != incarnation)
+                { await transaction.RollbackAsync(); continue; }
+                var result = await AppendAsync(connection, transaction, workflowEvent, hash, instance, now);
+                if (incarnation is { } ownerId && result.Status is EventAppendStatus.Stored or EventAppendStatus.Rejected)
+                    await payload.PublishAsync(pins, InboxPayloads.Owner(workflowEvent.InstanceId, ownerId));
+                if (workflowEvent.DeliveryIdentity != null && result.Status is EventAppendStatus.Stored or EventAppendStatus.Duplicate or EventAppendStatus.Rejected)
+                    await WriteWebhookDeliveryAsync(connection, transaction, workflowEvent, hash, result, now);
+                if (result.MadeRunnable)
+                    await NotifyRunnableAsync(connection, transaction);
+                await transaction.CommitAsync();
+                return result;
             }
-            var (instance, now) = await LockAsync<InboxRow>(connection, transaction, Statement.LockInbox, workflowEvent.InstanceId);
-            var result = await AppendAsync(connection, transaction, workflowEvent, hash, instance, now);
-            if (workflowEvent.DeliveryIdentity != null && result.Status is EventAppendStatus.Stored or EventAppendStatus.Duplicate or EventAppendStatus.Rejected)
-                await WriteWebhookDeliveryAsync(connection, transaction, workflowEvent, hash, result, now);
-            if (result.MadeRunnable)
-                await NotifyRunnableAsync(connection, transaction);
-            await transaction.CommitAsync();
-            return result;
         });
     }
 
@@ -431,7 +444,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             workflowEvent.Key,
             workflowEvent.TargetWaitId,
             workflowEvent.Subject,
-            workflowEvent.PayloadJson,
+            PayloadJson = JsonSerializer.Serialize(InboxPayloads.Prepare(workflowEvent, _payloadSettings).Value),
             Hash = hash
         }, ("Rejection", (short?)rejection)), ("Now", now));
         if (advanceSql == null)
@@ -553,6 +566,8 @@ public abstract partial class RelationalWorkflowStateRepository :
             sql = sql.Replace("WHERE close_reason IS NULL", "WHERE close_reason IS NULL AND " + predicate)
                 .Replace("WHERE CloseReason IS NULL", "WHERE CloseReason IS NULL AND " + predicate);
         }
+        if (query.IncludeClosed)
+            sql = sql.Replace("close_reason IS NULL", "1=1").Replace("CloseReason IS NULL", "1=1");
         var rows = await connection.QueryAsync<WaitRow>(sql, parameters);
         return rows.Select(row => row.Read(ReadTime)).ToArray();
     }
@@ -582,11 +597,18 @@ public abstract partial class RelationalWorkflowStateRepository :
         if (commit.ExpectedRevision == 0 || commit.ChildStarts.Count > 0)
             await ExecuteOptionalAsync(connection, transaction, Statement.CatalogSharedLock, null);
         var payloadPins = PayloadStore.Enlist(transaction);
+        var parentIncarnation = commit.ParentNotice is { } incomingNotice
+            ? await DeletionIncarnationAsync(connection, transaction, incomingNotice.ParentInstanceId) : null;
+        var noticePayload = commit.ParentNotice is { } preparedNotice
+            ? InboxPayloads.Prepare(ToEvent(preparedNotice), _payloadSettings) : null;
         if (!commit.PreservesPayloadPins)
         {
             await payloadPins.LockAsync(commit.PayloadOwner, commit.PayloadReferences
                 .Concat(commit.PayloadBodies.Select(body => body.Reference))
-                .Concat(commit.PayloadBodies.SelectMany(body => body.Dependencies)).Distinct().ToArray());
+                .Concat(commit.PayloadBodies.SelectMany(body => body.Dependencies))
+                .Concat(commit.ChildStarts.SelectMany(child => child.PayloadReferences))
+                .Concat(noticePayload?.References ?? []).Concat(noticePayload?.Bodies.SelectMany(b => b.Dependencies) ?? [])
+                .Distinct().ToArray());
         }
         WorkflowAdmissionRecord? admitted = null;
         if (admission != null)
@@ -620,6 +642,9 @@ public abstract partial class RelationalWorkflowStateRepository :
             ? Utc(due) : current?.RunnableAtUtc;
         var currentRevision = current?.Revision ?? 0;
         var receipt = await connection.QuerySingleOrDefaultAsync<CommitReceipt>(RequiredSql(Statement.Receipt), new { commit.InstanceId, commit.CommitId }, transaction);
+        if (receipt == null && commit.ParentNotice is { } identityNotice &&
+            await DeletionIncarnationAsync(connection, transaction, identityNotice.ParentInstanceId) != parentIncarnation)
+            return new WorkflowCommitResult(WorkflowCommitStatus.Retry, currentRevision);
         // Receipts are deleted with the instance, so a present receipt belongs to its current creation.
         if (receipt == null && commit.ExpectedRevision > 0 &&
             current != null && current.Incarnation != commit.Incarnation)
@@ -723,6 +748,10 @@ public abstract partial class RelationalWorkflowStateRepository :
             foreach (var body in commit.PayloadBodies)
                 await payloadPins.PutAsync(body.Body, body.Dependencies);
             await payloadPins.ReplaceAsync(commit.PayloadOwner, commit.PayloadReferences);
+            foreach (var child in commit.ChildStarts)
+                await payloadPins.ReplaceAsync(CheckpointOwner(child.ChildInstanceId, child.Incarnation), child.PayloadReferences);
+            if (commit.ParentNotice is { } parentNotice && parentIncarnation is { } parentOwner)
+                await noticePayload!.PublishAsync(payloadPins, InboxPayloads.Owner(parentNotice.ParentInstanceId, parentOwner));
         }
         await ApplyPartsAsync(connection, transaction, commit);
         // An idle instance is next due at the earliest deadline of its open waits (D-31, D-35).
@@ -874,7 +903,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     internal const string EventColumns =
         "instance_id AS InstanceId, event_id AS EventId, sequence AS Sequence, event_type AS EventType, " +
-        "event_key AS EventKey, target_wait_id AS TargetWaitId, payload_json AS PayloadJson, " +
+        "event_key AS EventKey, target_wait_id AS TargetWaitId, stored_payload_json AS PayloadJson, " +
         "received_at_utc AS ReceivedAtUtc, outcome AS Outcome, wait_id AS WaitId, rejection AS Rejection, " +
         "subject AS Subject";
 
@@ -932,12 +961,23 @@ public abstract partial class RelationalWorkflowStateRepository :
             while (true)
             {
                 await using var transaction = (await BeginTransactionAsync(connection, Operation.Delete))!;
+                var incarnation = await DeletionIncarnationAsync(connection, transaction, instanceId);
+                var pins = PayloadStore.Enlist(transaction);
+                var references = incarnation is { } payloadIncarnation
+                    ? await DeletionReferencesAsync(connection, transaction, instanceId, payloadIncarnation) : [];
+                if (incarnation is { } seenIncarnation)
+                {
+                    await pins.LockAsync(CheckpointOwner(instanceId, seenIncarnation), references);
+                }
                 var json = await connection.QuerySingleOrDefaultAsync<string>(RequiredSql(Statement.DeleteState), parameters, transaction);
                 var seen = WaitingParent(json);
                 var parent = seen is { } waiting
                     ? await LockAsync<InboxRow>(connection, transaction, Statement.DeleteParentInbox, waiting.ParentId)
                     : default;
                 await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, parameters);
+                var lockedIncarnation = await DeletionIncarnationAsync(connection, transaction, instanceId);
+                if (lockedIncarnation != incarnation)
+                { await transaction.RollbackAsync(); continue; }
                 if (DeleteRevalidationSql is { } lockedSql)
                 {
                     json = await connection.QuerySingleOrDefaultAsync<string>(CheckSql(nameof(DeleteRevalidationSql), lockedSql), parameters, transaction);
@@ -946,6 +986,12 @@ public abstract partial class RelationalWorkflowStateRepository :
                         await transaction.RollbackAsync();
                         continue;
                     }
+                }
+                if (incarnation is { } currentIncarnation)
+                {
+                    var currentReferences = await DeletionReferencesAsync(connection, transaction, instanceId, currentIncarnation);
+                    if (!references.SequenceEqual(currentReferences))
+                    { await transaction.RollbackAsync(); continue; }
                 }
                 if (seen is { } answering)
                 {
@@ -959,6 +1005,8 @@ public abstract partial class RelationalWorkflowStateRepository :
                 {
                     if (json != null)
                     {
+                        await pins.ReleaseAsync(CheckpointOwner(instanceId, incarnation!.Value));
+                        await pins.ReleaseAsync(InboxPayloads.Owner(instanceId, incarnation.Value));
                         var removedAt = await OutboxNowAsync(connection, transaction);
                         await connection.ExecuteAsync(RequiredSql(Statement.WriteTombstone),
                             WithTimes(parameters, ("Now", removedAt), ("Expires", removedAt + period)), transaction);
@@ -986,7 +1034,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     private static WorkflowEvent ToEvent(ParentNotice notice) =>
         new(notice.ParentInstanceId, notice.EventId, notice.EventType, notice.PayloadJson,
-            TargetWaitId: notice.ParentWaitId);
+            TargetWaitId: notice.ParentWaitId) { PayloadDependencies = notice.PayloadDependencies, PayloadThresholdBytes = 0 };
 
     private sealed class InboxRow
     {
@@ -1018,7 +1066,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         public string? Subject { get; set; }
 
         public StoredWorkflowEvent Read(Func<DateTime, DateTime> readTime) => new(InstanceId, EventId, Sequence, EventType, EventKey,
-            TargetWaitId, StoredJson.Inline(PayloadJson), readTime(ReceivedAtUtc), (EventOutcome)Outcome, WaitId,
+            TargetWaitId, JsonSerializer.Deserialize<StoredJson>(PayloadJson)!, readTime(ReceivedAtUtc), (EventOutcome)Outcome, WaitId,
             (EventRejection?)Rejection, Subject);
     }
 

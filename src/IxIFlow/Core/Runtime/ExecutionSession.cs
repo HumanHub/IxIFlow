@@ -43,6 +43,7 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
             SavedInstance.WorkflowDataJson = parts.GetValueOrDefault(CheckpointParts.DataKey) ?? StoredJson.Inline("");
             SavedInstance.Saved(parts, reply.Revision);
             Payloads.Acknowledged();
+            Payloads.Known(CheckpointPayloads.References(SavedInstance.ExecutionStateJson, parts));
         }
         return reply;
     }

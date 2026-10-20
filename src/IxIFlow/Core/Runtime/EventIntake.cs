@@ -75,6 +75,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     private async Task DecideAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ExecutionSession host, StoredWorkflowEvent stored, InboxPage page, WorkflowInstance instance)
     {
+        await host.Reader.ReadAsync(stored.PayloadJson);
         var payload = Read(stored);
         if (payload == null)
         {

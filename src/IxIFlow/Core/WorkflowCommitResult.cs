@@ -394,6 +394,7 @@ public sealed class CheckpointCommit
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(child.ChildInstanceId, nameof(childStarts));
             ArgumentException.ThrowIfNullOrWhiteSpace(child.ParentWaitId, nameof(childStarts));
+            if (child.Incarnation == Guid.Empty) throw new ArgumentException("A child start requires an incarnation", nameof(childStarts));
             var childInstance = child.Child
                 ?? throw new ArgumentException("A child start carries the child's instance", nameof(childStarts));
             if (childInstance.InstanceId != child.ChildInstanceId || childInstance.ParentInstanceId != instance.InstanceId ||
@@ -425,6 +426,7 @@ public sealed class CheckpointCommit
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.ParentWaitId, nameof(parentNotice));
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.EventId, nameof(parentNotice));
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.EventType, nameof(parentNotice));
+            parentNotice = parentNotice with { PayloadDependencies = Array.AsReadOnly(parentNotice.PayloadDependencies.ToArray()) };
             if (!WorkflowStoreRules.IsTerminal(instance.Status) ||
                 instance.ParentInstanceId != parentNotice.ParentInstanceId ||
                 instance.ParentWaitId != parentNotice.ParentWaitId)
@@ -476,22 +478,26 @@ public sealed class CheckpointCommit
             preservesPayloadPins: true);
 
     internal static CheckpointCommit PayloadStop(WorkflowInstance saved, long epoch, string reason, DateTime now,
-        Runtime.OperatorStopKind kind = Runtime.OperatorStopKind.PayloadUnavailable)
+        Runtime.OperatorStopKind kind = Runtime.OperatorStopKind.PayloadUnavailable) =>
+        StopForOperator(saved, epoch, new() { Kind = kind, Reason = reason, StoppedAtUtc = now });
+
+    internal static CheckpointCommit StopForOperator(WorkflowInstance saved, long epoch,
+        Runtime.OperatorStopState stop, bool clearsCrashCount = false)
     {
         if (WorkflowStoreRules.IsTerminal(saved.Status))
-            throw new WorkflowEngineException(WorkflowErrorKind.PayloadUnavailable, reason);
+            throw new WorkflowEngineException(WorkflowErrorKind.PayloadUnavailable, stop.Reason);
         // Only the readable trunk is parsed. No branch, data, input or list payload is assembled.
         var instance = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(saved))!;
         var metadata = System.Text.Json.Nodes.JsonNode.Parse(instance.ExecutionStateJson)!.AsObject();
         metadata[nameof(Runtime.ExecutionCheckpoint.OperatorStop)] = JsonSerializer.SerializeToNode(
-            new Runtime.OperatorStopState { Kind = kind, Reason = reason, StoppedAtUtc = now });
+            stop);
         // Preserve stored-only fields such as ForEach ResultCount exactly; no state object is reconstructed.
         instance.ExecutionStateJson = metadata.ToJsonString();
         instance.Status = WorkflowStatus.NeedsResolution;
-        instance.LastError = reason;
+        instance.LastError = stop.Reason;
         instance.LastErrorStackTrace = null;
         return FromFields(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance), [], [], false,
-            saved.Incarnation, epoch, Guid.NewGuid().ToString("N"), saved.Revision, false, false, [], null,
+            saved.Incarnation, epoch, Guid.NewGuid().ToString("N"), saved.Revision, clearsCrashCount, false, [], null,
             [], [], [], null, true, [], [], null, [], preservesPayloadPins: true);
     }
 

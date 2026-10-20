@@ -36,20 +36,20 @@ public interface IWorkflowOperations
     /// <summary>Reads a projection of the saved checkpoint, never the checkpoint itself.</summary>
     Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default);
     /// <summary>Requests a durable pause; running activities finish before it is committed.</summary>
-    Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
+    Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
     /// <summary>Continues a pause under a fresh lease on this host.</summary>
-    Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
+    Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
     /// <summary>Accepts a durable continue and schedules it on the host, without waiting for workflow activities to finish.</summary>
-    Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
+    Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
     /// <summary>Runs only the selected continuation and branches it creates, under a fresh lease.</summary>
     Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
-        string actor, CancellationToken cancellationToken = default);
+        string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
     /// <summary>Edits a paused root or branch view with an immutable, caller-supplied edit ID.</summary>
     Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
-        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken = default);
+        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
     /// <summary>Replaces the instance's breakpoint set and returns the resolved addresses.</summary>
     Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId, IReadOnlyList<Breakpoint> breakpoints,
-        string actor, CancellationToken cancellationToken = default);
+        string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
     /// <summary>Reads the latest requested set with committed hit counts.</summary>
     Task<IReadOnlyList<Breakpoint>> GetBreakpointsAsync(string instanceId, CancellationToken cancellationToken = default);
 

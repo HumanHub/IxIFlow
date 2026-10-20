@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Reflection;
 using System.Runtime.Loader;
@@ -11,14 +10,60 @@ using Microsoft.CodeAnalysis.Operations;
 namespace IxIFlow.Debugging;
 
 /// <summary>Compiles expressions only after every operation and resolved member passes the allowlist.</summary>
-public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler
+public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, IDisposable
 {
-    private readonly ConcurrentDictionary<BreakpointConditionRequest, Lazy<BreakpointConditionCompilation>> _cache = new();
+    private const int Capacity = 128;
+    private readonly Dictionary<BreakpointConditionRequest, LinkedListNode<(BreakpointConditionRequest Key, CacheEntry Entry)>> _cache = [];
+    private readonly LinkedList<(BreakpointConditionRequest Key, CacheEntry Entry)> _recency = [];
+    private bool _disposed;
 
-    public BreakpointConditionCompilation Compile(BreakpointConditionRequest request) => _cache.GetOrAdd(request,
-        key => new(() => CompileCore(key), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+    public BreakpointConditionCompilation Compile(BreakpointConditionRequest request)
+    {
+        CacheEntry compiled;
+        CacheEntry? evicted = null;
+        lock (_cache)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_cache.TryGetValue(request, out var hit))
+            {
+                _recency.Remove(hit); _recency.AddFirst(hit);
+                return hit.Value.Entry.Compilation;
+            }
+            compiled = CompileCore(request);
+            _cache.Add(request, _recency.AddFirst((request, compiled)));
+            if (_cache.Count > Capacity)
+            {
+                var oldest = _recency.Last!;
+                _recency.RemoveLast(); _cache.Remove(oldest.Value.Key);
+                evicted = oldest.Value.Entry;
+            }
+        }
+        // Unload is deferred by the runtime while an in-flight evaluation still holds its delegate.
+        evicted?.LoadContext?.Unload();
+        return compiled.Compilation;
+    }
 
-    private static BreakpointConditionCompilation CompileCore(BreakpointConditionRequest request)
+    public void Dispose()
+    {
+        CacheEntry[] entries;
+        lock (_cache)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            entries = _recency.Select(item => item.Entry).ToArray();
+            _cache.Clear(); _recency.Clear();
+        }
+        foreach (var entry in entries) entry.LoadContext?.Unload();
+    }
+
+    private sealed class CacheEntry(Func<object, object?, object?, int?, DateTimeOffset, bool>? evaluate,
+        IReadOnlyList<BreakpointConditionDiagnostic> diagnostics, AssemblyLoadContext? loadContext = null)
+    {
+        public BreakpointConditionCompilation Compilation { get; } = new(evaluate, diagnostics);
+        public AssemblyLoadContext? LoadContext { get; } = loadContext;
+    }
+
+    private static CacheEntry CompileCore(BreakpointConditionRequest request)
     {
         // Parse the user's text as one expression before embedding it. In particular, directives and
         // trailing tokens cannot escape the expression into the generated method or assembly.
@@ -67,12 +112,16 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler
             .Select(d => Positioned(d.Id, d.GetMessage(), d.Location.SourceSpan.Start - prefix.Length,
                 d.Location.SourceSpan.Length, request.Text)).ToArray());
         stream.Position = 0;
-        // The cache owns the compiled delegate and its collectible assembly for the compiler's lifetime.
+        // The cache owns the collectible context until eviction or compiler disposal.
         var loadContext = new AssemblyLoadContext(compilation.AssemblyName!, isCollectible: true);
-        var assembly = loadContext.LoadFromStream(stream);
-        var predicate = assembly.GetType("Condition")!.GetMethod("Evaluate")!
-            .CreateDelegate<Func<object, object?, object?, int?, DateTimeOffset, bool>>();
-        return new(predicate, []);
+        try
+        {
+            var assembly = loadContext.LoadFromStream(stream);
+            var predicate = assembly.GetType("Condition")!.GetMethod("Evaluate")!
+                .CreateDelegate<Func<object, object?, object?, int?, DateTimeOffset, bool>>();
+            return new(predicate, [], loadContext);
+        }
+        catch { loadContext.Unload(); throw; }
     }
 
     private static IEnumerable<MetadataReference> References(BreakpointConditionRequest request)

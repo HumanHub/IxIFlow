@@ -123,7 +123,7 @@ public sealed partial class DebugAdapterSession
             throw new ProtocolException("Only paused workflow data is editable");
         await AuthorizeAsync(DebugOperation.Edit, token);
         await _operations.EditDataAsync(_instanceId!, Guid.NewGuid().ToString("N"), _inspection.Revision,
-            new(_inspection.DebugState.PauseGeneration, thread), [new(path, value)], _endpoint.Actor, token);
+            new(_inspection.DebugState.PauseGeneration, thread), [new(path, value)], _endpoint.Actor, token, _incarnation);
         ClearHandles();
         Emit<InvalidatedEvent>(new { areas = new[] { "variables", "stacks" } });
     }

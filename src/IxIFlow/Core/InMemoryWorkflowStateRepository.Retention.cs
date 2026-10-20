@@ -21,14 +21,19 @@ public partial class InMemoryWorkflowStateRepository
             return Task.FromResult(ActiveTombstone(instanceId, Now));
     }
 
-    public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention,
+    public async Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention,
         int batchSize, CancellationToken cancellationToken = default)
     {
         RetentionSettings.Validate(finishedRetention, tombstoneRetention, batchSize);
         cancellationToken.ThrowIfCancellationRequested();
+        string[] candidates;
+        Dictionary<string, int> blocked;
+        int expiredCount;
+        DateTime cutoff;
         lock (_claimLock)
         {
             var now = Now;
+            cutoff = now - finishedRetention;
             ExpireAdmissions(now, batchSize);
             // Sweep every publisher, including subscriptions no host currently serves.
             var unclaimed = _deliveries.Values.Where(d => d.Status == OutboxDeliveryStatus.Pending &&
@@ -46,28 +51,24 @@ public partial class InMemoryWorkflowStateRepository
                 .Take(batchSize).ToArray();
             foreach (var row in expired)
                 _tombstones.Remove(row.InstanceId);
-            var blocked = _deliveries.Values.Where(d => d.Status == OutboxDeliveryStatus.Pending &&
+            expiredCount = expired.Length;
+            blocked = _deliveries.Values.Where(d => d.Status == OutboxDeliveryStatus.Pending &&
                     d.FirstAttemptAtUtc == null && _instances.TryGetValue(d.Event.InstanceId, out var instance) &&
                     WorkflowStoreRules.IsTerminal(instance.Status) &&
                     _endedAt.TryGetValue(instance.InstanceId, out var ended) && now - ended >= finishedRetention &&
                     !_instances.Values.Any(child => child.ParentInstanceId == instance.InstanceId))
                 .GroupBy(d => d.PublisherName, StringComparer.Ordinal)
                 .ToDictionary(g => g.Key, g => g.Select(d => d.Event.InstanceId).Distinct(StringComparer.Ordinal).Count(), StringComparer.Ordinal);
-            var candidates = _instances.Values.Where(i => WorkflowStoreRules.IsTerminal(i.Status) &&
+            candidates = _instances.Values.Where(i => WorkflowStoreRules.IsTerminal(i.Status) &&
                     _endedAt.TryGetValue(i.InstanceId, out var ended) && now - ended >= finishedRetention &&
                     !_deliveries.Values.Any(d => d.Event.InstanceId == i.InstanceId && d.Status == OutboxDeliveryStatus.Pending) &&
                     !_instances.Values.Any(child => child.ParentInstanceId == i.InstanceId))
                 .OrderBy(i => _endedAt[i.InstanceId]).ThenBy(i => i.InstanceId, StringComparer.Ordinal)
                 .Take(batchSize).Select(i => i.InstanceId).ToArray();
-            foreach (var id in candidates)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                // Terminal children have already
-                // copied their complete result into the parent's durable inbox, so no notice is needed.
-                DeleteInstance(id);
-                _tombstones[id] = new WorkflowTombstone(id, now, now + tombstoneRetention);
-            }
-            return Task.FromResult(new RetentionResult(candidates.Length, expired.Length) { SkippedUnattemptedByPublisher = blocked });
         }
+        var removed = 0;
+        foreach (var id in candidates)
+            if (await DeleteWithPayloadsAsync(id, tombstoneRetention, cutoff, cancellationToken)) removed++;
+        return new RetentionResult(removed, expiredCount) { SkippedUnattemptedByPublisher = blocked };
     }
 }

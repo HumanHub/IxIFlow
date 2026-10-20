@@ -9,18 +9,17 @@ public sealed partial class WorkflowHost
     {
         private async Task<WorkflowDefinition> DebugDefinitionAsync(string instanceId, CancellationToken cancellationToken)
         {
-            var inspection = await InspectAsync(instanceId, cancellationToken)
+            cancellationToken.ThrowIfCancellationRequested();
+            var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId)
                 ?? throw new InvalidOperationException("Instance is unavailable");
-            return await registry.GetWorkflowDefinitionAsync(inspection.Summary.WorkflowName, inspection.Summary.WorkflowVersion)
+            return await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
                 ?? throw new InvalidOperationException("Definition is unavailable");
         }
 
         public async Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string instanceId, CancellationToken cancellationToken)
         {
             var definition = await DebugDefinitionAsync(instanceId, cancellationToken);
-            var instance = await _store.GetWorkflowInstanceAsync(instanceId) ?? throw new InvalidOperationException("Instance is unavailable");
-            return InspectionPrivacy.Clean(definition.StepTable.ToArray(), WaitIds(instance,
-                await ReadCheckpointAsync(instance)));
+            return InspectionPrivacy.Clean(definition.StepTable.ToArray(), await DurableWaitIdsAsync(instanceId, cancellationToken));
         }
 
         public async Task<string?> GetSourceAsync(string instanceId, string path, CancellationToken cancellationToken)
@@ -43,9 +42,7 @@ public sealed partial class WorkflowHost
             }
             if (content == null) return null;
             if (System.Text.Encoding.UTF8.GetByteCount(content) > 1024 * 1024) throw new InvalidOperationException("Source exceeds the inspection limit");
-            var instance = await _store.GetWorkflowInstanceAsync(instanceId) ?? throw new InvalidOperationException("Instance is unavailable");
-            return InspectionPrivacy.Clean(new[] { content }, WaitIds(instance,
-                await ReadCheckpointAsync(instance)))[0];
+            return InspectionPrivacy.Clean(new[] { content }, await DurableWaitIdsAsync(instanceId, cancellationToken))[0];
         }
 
         public async Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries, CancellationToken cancellationToken)
@@ -98,7 +95,8 @@ public sealed partial class WorkflowHost
             var threads = InspectionProjection.Threads(instance, checkpoint, scopes, Now);
             var debug = checkpoint.Debug;
             var result = new InstanceInspection(new(instance.InstanceId, instance.WorkflowName, instance.WorkflowVersion,
-                instance.Status, instance.ParentInstanceId, instance.CreatedAt, instance.CompletedAt, instance.LastError),
+                instance.Status, instance.ParentInstanceId, instance.CreatedAt, instance.CompletedAt, instance.LastError)
+                    { Incarnation = instance.Incarnation },
                 instance.Revision, checkpoint.StructureHash,
                 new(debug.PauseGeneration, debug.AppliedOrder, debug.Stop, debug.Stepping)
                     { Evaluation = debug.Evaluation, SkipOnce = debug.SkipOnce },
@@ -123,11 +121,28 @@ public sealed partial class WorkflowHost
             ArgumentOutOfRangeException.ThrowIfNegative(afterSequence);
             if (limit is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(limit));
             cancellationToken.ThrowIfCancellationRequested();
-            var instance = await _store.GetWorkflowInstanceAsync(instanceId);
-            var ids = instance != null && HasStructuredCheckpoint(instance)
-                ? WaitIds(instance, await ReadCheckpointAsync(instance)) : [];
             var entries = await _store.GetTraceAsync(instanceId, afterSequence, limit);
-            return InspectionPrivacy.Clean(entries, ids);
+            return InspectionPrivacy.Clean(entries, await DurableWaitIdsAsync(instanceId, cancellationToken));
+        }
+
+        private async Task<string[]> DurableWaitIdsAsync(string instanceId, CancellationToken cancellationToken)
+        {
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var kind in Enum.GetValues<WaitKind>())
+            {
+                string? after = null;
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var page = await _store.GetOpenWaitsAsync(new(InstanceId: instanceId, Kind: kind,
+                        AfterWaitRef: after, Limit: 1000) { IncludeClosed = true });
+                    foreach (var wait in page) ids.Add(wait.WaitId);
+                    if (page.Count < 1000) break;
+                    after = WaitReference.Of(instanceId, page[^1].WaitId);
+                }
+            }
+            if ((await _store.GetWorkflowInstanceSummaryAsync(instanceId))?.ParentWaitId is { } parent) ids.Add(parent);
+            return ids.ToArray();
         }
 
         private static string[] WaitIds(WorkflowInstance instance, ExecutionCheckpoint checkpoint) =>

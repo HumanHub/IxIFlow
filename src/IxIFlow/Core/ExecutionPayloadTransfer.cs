@@ -22,27 +22,14 @@ public sealed class ExecutionPayloadTransfer(IPayloadStore store, ExecutionLimit
     public async Task<ReadPayloadReply> ReadAsync(ReadPayload request)
     {
         CheckLength(request.Reference.Bytes);
-        var reader = new PayloadOwner("reader", Guid.NewGuid().ToString("N"));
         try
         {
-            try
-            {
-                await store.InTransactionAsync(async (pins, ct) => await pins.PinAsync(reader, request.Reference, ct));
-            }
-            catch (InvalidOperationException error) when (error.Message == "Payload unavailable")
-            { return new(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable); }
-            try
-            {
-                var stored = await store.GetAsync(request.Reference) ?? throw new InvalidDataException("Payload missing");
-                var body = stored.ToArray();
-                request.Reference.Verify(body);
-                return new(request.AssignmentId, body);
-            }
-            finally
-            {
-                // The verified body is an independent snapshot before the reader's pins are released.
-                await store.InTransactionAsync(async (pins, ct) => await pins.ReleaseAsync(reader, ct));
-            }
+            // Get verifies and copies under the store transaction's digest lock. Connection loss
+            // releases that lock; no durable reader owner can outlive this independent snapshot.
+            var stored = await store.GetAsync(request.Reference) ?? throw new InvalidDataException("Payload missing");
+            var body = stored.ToArray();
+            request.Reference.Verify(body);
+            return new(request.AssignmentId, body);
         }
         catch (InvalidDataException)
         { return new(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable); }

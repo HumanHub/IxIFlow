@@ -325,6 +325,7 @@ internal sealed class ActivityAttempts(
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Child data type '{pending.ChildDataType}' is unavailable");
             continuation.AcceptedWait = null;
+            await host.Reader.ReadAsync(completed.DataJson);
             return Settles(completed.Outcome(dataType));
         }
         if (pending != null)
@@ -365,6 +366,10 @@ internal sealed class ActivityAttempts(
             var data = ChildInputs.NewData(childDefinition, step, context);
             var prepared = WorkflowInstances.Start(childDefinition, data, instance, pending.Id,
                 Guid.NewGuid().ToString("N"), Now);
+            var child = prepared.Child!;
+            child.WorkflowDataJson = host.Payloads.Store(child.WorkflowDataJson);
+            prepared = new(prepared.ChildInstanceId, System.Text.Json.JsonSerializer.Serialize(child), prepared.ParentWaitId)
+                { Incarnation = prepared.Incarnation };
             var reply = await host.StartChildAsync(scopes.Id(step), prepared, childScopes.StructureHash);
             if (reply.Refusal == WorkflowErrorKind.ResourceExhausted)
             {

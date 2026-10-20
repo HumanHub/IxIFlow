@@ -30,7 +30,7 @@ public abstract partial class RelationalWorkflowStateRepository
         {
             ct.ThrowIfCancellationRequested();
             await repository.EnsureSchemaAsync();
-            while (true)
+            for (var attempt = 0; ; attempt++)
             {
               try { return await repository.ExecuteOperationAsync(Operation.Commit, async () =>
               {
@@ -46,7 +46,8 @@ public abstract partial class RelationalWorkflowStateRepository
                 }
                 finally { catalog.End(); }
               }); }
-              catch (PayloadLockUnavailableException) { await Task.Delay(5, ct); }
+              catch (PayloadLockUnavailableException) when (attempt < 2)
+              { await Task.Delay(25 * (1 << attempt), ct); }
             }
         }
 
@@ -66,20 +67,32 @@ public abstract partial class RelationalWorkflowStateRepository
             async Task Lock(string digest, CancellationToken ct)
             {
                 if (!locked.Add(digest)) return;
+                // Wait for the first digest only. Secondary contention rolls the transaction back,
+                // so standalone dependency operations cannot form a wait cycle with a checkpoint.
+                var waitMs = locked.Count == 1 ? 2000 : 0;
                 if (SqlServer)
                 {
                     var result = await connection.ExecuteScalarAsync<int>(new CommandDefinition("""
                         DECLARE @result int;
                         EXEC @result = sys.sp_getapplock @Resource = @Resource,
-                            @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 0;
+                            @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = @WaitMs;
                         SELECT @result;
-                        """, new { Resource = "IxIFlow.Payload/" + digest }, transaction, cancellationToken: ct));
+                        """, new { Resource = "IxIFlow.Payload/" + digest, WaitMs = waitMs }, transaction, cancellationToken: ct));
                     if (result < 0) throw new PayloadLockUnavailableException();
                 }
                 else if (repository.PayloadSqlDialect == PayloadDialect.PostgreSql)
                 {
                     var key = BinaryPrimitives.ReadInt64BigEndian(SHA256.HashData(Encoding.UTF8.GetBytes(digest)));
-                    if (!await connection.ExecuteScalarAsync<bool>(new CommandDefinition("SELECT pg_try_advisory_xact_lock(@Key)",
+                    if (waitMs > 0)
+                    {
+                        try
+                        {
+                            await connection.ExecuteAsync(new CommandDefinition("SET LOCAL lock_timeout = '2s'; SELECT pg_advisory_xact_lock(@Key); SET LOCAL lock_timeout = '0'",
+                                new { Key = key }, transaction, cancellationToken: ct));
+                        }
+                        catch (DbException error) when (error.SqlState == "55P03") { throw new PayloadLockUnavailableException(); }
+                    }
+                    else if (!await connection.ExecuteScalarAsync<bool>(new CommandDefinition("SELECT pg_try_advisory_xact_lock(@Key)",
                         new { Key = key }, transaction, cancellationToken: ct))) throw new PayloadLockUnavailableException();
                 }
                 // SQLite's BEGIN IMMEDIATE owns the writer lock before clock sampling.
@@ -89,15 +102,21 @@ public abstract partial class RelationalWorkflowStateRepository
             {
                 await Lock(digest, ct);
                 if (rows.TryGetValue(digest, out var cached)) return cached;
+                var row = await Lookup(digest, ct);
+                rows[digest] = row;
+                return row;
+            }
+            async ValueTask<PayloadRecord?> Lookup(string digest, CancellationToken ct)
+            {
+                if (rows.TryGetValue(digest, out var cached)) return cached;
                 var stored = await connection.QuerySingleOrDefaultAsync<PayloadRow>(new CommandDefinition(
                     $"SELECT {C("MetadataJson", "metadata_json")} AS MetadataJson FROM {Table} WHERE {C("Digest", "digest")}=@Digest",
                     new { Digest = digest }, transaction, cancellationToken: ct));
-                if (stored is null) { rows[digest] = null; return null; }
+                if (stored is null) return null;
                 var row = JsonSerializer.Deserialize<PayloadRecord>(stored.MetadataJson)!;
                 row.Owners = (await connection.QueryAsync<PayloadOwner>(new CommandDefinition(
                     $"SELECT {C("OwnerKind", "owner_kind")} AS Kind, {C("OwnerId", "owner_id")} AS Id FROM {Refs} WHERE {C("Digest", "digest")}=@Digest",
                     new { Digest = digest }, transaction, cancellationToken: ct))).ToHashSet();
-                rows[digest] = row;
                 return row;
             }
             async ValueTask Write(PayloadRecord row, CancellationToken ct)
@@ -138,23 +157,30 @@ public abstract partial class RelationalWorkflowStateRepository
                     owner, transaction, cancellationToken: ct));
                 var owned = new List<PayloadRecord>();
                 foreach (var digest in digests.Order(StringComparer.Ordinal))
-                    if (await Read(digest, ct) is { } row) owned.Add(row);
+                    if (await Lookup(digest, ct) is { } row) owned.Add(row);
                 return owned;
             }
             async ValueTask<byte[]?> Body(PayloadRecord row, CancellationToken ct) =>
                 await connection.QuerySingleOrDefaultAsync<byte[]>(new CommandDefinition(
                     $"SELECT {C("Body", "body")} FROM {Table} WHERE {C("Digest", "digest")}=@Digest",
                     new { row.Reference.Digest }, transaction, cancellationToken: ct));
-            async ValueTask<IReadOnlyList<PayloadRecord>> Discover(CancellationToken ct)
+            async ValueTask<IReadOnlyList<PayloadRecord>> Discover(int limit, TimeSpan grace, CancellationToken ct)
             {
                 now = await repository.OutboxNowAsync(connection, transaction);
+                var touched = repository.PayloadSqlDialect switch
+                {
+                    PayloadDialect.SqlServer => "TRY_CONVERT(datetime2, JSON_VALUE(p.MetadataJson, '$.TouchedAtUtc')) <= @Cutoff",
+                    PayloadDialect.PostgreSql => "(p.metadata_json::jsonb->>'TouchedAtUtc')::timestamptz <= @Cutoff",
+                    _ => "julianday(json_extract(p.metadata_json, '$.TouchedAtUtc')) <= julianday(@Cutoff)"
+                };
                 var json = await connection.QueryAsync<string>(new CommandDefinition(
-                    $"SELECT p.{C("MetadataJson", "metadata_json")} FROM {Table} p {(SqlServer ? "WITH (READPAST, READCOMMITTEDLOCK)" : "")} WHERE NOT EXISTS " +
-                    $"(SELECT 1 FROM {Refs} r WHERE r.{C("Digest", "digest")}=p.{C("Digest", "digest")})",
-                    transaction: transaction, cancellationToken: ct));
+                    $"SELECT {(SqlServer ? "TOP (@Limit)" : "")} p.{C("MetadataJson", "metadata_json")} FROM {Table} p {(SqlServer ? "WITH (READPAST, READCOMMITTEDLOCK)" : "")} WHERE {touched} AND NOT EXISTS " +
+                    $"(SELECT 1 FROM {Refs} r WHERE r.{C("Digest", "digest")}=p.{C("Digest", "digest")}) " +
+                    $"ORDER BY p.{C("Digest", "digest")} {(SqlServer ? "" : "LIMIT @Limit")}",
+                    repository.WithTimes(new { Limit = limit }, ("Cutoff", now - grace)), transaction, cancellationToken: ct));
                 return json.Select(text => JsonSerializer.Deserialize<PayloadRecord>(text)!).ToArray();
             }
-            return new PayloadCatalog(Read, Write, Delete, () => now, Settings, transaction, Owned, Body, Discover);
+            return new PayloadCatalog(Read, Write, Delete, () => now, Settings, transaction, Owned, Body, Discover, Lookup);
         }
 
         private sealed class PayloadRow

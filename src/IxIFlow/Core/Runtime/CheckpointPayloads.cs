@@ -30,7 +30,10 @@ internal sealed class CheckpointPayloads(ExecutionLimits limits, PayloadBudget b
     private readonly Dictionary<JsonSerializerOptions, JsonSerializerOptions> _options = new(ReferenceEqualityComparer.Instance);
     public IEnumerable<StoredJson> Pending => _new.Values;
     public void Known(IEnumerable<PayloadReference> references)
-    { foreach (var reference in references) _published.Add(reference.Digest); }
+    {
+        _published.Clear();
+        foreach (var reference in references) _published.Add(reference.Digest);
+    }
     public void Acknowledged()
     {
         foreach (var value in _new.Values) { budget.Release(value.Bytes); _published.Add(value.Identity.Digest); }

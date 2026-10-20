@@ -12,8 +12,9 @@ public sealed record PayloadOwner(string Kind, string Id);
 /// Referencing writes put new bodies and acquire owner pins in their own transaction, using
 /// InTransactionAsync or Enlist. Failed transactions roll back bodies and pins together with the references.
 /// Pins include the dependency closure. Owners distinguish checkpoints, inbox events, children, retained
-/// results and readers; release only the retiring owner's pins. Lost acknowledgements retain committed pins.
-/// Readers keep pins until they hold a verified snapshot. Collection deletes an unpinned body past its grace
+/// results; release only the retiring owner's pins. Lost acknowledgements retain committed pins.
+/// Reads hold a transaction's digest lock until they have a verified independent snapshot, without durable reader owners.
+/// Collection deletes an unpinned body past its grace
 /// period atomically under the same digest lock used by puts and pins. Concurrent pins either prevent deletion
 /// or fail because the body is missing. Discovery is advisory; collection rechecks eligibility under the lock.
 /// </summary>
