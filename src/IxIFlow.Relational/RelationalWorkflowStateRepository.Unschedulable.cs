@@ -22,6 +22,7 @@ public abstract partial class RelationalWorkflowStateRepository
     private sealed class UnschedulableRow
     {
         public string InstanceId { get; set; } = "";
+        public Guid Incarnation { get; set; }
         public string WorkflowName { get; set; } = "";
         public int WorkflowVersion { get; set; }
         public DateTime RunnableAtUtc { get; set; }
@@ -73,7 +74,7 @@ public abstract partial class RelationalWorkflowStateRepository
                 IEnumerable<WorkflowDemand> demands = sets[row.DemandSetId];
                 if (row.PinnedHost != null) demands = demands.Append(new("host", row.PinnedHost,
                     row.PinExpiresAtUtc is { } expiry ? ReadTime(expiry) : null, row.PinInherit));
-                return new UnschedulableInstance(row.InstanceId, row.WorkflowName, row.WorkflowVersion,
+                return new UnschedulableInstance(row.InstanceId, row.Incarnation, row.WorkflowName, row.WorkflowVersion,
                     ReadTime(row.RunnableAtUtc), UnschedulableWork.Explain(demands, hosts, now));
             }).ToArray();
             return UnschedulableWork.Page(result, limit, now);

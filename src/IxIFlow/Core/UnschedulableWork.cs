@@ -4,7 +4,7 @@ namespace IxIFlow.Core;
 public sealed record UnschedulableCursor(DateTime RunnableAtUtc, string InstanceId);
 
 /// <summary>Due work that no live host can run. Demands describe absent capabilities or an incompatible combination.</summary>
-public sealed record UnschedulableInstance(string InstanceId, string WorkflowName, int WorkflowVersion,
+public sealed record UnschedulableInstance(string InstanceId, Guid Incarnation, string WorkflowName, int WorkflowVersion,
     DateTime RunnableAtUtc, IReadOnlyList<WorkflowDemand> UnmetDemands);
 
 /// <summary>A bounded diagnostic read, evaluated at StoreTimeUtc. Paging is a fresh read, not a frozen snapshot.</summary>

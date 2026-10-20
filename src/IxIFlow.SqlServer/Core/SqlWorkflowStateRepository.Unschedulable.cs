@@ -6,8 +6,9 @@ public sealed partial class SqlWorkflowStateRepository
         SELECT sets.DemandSetId, demand.DemandKey AS [Key], demand.DemandValue AS Value,
             demand.ExpiresAtUtc, demand.ValueExpiresAtUtc, demand.Inherit FROM dbo.IxIFlowDemandSets AS sets
         LEFT JOIN dbo.IxIFlowDemandSetRows AS demand ON demand.DemandSetId = sets.DemandSetId
-        WHERE EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances AS due WITH (FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
-                WHERE due.DemandSetId = sets.DemandSetId AND due.RunnableAtUtc <= @Now);
+        WHERE (SELECT TOP (1) 1 FROM dbo.IxIFlowWorkflowInstances AS due WITH (FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
+                WHERE due.DemandSetId = sets.DemandSetId AND due.RunnableAtUtc <= @Now
+                ORDER BY due.RunnableAtUtc, due.InstanceId) = 1;
         """;
 
     internal override string UnschedulableSql => """
@@ -45,7 +46,7 @@ public sealed partial class SqlWorkflowStateRepository
                 ORDER BY instance.RunnableAtUtc, instance.InstanceId) AS candidate),
         page AS (SELECT TOP (@Limit) InstanceId, MIN(RunnableAtUtc) AS RunnableAtUtc FROM candidates
             GROUP BY InstanceId ORDER BY MIN(RunnableAtUtc), InstanceId)
-        SELECT instance.InstanceId, instance.WorkflowName, JSON_VALUE(instance.StateJson, '$.WorkflowVersion') AS WorkflowVersion,
+        SELECT instance.InstanceId, instance.Incarnation, instance.WorkflowName, JSON_VALUE(instance.StateJson, '$.WorkflowVersion') AS WorkflowVersion,
             page.RunnableAtUtc, instance.DemandSetId, instance.PinnedHost, instance.PinExpiresAtUtc, instance.PinInherit
         FROM page JOIN dbo.IxIFlowWorkflowInstances AS instance WITH (FORCESEEK) ON instance.InstanceId = page.InstanceId
         ORDER BY page.RunnableAtUtc, page.InstanceId OPTION (LOOP JOIN, RECOMPILE);

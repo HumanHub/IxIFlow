@@ -7,8 +7,9 @@ public sealed partial class SqliteWorkflowStateRepository
             demand.demand_value AS Value, demand.expires_at_utc AS ExpiresAtUtc, demand.value_expires_at_utc AS ValueExpiresAtUtc, demand.inherit AS Inherit
         FROM ixiflow_demand_sets AS sets LEFT JOIN ixiflow_demand_set_rows AS demand
             ON demand.demand_set_id = sets.demand_set_id
-        WHERE EXISTS (SELECT 1 FROM ixiflow_workflow_instances AS due INDEXED BY ix_ixiflow_instances_set_runnable
-                WHERE due.demand_set_id = sets.demand_set_id AND due.runnable_at_utc <= @Now)
+        WHERE (SELECT 1 FROM ixiflow_workflow_instances AS due INDEXED BY ix_ixiflow_instances_set_runnable
+                WHERE due.demand_set_id = sets.demand_set_id AND due.runnable_at_utc <= @Now
+                ORDER BY due.runnable_at_utc, due.instance_id LIMIT 1) = 1
         """;
 
     internal override string UnschedulableSql => """
@@ -39,7 +40,7 @@ public sealed partial class SqliteWorkflowStateRepository
                   AND instance.pin_expires_at_utc > @Now
                   AND NOT EXISTS (SELECT 1 FROM pins WHERE pins.id = sets.id AND pins.value = instance.pinned_host)),
         page AS MATERIALIZED (SELECT * FROM candidates ORDER BY runnable_at_utc, instance_id LIMIT @Limit)
-        SELECT instance.instance_id AS InstanceId, instance.workflow_name AS WorkflowName,
+        SELECT instance.instance_id AS InstanceId, instance.incarnation AS Incarnation, instance.workflow_name AS WorkflowName,
             json_extract(instance.state_json, '$.WorkflowVersion') AS WorkflowVersion, page.runnable_at_utc AS RunnableAtUtc,
             instance.demand_set_id AS DemandSetId, instance.pinned_host AS PinnedHost,
             instance.pin_expires_at_utc AS PinExpiresAtUtc, instance.pin_inherit AS PinInherit

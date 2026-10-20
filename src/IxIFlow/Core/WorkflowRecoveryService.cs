@@ -46,13 +46,34 @@ internal sealed partial class WorkflowRecoveryService(
     // Lists the instances this host may claim now and reserves them; the task returned recovers them.
     private async Task<Task> ClaimAsync(CancellationToken cancellationToken)
     {
+        var handedOff = false;
+        try
+        {
+            var pass = await ReserveAsync(cancellationToken);
+            handedOff = true;
+            return CompletePassAsync(pass);
+        }
+        finally
+        {
+            // Discovery can fail before there is any reserved work to clean up.
+            if (!handedOff) _coordination.CompleteClaimPass();
+        }
+    }
+
+    private async Task CompletePassAsync(Task pass)
+    {
+        try { await pass; }
+        finally { _coordination.CompleteClaimPass(); }
+    }
+
+    private async Task<Task> ReserveAsync(CancellationToken cancellationToken)
+    {
         // A host claims only what it has slots for (D-10); the rest waits for the next pass or another host.
         int limit;
         using (var probe = scopes.CreateScope())
             limit = probe.ServiceProvider.GetService<WorkflowHost>()?.FreeSlots ?? _settings.Slots;
         if (limit == 0)
         {
-            _coordination.CompleteClaimPass();
             return Task.CompletedTask;
         }
         HashSet<string> skipped;
@@ -96,7 +117,6 @@ internal sealed partial class WorkflowRecoveryService(
             lock (_lock)
                 foreach (var instance in instances)
                     _recovering.Remove(instance.InstanceId);
-            _coordination.CompleteClaimPass();
         }
     }
 

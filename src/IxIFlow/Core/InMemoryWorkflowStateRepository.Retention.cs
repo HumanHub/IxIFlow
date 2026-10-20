@@ -71,6 +71,7 @@ public partial class InMemoryWorkflowStateRepository
                          .Select(set => set.Key).Order(StringComparer.Ordinal).Take(batchSize).ToArray())
             {
                 _demandSetMembers.Remove(setId);
+                _runnableSetMembers.Remove(setId);
                 _pinnedSetMembers.Remove(setId);
                 _demandSets.Remove(setId);
             }

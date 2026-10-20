@@ -299,15 +299,19 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly object _claimLock = new();
     private readonly Dictionary<string, WorkflowDemand[]> _demandSets = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HashSet<string>> _demandSetMembers = new(StringComparer.Ordinal);
-    private sealed record PinMember(DateTime Expiry, string Id, bool UpperBound = false);
-    private static readonly IComparer<PinMember> PinOrder = Comparer<PinMember>.Create((a, b) =>
+    // Ordered runnable times exclude dormant members and include future parks as store time advances.
+    // Every update is made under _claimLock alongside the instance transition.
+    private readonly Dictionary<string, SortedSet<TimedMember>> _runnableSetMembers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, DateTime> _runnableTimes = new(StringComparer.Ordinal);
+    private sealed record TimedMember(DateTime AtUtc, string Id, bool UpperBound = false);
+    private static readonly IComparer<TimedMember> TimedOrder = Comparer<TimedMember>.Create((a, b) =>
     {
-        var time = a.Expiry.CompareTo(b.Expiry);
+        var time = a.AtUtc.CompareTo(b.AtUtc);
         if (time != 0) return time;
         if (a.UpperBound || b.UpperBound) return a.UpperBound.CompareTo(b.UpperBound);
         return StringComparer.Ordinal.Compare(a.Id, b.Id);
     });
-    private readonly Dictionary<string, Dictionary<string, SortedSet<PinMember>>> _pinnedSetMembers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, SortedSet<TimedMember>>> _pinnedSetMembers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string DemandSetId, WorkflowDemand? Pin)> _placement = new(StringComparer.Ordinal);
 
     private void SavePlacement(string instanceId, DemandSet set)
@@ -316,6 +320,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         {
             _demandSets.Add(set.Id, set.Rows);
             _demandSetMembers.Add(set.Id, new(StringComparer.Ordinal));
+            _runnableSetMembers.Add(set.Id, new(TimedOrder));
         }
         _placement.Add(instanceId, (set.Id, set.Pin));
         _demandSetMembers[set.Id].Add(instanceId);
@@ -324,13 +329,33 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             if (!_pinnedSetMembers.TryGetValue(set.Id, out var pins))
                 _pinnedSetMembers.Add(set.Id, pins = new(StringComparer.Ordinal));
             if (!pins.TryGetValue(set.Pin.Value!, out var bucket))
-                pins.Add(set.Pin.Value!, bucket = new(PinOrder));
+                pins.Add(set.Pin.Value!, bucket = new(TimedOrder));
             bucket.Add(new(set.Pin.ExpiresAtUtc ?? DateTime.MaxValue, instanceId));
         }
     }
 
+    private bool HasDueMembers(string setId, DateTime now) =>
+        _runnableSetMembers[setId].Min is { } first && first.AtUtc <= now;
+
     private IEnumerable<KeyValuePair<string, WorkflowDemand[]>> DueDemandSets(DateTime now) =>
-        _demandSets.Where(set => _demandSetMembers[set.Key].Any(id => _instances[id].RunnableAtUtc <= now));
+        _demandSets.Where(set => HasDueMembers(set.Key, now));
+
+    private IEnumerable<string> DueMembers(string setId, DateTime now) =>
+        _runnableSetMembers[setId].GetViewBetween(new(DateTime.MinValue, ""), new(now, "", true))
+            .Select(member => member.Id);
+
+    private void SetRunnableAt(WorkflowInstance instance, DateTime? at)
+    {
+        var members = _runnableSetMembers[_placement[instance.InstanceId].DemandSetId];
+        if (_runnableTimes.Remove(instance.InstanceId, out var previous))
+            members.Remove(new(previous, instance.InstanceId));
+        instance.RunnableAtUtc = at;
+        if (at is { } time)
+        {
+            _runnableTimes.Add(instance.InstanceId, time);
+            members.Add(new(time, instance.InstanceId));
+        }
+    }
 
     private IEnumerable<WorkflowDemand> SavedDemands(string id)
     {
@@ -410,7 +435,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         // A request still to be taken up makes the instance runnable now, in the same step (C-01);
         // repeating one already unwound changes nothing.
         if (!_acknowledgedCancellations.Contains(instanceId))
-            instance.RunnableAtUtc = now;
+            SetRunnableAt(instance, now);
         return true;
     }
 
@@ -454,8 +479,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         lock (_claimLock)
         {
             var now = Now;
-            var matchingSets = DueDemandSets(now).Where(set => DemandMatching.Meets(set.Value, query, now));
-            var runnable = matchingSets.SelectMany(set => _demandSetMembers[set.Key]).Select(id => _instances[id])
+            var matchingSets = _demandSets.Where(set => DemandMatching.Meets(set.Value, query, now) && HasDueMembers(set.Key, now));
+            var runnable = matchingSets.SelectMany(set => DueMembers(set.Key, now)).Select(id => _instances[id])
                 .Where(instance => instance.RunnableAtUtc <= now &&
                     (_placement[instance.InstanceId].Pin is not { } pin || DemandMatching.Meets([pin], query, now)) &&
                     !(_leases.TryGetValue(instance.InstanceId, out var lease) && lease.ExpiresAtUtc > now))
@@ -697,6 +722,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
             if (createdDemands != null)
                 SavePlacement(commit.InstanceId, createdDemands);
+            SetRunnableAt(snapshot, snapshot.RunnableAtUtc);
             StripDemands(snapshot);
             _instances[commit.InstanceId] = snapshot;
             _summaries[commit.InstanceId] = InstanceSummary.Of(snapshot) with
@@ -723,6 +749,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             {
                 var child = created.Instance;
                 SavePlacement(child.InstanceId, created.Demands);
+                SetRunnableAt(child, child.RunnableAtUtc);
                 StripDemands(child);
                 _instances[child.InstanceId] = child;
                 _summaries[child.InstanceId] = InstanceSummary.Of(child);
@@ -836,7 +863,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         var madeRunnable = (instance.Status is WorkflowStatus.Running or WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) &&
             (!ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) || ExecutionCheckpoint.StopOf(instance) == null);
         if (madeRunnable)
-            instance.RunnableAtUtc = now;
+            SetRunnableAt(instance, now);
         var notice = madeRunnable && !wasClaimable ? Notice(workflowEvent.InstanceId, now) : null;
         notice = notice?.Claimable == true ? notice : null;
         _events[(workflowEvent.InstanceId, workflowEvent.EventId)] = (Stored(workflowEvent, sequence, now), hash, notice);
@@ -1028,7 +1055,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         if (_instances.TryGetValue(instanceId, out var deleted) && !WorkflowStoreRules.IsTerminal(deleted.Status) &&
             deleted is { ParentInstanceId: { } parent, ParentWaitId: { } wait })
             Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
-        _instances.TryRemove(instanceId, out _);
+        if (_instances.TryRemove(instanceId, out var removed))
+            SetRunnableAt(removed, null);
         if (_placement.Remove(instanceId, out var placement))
         {
             _demandSetMembers[placement.DemandSetId].Remove(instanceId);
