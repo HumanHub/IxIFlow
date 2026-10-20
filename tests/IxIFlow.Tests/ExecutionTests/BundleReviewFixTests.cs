@@ -63,7 +63,7 @@ public sealed class BundleReviewFixTests
         await using var content = (await store.OpenAsync(version.ArtifactDigest!.Value))!;
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => WorkflowBundleArchive.ReadAsync(
             new NonSeekable(content), version.ArtifactDigest.Value, limits: limits));
-        Assert.Equal(WorkflowErrorKind.ArtifactMismatch, error.Kind);
+        Assert.Equal(WorkflowErrorKind.ResourceExhausted, error.Kind);
     }
 
     [Fact]
@@ -136,7 +136,14 @@ public sealed class BundleReviewFixTests
         var loading = catalog.ResolveWorkflowDefinitionAsync(version.Name, 1, cancel.Token);
         await artifacts.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         if (!timeout) cancel.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => loading);
+        if (timeout)
+        {
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => loading);
+            Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, error.Kind);
+            Assert.True(error.IsInterruption);
+            Assert.False(cancel.IsCancellationRequested);
+        }
+        else await Assert.ThrowsAnyAsync<OperationCanceledException>(() => loading);
         await artifacts.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
         artifacts.Release.TrySetResult();
         using var retry = await catalog.ResolveWorkflowDefinitionAsync(version.Name, 1);

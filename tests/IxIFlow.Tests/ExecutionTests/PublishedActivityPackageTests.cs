@@ -289,9 +289,9 @@ public sealed class PublishedActivityPackageTests
         var publisher = new WorkflowPublisher(store, store);
         var native = ActivityPackageFixture.Package("fixture.native", "1.0.0", new()
         {
-            ["runtimes/win/native/fixture.dll"] = [1],
-            ["runtimes/linux-x64/native/libfixture.so"] = [2],
-            ["runtimes/osx-arm64/native/libfixture.dylib"] = [3]
+            ["runtimes/win/native/fixture.dll"] = ActivityPackageFixture.NativeLibraryBytes(),
+            ["runtimes/linux-x64/native/libfixture.so"] = ActivityPackageFixture.NativeLibraryBytes(),
+            ["runtimes/osx-arm64/native/libfixture.dylib"] = ActivityPackageFixture.NativeLibraryBytes()
         });
         await publisher.UploadPackageAsync(new MemoryStream(native));
         var version = await ActivityPackageFixture.PublishAsync(store, yaml: ActivityPackageFixture.Yaml(extraImport: "fixture.native@1.0.0"));
@@ -313,7 +313,7 @@ public sealed class PublishedActivityPackageTests
         Assert.NotNull(definition.Definition);
         var nativeFiles = Directory.GetFiles(Path.Combine(cache, "native"), "*", SearchOption.AllDirectories);
         Assert.Single(nativeFiles);
-        Assert.Equal(new byte[] { rid.StartsWith("win", StringComparison.Ordinal) ? (byte)1 : rid.StartsWith("linux", StringComparison.Ordinal) ? (byte)2 : (byte)3 }, await File.ReadAllBytesAsync(nativeFiles[0]));
+        Assert.Equal(ActivityPackageFixture.NativeLibraryBytes(), await File.ReadAllBytesAsync(nativeFiles[0]));
 
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.remote", "1.0.0", new()
         { ["runtimes/test-other-platform/native/remote.bin"] = [4] })));

@@ -19,6 +19,9 @@ public sealed class WorkflowPublisherOptions
     /// <summary>Standard NuGet.Config. Feed credentials remain owned by NuGet and are never persisted in the catalog.</summary>
     public string? NuGetConfigPath { get; init; }
     public WorkflowBundleReadLimits PackageReadLimits { get; init; } = new();
+    public int MaxPackageCandidates { get; init; } = 2048;
+    public int MaxResolvedPackages { get; init; } = 256;
+    public long MaxPackageResolutionBytes { get; init; } = 256 * 1024 * 1024;
     public TimeSpan BuildTimeout { get; init; } = TimeSpan.FromSeconds(30);
     public WorkflowSourceOptions SourceOptions { get; init; } = new();
 }
@@ -88,7 +91,10 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             diagnostics.AddRange(compilation.Diagnostics);
             if (!compilation.Success) return new(null, diagnostics);
             stage = WorkflowPublishStage.Test;
-            var tested = await WorkflowBuild.RunAsync(compilation, packages.RuntimeAssemblies, _options.BuildTimeout, _logger, cancellationToken);
+            var (entries, shared) = BundleAssemblies(compilation.Assembly, references.Paths, packages);
+            var implementations = packages.RuntimeAssemblies.ToDictionary();
+            foreach (var bytes in entries.Values) implementations.TryAdd(ResolvedWorkflowPackages.AssemblyIdentity(bytes).Name!, bytes);
+            var tested = await WorkflowBuild.RunAsync(compilation, implementations, _options.BuildTimeout, _logger, cancellationToken);
             if (tested.Error != null)
             {
                 location = tested.Line > 1 ? FindBuildLocation(document, tested.Line, tested.Column) : document.Workflow.Location;
@@ -100,7 +106,6 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 return Failure("PUB005", $"Declared identity '{tested.Name}' v{tested.Version} does not match draft '{draft.Name}' v{draft.Version}");
             }
             stage = WorkflowPublishStage.Publish;
-            var (entries, shared) = BundleAssemblies(compilation.Assembly, references.Paths, packages);
             var manifest = new WorkflowBundleManifest(1, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
                 typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
                 tested.CombinerSignature, WorkflowCompilation.Settings,

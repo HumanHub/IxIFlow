@@ -205,11 +205,17 @@ public static class WorkflowCompilation
         WithDefinition(assemblyBytes, pdbBytes, static definition => definition);
 
     internal static T WithDefinition<T>(byte[] assemblyBytes, byte[] pdbBytes, Func<WorkflowDefinition, T> inspect)
-        => WithDefinition(assemblyBytes, pdbBytes, new Dictionary<string, byte[]>(), inspect);
-
-    internal static T WithDefinition<T>(byte[] assemblyBytes, byte[] pdbBytes, IReadOnlyDictionary<string, byte[]> dependencies, Func<WorkflowDefinition, T> inspect)
     {
-        var context = new ScratchContext(dependencies);
+        // In-process compilation uses the explicitly declared host reference profile.
+        var references = ReferencePaths().ToDictionary(path => AssemblyName.GetAssemblyName(path).Name!, StringComparer.OrdinalIgnoreCase);
+        return InspectDefinition(new CompilationContext(references), assemblyBytes, pdbBytes, inspect);
+    }
+
+    internal static T WithDefinition<T>(byte[] assemblyBytes, byte[] pdbBytes, IReadOnlyDictionary<string, byte[]> dependencies, Func<WorkflowDefinition, T> inspect) =>
+        InspectDefinition(new ScratchContext(dependencies), assemblyBytes, pdbBytes, inspect);
+
+    private static T InspectDefinition<T>(AssemblyLoadContext context, byte[] assemblyBytes, byte[] pdbBytes, Func<WorkflowDefinition, T> inspect)
+    {
         try
         {
             using var assemblyStream = new MemoryStream(assemblyBytes);
@@ -224,10 +230,19 @@ public static class WorkflowCompilation
         finally { context.Unload(); }
     }
 
+    private sealed class CompilationContext(IReadOnlyDictionary<string, string> references) : AssemblyLoadContext(isCollectible: true)
+    {
+        protected override Assembly Load(AssemblyName name) => references.TryGetValue(name.Name!, out var path)
+            ? Default.LoadFromAssemblyPath(path) : throw new FileNotFoundException($"Compilation dependency '{name}' is outside the reference profile");
+    }
+
     private sealed class ScratchContext(IReadOnlyDictionary<string, byte[]> dependencies) : AssemblyLoadContext(isCollectible: true)
     {
-        protected override Assembly? Load(AssemblyName name) => dependencies.TryGetValue(name.Name!, out var bytes)
-            ? LoadFromStream(new MemoryStream(bytes, writable: false)) : Default.Assemblies.FirstOrDefault(assembly =>
-                AssemblyName.ReferenceMatchesDefinition(name, assembly.GetName()));
+        protected override Assembly Load(AssemblyName name)
+        {
+            if (dependencies.TryGetValue(name.Name!, out var bytes)) return LoadFromStream(new MemoryStream(bytes, writable: false));
+            if (WorkflowSharedAssemblies.IsShared(name)) return Default.LoadFromAssemblyName(name);
+            throw new FileNotFoundException($"Private publish dependency '{name}' has no runtime implementation");
+        }
     }
 }
