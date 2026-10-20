@@ -175,6 +175,7 @@ public sealed class DefinitionValidationTests
     // Models a custom registry that returns definitions without invoking the engine validator.
     private sealed class UncheckedRegistry(params WorkflowDefinition[] definitions) : IWorkflowCatalog
     {
+        public long DefinitionRevision => 0; // This registry's definition set is immutable.
         private readonly WorkflowCatalog _catalog = UncheckedCatalog(definitions);
         private static WorkflowCatalog UncheckedCatalog(WorkflowDefinition[] definitions)
         {

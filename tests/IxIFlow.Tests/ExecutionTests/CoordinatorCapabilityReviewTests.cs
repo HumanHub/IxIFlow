@@ -12,6 +12,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "recovery")]
 public sealed class CoordinatorCapabilityReviewTests : IClassFixture<SqliteTestDatabase<CoordinatorCapabilityReviewTests>>
 {
     [Theory]
@@ -89,17 +90,28 @@ public sealed class CoordinatorCapabilityReviewTests : IClassFixture<SqliteTestD
                 Assert.Equal(1, definitions.Count("GetWorkflowDefinitionsAsync"));
                 // Each start still reads the durable version state for admission; scans and snapshots add none.
                 Assert.Equal(5, calls.Count("GetWorkflowVersionAsync"));
+                // A second host has also cached its capabilities before the shared catalog changes.
+                await provider.GetRequiredService<HostSettings>().GetCapabilitiesAsync(catalog);
+                var registered = Workflow.Create<Data>("RegisteredAfterHeartbeat").Step<Noop>().Build();
+                await catalog.RegisterWorkflowAsync(registered);
+                var key = $"workflow:{registered.Name}@{registered.Version}";
+                var registeredHash = new WorkflowScopeCatalog(registered).StructureHash;
+                Assert.Equal(registeredHash, (await host.GetRequiredService<HostSettings>()
+                    .GetCapabilitiesAsync(countedCatalog)).GetValueOrDefault(key));
+                Assert.Equal(registeredHash, (await provider.GetRequiredService<HostSettings>()
+                    .GetCapabilitiesAsync(catalog)).GetValueOrDefault(key));
+                Assert.Equal(2, definitions.Count("GetWorkflowDefinitionsAsync"));
                 var added = Workflow.Create<Data>("AddedAfterHeartbeat").Step<Noop>().Build();
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
                 Assert.Equal(WorkflowExecutionStatus.Success, (await host.GetRequiredService<IWorkflowClient>()
                     .RunAsync(added, new Data(), cancellationToken: timeout.Token)).Status);
-                Assert.Equal(1, definitions.Count("GetWorkflowDefinitionsAsync"));
+                Assert.Equal(3, definitions.Count("GetWorkflowDefinitionsAsync"));
                 var before = calls.Count("HeartbeatAsync");
                 time.Advance(MemberRegistry.DefaultHeartbeatInterval);
                 var until = DateTime.UtcNow.AddSeconds(5);
                 while (calls.Count("HeartbeatAsync") == before && DateTime.UtcNow < until) await Task.Delay(10);
                 Assert.True(calls.Count("HeartbeatAsync") > before);
-                Assert.Equal(2, definitions.Count("GetWorkflowDefinitionsAsync"));
+                Assert.Equal(4, definitions.Count("GetWorkflowDefinitionsAsync"));
             }
             finally { await heartbeat.StopAsync(CancellationToken.None); }
         }

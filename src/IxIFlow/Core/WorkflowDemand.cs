@@ -10,6 +10,7 @@ namespace IxIFlow.Core;
 public sealed record WorkflowDemand(string Key, string? Value = null, DateTime? ExpiresAtUtc = null, bool Inherit = false)
 {
     /// <summary>Expiry of the value restriction when it ends before the key-presence constraint.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTime? ValueExpiresAtUtc { get; init; }
     [JsonIgnore] internal LambdaExpression? Expression { get; init; }
     [JsonIgnore] internal Func<object, string?>? Evaluate { get; init; }

@@ -43,6 +43,8 @@ public interface IWorkflowCatalogStore
 /// <summary>Persistent version catalog and the code definitions this host can execute.</summary>
 public interface IWorkflowCatalog : IWorkflowCatalogStore, IWorkflowDefinitionSource
 {
+    /// <summary>Monotonically increases after a new local executable definition is registered.</summary>
+    long DefinitionRevision { get; }
     Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync();
     Task RegisterWorkflowAsync(WorkflowDefinition definition);
     Task<string?> GetWorkflowStructureHashAsync(string name, int version);
@@ -56,7 +58,10 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
     private readonly ConcurrentDictionary<(string, int), WorkflowDefinition> _definitions = new();
     private readonly ConcurrentDictionary<(string, int), WorkflowVersion> _registrations = new();
     private readonly SemaphoreSlim _registrationLock = new(1, 1);
+    private long _definitionRevision;
     private readonly IArtifactStore? _artifacts;
+
+    public long DefinitionRevision => Interlocked.Read(ref _definitionRevision);
 
     public WorkflowCatalog() : this(new InMemoryWorkflowStateRepository()) { }
     public WorkflowCatalog(IEnumerable<WorkflowDefinition> definitions)
@@ -92,6 +97,7 @@ public sealed class WorkflowCatalog : IWorkflowCatalog
                 await _store.RegisterWorkflowVersionAsync(registration, _artifacts);
                 _registrations.TryAdd(key, registration);
                 _definitions.TryAdd(key, definition);
+                Interlocked.Increment(ref _definitionRevision);
             }
         }
         finally { _registrationLock.Release(); }

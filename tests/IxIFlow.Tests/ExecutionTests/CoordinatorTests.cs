@@ -10,6 +10,7 @@ using IxIFlow.Coordinator;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
+using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Time.Testing;
@@ -160,6 +161,65 @@ public sealed class CoordinatorTests
         server.Matcher.Notify(Notice(id, (await inner.GetWorkflowDemandsAsync(id)).ToArray()));
         await EventuallyAsync(async () => (await inner.GetWorkflowInstanceSummaryAsync(id))?.Status == WorkflowStatus.Completed);
         Assert.Equal(time.Start, time.GetUtcNow());
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task DefinitionsRegisteredAfterConnectingSupportRecoveryChildrenAndCancellation(int coordinators)
+    {
+        var time = new FakeTimeProvider();
+        var store = new InMemoryWorkflowStateRepository(time);
+        var catalog = new WorkflowCatalog(store);
+        await using var server = await Server.StartAsync(time, store);
+        await using var otherServer = coordinators == 2 ? await Server.StartAsync(time, store) : null;
+        await using var first = Services(time, store, true, server.Endpoint, catalog: catalog);
+        await using var second = Services(time, store, true, server.Endpoint, catalog: catalog);
+        var firstLinks = first.GetRequiredService<CoordinatorLinks>();
+        var secondLinks = second.GetRequiredService<CoordinatorLinks>();
+        await firstLinks.StartAsync(CancellationToken.None);
+        await secondLinks.StartAsync(CancellationToken.None);
+        try
+        {
+            await EventuallyAsync(() => firstLinks.ConnectedCount == coordinators && secondLinks.ConnectedCount == coordinators);
+            // As in the distributed conformance fixture, links run but no host heartbeat refreshes the catalog.
+            var child = Workflow.Create<Data>("LateChild").Step<Noop>().WaitFor<Approval>("approval").Build();
+            var parent = Workflow.Create<Data>("LateParent").Step<Noop>().Invoke<Data>("LateChild", 1).Build();
+            await catalog.RegisterWorkflowAsync(child);
+            await catalog.RegisterWorkflowAsync(parent);
+            var (interrupted, checkpoint, scopes) = WorkflowInstances.NewInstance(child, new Data(), new(), time.GetUtcNow().UtcDateTime);
+            ExecutionCheckpointWriter.Prepare(interrupted, checkpoint, new Data(), scopes, time.GetUtcNow().UtcDateTime);
+            await store.SeedAsync(interrupted, TimeSpan.Zero);
+            Assert.Equal(WorkflowExecutionStatus.Suspended, (await second.GetRequiredService<IWorkflowClient>()
+                .RecoverAsync(interrupted.InstanceId)).Status);
+
+            var client = first.GetRequiredService<IWorkflowClient>();
+            var remote = second.GetRequiredService<IWorkflowClient>();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var started = await client.RunAsync(parent, new Data(), cancellationToken: timeout.Token);
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            var childId = ExecutionCheckpoint.Read((await store.GetWorkflowInstanceAsync(started.InstanceId))!.ExecutionStateJson)
+                .Continuations.Single(item => item.PendingActivity?.ChildWorkflowId != null).PendingActivity!.ChildWorkflowId!;
+            await EventuallyAsync(async () => (await store.GetWorkflowInstanceSummaryAsync(childId))?.Status == WorkflowStatus.Suspended);
+            Assert.Equal(WorkflowExecutionStatus.Success, (await remote.ResumeAsync(childId, "approval", new Approval(), timeout.Token)).Status);
+            Assert.Equal(WorkflowExecutionStatus.Success, (await client.AwaitAsync(started.InstanceId,
+                WorkflowAwaitCondition.Finished, timeout.Token)).Status);
+
+            var cancelled = await client.RunAsync(parent, new Data(), cancellationToken: timeout.Token);
+            var cancelledChild = ExecutionCheckpoint.Read((await store.GetWorkflowInstanceAsync(cancelled.InstanceId))!.ExecutionStateJson)
+                .Continuations.Single(item => item.PendingActivity?.ChildWorkflowId != null).PendingActivity!.ChildWorkflowId!;
+            await EventuallyAsync(async () => (await store.GetWorkflowInstanceSummaryAsync(cancelledChild))?.Status == WorkflowStatus.Suspended);
+            await remote.CancelAsync(cancelled.InstanceId, new CancellationReason { ReasonCode = "operator" }, timeout.Token);
+            Assert.Equal(WorkflowExecutionStatus.Cancelled, (await remote.AwaitAsync(cancelled.InstanceId,
+                WorkflowAwaitCondition.Finished, timeout.Token)).Status);
+            Assert.Equal(WorkflowStatus.Cancelled, (await store.GetWorkflowInstanceSummaryAsync(cancelledChild))!.Status);
+            Assert.Equal(time.Start, time.GetUtcNow());
+        }
+        finally
+        {
+            await firstLinks.StopAsync(CancellationToken.None);
+            await secondLinks.StopAsync(CancellationToken.None);
+        }
     }
 
     [Fact]
@@ -506,13 +566,15 @@ public sealed class CoordinatorTests
         .Demand("region", "eu").Step<Noop>().WaitFor<Approval>("approval").Step<Noop>().Build();
     private static ServiceProvider Services(TimeProvider time, IWorkflowStateRepository store, bool eligible,
         Uri? endpoint = null, IRunnableWakeSource? source = null, bool discover = false,
-        Action<CoordinatorClientOptions>? configure = null, int slots = HostSettings.DefaultSlots)
+        Action<CoordinatorClientOptions>? configure = null, int slots = HostSettings.DefaultSlots,
+        IWorkflowCatalog? catalog = null)
     {
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton(time); services.AddSingleton(store);
         if (source != null) services.AddSingleton(source);
         var builder = services.AddIxIFlow(o =>
         { o.PollInterval = TimeSpan.FromMinutes(1); o.Slots = slots; o.Capabilities["region"] = eligible ? "eu" : "us"; });
+        if (catalog != null) services.AddSingleton(catalog);
         if (endpoint != null || discover) builder.UseCoordinators(o => { o.AllowInsecure = true; if (endpoint != null) o.Coordinators.Add(endpoint); configure?.Invoke(o); });
         services.AddTransient<Noop>();
         var provider = services.BuildServiceProvider();

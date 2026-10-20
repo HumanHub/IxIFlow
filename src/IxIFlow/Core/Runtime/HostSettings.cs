@@ -5,6 +5,8 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
 {
     private readonly SemaphoreSlim _capabilityGate = new(1, 1);
     private IReadOnlyDictionary<string, string>? _capabilitySnapshot;
+    private IWorkflowCatalog? _capabilityCatalog;
+    private long _definitionRevision;
 
     internal Task<IReadOnlyDictionary<string, string>> GetCapabilitiesAsync(IWorkflowCatalog catalog) =>
         CapabilitiesAsync(catalog, refresh: false);
@@ -12,28 +14,22 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
     internal Task<IReadOnlyDictionary<string, string>> RefreshCapabilitiesAsync(IWorkflowCatalog catalog) =>
         CapabilitiesAsync(catalog, refresh: true);
 
-    internal async Task RegisteredWorkflowAsync(WorkflowDefinition definition, string structureHash)
-    {
-        await _capabilityGate.WaitAsync();
-        try
-        {
-            if (_capabilitySnapshot == null) return;
-            var key = $"workflow:{definition.Name}@{definition.Version}";
-            if (_capabilitySnapshot.GetValueOrDefault(key) == structureHash) return;
-            var updated = new Dictionary<string, string>(_capabilitySnapshot, StringComparer.Ordinal) { [key] = structureHash };
-            _capabilitySnapshot = MemberRegistry.SnapshotCapabilities(updated);
-        }
-        finally { _capabilityGate.Release(); }
-    }
-
     private async Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync(IWorkflowCatalog catalog, bool refresh)
     {
         await _capabilityGate.WaitAsync();
         try
         {
-            if (refresh || _capabilitySnapshot == null)
+            // Read the revision before enumerating. A registration racing the enumeration then
+            // invalidates this snapshot on the next lookup instead of being cached as already seen.
+            var revision = catalog.DefinitionRevision;
+            if (refresh || _capabilitySnapshot == null || !ReferenceEquals(_capabilityCatalog, catalog) ||
+                _definitionRevision != revision)
+            {
                 _capabilitySnapshot = MemberRegistry.SnapshotCapabilities(
                     await WorkflowHeartbeatService.CapabilitiesAsync(catalog, this));
+                _capabilityCatalog = catalog;
+                _definitionRevision = revision;
+            }
             return _capabilitySnapshot;
         }
         finally { _capabilityGate.Release(); }
