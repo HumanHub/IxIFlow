@@ -232,7 +232,11 @@ public sealed class WorkflowPublishingReviewRegressionTests
     }
     public sealed class ThrowingDefaultAttribute() : DefaultValueAttribute(Fail())
     {
-        public static string Message = "";
+        public static string Message
+        {
+            get => (string?)AppDomain.CurrentDomain.GetData(typeof(ThrowingDefaultAttribute).FullName!) ?? "";
+            set => AppDomain.CurrentDomain.SetData(typeof(ThrowingDefaultAttribute).FullName!, value);
+        }
         private static object Fail() => throw new InvalidOperationException(Message);
     }
 
@@ -247,7 +251,8 @@ public sealed class WorkflowPublishingReviewRegressionTests
             }
             """);
         Assert.True(compilation.Success, string.Join("; ", compilation.Diagnostics));
-        var result = await WorkflowBuild.RunAsync(compilation, TimeSpan.FromSeconds(10),
+        var fixture = typeof(BrokenMessageException).Assembly;
+        var result = await WorkflowBuild.RunAsync(compilation, new Dictionary<string, byte[]> { [fixture.GetName().Name!] = File.ReadAllBytes(fixture.Location) }, TimeSpan.FromSeconds(10),
             Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, CancellationToken.None);
         Assert.Equal("Build() failed while inspecting its result", result.Error);
     }
@@ -320,6 +325,10 @@ public sealed class WorkflowPublishingReviewRegressionTests
     {
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => inner.RegisterPackageAsync(package, artifacts);
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => inner.GetPackagesAsync(id);
+        public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => inner.GetPackageAsync(id, version);
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => inner.GetPackagePageAsync(id, afterVersion, limit);
         public async Task<WorkflowDraft?> GetDefinitionAsync(string name, int version)
         {
             Entered.TrySetResult();

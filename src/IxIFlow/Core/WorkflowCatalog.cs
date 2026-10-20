@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using IxIFlow.Core.Runtime;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core;
 
@@ -27,6 +28,10 @@ public sealed record WorkflowDraftId(string Name, int Version, long Revision);
 /// <summary>Durable catalog operations, shared with the instance commit protocol.</summary>
 public interface IWorkflowCatalogStore
 {
+    Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts);
+    Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null);
+    Task<WorkflowPackage?> GetPackageAsync(string id, string version);
+    Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit);
     Task<WorkflowDraft?> GetDefinitionAsync(string name, int version);
     Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision);
     Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null);
@@ -70,7 +75,7 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
         : this(new InMemoryWorkflowStateRepository(), definitions) { }
 
     public WorkflowCatalog(IWorkflowCatalogStore store, IEnumerable<WorkflowDefinition>? definitions = null,
-        IArtifactStore? artifacts = null, WorkflowBundleOptions? bundles = null)
+        IArtifactStore? artifacts = null, WorkflowBundleOptions? bundles = null, ILogger<WorkflowCatalog>? logger = null)
     {
         _store = store;
         _artifacts = artifacts;
@@ -81,7 +86,7 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
             bundles.ReadLimits.Validate();
             ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(bundles.FetchTimeout, TimeSpan.Zero);
             ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(bundles.CacheLockTimeout, TimeSpan.Zero);
-            _bundles = new(artifacts ?? throw new ArgumentException("Bundle loading requires an artifact store"), bundles);
+            _bundles = new(artifacts ?? throw new ArgumentException("Bundle loading requires an artifact store"), bundles, logger);
         }
         foreach (var definition in definitions ?? [])
             RegisterWorkflowAsync(definition).GetAwaiter().GetResult();
@@ -154,6 +159,10 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
     public Task RetireWorkflowVersionAsync(string name, int version) =>
         SetWorkflowVersionStateAsync(name, version, WorkflowVersionState.Retired);
     public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _store.GetDefinitionAsync(name, version);
+    public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => _store.RegisterPackageAsync(package, artifacts);
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _store.GetPackagesAsync(id);
+    public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _store.GetPackageAsync(id, version);
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _store.GetPackagePageAsync(id, afterVersion, limit);
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
         _store.SaveDefinitionAsync(definition, expectedRevision);
     public async Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null)
@@ -289,6 +298,56 @@ internal static class WorkflowCatalogRules
     }
 
     public static IReadOnlySet<ArtifactDigest> ArtifactReferences(IEnumerable<WorkflowVersion> rows) =>
-        rows.SelectMany(row => (row.ArtifactReferences ?? []).Concat(row.ArtifactDigest is { } digest ? [digest] : []))
+        rows.SelectMany(row => (row.ArtifactReferences ?? []).Concat(row.ArtifactDigest is { } digest ? [digest] : [])
+            .Concat(row.ManifestJson == null ? [] : System.Text.Json.JsonSerializer.Deserialize<WorkflowBundleManifest>(row.ManifestJson)!
+                .ActivityPackages.Select(package => package.Digest)))
             .ToHashSet();
+
+    internal sealed record OrphanPin(IReadOnlyList<ArtifactDigest> Packages, string? Error = null);
+
+    internal static async Task<IReadOnlyDictionary<ArtifactDigest, OrphanPin>> ReadOrphanPinsAsync(IReadOnlyList<WorkflowVersion> versions,
+        IReadOnlyList<ArtifactDigest> instancePins, IArtifactStore artifacts, CancellationToken token)
+    {
+        var catalogPins = versions.Where(row => row.ArtifactDigest != null).Select(row => row.ArtifactDigest!.Value).ToHashSet();
+        var result = new Dictionary<ArtifactDigest, OrphanPin>();
+        foreach (var digest in instancePins.Distinct().Where(pin => !catalogPins.Contains(pin)))
+        {
+            try
+            {
+                await using var archive = await artifacts.OpenAsync(digest, token)
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Artifact unavailable");
+                var bundle = await WorkflowBundleArchive.ReadAsync(archive, digest, token);
+                result.Add(digest, new(bundle.Manifest.ActivityPackages.Select(package => package.Digest).ToArray()));
+            }
+            catch (Exception error) when (error is not (OperationCanceledException or OutOfMemoryException))
+            {
+                result.Add(digest, new([], error is WorkflowEngineException engine ? engine.Kind.ToString() : "Unreadable"));
+            }
+        }
+        return result;
+    }
+
+    // Called under the catalog lock after re-reading versions and pins. A newly orphaned pin
+    // asks the caller to retry preparation outside the lock; no artifact I/O happens here.
+    internal static IReadOnlySet<ArtifactDigest>? RetentionReferences(IReadOnlyList<WorkflowVersion> versions,
+        IReadOnlyList<ArtifactDigest> instancePins, IReadOnlyList<WorkflowPackage> packages,
+        IReadOnlyDictionary<ArtifactDigest, OrphanPin> prepared)
+    {
+        var references = ArtifactReferences(versions).Concat(instancePins).ToHashSet();
+        var catalogPins = versions.Where(row => row.ArtifactDigest != null).Select(row => row.ArtifactDigest!.Value).ToHashSet();
+        foreach (var digest in instancePins.Distinct().Where(pin => !catalogPins.Contains(pin)))
+        {
+            if (!prepared.TryGetValue(digest, out var pin)) return null;
+            references.UnionWith(pin.Packages);
+            if (pin.Error != null)
+            {
+                // Unknown dependencies cannot be collected safely. Preserve package identities'
+                // content, but still collect unrelated abandoned bundles. Do not stop the pass.
+                references.UnionWith(packages.Select(package => package.Digest));
+                Runtime.Telemetry.ArtifactRetentionUnreadablePins.Add(1, new KeyValuePair<string, object?>("reason", pin.Error));
+                System.Diagnostics.Trace.TraceWarning($"Artifact retention: unreadable orphan instance pin {digest} ({pin.Error}); package content retained conservatively");
+            }
+        }
+        return references;
+    }
 }

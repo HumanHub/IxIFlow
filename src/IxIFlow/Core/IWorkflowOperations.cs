@@ -125,7 +125,7 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
 
     public async Task<InstanceSummary?> GetAsync(string instanceId, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         return (await SearchAsync(new InstanceQuery(InstanceId: instanceId, Limit: 1), cancellationToken)).Items.SingleOrDefault();
     }
 
@@ -143,7 +143,7 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         cancellationToken.ThrowIfCancellationRequested();
         return host.ReadAsync(client => client.GetTraceAsync(instanceId, afterSequence, limit, cancellationToken));
     }
@@ -151,7 +151,7 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
     public async Task<InstanceSummary> TerminateAsync(string instanceId, string reasonCode, string? description = null,
         string? actor = null, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(reasonCode);
         cancellationToken.ThrowIfCancellationRequested();
         var incarnation = await IncarnationAsync(instanceId, null);

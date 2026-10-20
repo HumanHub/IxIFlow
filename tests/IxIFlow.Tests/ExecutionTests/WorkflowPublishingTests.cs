@@ -262,9 +262,27 @@ public sealed class WorkflowPublishingTests
 
     public sealed class HangingDefaultAttribute : DefaultValueAttribute
     {
-        public static readonly TaskCompletionSource<(Thread Thread, AssemblyLoadContext Context)> Entered =
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public static bool Unloading;
+        // The publishing scratch context owns its own copy of this fixture assembly.
+        // Communicate through AppDomain data, whose tuple types all belong to the shared runtime.
+        private static string ProbeKey => typeof(HangingDefaultAttribute).FullName!;
+        public static TaskCompletionSource<(Thread Thread, AssemblyLoadContext Context)> Entered
+        {
+            get
+            {
+                lock (AppDomain.CurrentDomain)
+                {
+                    if (AppDomain.CurrentDomain.GetData(ProbeKey) is TaskCompletionSource<(Thread, AssemblyLoadContext)> probe) return probe;
+                    var created = new TaskCompletionSource<(Thread, AssemblyLoadContext)>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    AppDomain.CurrentDomain.SetData(ProbeKey, created);
+                    return created;
+                }
+            }
+        }
+        public static bool Unloading
+        {
+            get => AppDomain.CurrentDomain.GetData(ProbeKey + ".Unloading") is true;
+            set => AppDomain.CurrentDomain.SetData(ProbeKey + ".Unloading", value);
+        }
 
         public HangingDefaultAttribute() : base(0)
         {

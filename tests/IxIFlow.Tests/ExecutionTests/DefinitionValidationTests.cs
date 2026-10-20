@@ -191,6 +191,10 @@ public sealed class DefinitionValidationTests
                     new WorkflowScopeCatalog(definition).StructureHash)).GetAwaiter().GetResult();
             return new WorkflowCatalog(store);
         }
+        public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => _catalog.RegisterPackageAsync(package, artifacts);
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _catalog.GetPackagesAsync(id);
+        public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _catalog.GetPackageAsync(id, version);
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _catalog.GetPackagePageAsync(id, afterVersion, limit);
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _catalog.GetDefinitionAsync(name, version);
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) => _catalog.SaveDefinitionAsync(definition, expectedRevision);
         public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) => _catalog.RegisterWorkflowVersionAsync(version, artifacts);

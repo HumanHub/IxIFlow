@@ -20,7 +20,7 @@ public abstract partial class RelationalWorkflowStateRepository
 
     public async Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(command);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.Commit, async () =>
@@ -60,6 +60,7 @@ public abstract partial class RelationalWorkflowStateRepository
         bool includeGeneration)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
+        InstanceIds.ValidateAll(instanceIds);
         var states = new Dictionary<string, WorkflowDebugState>(StringComparer.Ordinal);
         var cancellations = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
         if (instanceIds.Count == 0) return new(cancellations, states);
