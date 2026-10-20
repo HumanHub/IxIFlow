@@ -74,4 +74,4 @@ Mapped inputs are copies. Output mappings propagate results. `WorkflowData` and 
 
 Implement `IRequestActivity<TReply>` when sending a request that expects an engine reply; `context.Reply` supplies its token/address. Implement `IRecoverableActivity<TState>` when an interrupted external effect can be checked safely. [Recovery.cs](../samples/IxIFlow.Samples/Recovery.cs) and the [execution guide](execution-model.md#interrupted-activities) show the recovery and operator-resolution paths.
 
-Broader catalog services, published activity packages/code activities and isolated version loading are [planned](roadmap.md).
+Broader catalog services and published activity packages/code activities are [planned](roadmap.md).

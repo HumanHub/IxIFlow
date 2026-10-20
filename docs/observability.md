@@ -64,6 +64,6 @@ Run scopes include `InstanceId` and `WorkflowName`. Activity/child attempt scope
 
 Operator calls record the supplied actor, falling back to `IxIFlowOptions.Actor`. Cancellation uses `CancellationReason.RequestedBy`; resolution uses `decidedBy`; release accepts an actor. These strings are audit metadata. The application decides who is authorized to make the call.
 
-## Planned debugger work
+## Debugger
 
-Breakpoints, all-stop pause, stepping, audited data edits, Debug Adapter Protocol and inspection/replay tooling remain 1.0 work. Timers will keep running while paused; edits will record the actor, time, revision and edited paths. Committed transition traces, event/operator entries, snapshots, redaction, logging and OpenTelemetry are already implemented. See the [roadmap](roadmap.md).
+Breakpoints, all-stop pause, stepping, audited data edits, the Debug Adapter Protocol, inspection and replay are described in [debugging](debugging.md) and [the debug adapter](debug-adapter.md). They build on the committed transition traces, event and operator entries, snapshots, redaction, logging and OpenTelemetry described above.
