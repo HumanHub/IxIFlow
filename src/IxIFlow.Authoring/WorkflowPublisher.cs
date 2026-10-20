@@ -91,6 +91,9 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             diagnostics.AddRange(compilation.Diagnostics);
             if (!compilation.Success) return new(null, diagnostics);
             stage = WorkflowPublishStage.Test;
+            // Without a profile every runtime and SDK assembly would be bundled privately and no host could load it.
+            if (!WorkflowSharedAssemblies.IsUsable)
+                return Failure("PUB008", "This process has no usable shared compatibility profile (a self-contained single-file process, or unreadable runtime metadata); publish from a framework-dependent process");
             var (entries, shared) = BundleAssemblies(compilation.Assembly, references.Paths, packages);
             var implementations = packages.RuntimeAssemblies.ToDictionary();
             foreach (var bytes in entries.Values) implementations.TryAdd(ResolvedWorkflowPackages.AssemblyIdentity(bytes).Name!, bytes);
