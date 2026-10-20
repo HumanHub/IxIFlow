@@ -1,11 +1,13 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Compression;
+using System.Reflection;
 using System.Runtime.Loader;
 using System.Text;
 using System.Text.Json;
 using IxIFlow.Authoring;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using IxIFlow.Dsl.Compilation;
 using IxIFlow.Dsl.Documents;
 using IxIFlow.Generators;
@@ -72,11 +74,28 @@ public sealed class WorkflowPublishingTests
         Assert.Equal(version.StructureHash, bundle.Manifest.StructureHash);
         Assert.Equal("Bundled", bundle.Manifest.Name);
         Assert.Equal(1, bundle.Manifest.Version);
-        Assert.Equal(typeof(Data).AssemblyQualifiedName, bundle.Manifest.DataType);
+        Assert.Equal(WorkflowTypeIdentity.SavedName(typeof(Data)), bundle.Manifest.DataType);
         Assert.Equal(WorkflowCompilation.Settings, bundle.Manifest.Compiler);
         Assert.Contains(typeof(WorkflowDefinition).Assembly.FullName!, bundle.Manifest.SharedAssemblies.Keys);
-        Assert.Contains(typeof(Data).Assembly.FullName!, bundle.Manifest.SharedAssemblies.Keys);
-        Assert.Equal(4, bundle.Entries.Count);
+        Assert.DoesNotContain(typeof(Data).Assembly.FullName!, bundle.Manifest.SharedAssemblies.Keys);
+        Assert.Contains("private/" + typeof(Data).Assembly.GetName().Name + ".dll", bundle.Entries.Keys);
+        var expectedEntries = new HashSet<string>(StringComparer.Ordinal)
+        {
+            WorkflowBundleArchive.AssemblyPath, WorkflowBundleArchive.PdbPath,
+            WorkflowBundleArchive.YamlPath, WorkflowBundleArchive.SourcePath
+        };
+        var pending = new Queue<Assembly>();
+        expectedEntries.Add("private/" + typeof(Data).Assembly.GetName().Name + ".dll");
+        pending.Enqueue(typeof(Data).Assembly);
+        while (pending.TryDequeue(out var assembly))
+        {
+            foreach (var reference in assembly.GetReferencedAssemblies())
+            {
+                if (!WorkflowSharedAssemblies.IsShared(reference) && expectedEntries.Add("private/" + reference.Name + ".dll"))
+                    pending.Enqueue(Assembly.Load(reference));
+            }
+        }
+        Assert.Equal(expectedEntries.Order(StringComparer.Ordinal), bundle.Entries.Keys.Order(StringComparer.Ordinal));
         foreach (var entry in bundle.Entries)
             Assert.Equal(bundle.Manifest.Entries[entry.Key], ArtifactDigest.Of(entry.Value.Span));
         Assert.Equal(WorkflowYamlSerializer.Write(WorkflowYamlSerializer.Read(Yaml)), Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.YamlPath].Span));

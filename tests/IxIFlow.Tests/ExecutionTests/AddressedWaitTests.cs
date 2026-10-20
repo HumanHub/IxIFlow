@@ -27,7 +27,7 @@ public sealed class AddressedWaitTests
         var wait = Assert.Single(await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
 
         Assert.Equal((WaitKind.Event, "approval"), (wait.Kind, wait.Key));
-        Assert.Equal(WorkflowTypeIdentity.StableName(typeof(Approval)), wait.EventType);
+        Assert.Equal(WorkflowTypeIdentity.SavedName(typeof(Approval)), wait.EventType);
         Assert.Contains("\"Approved\"", wait.EventSchema);
         Assert.NotNull(wait.DeadlineUtc);
         Assert.True(ReplyToken.TryRead(wait.Token, out var instanceId, out var waitId, out _));

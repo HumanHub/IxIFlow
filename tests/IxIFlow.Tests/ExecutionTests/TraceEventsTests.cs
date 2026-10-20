@@ -127,7 +127,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
             decisions.Select(entry => ((ReceivedEventTrace)entry.Payload!)!.RefusalReason));
         var taken = decisions[^1];
         Assert.Equal("go", ((ReceivedEventTrace)taken.Payload!)!.Key);
-        Assert.Equal(typeof(Go).AssemblyQualifiedName, ((ReceivedEventTrace)taken.Payload!).EventType);
+        Assert.Equal(WorkflowTypeIdentity.SavedName(typeof(Go)), ((ReceivedEventTrace)taken.Payload!).EventType);
         Assert.Equal("root/1", ((ReceivedEventTrace)taken.Payload!).StepId);
         Assert.Equal(WaitReference.Of(started.InstanceId, wait.WaitId), ((ReceivedEventTrace)taken.Payload!).WaitRef);
         Assert.All(decisions, entry => Assert.Equal(Start.UtcDateTime, entry.Timestamp));
@@ -496,7 +496,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         Assert.Equal(EventRejection.InstanceFinished, refused.Event.Rejection);
         var entry = Assert.Single(await client.GetTraceAsync(finished.InstanceId),
             entry => entry.EntryType == TraceEntryType.EventRefused);
-        Assert.Equal(new ReceivedEventTrace("late-event", "late", typeof(Go).AssemblyQualifiedName!, null, null,
+        Assert.Equal(new ReceivedEventTrace("late-event", "late", WorkflowTypeIdentity.SavedName(typeof(Go)), null, null,
             EventRejection.InstanceFinished), ((ReceivedEventTrace)entry.Payload!));
         Assert.Equal(time.GetUtcNow().UtcDateTime, entry.Timestamp);
         Assert.DoesNotContain("secret", JsonSerializer.Serialize(entry));
