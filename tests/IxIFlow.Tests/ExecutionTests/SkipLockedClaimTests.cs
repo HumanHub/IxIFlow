@@ -195,9 +195,9 @@ public sealed class SkipLockedClaimTests
         {
             var method = store.GetType().GetMethod("Sql", BindingFlags.NonPublic | BindingFlags.Instance)!;
             var sql = (string)method.Invoke(store, [Enum.Parse(method.GetParameters()[0].ParameterType, statement)])!;
-            await hold.Connection.ExecuteScalarAsync<int>(sql, new { InstanceId = new string('x', 239) }, hold.Transaction);
+            await hold.Connection.ExecuteScalarAsync<int>(sql, new { InstanceId = new string('x', 238) }, hold.Transaction);
             var error = await Assert.ThrowsAsync<SqlException>(() => hold.Connection.ExecuteAsync(sql,
-                new { InstanceId = new string('x', 240) }, hold.Transaction));
+                new { InstanceId = new string('x', 239) }, hold.Transaction));
             Assert.Equal(51000, error.Number);
         }
     }
