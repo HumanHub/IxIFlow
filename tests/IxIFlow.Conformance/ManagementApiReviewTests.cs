@@ -54,6 +54,18 @@ public sealed class ManagementApiReviewTests
         var reply = Cross(await new WorkflowHost.InstanceOperations.ExecutionHost(operations).CheckpointAsync(request));
         Assert.Equal(CheckpointReplyKind.Conflict, reply.Kind);
         Assert.Equal(WorkflowControlMode.Terminate, reply.PendingCancellation!.Mode);
+        if (stage == "limit")
+        {
+            // Termination writes metadata only, so an instance over the size limit is still terminated,
+            // and its saved data stays as it was.
+            Assert.Null(assignment.LastCommitError);
+            var terminated = (await inner.GetWorkflowInstanceAsync(instance.InstanceId))!;
+            Assert.Equal(WorkflowStatus.Terminated, terminated.Status);
+            Assert.Equal(instance.WorkflowDataJson, terminated.WorkflowDataJson);
+            probe.Read = null;
+            await owner.DisposeAsync();
+            return;
+        }
         Assert.NotNull(assignment.LastCommitError);
         Assert.Equal(WorkflowStatus.Running, (await inner.GetWorkflowInstanceSummaryAsync(instance.InstanceId))!.Status);
         probe.Search = null; probe.Read = null; probe.Commit = null;
