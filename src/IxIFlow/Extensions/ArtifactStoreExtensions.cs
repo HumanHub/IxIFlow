@@ -20,6 +20,7 @@ public static class ArtifactStoreExtensions
         ArgumentOutOfRangeException.ThrowIfNegative(options.MaxCachedBundles);
         options.ReadLimits.Validate();
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.FetchTimeout, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.CacheLockTimeout, TimeSpan.Zero);
         builder.Services.Replace(ServiceDescriptor.Singleton(options));
         return builder;
     }

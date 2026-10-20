@@ -82,6 +82,7 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
             ArgumentOutOfRangeException.ThrowIfNegative(bundles.MaxCachedBundles);
             bundles.ReadLimits.Validate();
             ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(bundles.FetchTimeout, TimeSpan.Zero);
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(bundles.CacheLockTimeout, TimeSpan.Zero);
             _bundles = new(artifacts ?? throw new ArgumentException("Bundle loading requires an artifact store"), bundles);
         }
         foreach (var definition in definitions ?? [])
