@@ -22,6 +22,7 @@ public sealed partial class SqliteWorkflowStateRepository
                 SELECT [instance_id], [event_id], [sequence], [event_type], [event_key], [target_wait_id], [subject], [stored_payload_json], [payload_hash], [received_at_utc], [outcome], [wait_id], [rejection], [settled_at_utc] FROM ixiflow_workflow_events WHERE 1=0;
                 SELECT [instance_id], [part_key], [json] FROM ixiflow_workflow_parts WHERE 1=0;
                 SELECT [instance_id], [sequence], [entry_json], [revision], [commit_end_sequence], [commit_status] FROM ixiflow_workflow_traces WHERE 1=0;
+                SELECT instance_id, diagnostic_id, diagnostic_json FROM ixiflow_workflow_diagnostics WHERE 1=0;
                 SELECT [instance_id], [wait_id], [wait_ref], [kind], [wait_key], [event_type], [default_payload_json], [deadline_utc], [opened_sequence], [opened_at_utc], [close_reason], [closed_at_utc] FROM ixiflow_workflow_waits WHERE 1=0;
                 SELECT [instance_id], [commit_id], [expected_revision], [revision], [payload_hash] FROM ixiflow_workflow_commits WHERE 1=0;
                 SELECT [id], [epoch] FROM ixiflow_execution_epoch WHERE 1=0;

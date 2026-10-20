@@ -82,7 +82,9 @@ internal static class ExecutionCheckpointWriter
             openedWaits: opened, closedWaits: closed, armedWaits: armed, wakeAfter: parkFor,
             stopped: checkpoint.OperatorStop != null || instance.Status == WorkflowStatus.Paused, childStarts: checkpoint.ChildStarts.ToArray(),
             childCancellations: checkpoint.ChildCancellations.ToArray(),
-            parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: checkpoint.Trace.Pending);
+            parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: checkpoint.Trace.Pending,
+            diagnostics: checkpoint.PendingDiagnostics,
+            retainedDiagnosticIds: checkpoint.Diagnostics is { Count: > 0 } diagnostics ? diagnostics.Select(item => item.DiagnosticId).ToArray() : null);
         using var span = Telemetry.Source.StartActivity("commit");
         Telemetry.Tag(span, instance);
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -112,6 +114,7 @@ internal static class ExecutionCheckpointWriter
                     instance.Revision = reply.Revision;
                     instance.Saved(commit.ApplyParts(instance.SavedParts), reply.Revision);
                     checkpoint.Trace.Committed();
+                    checkpoint.PendingDiagnostics.Clear();
                     checkpoint.ChildStarts.Clear();
                     checkpoint.ChildCancellations.Clear();
                     checkpoint.Inbox.Acknowledged(checkpoint, reply.UnreadEvents);
@@ -167,6 +170,7 @@ internal static class ExecutionCheckpointWriter
             // An operator stop retains saved positions even if their definition is unavailable.
             if (!preserveContinuationState)
                 ContinuationTransitions.PrepareCheckpoint(checkpoint, scopes);
+            checkpoint.RetainDiagnostics();
             checkpoint.RecordBranchChanges();
             // Recording changes the persisted trace-budget counters; do it before splitting the checkpoint.
             checkpoint.Trace.CapturePositions(now);

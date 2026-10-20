@@ -124,7 +124,6 @@ internal static class Telemetry
 
     public static void Fail(Activity? span, Exception error)
     {
-        span?.SetStatus(ActivityStatusCode.Error, error.Message);
-        span?.AddException(error);
+        InspectionRedactionPolicy.Default.Fail(span, error);
     }
 }

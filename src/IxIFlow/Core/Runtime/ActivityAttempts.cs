@@ -15,6 +15,7 @@ internal sealed class ActivityAttempts(
 {
     private readonly ActivityTransitionExecutor _activities = new(activityExecutor);
     private readonly ILogger _logger = LogScope.Logger(services);
+    private readonly InspectionRedactionPolicy _inspectionPolicy = (InspectionRedactionPolicy)services.GetService(typeof(InspectionRedactionPolicy))!;
     private readonly string _hostName = (services.GetService(typeof(HostSettings)) as HostSettings ?? HostSettings.Default).Name;
 
     private DateTime Now => time.GetUtcNow().UtcDateTime;
@@ -116,6 +117,8 @@ internal sealed class ActivityAttempts(
         catch (Exception error) when (isRecovery && error is not WorkflowEngineException { IsInterruption: true })
         {
             pending!.ResolutionReason = $"Activity recovery could not be prepared: {error.Message}";
+            pending.ResolutionDiagnostic = checkpoint.RecordDiagnostic(error);
+            _inspectionPolicy.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
             continuation.Status = ContinuationStatus.WaitingResolution;
             await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
             return null;
@@ -129,12 +132,14 @@ internal sealed class ActivityAttempts(
         if (isRecovery && pending!.Resolution == null && prepared.Activity is not IRecoverableActivity)
         {
             pending!.ResolutionReason = "The activity has no recovery contract";
+            pending.ResolutionDiagnostic = checkpoint.RecordDiagnostic("RecoveryContractUnavailable", pending.ResolutionReason);
             continuation.Status = ContinuationStatus.WaitingResolution;
             await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
             return null;
         }
 
         pending!.ResolutionReason = null;
+        pending.ResolutionDiagnostic = null;
         pending.Attempts.Add(attempt);
         if (checkpoint.Trace.Accepts(TraceEntryType.ActivityStarted, Now))
         {
@@ -156,7 +161,7 @@ internal sealed class ActivityAttempts(
                 }
             };
             if (pending.Resolution != null)
-                startTrace.Metadata!["DecisionNote"] = pending.Resolution.Note;
+                startTrace.Metadata!["DecisionNote"] = InspectionRedactionPolicy.Default.Note(pending.Resolution.Note, services);
             checkpoint.Trace.Add(startTrace);
         }
         // Claiming the attempt is not progress: an activity that kills its owner keeps counting.
@@ -206,7 +211,7 @@ internal sealed class ActivityAttempts(
             catch (Exception error)
             {
                 return ActivityRunResult.Unresolved(
-                    $"Recovery check failed: {error.Message}");
+                    $"Recovery check failed: {error.Message}", error);
             }
 
             switch (resolution.Disposition)
@@ -424,7 +429,7 @@ internal sealed class ActivityAttempts(
             }
         };
         if (pending.Resolution != null)
-            startTrace.Metadata!["DecisionNote"] = pending.Resolution.Note;
+            startTrace.Metadata!["DecisionNote"] = InspectionRedactionPolicy.Default.Note(pending.Resolution.Note, services);
         checkpoint.Trace.Add(startTrace);
     }
 
@@ -447,7 +452,7 @@ internal sealed class ActivityAttempts(
             var outcome = await activity.Task;
             if (outcome.Kind == ActivityRunKind.Unresolved)
             {
-                MarkActivityUnresolved(activity, outcome.Reason);
+                MarkActivityUnresolved(checkpoint, activity, outcome.Reason, outcome.Error);
                 return;
             }
 
@@ -490,8 +495,8 @@ internal sealed class ActivityAttempts(
                 }
                 catch (Exception error)
                 {
-                    MarkActivityUnresolved(activity,
-                        $"Activity returned, but its saga output could not be saved: {error.Message}");
+                    MarkActivityUnresolved(checkpoint, activity,
+                        $"Activity returned, but its saga output could not be saved: {error.Message}", error);
                     return;
                 }
                 if (activity.Continuation.ParentJoinId == null && activity.Step.OutputMappings.Any(m => m.Direction == PropertyMappingDirection.Output))
@@ -549,19 +554,23 @@ internal sealed class ActivityAttempts(
         continuation.CancellationUnwind && !TryScopeTransitions.IsInsideFinally(continuation) &&
         !SagaScopeTransitions.IsInsideCompensation(continuation);
 
-    private void MarkActivityUnresolved(RunningActivity activity, string? reason)
+    private void MarkActivityUnresolved(ExecutionCheckpoint checkpoint, RunningActivity activity, string? reason, Exception? error = null)
     {
         var pending = activity.Continuation.PendingActivity
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 "Unresolved activity has no saved Start");
         pending.ResolutionReason = reason;
+        pending.ResolutionDiagnostic = error != null ? checkpoint.RecordDiagnostic(error)
+            : reason == null ? null : checkpoint.RecordDiagnostic("ActivityUnresolved", reason);
+        if (error != null)
+            _inspectionPolicy.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
         pending.Attempts[^1].EndedAtUtc = Now;
         pending.Attempts[^1].Observation = "Unresolved";
         activity.Continuation.Status = ContinuationStatus.WaitingResolution;
     }
 
     // What a later attempt sees of this one is in the trace too (D-37).
-    private static Dictionary<string, object> AttemptFacts(Dictionary<string, object> metadata,
+    private Dictionary<string, object> AttemptFacts(Dictionary<string, object> metadata,
         ActivityAttemptState attempt)
     {
         if (attempt.Host != null)
@@ -569,7 +578,7 @@ internal sealed class ActivityAttempts(
         if (attempt.ErrorType != null)
             metadata["ErrorType"] = attempt.ErrorType;
         if (attempt.Note != null)
-            metadata["Note"] = attempt.Note.Json;
+            metadata["Note"] = InspectionRedactionPolicy.Default.AttemptNote(attempt.Note, services);
         return metadata;
     }
 
@@ -593,6 +602,9 @@ internal sealed class ActivityAttempts(
         string observation,
         Exception? error = null)
     {
+        var diagnostic = error == null ? null : checkpoint.RecordDiagnostic(error);
+        if (error != null)
+            _inspectionPolicy.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
         var pending = running.Continuation.PendingActivity;
         if (pending == null)
             return;
@@ -611,8 +623,9 @@ internal sealed class ActivityAttempts(
             ActivityName = running.Step.ActivityType?.Name ?? running.Step.Name,
             StepNumber = running.StepNumber,
             Duration = attempt.EndedAtUtc - attempt.StartedAtUtc,
-            ErrorMessage = error?.Message,
-            StackTrace = error?.StackTrace,
+            Error = diagnostic,
+            ErrorMessage = diagnostic?.ToString(),
+            StackTrace = null,
             Metadata = AttemptFacts(new Dictionary<string, object>
             {
                 ["InvocationId"] = pending.Id,
@@ -636,8 +649,8 @@ internal sealed record ActivityRunResult(
     // A thrown result is always the step's own failure; engine failures fault the activity task instead.
     public static ActivityRunResult Threw(Exception error) =>
         new(ActivityRunKind.Threw, Error: WorkflowEngineException.FromWorkflowCode(error));
-    public static ActivityRunResult Unresolved(string reason) =>
-        new(ActivityRunKind.Unresolved, Reason: reason);
+    public static ActivityRunResult Unresolved(string reason, Exception? error = null) =>
+        new(ActivityRunKind.Unresolved, Reason: reason, Error: error);
     public static ActivityRunResult Skipped() => new(ActivityRunKind.Skipped);
 }
 

@@ -292,8 +292,7 @@ public class ActivityExecutor : IActivityExecutor
                     inputs.Properties[targetProperty.Name] = saved;
                     targetProperty.SetValue(activity, convertedValue);
 
-                    _logger.LogTrace("Applied typed input mapping: {Property} = {Value}",
-                        mapping.TargetProperty, convertedValue);
+                    _logger.LogTrace("Applied typed input mapping: {Property}", mapping.TargetProperty);
                 }
                 else
                 {
@@ -303,7 +302,7 @@ public class ActivityExecutor : IActivityExecutor
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to apply typed input mapping for property {Property}",
+                _serviceProvider.GetRequiredService<InspectionRedactionPolicy>().Log(_logger, _serviceProvider.GetService<ILogger<SensitiveDiagnostics>>(), LogLevel.Error, ex, "Failed to apply typed input mapping for property {Property}",
                     mapping.TargetProperty);
                 throw;
             }
@@ -340,8 +339,7 @@ public class ActivityExecutor : IActivityExecutor
                     {
                         mapping.TargetAssignmentFunction(evaluationContext, sourceValue);
 
-                        _logger.LogTrace("Applied typed output mapping: {Property} = {Value}",
-                            mapping.TargetProperty, sourceValue);
+                        _logger.LogTrace("Applied typed output mapping: {Property}", mapping.TargetProperty);
                     }
                     else
                     {
@@ -357,7 +355,7 @@ public class ActivityExecutor : IActivityExecutor
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to apply typed output mapping for property {Property}",
+                _serviceProvider.GetRequiredService<InspectionRedactionPolicy>().Log(_logger, _serviceProvider.GetService<ILogger<SensitiveDiagnostics>>(), LogLevel.Error, ex, "Failed to apply typed output mapping for property {Property}",
                     mapping.TargetProperty);
                 throw;
             }

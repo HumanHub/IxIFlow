@@ -34,7 +34,7 @@ public sealed partial class DebugPayloadFixTests
         Assert.Equal(WorkflowCommitStatus.Applied, (await h.Store.CommitWorkflowInstanceAsync(
             CheckpointCommit.FromFields(CommittedInstance.Of(saved), JsonSerializer.Serialize(saved), [], [], false,
                 saved.Incarnation, lease.Epoch, Guid.NewGuid().ToString("N"), saved.Revision, true, false,
-                [], null, [], [], [], null, false, [], [], null, [],
+                [], null, [], [], [], null, false, [], [], null, [], [], null,
                 CheckpointPayloads.References(saved.ExecutionStateJson, saved.SavedParts!)))).Status);
         var before = (await h.Store.GetWorkflowInstanceAsync(first.InstanceId))!;
         h.Clock.Advance(TimeSpan.FromSeconds(3));
