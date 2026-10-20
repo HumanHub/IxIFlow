@@ -186,10 +186,6 @@ public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStor
     /// <summary>Reads a durable cancellation request for an instance.</summary>
     Task<CancellationReason?> GetCancellationRequestAsync(string instanceId);
 
-    /// <summary>Reads cancellation alone when the host is not watching debugger commands.</summary>
-    async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds) => (await GetControlRequestsAsync(instanceIds)).Cancellations;
-
     /// <summary>
     /// Lists up to <paramref name="limit"/> instances a host may claim now: their runnable time has
     /// passed and nobody holds their lease. The earliest come first.

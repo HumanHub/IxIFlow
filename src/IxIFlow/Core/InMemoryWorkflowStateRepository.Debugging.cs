@@ -3,10 +3,6 @@ namespace IxIFlow.Core;
 public partial class InMemoryWorkflowStateRepository
 {
     public virtual async Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds)
-        => new(await GetCancellationRequestsAsync(instanceIds), await GetDebugStatesAsync(instanceIds));
-
-    public virtual async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
         var ids = instanceIds.Distinct(StringComparer.Ordinal).ToArray();
@@ -26,7 +22,7 @@ public partial class InMemoryWorkflowStateRepository
         }
         if (ids.Length > 0 && failures.Count == ids.Length)
             throw new AggregateException("No cancellation request could be read", failures);
-        return cancellations;
+        return new(cancellations, await GetDebugStatesAsync(ids));
     }
     private readonly Dictionary<string, List<DebugCommand>> _debugCommands = new(StringComparer.Ordinal);
     // Updated with each checkpoint under _claimLock, so control reads need no trunk parsing.

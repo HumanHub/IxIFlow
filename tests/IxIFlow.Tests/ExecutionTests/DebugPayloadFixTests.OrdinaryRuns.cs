@@ -77,7 +77,7 @@ public sealed partial class DebugPayloadFixTests
     }
 
     [Fact]
-    public async Task OrdinaryExecutionAndResumeDoNotAccessPayloadsOrDebugState()
+    public async Task OrdinaryExecutionAndResumeDoNotAccessPayloads()
     {
         var store = new OrdinaryStore();
         var registrations = new ServiceCollection().AddLogging();
@@ -119,8 +119,6 @@ public sealed partial class DebugPayloadFixTests
     private sealed class OrdinaryStore : InMemoryWorkflowStateRepository
     {
         public override IPayloadStore PayloadStore => throw new InvalidOperationException("Ordinary execution accessed payload storage");
-        public override Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> ids) =>
-            throw new InvalidOperationException("Ordinary execution read debugger state");
     }
 
     private sealed class PostingContext : SynchronizationContext

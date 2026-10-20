@@ -118,7 +118,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
 
     private async Task ReadAsync(string[] watchedIds)
     {
-        _read ??= (TrackRead(ReadControlsAsync(watchedIds),
+        _read ??= (TrackRead(_store.GetControlRequestsAsync(watchedIds),
             $"cancellation requests for {string.Join(", ", watchedIds)}"), watchedIds, Now);
         var (read, instanceIds, readAt) = _read.Value;
         IReadOnlyDictionary<string, CancellationReason> requests;
@@ -161,12 +161,6 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
         }
         await ReadArrivalsAsync(instanceIds);
     }
-
-    private async Task<WorkflowControlRequests> ReadControlsAsync(string[] instanceIds) =>
-        Subscribers(instanceIds).Any(subscriber => subscriber.Debug != null)
-            ? await _store.GetControlRequestsAsync(instanceIds)
-            : new(await _store.GetCancellationRequestsAsync(instanceIds),
-                new Dictionary<string, WorkflowDebugState>());
 
     // Arrivals are a hint: a run also learns of them from its commit replies, so a failed read only
     // delays them and never affects cancellation or ownership.
