@@ -15,7 +15,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Feature", "host")]
 [Trait("Spec", "C-07")]
 [Trait("Spec", "D-07")]
-public sealed class WorkflowDemandTests
+public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<WorkflowDemandTests>>
 {
     [Theory]
     [InlineData(false)]
