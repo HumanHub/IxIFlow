@@ -16,7 +16,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Spec", "B-04")]
 [Trait("Spec", "C-02")]
 [Trait("Spec", "C-08")]
-public sealed class ClaimHandoffTests
+public sealed class ClaimHandoffTests : IClassFixture<SqliteTestDatabase<ClaimHandoffTests>>
 {
     [Fact]
     public Task MemoryHandoff() => Contract(new InMemoryWorkflowStateRepository());
