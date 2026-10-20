@@ -10,23 +10,6 @@ internal sealed class ExecutionCheckpoint
     [JsonIgnore]
     public TraceBuffer Trace { get; set; } = new();
 
-    /// <summary>Only callers returning a run's trace collect acknowledged entries. Never saved.</summary>
-    [JsonIgnore]
-    public List<ExecutionTraceEntry>? ResultTrace { get; set; }
-
-    public void AcknowledgeTrace()
-    {
-        ResultTrace?.AddRange(Trace.Pending);
-        Trace.Committed();
-    }
-
-    public List<ExecutionTraceEntry> TakeTraceResult()
-    {
-        var result = ResultTrace ?? [];
-        ResultTrace = null;
-        return result;
-    }
-
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public long TraceEntriesRecorded { get; set; }
 
@@ -40,7 +23,7 @@ internal sealed class ExecutionCheckpoint
     /// as unsupported rather than read wrongly.
     /// </summary>
     [JsonRequired]
-    public int SchemaVersion { get; set; } = 4;
+    public int SchemaVersion { get; set; } = WorkflowDefinitionValidator.CheckpointContractVersion;
     [JsonRequired]
     public string StructureHash { get; set; } = "";
     public List<ContinuationState> Continuations { get; set; } = [];
@@ -153,12 +136,9 @@ internal sealed class ExecutionCheckpoint
     [JsonIgnore]
     public StoreClock Clock { get; } = new();
 
-    /// <summary>
-    /// When the host should next look at the instance after its last commit, in the host's clock, or
-    /// null when nothing but an event or an operator moves it. It is not saved.
-    /// </summary>
+    /// <summary>The delivered signals for this run, never checkpointed.</summary>
     [JsonIgnore]
-    public DateTime? LocalWakeUtc { get; set; }
+    public ExecutionSignals? Signals { get; set; }
 
     /// <summary>
     /// True while the execution deadline can still end the run: it is set, and the run has neither
@@ -510,6 +490,8 @@ internal sealed class ActivityInvocationState
     public ActivityInputSnapshot Inputs { get; set; } = new();
     public SerializedValue? RecoveryState { get; set; }
     public string? ChildWorkflowId { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ChildDataType { get; set; }
     public List<ActivityAttemptState> Attempts { get; set; } = [];
     public string? ResolutionReason { get; set; }
     public InspectionError? ResolutionDiagnostic { get; set; }

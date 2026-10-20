@@ -34,6 +34,7 @@ public static class ServiceCollectionExtensions
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
+        services.AddSingleton<IWorkflowOperations, HostedWorkflowOperations>();
         services.AddSingleton<IWorkflowIngressClient, WorkflowIngressClient>();
         services.AddScoped<WorkflowHost.SlotClient>();
         services.AddScoped<RunControl>();
@@ -53,9 +54,13 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(ExecutionLimits.Default);
         services.TryAddSingleton(new ClientActor(null));
-        
+
         // Workflow state and persistence
-        services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
+        services.AddSingleton<IWorkflowCatalog>(provider => new WorkflowCatalog(
+            provider.GetRequiredService<IWorkflowStateRepository>(), provider.GetServices<WorkflowDefinition>(),
+            provider.GetRequiredService<IArtifactStore>()));
+        services.TryAddSingleton<IArtifactStore>(provider => new RepositoryArtifactStore(provider.GetRequiredService<IWorkflowStateRepository>()));
+        services.AddSingleton<IWorkflowDefinitionSource>(provider => provider.GetRequiredService<IWorkflowCatalog>());
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
         return new IxIFlowBuilder(services);
     }
@@ -104,7 +109,6 @@ public static class ServiceCollectionExtensions
             MaxTraceEntriesPerCommit = options.MaxTraceEntriesPerCommit,
             TraceDetail = options.TraceDetail,
             MaxTraceEntriesPerInstance = options.MaxTraceEntriesPerInstance,
-            MaxCrashes = options.MaxCrashes,
             MaxActiveBranches = options.MaxActiveBranches,
             MaxActivitiesPerRun = options.MaxActivitiesPerRun,
             MaxForEachItems = options.MaxForEachItems,
@@ -120,15 +124,16 @@ public static class ServiceCollectionExtensions
         var hostSettings = (options.Slots, options.DrainTimeout, options.PollInterval, options.HostName, options.HeartbeatInterval);
         services.Replace(ServiceDescriptor.Singleton<HostSettings>(_ =>
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
-            { HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities }));
+            { HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes }));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
 
         RetentionSettings.Validate(options.FinishedInstanceRetention, options.TombstoneRetention, options.RetentionBatchSize);
         if (options.RetentionScanInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(options.RetentionScanInterval), "The retention scan interval must be positive");
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ArtifactRetention, TimeSpan.Zero);
         services.Replace(ServiceDescriptor.Singleton(new RetentionSettings(options.FinishedInstanceRetention,
-            options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize)));
+            options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize) { ArtifactRetention = options.ArtifactRetention }));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -155,20 +160,20 @@ public static class ServiceCollectionExtensions
         var workflowInterface = typeof(TWorkflow)
             .GetInterfaces()
             .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IWorkflow<>));
-        
+
         if (workflowInterface == null)
             throw new ArgumentException($"{typeof(TWorkflow).Name} must implement IWorkflow<T>");
-        
+
         var workflowDataType = workflowInterface.GetGenericArguments()[0];
-        
+
         // Register the workflow class
         services.AddTransient<TWorkflow>();
-        
+
         // Use reflection to call the generic BuildWorkflowDefinition method
         var buildMethod = typeof(ServiceCollectionExtensions)
             .GetMethod(nameof(BuildWorkflowDefinition), BindingFlags.Public | BindingFlags.Static)!
             .MakeGenericMethod(typeof(TWorkflow), workflowDataType);
-        
+
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
@@ -197,7 +202,7 @@ public static class ServiceCollectionExtensions
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
         // Register the workflow class
         services.AddTransient<TWorkflow>();
-        
+
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
@@ -245,6 +250,9 @@ internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinitio
 /// </summary>
 public class IxIFlowOptions
 {
+    /// <summary>How long unreferenced artifacts are retained; defaults to 90 days.</summary>
+    public TimeSpan ArtifactRetention { get; set; } = TimeSpan.FromDays(90);
+
     /// <summary>How long terminal rows and their results remain, measured from the first terminal store write. At least one minute.</summary>
     public TimeSpan FinishedInstanceRetention { get; set; } = RetentionSettings.Default.FinishedRetention;
 
@@ -294,7 +302,7 @@ public class IxIFlowOptions
     /// lease, before the instance is quarantined at NeedsResolution. No host runs a quarantined
     /// instance until an operator releases it. Progress resets the count.
     /// </summary>
-    public int MaxCrashes { get; set; } = ExecutionLimits.DefaultMaxCrashes;
+    public int MaxCrashes { get; set; } = HostSettings.DefaultMaxCrashes;
 
     /// <summary>
     /// Maximum live branches of one instance, excluding the root, parents waiting at joins, and

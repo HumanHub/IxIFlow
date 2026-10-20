@@ -72,7 +72,7 @@ public sealed class IncomingWebhookScenarios
         using var retry = await Start(http, key: "lost-response");
         Assert.Equal(HttpStatusCode.Accepted, retry.StatusCode);
         Assert.Equal(id, await Id(retry));
-        Assert.Single(await factory.Repository.GetWorkflowInstancesByNameAsync("HttpApproval"));
+        Assert.Single(await Task.WhenAll((await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items.Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Theory]
@@ -85,7 +85,7 @@ public sealed class IncomingWebhookScenarios
         using var first = await Start(http, key: "conflict");
         using var conflict = await Start(http, key: "conflict", value: 9);
         Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
-        Assert.Single(await factory.Repository.GetWorkflowInstancesByNameAsync("HttpApproval"));
+        Assert.Single(await Task.WhenAll((await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items.Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Theory]
@@ -101,7 +101,7 @@ public sealed class IncomingWebhookScenarios
         request.Headers.Add("webhook-signature", "v1,invalid");
         using var response = await http.SendAsync(request);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        Assert.Empty(await factory.Repository.GetWorkflowInstancesByNameAsync("HttpApproval"));
+        Assert.Empty(await Task.WhenAll((await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items.Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Theory]
@@ -165,7 +165,7 @@ public sealed class IncomingWebhookScenarios
     public async Task AStartOnOneHostCompletesThroughAnEventOnAnotherHost(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await using var first = new IngressFactory(store.NewRepository(), registry);
         await using var second = new IngressFactory(store.NewRepository(), registry);
         using var firstHttp = first.AuthenticatedClient();
@@ -236,7 +236,7 @@ public sealed class IncomingWebhookScenarios
     }
     public sealed class Application { }
 
-    private sealed class IngressFactory(IWorkflowStateRepository repository, IWorkflowVersionRegistry? registry = null)
+    private sealed class IngressFactory(IWorkflowStateRepository repository, IWorkflowCatalog? registry = null)
         : WebApplicationFactory<Application>
     {
         public IWorkflowStateRepository Repository => repository;
@@ -252,7 +252,7 @@ public sealed class IncomingWebhookScenarios
             {
                 services.AddIxIFlow(options => options.PollInterval = TimeSpan.FromMilliseconds(50));
                 services.Replace(ServiceDescriptor.Singleton(repository));
-                services.Replace(ServiceDescriptor.Singleton(registry ?? new WorkflowVersionRegistry()));
+                services.Replace(ServiceDescriptor.Singleton(registry ?? new WorkflowCatalog()));
                 services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
                 services.AddTransient<Noop>();
                 services.AddAuthentication("test").AddScheme<AuthenticationSchemeOptions, TestAuthentication>("test", _ => { });

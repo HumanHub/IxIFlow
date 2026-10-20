@@ -10,7 +10,8 @@ internal sealed class ActivityAttempts(
     IServiceProvider services,
     IActivityExecutor activityExecutor,
     ContinuationTransitions transitions,
-    TimeProvider time)
+    TimeProvider time,
+    IWorkflowDefinitionSource definitions)
 {
     private readonly ActivityTransitionExecutor _activities = new(activityExecutor);
     private readonly ILogger _logger = LogScope.Logger(services);
@@ -25,7 +26,7 @@ internal sealed class ActivityAttempts(
         WorkflowStep step,
         WorkflowDefinition definition,
         WorkflowInstance instance,
-        IExecutionHost host,
+        ExecutionSession host,
         CancellationTokenSource activityCancellation)
     {
         checkpoint.Touch(continuation);
@@ -299,7 +300,7 @@ internal sealed class ActivityAttempts(
         WorkflowStep step,
         WorkflowDefinition definition,
         WorkflowInstance instance,
-        IExecutionHost host,
+        ExecutionSession host,
         CancellationTokenSource cancellation)
     {
         using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), continuation.PendingActivity?.Id));
@@ -318,11 +319,13 @@ internal sealed class ActivityAttempts(
         }
         if (continuation.AcceptedWait is { } accepted && accepted.StepId == scopes.Id(step) && pending != null)
         {
-            continuation.AcceptedWait = null;
             var completed = accepted.Event.Read(services) as ChildCompleted
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Child invocation step '{step.Name}' took an event that is not its child's completion");
-            var dataType = (await host.ResolveChildAsync(step, starting: false)).WorkflowDataType!;
+            var dataType = WorkflowTypeIdentity.Resolve(pending.ChildDataType ?? "")
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    $"Child data type '{pending.ChildDataType}' is unavailable");
+            continuation.AcceptedWait = null;
             return Settles(completed.Outcome(dataType));
         }
         if (pending != null)
@@ -341,7 +344,19 @@ internal sealed class ActivityAttempts(
         pending = new ActivityInvocationState { StepId = scopes.Id(step), StartedAtUtc = Now };
         pending.ChildWorkflowId = pending.Id;
         using var startScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), pending.Id));
-        var childDefinition = await host.ResolveChildAsync(step, starting: true);
+        var childDefinition = step.WorkflowType != null
+            ? step.Runtime.ChildDefinition!(services)
+            : await definitions.GetWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value)
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    $"Workflow definition not found: {step.WorkflowName} v{step.WorkflowVersion}");
+        if (childDefinition.Name != step.WorkflowName || childDefinition.Version != step.WorkflowVersion)
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                step.WorkflowType != null
+                    ? $"Workflow type '{step.WorkflowType}' is registered as '{childDefinition.Name}' v{childDefinition.Version}, " +
+                      $"but the invocation requires '{step.WorkflowName}' v{step.WorkflowVersion}"
+                    : "The child definition has a different declared identity");
+        var childScopes = WorkflowDefinitionValidator.ForExecution(childDefinition);
+        pending.ChildDataType = childDefinition.WorkflowDataType!.AssemblyQualifiedName!;
         ChildStart start;
         try
         {
@@ -349,7 +364,18 @@ internal sealed class ActivityAttempts(
                 continuation.GetPrevious(services),
                 ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
             var data = ChildInputs.NewData(childDefinition, step, context);
-            start = host.StartChild(childDefinition, data, instance, pending.Id, Guid.NewGuid().ToString("N"));
+            var prepared = WorkflowInstances.Start(childDefinition, data, instance, pending.Id,
+                Guid.NewGuid().ToString("N"), Now);
+            var reply = await host.StartChildAsync(scopes.Id(step), prepared, childScopes.StructureHash);
+            if (reply.Refusal == WorkflowErrorKind.ResourceExhausted)
+            {
+                continuation.PendingActivity = pending;
+                Attempt(instance, checkpoint, continuation, step, pending, "InvokeWorkflow");
+                return Settles(ActivityRunResult.Unresolved($"The child workflow could not start: {reply.Message}"));
+            }
+            if (reply.Refusal is { } refusal)
+                throw new WorkflowEngineException(refusal, reply.Message ?? "The child start was refused");
+            start = reply.Start ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Missing child start");
         }
         catch (CheckpointLimitExceededException error)
         {
@@ -358,7 +384,8 @@ internal sealed class ActivityAttempts(
             Attempt(instance, checkpoint, continuation, step, pending, "InvokeWorkflow");
             return Settles(ActivityRunResult.Unresolved($"The child workflow could not start: {error.Message}"));
         }
-        catch (Exception error) when (!WorkflowEngineException.IsEngineFailure(error))
+        catch (Exception error) when (error is not ExecutionOwnershipLostException &&
+                                      !WorkflowEngineException.IsEngineFailure(error))
         {
             return Settles(ActivityRunResult.Threw(error));
         }
@@ -400,7 +427,7 @@ internal sealed class ActivityAttempts(
         RunningActivity activity,
         Dictionary<string, RunningActivity> inFlight,
         WorkflowInstance instance,
-        IExecutionHost host)
+        ExecutionSession host)
     {
         using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(activity.Step),
             activity.Continuation.PendingActivity?.Id));

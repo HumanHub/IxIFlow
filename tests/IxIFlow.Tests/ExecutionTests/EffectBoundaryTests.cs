@@ -39,7 +39,7 @@ public sealed class EffectBoundaryTests
             .RunAsync(definition, new BoundaryData { Branch = "then" }));
 
         // The If was never committed: the last checkpoint ends after the first activity.
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("ReDerivedControlFlow"));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "ReDerivedControlFlow", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         var root = ExecutionCheckpoint.Read(saved.ExecutionStateJson).Continuations[0];
         Assert.Null(root.PendingActivity);
         Assert.Equal(["root"], root.Stack.Select(frame => frame.ScopeId));
@@ -95,7 +95,7 @@ public sealed class EffectBoundaryTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Engine(services)
             .RunAsync(definition, new BoundaryData(), cancellationToken: stop.Token));
 
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("CommittedSagaRetry"));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "CommittedSagaRetry", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         Assert.Contains(ExecutionCheckpoint.Read(saved.ExecutionStateJson).Continuations,
             continuation => continuation.RetryAfterUtc != null);
     }

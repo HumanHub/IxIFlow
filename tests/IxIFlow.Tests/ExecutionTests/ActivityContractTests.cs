@@ -108,7 +108,7 @@ public sealed class ActivityContractTests
         var options = new WorkflowSourceOptions();
         options.Types["Data"] = "global::IxIFlow.Tests.ExecutionTests.ActivityContractTests.Data";
         options.Types["InOut"] = "global::IxIFlow.Tests.ExecutionTests.ActivityContractTests.RequiredInOut";
-        var definition = YamlTestCompilation.Build(WorkflowSourceTranslator.Translate(yaml, "contract.yaml", options));
+        var definition = IxIFlow.Authoring.WorkflowCompilation.Build(WorkflowSourceTranslator.Translate(yaml, "contract.yaml", options));
         var result = await Execute(definition, new Data { Number = 4 });
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(expected, Assert.IsType<Data>(result.WorkflowData).Number);
@@ -149,8 +149,18 @@ public sealed class ActivityContractTests
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         var trace = await provider.GetRequiredService<IWorkflowClient>().GetTraceAsync(result.InstanceId);
         Assert.Collection(trace.Where(entry => entry.EntryType == TraceEntryType.ActivityFailed),
-            first => Assert.Contains("InvalidInput", first.ErrorMessage),
-            second => Assert.Contains("InvalidInput", second.ErrorMessage));
+            SafeFailure, SafeFailure);
+        var raw = Assert.Single(await provider.GetRequiredService<IWorkflowDiagnostics>().ReadAsync(result.InstanceId));
+        Assert.Contains("InvalidInput", raw.Message);
+        Assert.Equal(trace.Last(entry => entry.EntryType == TraceEntryType.ActivityFailed).Error!.DiagnosticId, raw.DiagnosticId);
+
+        static void SafeFailure(ExecutionTraceEntry entry)
+        {
+            Assert.Equal(typeof(WorkflowEngineException).FullName, entry.Error!.ErrorType);
+            Assert.Matches("^[0-9a-f]{32}$", entry.Error.DiagnosticId);
+            Assert.Equal(entry.Error.ToString(), entry.ErrorMessage);
+            Assert.Null(entry.StackTrace);
+        }
     }
 
     [Fact]
@@ -241,6 +251,7 @@ public sealed class ActivityContractTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        IxIFlow.Tests.Infrastructure.DiagnosticTestAccess.Allow(services);
         services.AddIxIFlow();
         return services.BuildServiceProvider();
     }

@@ -65,7 +65,7 @@ public sealed class CheckpointLimitTests
         // An operator raises the limit: a host with the higher limit and the same workflow releases it.
         // Recovery alone leaves it stopped.
         using var raised = Services(repository, ExecutionLimits.DefaultMaxCheckpointBytes);
-        await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(GrowingWorkflow());
+        await raised.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(GrowingWorkflow());
         var stillStopped = await Engine(raised).RecoverAsync(instanceId);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, stillStopped.Status);
         Assert.Contains("release it", stillStopped.ErrorMessage);
@@ -139,7 +139,7 @@ public sealed class CheckpointLimitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository, 8_000);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<LimitData>("OversizedChild").Step<NoopActivity>().Build());
         var parent = Workflow.Create<LimitData>("ParentOfOversizedChild")
             .Step<NoopActivity>()
@@ -151,7 +151,10 @@ public sealed class CheckpointLimitTests
 
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
         var pending = Assert.Single(await Engine(services).GetPendingActivitiesAsync(result.InstanceId));
-        Assert.Contains("The child workflow could not start", pending.Reason);
+        Assert.Matches(@"^ActivityUnresolved \([0-9a-f]{32}\)$", pending.Reason!);
+        var raw = Assert.Single(await services.GetRequiredService<IWorkflowDiagnostics>().ReadAsync(result.InstanceId));
+        Assert.Contains("The child workflow could not start", raw.Message);
+        Assert.Equal(pending.Reason, new InspectionError(raw.ErrorType, raw.DiagnosticId).ToString());
     }
 
     [Fact]
@@ -164,7 +167,7 @@ public sealed class CheckpointLimitTests
             () => Engine(services).RunAsync(GrowingWorkflow("RefusedStart"),
                 new LimitData { Text = new string('x', GrownLength) }));
 
-        Assert.Empty(await repository.GetWorkflowInstancesByNameAsync("RefusedStart"));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "RefusedStart", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     private static WorkflowDefinition GrowingWorkflow(string name = "GrowingCheckpoint") =>
@@ -179,6 +182,7 @@ public sealed class CheckpointLimitTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(repository);
+        IxIFlow.Tests.Infrastructure.DiagnosticTestAccess.Allow(services);
         services.AddIxIFlow(options => options.MaxCheckpointBytes = maxCheckpointBytes);
         services.AddTransient<NoopActivity>();
         services.AddTransient<GrowActivity>();

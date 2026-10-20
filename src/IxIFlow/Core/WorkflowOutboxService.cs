@@ -104,7 +104,7 @@ internal sealed class WorkflowOutboxService(IWorkflowStateRepository repository,
             OutboxPublishResult result;
             try
             {
-                result = remaining <= TimeSpan.Zero ? OutboxPublishResult.GiveUp("Retry horizon elapsed")
+                result = remaining <= TimeSpan.Zero ? OutboxPublishResult.GiveUp("Retry horizon elapsed", reason: OutboxGivenUpReason.Horizon)
                     : await publisher.PublishAsync(new(item, delivery.Attempts, delivery.StoreNowUtc), attempt.Token)
                         .WaitAsync(attempt.Token);
             }
@@ -160,7 +160,7 @@ internal sealed class WorkflowOutboxService(IWorkflowStateRepository repository,
     internal static OutboxPublishResult ClampRetry(OutboxPublishResult result, int attempts, TimeSpan remaining)
     {
         if (result.Outcome != OutboxPublishOutcome.RetryLater) return result;
-        if (remaining <= TimeSpan.Zero) return OutboxPublishResult.GiveUp(result.Error);
+        if (remaining <= TimeSpan.Zero) return OutboxPublishResult.GiveUp(result.Error, reason: OutboxGivenUpReason.Horizon);
         var delay = result.RetryAfter ?? OutboxRetry.Delay(attempts);
         delay = TimeSpan.FromTicks(Math.Clamp(delay.Ticks, 0, Math.Min(TimeSpan.FromDays(30).Ticks, remaining.Ticks)));
         return result with { RetryAfter = delay };

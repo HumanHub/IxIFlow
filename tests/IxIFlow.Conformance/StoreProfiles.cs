@@ -109,6 +109,14 @@ internal sealed class ProfileStore : IAsyncDisposable
             new { Id = instanceId }));
     }
 
+    internal async Task AgeRetentionAsync()
+    {
+        await using var connection = _newConnection!();
+        await connection.ExecuteAsync(Profile == StoreProfiles.DistributedSqlServer
+            ? "UPDATE dbo.IxIFlowWorkflowInstances SET EndedAtUtc=DATEADD(DAY,-2,SYSUTCDATETIME()) WHERE EndedAtUtc IS NOT NULL; UPDATE dbo.IxIFlowWorkflowTombstones SET ExpiresAtUtc=DATEADD(DAY,-1,SYSUTCDATETIME())"
+            : "UPDATE ixiflow_workflow_instances SET ended_at_utc=clock_timestamp()-INTERVAL '2 days' WHERE ended_at_utc IS NOT NULL; UPDATE ixiflow_workflow_tombstones SET expires_at_utc=clock_timestamp()-INTERVAL '1 day'");
+    }
+
     public async ValueTask DisposeAsync()
     {
         foreach (var repository in _repositories)

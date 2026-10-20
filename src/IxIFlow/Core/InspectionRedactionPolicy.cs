@@ -54,8 +54,55 @@ public sealed class InspectionRedactionPolicy
     /// <summary>Projects a delivery for an inspection listing. Store reads remain execution primitives.</summary>
     public OutboxDelivery Delivery(OutboxDelivery delivery) => delivery with
     {
+        Event = delivery.Event with { DataJson = "" },
+        LeaseToken = null,
+        LeaseUntilUtc = null,
         LastError = delivery.LastError == null ? null : new InspectionError("DeliveryFailure", DeliveryDiagnosticId(delivery)).ToString()
     };
+
+    /// <summary>Administrative listings never expose event bodies or publisher free text.</summary>
+    public DeliverySummary Delivery(DeliverySummary delivery) => delivery with
+    {
+        Event = delivery.Event with { DataJson = "" },
+        LastError = delivery.LastError == null ? null : new InspectionError("DeliveryFailure",
+            $"{delivery.Event.Id}/{delivery.PublisherName}/{delivery.Attempts}").ToString()
+    };
+
+    public OutboxPublisherState Publisher(OutboxPublisherState publisher) => publisher with
+    {
+        LastError = publisher.LastError == null ? null : new InspectionError("PublisherFailure",
+            $"{publisher.Name}/{publisher.DisabledAtUtc?.Ticks}").ToString()
+    };
+
+    /// <summary>Schema shape is inspection; annotations can contain values or arbitrary free text.</summary>
+    public string? EventSchema(string typeName)
+    {
+        try
+        {
+            if (WorkflowTypeIdentity.Resolve(typeName) is not { } type) return null;
+            var schema = System.Text.Json.Schema.JsonSchemaExporter.GetJsonSchemaAsNode(JsonSerializerOptions.Default, type);
+            StripAnnotations(schema);
+            return schema.ToJsonString();
+        }
+        catch { return null; }
+    }
+
+    private static void StripAnnotations(System.Text.Json.Nodes.JsonNode? node)
+    {
+        if (node is System.Text.Json.Nodes.JsonObject obj)
+        {
+            foreach (var key in new[] { "default", "examples", "example", "description", "title", "enum", "const" }) obj.Remove(key);
+            foreach (var property in obj.ToArray())
+            {
+                // Property names are schema structure, even when named "default" or "description".
+                if (property.Key is "properties" or "$defs" && property.Value is System.Text.Json.Nodes.JsonObject members)
+                    foreach (var member in members) StripAnnotations(member.Value);
+                else StripAnnotations(property.Value);
+            }
+        }
+        else if (node is System.Text.Json.Nodes.JsonArray array)
+            foreach (var item in array) StripAnnotations(item);
+    }
 
     /// <summary>A delivery attempt has an identity even when the publisher returned only free text.</summary>
     public string DeliveryDiagnosticId(OutboxDelivery delivery) => $"{delivery.Event.Id}/{delivery.PublisherName}/{delivery.Attempts}";

@@ -44,7 +44,7 @@ public sealed class AddressedWaitTests
     {
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             ApprovalWorkflow("ChildApproval", null));
         // The child's own wait is listed; its parent's wait for the child is never listed (D-17).
         await engine.RunAsync(Workflow.Create<LoopData>("ParentOfChildApproval")
@@ -56,11 +56,11 @@ public sealed class AddressedWaitTests
 
         var listed = new List<OpenWait>();
         string? after = null;
-        while (await engine.GetOpenWaitsAsync(new WaitQuery(Key: "approval", AfterWaitId: after, Limit: 1)) is
+        while (await engine.GetOpenWaitsAsync(new WaitQuery(Key: "approval", AfterWaitRef: after, Limit: 1)) is
                [var wait])
         {
             listed.Add(wait);
-            after = wait.WaitId;
+            after = WaitReference.Of(wait.InstanceId, wait.WaitId);
         }
 
         Assert.Equal(2, listed.Count);

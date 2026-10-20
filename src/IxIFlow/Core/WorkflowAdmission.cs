@@ -54,11 +54,12 @@ public interface IWorkflowIngressClient
     Task<WorkflowAdmissionRecord> AdmitAsync<TData>(WorkflowDefinition definition, TData data,
         WorkflowAdmission admission, CancellationToken cancellationToken = default) where TData : class;
     Task<EventAppendResult> AcceptEventAsync(WorkflowEvent workflowEvent, CancellationToken cancellationToken = default);
+    Task<EventAppendResult> AcceptReplyAsync(string token, WorkflowEvent workflowEvent, CancellationToken cancellationToken = default);
     Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId);
     Task<WorkflowOwnership?> GetOwnershipAsync(string instanceId);
 }
 
-internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWorkflowVersionRegistry registry,
+internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWorkflowCatalog registry,
     WorkflowHost host, ExecutionLimits limits, TimeProvider time, ILogger<WorkflowIngressClient>? logger = null) : IWorkflowIngressClient
 {
     private readonly IWorkflowAdmissionStore _admission = store;
@@ -74,17 +75,16 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             host.WakeNow(existing.InstanceId);
             return existing;
         }
-        var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
-        if (registered?.Metadata.TryGetValue("IsActive", out var active) == true && active is false)
-            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow version is deactivated");
         var now = time.GetUtcNow().UtcDateTime;
-        var (instance, checkpoint, scopes) = WorkflowHost.InstanceOperations.NewInstance(definition, data, new(), now);
+        var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, data, new(), now);
         var prepared = ExecutionCheckpointWriter.Prepare(instance, checkpoint, data, scopes, now,
             verify: limits.VerifyCheckpointParts);
         if (prepared.Bytes > limits.MaxCheckpointBytes)
             throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "The admission checkpoint exceeds the configured limit");
         var commit = CheckpointCommit.CreateAdmission(instance);
         await registry.RegisterWorkflowAsync(definition);
+        WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(definition.Name, definition.Version),
+            definition.Name, definition.Version);
         // Keep the exact commit across store-classified retries; no key reservation or separate instance insert.
         for (var attempt = 1; ; attempt++)
         {
@@ -109,6 +109,23 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (workflowEvent.TargetWaitId != null || workflowEvent.Subject != null)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown reply token");
+        return await AppendAsync(workflowEvent);
+    }
+
+    public Task<EventAppendResult> AcceptReplyAsync(string token, WorkflowEvent workflowEvent,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!ReplyToken.TryRead(token, out var instanceId, out var waitId, out var subject) ||
+            instanceId != workflowEvent.InstanceId)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown reply token");
+        return AppendAsync(workflowEvent with { TargetWaitId = waitId, Subject = subject, Key = null });
+    }
+
+    private async Task<EventAppendResult> AppendAsync(WorkflowEvent workflowEvent)
+    {
         var receipt = await store.AppendEventAsync(workflowEvent);
         if (receipt.MadeRunnable) host.WakeNow(workflowEvent.InstanceId);
         return receipt;
