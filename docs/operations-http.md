@@ -20,7 +20,9 @@ All five route policies are mandatory. Missing or unknown policies, a missing qu
 
 Each single-instance route first authorizes its policy against the HTTP context and then calls `IAuthorizationService.AuthorizeAsync(user, summary, policy)` with the persisted `InstanceSummary`. Policy handlers should support both resources: the context check establishes general access, and the summary check establishes access to this workflow, correlation or parent. An instance denial returns `403`. An unknown instance returns `404`; a retained removal tombstone returns `410`.
 
-Search authorization runs before the store query. Register an `IInstanceQueryScope` with both overloads: one narrows `InstanceQuery` and one narrows `WaitQuery` for the principal. Preserve the caller's filters and paging while intersecting them with the application's permitted scope. Never broaden a supplied filter. The wait overload can constrain `InstanceIds`; an empty collection permits no instances. Even an unrestricted administrative application must register an explicit implementation. Results are never post-filtered, so authorized pages and continuation cursors remain intact. Global outbox access is governed by the outbox policy.
+Search authorization runs before the store query. Register an `IInstanceQueryScope` with both overloads: one narrows `InstanceQuery` and one narrows `WaitQuery` for the principal. Preserve the caller's filters and paging while intersecting them with the application's permitted scope. Never broaden a supplied filter. The wait overload can constrain `InstanceIds`; an empty collection permits no instances. Even an unrestricted administrative application must register an explicit implementation. Search and wait pages retain the store's scoped continuation cursors. Global outbox access is governed by the outbox policy.
+
+`GET /unschedulable` accepts `limit` (1–1000, default 100) and an opaque `cursor` from the preceding page's `nextCursor`. It returns due, unleased work that no live host can run, including unmet demands and the store time used for diagnosis. Each candidate passes an exact instance query narrowed by the application's scope, then resource authorization under the read policy, before it counts toward the response page. Internal reads use batches of 100; finding a page can require several batches when many candidates are outside the caller's scope. Returned cursors identify only visible rows. Paging uses fresh reads, so heartbeat and scheduling changes can alter later pages.
 
 **Inspection also requires reply authorization.** Trace and snapshot routes enforce the inspect policy and the reply policy, including both checks against the instance summary. Treat trace and snapshot readers as able to reply. [Reply tokens](reply-tokens.md) are capabilities: holding one is the right to answer its wait. Handle token-bearing listings as privileged output.
 
@@ -29,6 +31,7 @@ All paths below are relative to the mapped prefix.
 | Method and path | Policy | Response |
 | --- | --- | --- |
 | `GET /instances` | read | `InstancePage`: `items`, `nextCursor` |
+| `GET /unschedulable` | read | Due work with `unmetDemands`: `items`, `nextCursor`, `storeTimeUtc` |
 | `GET /instances/{id}` | read | `InstanceSummary` |
 | `GET /instances/{id}/waits` | read | Array of `PendingWait`, without wait IDs or tokens |
 | `GET /instances/{id}/waits?tokens=true` | reply | `WorkflowWaitPage`: `items`, `nextAfter`; items include reply tokens |

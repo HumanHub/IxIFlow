@@ -4,8 +4,10 @@ public sealed partial class SqlWorkflowStateRepository
 {
     internal override string AllDemandSetsSql => """
         SELECT sets.DemandSetId, demand.DemandKey AS [Key], demand.DemandValue AS Value,
-            demand.ExpiresAtUtc, demand.Inherit FROM dbo.IxIFlowDemandSets AS sets
-        LEFT JOIN dbo.IxIFlowDemandSetRows AS demand ON demand.DemandSetId = sets.DemandSetId;
+            demand.ExpiresAtUtc, demand.ValueExpiresAtUtc, demand.Inherit FROM dbo.IxIFlowDemandSets AS sets
+        LEFT JOIN dbo.IxIFlowDemandSetRows AS demand ON demand.DemandSetId = sets.DemandSetId
+        WHERE EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances AS due WITH (FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
+                WHERE due.DemandSetId = sets.DemandSetId AND due.RunnableAtUtc <= @Now);
         """;
 
     internal override string UnschedulableSql => """

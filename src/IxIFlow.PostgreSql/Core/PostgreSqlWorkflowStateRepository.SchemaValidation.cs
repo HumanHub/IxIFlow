@@ -31,7 +31,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 SELECT delivery_identity, payload_hash, sequence, rejection, expires_at_utc, notice_json FROM ixiflow_webhook_deliveries WHERE 1=0;
                 SELECT member_id, kind, name, endpoint, slots, engine_version, heartbeat_interval_ticks, started_at_utc, heartbeat_at_utc FROM ixiflow_hosts WHERE 1=0;
                 SELECT demand_set_id FROM ixiflow_demand_sets WHERE 1=0;
-                SELECT demand_set_id, demand_key, demand_value, expires_at_utc, inherit FROM ixiflow_demand_set_rows WHERE 1=0;
+                SELECT demand_set_id, demand_key, demand_value, expires_at_utc, value_expires_at_utc, inherit FROM ixiflow_demand_set_rows WHERE 1=0;
                 SELECT member_id, capability_key, capability_value FROM ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();

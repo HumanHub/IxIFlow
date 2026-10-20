@@ -7,9 +7,13 @@ namespace IxIFlow.Core.Runtime;
 // One bounded queue and at most one outstanding notifier call per host. A notifier that ignores
 // cancellation may occupy that call forever; it cannot accumulate tasks or hold up store callers.
 internal sealed class RunnableNotifications(IRunnableNotifier notifier,
-    ILogger<RunnableNotifications>? logger = null) : IDisposable
+    ILogger<RunnableNotifications>? logger = null, TimeProvider? timeProvider = null) : IDisposable
 {
     private readonly ILogger _logger = logger ?? NullLogger<RunnableNotifications>.Instance;
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
+    private readonly object _dropGate = new();
+    private long _pendingDrops;
+    private long? _lastDropLog;
     private readonly Channel<RunnableNotice> _queue = Channel.CreateBounded<RunnableNotice>(
         new BoundedChannelOptions(256) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
     private readonly CancellationTokenSource _stop = new();
@@ -21,7 +25,19 @@ internal sealed class RunnableNotifications(IRunnableNotifier notifier,
         if (Interlocked.Exchange(ref _started, 1) == 0)
             ThreadPool.UnsafeQueueUserWorkItem(_ => _ = DrainAsync(), (object?)null);
         if (!_queue.Writer.TryWrite(notice))
-            _logger.LogWarning("Runnable notification queue is full or stopped; dropped notice for {InstanceId}", notice.InstanceId);
+        {
+            Telemetry.RunnableNoticeDrops.Add(1);
+            long dropped;
+            lock (_dropGate)
+            {
+                _pendingDrops++;
+                if (_lastDropLog is { } last && _time.GetElapsedTime(last) < TimeSpan.FromSeconds(30)) return;
+                _lastDropLog = _time.GetTimestamp();
+                dropped = _pendingDrops;
+                _pendingDrops = 0;
+            }
+            _logger.LogWarning("Runnable notification queue is full or stopped; dropped {DroppedCount} notices since the last report", dropped);
+        }
     }
 
     private async Task DrainAsync()

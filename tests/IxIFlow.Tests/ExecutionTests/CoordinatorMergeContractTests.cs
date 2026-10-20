@@ -17,7 +17,7 @@ public sealed class CoordinatorMergeContractTests : IClassFixture<SqliteTestData
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
-    public async Task TerminationFallbackClaimsOnlyOnAHostMeetingEveryDemand(bool sqlite, bool missingDefinition)
+    public async Task TerminationFallbackFinishesOnAHostWithoutMatchingPlacement(bool sqlite, bool missingDefinition)
     {
         IWorkflowStateRepository store = sqlite
             ? new SqliteWorkflowStateRepository(SqliteTestDatabase<CoordinatorMergeContractTests>.ConnectionString)
@@ -41,15 +41,13 @@ public sealed class CoordinatorMergeContractTests : IClassFixture<SqliteTestData
             Assert.Contains(new WorkflowDemand("gpu", "cuda"), demands);
             Assert.Equal(DemandSet.Create(demands).Id, accepted.Notice.DemandSetId);
 
-            Assert.False(await wrong.GetRequiredService<WorkflowHost.InstanceOperations>().FinishTerminationAsync(instance.InstanceId));
-            var unchanged = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
-            Assert.Equal(WorkflowStatus.Running, unchanged.Status);
-            Assert.Equal(instance.Revision, unchanged.Revision);
             Assert.Empty(await store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(wrong)));
             Assert.Contains(await store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(matching)),
                 candidate => candidate.InstanceId == instance.InstanceId);
 
-            Assert.True(await matching.GetRequiredService<WorkflowHost.InstanceOperations>().FinishTerminationAsync(instance.InstanceId));
+            Assert.False(await wrong.GetRequiredService<WorkflowHost.InstanceOperations>()
+                .FinishTerminationAsync(instance.InstanceId, Guid.NewGuid()));
+            Assert.True(await wrong.GetRequiredService<WorkflowHost.InstanceOperations>().FinishTerminationAsync(instance.InstanceId));
             var terminated = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
             Assert.Equal(WorkflowStatus.Terminated, terminated.Status);
             Assert.Equal(instance.Revision + 1, terminated.Revision);

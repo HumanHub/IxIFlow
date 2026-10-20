@@ -125,7 +125,7 @@ internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions opt
         using var call = channel.CreateCallInvoker().AsyncDuplexStreamingCall(LinkProtocol.Link, null,
             new(headers: headers, cancellationToken: stop.Token));
         var queue = new SendQueue<HostMessage>(options.SendQueueCapacity);
-        var capabilities = new Dictionary<string, string>(await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings));
+        var capabilities = new Dictionary<string, string>(await settings.GetCapabilitiesAsync(registry));
         queue.TrySend(Hello(capabilities));
         lock (_gate) { _queue = queue; _session = stop; }
         long lastSeen = time.GetTimestamp();
@@ -205,7 +205,7 @@ internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions opt
                     if (_subscriptions.Values.Any(subscription => !subscription.Ack.Task.IsCompleted &&
                         time.GetElapsedTime(subscription.Started) >= options.LinkTimeout))
                         throw new TimeoutException("Coordinator subscription acknowledgement timed out");
-                var current = new Dictionary<string, string>(await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings));
+                var current = new Dictionary<string, string>(await settings.GetCapabilitiesAsync(registry));
                 if (!capabilities.OrderBy(p => p.Key, StringComparer.Ordinal).SequenceEqual(current.OrderBy(p => p.Key, StringComparer.Ordinal)))
                 {
                     if (!queue.TrySend(Hello(current))) throw new IOException("Coordinator send queue full");

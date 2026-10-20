@@ -4,9 +4,11 @@ public sealed partial class SqliteWorkflowStateRepository
 {
     internal override string AllDemandSetsSql => """
         SELECT sets.demand_set_id AS DemandSetId, demand.demand_key AS [Key],
-            demand.demand_value AS Value, demand.expires_at_utc AS ExpiresAtUtc, demand.inherit AS Inherit
+            demand.demand_value AS Value, demand.expires_at_utc AS ExpiresAtUtc, demand.value_expires_at_utc AS ValueExpiresAtUtc, demand.inherit AS Inherit
         FROM ixiflow_demand_sets AS sets LEFT JOIN ixiflow_demand_set_rows AS demand
             ON demand.demand_set_id = sets.demand_set_id
+        WHERE EXISTS (SELECT 1 FROM ixiflow_workflow_instances AS due INDEXED BY ix_ixiflow_instances_set_runnable
+                WHERE due.demand_set_id = sets.demand_set_id AND due.runnable_at_utc <= @Now)
         """;
 
     internal override string UnschedulableSql => """

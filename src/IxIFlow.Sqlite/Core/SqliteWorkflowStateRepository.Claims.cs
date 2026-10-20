@@ -16,7 +16,8 @@ public sealed partial class SqliteWorkflowStateRepository
 
     private const string UnmetDemand = """
         (demand.expires_at_utc IS NULL OR demand.expires_at_utc > @Now)
-        AND (capability.key IS NULL OR (demand.demand_value IS NOT NULL AND capability.value <> demand.demand_value))
+        AND (capability.key IS NULL OR (demand.demand_value IS NOT NULL
+            AND (demand.value_expires_at_utc IS NULL OR demand.value_expires_at_utc > @Now) AND capability.value <> demand.demand_value))
         """;
 
     private const string PinMatches = """
@@ -27,7 +28,9 @@ public sealed partial class SqliteWorkflowStateRepository
         WITH {CapabilitySnapshotSql},
         matched AS MATERIALIZED (
             SELECT sets.demand_set_id FROM ixiflow_demand_sets AS sets
-            WHERE NOT EXISTS (SELECT 1 FROM ixiflow_demand_set_rows AS demand
+            WHERE EXISTS (SELECT 1 FROM ixiflow_workflow_instances AS due INDEXED BY ix_ixiflow_instances_set_runnable
+                WHERE due.demand_set_id = sets.demand_set_id AND due.runnable_at_utc <= @Now)
+              AND NOT EXISTS (SELECT 1 FROM ixiflow_demand_set_rows AS demand
                 LEFT JOIN capabilities AS capability ON capability.key = demand.demand_key
                 WHERE demand.demand_set_id = sets.demand_set_id AND {UnmetDemand}))
         SELECT instance.instance_id AS InstanceId, instance.runnable_at_utc AS RunnableAtUtc

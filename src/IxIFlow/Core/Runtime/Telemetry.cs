@@ -48,6 +48,9 @@ internal static class Telemetry
     public static readonly Gauge<long> Unschedulable = Meter.CreateGauge<long>(
         "ixiflow.backlog.unschedulable", "{instance}", "Due, unleased instances no live host can run, last complete scan");
 
+    public static readonly Counter<long> RunnableNoticeDrops = Meter.CreateCounter<long>(
+        "ixiflow.runnable.notice.dropped", "{notice}", "Runnable notices dropped by the bounded host queue");
+
     public static readonly Gauge<double> UnschedulableAge = Meter.CreateGauge<double>(
         "ixiflow.backlog.unschedulable.age", "s", "Age of the oldest unschedulable instance, last complete scan");
 

@@ -9,7 +9,7 @@ internal sealed class CoordinatorMatcher(CoordinatorOptions options, TimeProvide
     private readonly Dictionary<Guid, Peer> _hosts = [];
     private readonly Dictionary<string, Held> _notices = new(StringComparer.Ordinal);
     private long _order;
-    internal int HeldCount { get { lock (_gate) { Expire(); return _notices.Count(p => !p.Value.Woken); } } }
+    internal int HeldCount { get { lock (_gate) { Expire(); return _notices.Count; } } }
 
     internal sealed class Peer(HostHello hello, Func<CoordinatorMessage, bool> send, Action abort)
     {
@@ -20,7 +20,7 @@ internal sealed class CoordinatorMatcher(CoordinatorOptions options, TimeProvide
         internal bool Send(CoordinatorMessage message) => send(message);
         internal void Abort() => abort();
     }
-    private sealed record Held(InstanceNotice Notice, long Started) { internal bool Woken; }
+    private sealed record Held(InstanceNotice Notice, long Started);
 
     internal Peer Connect(HostHello hello, Func<CoordinatorMessage, bool> send, Action abort)
     {
@@ -57,7 +57,7 @@ internal sealed class CoordinatorMatcher(CoordinatorOptions options, TimeProvide
         {
             peer.Hello = hello with { Capabilities = new(MemberRegistry.SnapshotCapabilities(hello.Capabilities)) };
             Expire();
-            foreach (var held in _notices.Values.Where(n => !n.Woken)) Match(held);
+            foreach (var held in _notices.Values.ToArray()) Match(held);
         }
     }
     internal void Ready(Peer peer, int freeSlots)
@@ -67,7 +67,7 @@ internal sealed class CoordinatorMatcher(CoordinatorOptions options, TimeProvide
         {
             peer.FreeSlots = freeSlots;
             Expire();
-            foreach (var held in _notices.Values.Where(n => !n.Woken)) Match(held);
+            foreach (var held in _notices.Values.ToArray()) Match(held);
         }
     }
     internal void Subscribe(Peer peer, string id, long subscription, bool watching)
@@ -117,7 +117,7 @@ internal sealed class CoordinatorMatcher(CoordinatorOptions options, TimeProvide
             if (!peer.Send(new(CoordinatorMessageKind.Wake, InstanceIds: [held.Notice.InstanceId]))) continue;
             peer.FreeSlots--;
             peer.LastWake = ++_order;
-            held.Woken = true;
+            _notices.Remove(held.Notice.InstanceId);
             return;
         }
     }

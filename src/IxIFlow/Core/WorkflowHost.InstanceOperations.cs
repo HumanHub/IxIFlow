@@ -45,12 +45,12 @@ public sealed partial class WorkflowHost
         private readonly HostSettings _hostSettings = (services.GetService(typeof(HostSettings)) as HostSettings) ?? HostSettings.Default;
 
         private async Task<ClaimQuery> ClaimQueryAsync() => new(_hostSettings.Id,
-            await WorkflowHeartbeatService.CapabilitiesAsync(registry, _hostSettings));
+            await _hostSettings.GetCapabilitiesAsync(registry));
 
         private async Task<bool> MeetsDemandsAsync(string instanceId, IReadOnlyList<WorkflowDemand> demands, ClaimQuery query)
         {
             // A host clock must neither expire a pin early nor keep an expired pin alive.
-            var now = demands.Any(demand => demand.ExpiresAtUtc != null)
+            var now = demands.Any(demand => demand.ExpiresAtUtc != null || demand.ValueExpiresAtUtc != null)
                 ? (await _store.GetPendingEventsAsync(instanceId, 0, 1)).StoreTimeUtc
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The store did not return its clock")
                 : DateTime.MinValue;
@@ -442,6 +442,7 @@ public sealed partial class WorkflowHost
                     return await ExistingStartAsync(existing, definition, scopes, versionOmitted);
                 instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
                 await registry.RegisterWorkflowAsync(definition);
+                await _hostSettings.RegisteredWorkflowAsync(definition, scopes.StructureHash);
                 WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(definition.Name, definition.Version),
                     definition.Name, definition.Version);
                 if (options.WhenUnschedulable == WhenUnschedulable.Fail)

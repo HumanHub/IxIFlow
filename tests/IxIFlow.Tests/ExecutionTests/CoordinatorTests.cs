@@ -67,13 +67,32 @@ public sealed class CoordinatorTests
         time.Advance(TimeSpan.FromSeconds(9)); matcher.Notify(Notice("held"));
         var peer = new FakePeer(matcher, new(), 8);
         Assert.Single(peer.Messages);
-        matcher.Notify(Notice("held")); Assert.Single(peer.Messages);
+        matcher.Notify(Notice("held")); Assert.Equal(2, peer.Messages.Count);
         time.Advance(TimeSpan.FromSeconds(1)); matcher.Notify(Notice("held"));
-        Assert.Equal(2, peer.Messages.Count);
+        Assert.Equal(3, peer.Messages.Count);
         var empty = new CoordinatorMatcher(new(), time);
         empty.Notify(Notice("expired")); time.Advance(TimeSpan.FromSeconds(11));
         var late = new FakePeer(empty, new(), 8);
         Assert.Empty(late.Messages); Assert.Equal(0, empty.HeldCount);
+    }
+
+    [Fact]
+    public void LaterNoticeForTheSameInstanceWakesAgainBeforeHoldExpiry()
+    {
+        var time = new FakeTimeProvider();
+        var matcher = new CoordinatorMatcher(new() { NoticeCapacity = 1 }, time);
+        var peer = new FakePeer(matcher, new(), 0);
+        matcher.Notify(Notice("again"));
+        matcher.Notify(Notice("again"));
+        Assert.Equal(1, matcher.HeldCount);
+        matcher.Ready(peer.Peer, 1);
+        Assert.Single(peer.Messages);
+        matcher.Notify(Notice("again"));
+        Assert.Equal(1, matcher.HeldCount);
+        matcher.Ready(peer.Peer, 1);
+        Assert.Equal(2, peer.Messages.Count);
+        Assert.Equal(0, matcher.HeldCount);
+        Assert.Equal(time.Start, time.GetUtcNow());
     }
 
     [Fact]
@@ -118,6 +137,29 @@ public sealed class CoordinatorTests
         matcher.Subscribe(peer.Peer, "awaited", 0, false);
         matcher.Notify(new("awaited", false, true, [], null));
         Assert.Equal(2, peer.Messages.Count);
+    }
+
+    [Fact]
+    public async Task AnEmptyWakePassRestoresCapacityBeforeTheNextNotice()
+    {
+        var time = new FakeTimeProvider();
+        var inner = new InMemoryWorkflowStateRepository(time);
+        var id = await SeedAsync(time, inner);
+        var store = DispatchProxy.Create<IWorkflowStateRepository, CoordinatorCapabilityReviewTests.CountingForwarder>();
+        var calls = (CoordinatorCapabilityReviewTests.CountingForwarder)(object)store;
+        calls.Inner = inner;
+        await using var server = await Server.StartAsync(time, inner);
+        await using var worker = await Host.StartAsync(Services(time, store, true, server.Endpoint, slots: 1));
+        await ConnectedAsync(worker, 1);
+        await Task.Delay(50);
+        var before = calls.Count("GetRunnableInstancesAsync");
+        server.Matcher.Notify(Notice("stale"));
+        await EventuallyAsync(() => calls.Count("GetRunnableInstancesAsync") > before);
+        await Task.Delay(50);
+        await AppendAsync(inner, id);
+        server.Matcher.Notify(Notice(id, (await inner.GetWorkflowDemandsAsync(id)).ToArray()));
+        await EventuallyAsync(async () => (await inner.GetWorkflowInstanceSummaryAsync(id))?.Status == WorkflowStatus.Completed);
+        Assert.Equal(time.Start, time.GetUtcNow());
     }
 
     [Fact]
@@ -464,13 +506,13 @@ public sealed class CoordinatorTests
         .Demand("region", "eu").Step<Noop>().WaitFor<Approval>("approval").Step<Noop>().Build();
     private static ServiceProvider Services(TimeProvider time, IWorkflowStateRepository store, bool eligible,
         Uri? endpoint = null, IRunnableWakeSource? source = null, bool discover = false,
-        Action<CoordinatorClientOptions>? configure = null)
+        Action<CoordinatorClientOptions>? configure = null, int slots = HostSettings.DefaultSlots)
     {
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton(time); services.AddSingleton(store);
         if (source != null) services.AddSingleton(source);
         var builder = services.AddIxIFlow(o =>
-        { o.PollInterval = TimeSpan.FromMinutes(1); o.Capabilities["region"] = eligible ? "eu" : "us"; });
+        { o.PollInterval = TimeSpan.FromMinutes(1); o.Slots = slots; o.Capabilities["region"] = eligible ? "eu" : "us"; });
         if (endpoint != null || discover) builder.UseCoordinators(o => { o.AllowInsecure = true; if (endpoint != null) o.Coordinators.Add(endpoint); configure?.Invoke(o); });
         services.AddTransient<Noop>();
         var provider = services.BuildServiceProvider();

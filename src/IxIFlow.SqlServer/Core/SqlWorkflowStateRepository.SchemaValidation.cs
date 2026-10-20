@@ -32,7 +32,7 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT MemberId, Kind, Name, Endpoint, Slots, EngineVersion, HeartbeatIntervalTicks, StartedAtUtc, HeartbeatAtUtc FROM dbo.IxIFlowHosts WHERE 1=0;
                 SELECT MemberId, CapabilityKey, CapabilityValue FROM dbo.IxIFlowHostCapabilities WHERE 1=0;
                 SELECT DemandSetId FROM dbo.IxIFlowDemandSets WHERE 1=0;
-                SELECT DemandSetId, DemandKey, DemandValue, ExpiresAtUtc, Inherit, DemandKeyBytes FROM dbo.IxIFlowDemandSetRows WHERE 1=0;
+                SELECT DemandSetId, DemandKey, DemandValue, ExpiresAtUtc, ValueExpiresAtUtc, Inherit, DemandKeyBytes FROM dbo.IxIFlowDemandSetRows WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
             if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.IxIFlowWorkflowInstances') AND name=N'IX_IxIFlowInstances_SetPin'", transaction: transaction) != 1)

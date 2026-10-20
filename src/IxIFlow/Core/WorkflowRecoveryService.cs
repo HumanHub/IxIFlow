@@ -51,7 +51,10 @@ internal sealed partial class WorkflowRecoveryService(
         using (var probe = scopes.CreateScope())
             limit = probe.ServiceProvider.GetService<WorkflowHost>()?.FreeSlots ?? _settings.Slots;
         if (limit == 0)
+        {
+            _coordination.CompleteClaimPass();
             return Task.CompletedTask;
+        }
         HashSet<string> skipped;
         lock (_lock)
         {
@@ -65,8 +68,8 @@ internal sealed partial class WorkflowRecoveryService(
         }
         ClaimQuery query;
         using (var probe = scopes.CreateScope())
-            query = new ClaimQuery(_settings.Id, await WorkflowHeartbeatService.CapabilitiesAsync(
-                probe.ServiceProvider.GetRequiredService<IWorkflowCatalog>(), _settings), limit + skipped.Count);
+            query = new ClaimQuery(_settings.Id, await _settings.GetCapabilitiesAsync(
+                probe.ServiceProvider.GetRequiredService<IWorkflowCatalog>()), limit + skipped.Count);
         var candidates = await repository.GetRunnableInstancesAsync(query);
         // Reserve against the live sets, so a pass running alongside cannot take the same instance.
         var instances = new List<RunnableInstance>();
@@ -93,6 +96,7 @@ internal sealed partial class WorkflowRecoveryService(
             lock (_lock)
                 foreach (var instance in instances)
                     _recovering.Remove(instance.InstanceId);
+            _coordination.CompleteClaimPass();
         }
     }
 
