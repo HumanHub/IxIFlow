@@ -90,7 +90,7 @@ public sealed class DiagnosticStorageTests : IClassFixture<SqliteTestDatabase<Di
         saved.Status = WorkflowStatus.Running;
         saved.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         await store.AppendEventAsync(new(saved.InstanceId, Guid.NewGuid().ToString("N"),
-            typeof(Notice).AssemblyQualifiedName!, "{}", Key: "a"));
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Notice)), "{}", Key: "a"));
         await store.SeedAsync(saved);
         var recovered = await client.RecoverAsync(saved.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, recovered.Status);

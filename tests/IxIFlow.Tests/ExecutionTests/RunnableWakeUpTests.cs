@@ -3,6 +3,7 @@ using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
@@ -121,7 +122,7 @@ public sealed class RunnableWakeUpTests
 
     private static async Task AppendApprovalAsync(IWorkflowStateRepository repository, string instanceId) =>
         Assert.Equal(EventAppendStatus.Stored, (await repository.AppendEventAsync(new WorkflowEvent(instanceId,
-            Guid.NewGuid().ToString("N"), typeof(Approval).AssemblyQualifiedName!,
+            Guid.NewGuid().ToString("N"), WorkflowTypeIdentity.SavedName(typeof(Approval)),
             JsonSerializer.Serialize(new Approval()), Key: "approval"))).Status);
 
     private static async Task CompletedAsync(IWorkflowStateRepository repository, string instanceId)

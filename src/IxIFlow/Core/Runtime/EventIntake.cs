@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Text.Json;
 
 namespace IxIFlow.Core.Runtime;
@@ -111,10 +112,16 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         {
             if (payload is ChildCompleted)
             {
-                var invocation = checkpoint.Continuations.Single(item => item.Id == matching[0].ContinuationId).PendingActivity;
-                if (WorkflowTypeIdentity.Resolve(invocation?.ChildDataType ?? "") == null)
+                var invocation = checkpoint.Continuations.Single(item => item.Id == matching[0].ContinuationId).PendingActivity!;
+                var step = scopes.Step(invocation.StepId);
+                using var childLease = invocation.ChildBundleDigest == null ? null
+                    : await ((IWorkflowDefinitionSource)services.GetService(typeof(IWorkflowDefinitionSource))!)
+                        .AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, invocation.ChildBundleDigest,
+                            checkpoint.Signals?.AcquisitionToken ?? default);
+                using var childTypes = WorkflowTypeIdentity.Enter(childLease?.Definition.BundleContext);
+                if (WorkflowTypeIdentity.Resolve(invocation.ChildDataType) == null)
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                        $"Child data type '{invocation?.ChildDataType}' is unavailable");
+                        $"Child data type '{invocation.ChildDataType}' is unavailable");
             }
             Consume(scopes, checkpoint, stored, matching[0], payload);
             Record(instance, checkpoint, stored, matching[0], null);

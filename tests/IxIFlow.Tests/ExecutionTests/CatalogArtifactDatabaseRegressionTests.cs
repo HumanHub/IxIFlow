@@ -151,6 +151,6 @@ public sealed class CatalogArtifactDatabaseRegressionTests
     {
         InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = name, WorkflowVersion = 1,
         Status = WorkflowStatus.Suspended, ExecutionStateJson = StoreTestSupport.CheckpointJson,
-        WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = typeof(object).AssemblyQualifiedName!
+        WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object))
     };
 }

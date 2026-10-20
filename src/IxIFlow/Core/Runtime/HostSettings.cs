@@ -4,15 +4,48 @@ namespace IxIFlow.Core.Runtime;
 internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan PollInterval, string Name)
 {
     private readonly SemaphoreSlim _capabilityGate = new(1, 1);
-    private IReadOnlyDictionary<string, string>? _capabilitySnapshot;
-    private IWorkflowCatalog? _capabilityCatalog;
-    private long _definitionRevision;
+    private sealed record CapabilitySnapshot(IWorkflowCatalog Catalog, long Revision, IReadOnlyDictionary<string, string> Values);
+    private CapabilitySnapshot? _capabilitySnapshot;
+    private long? _lastDemandRefresh;
+    internal WorkflowHeartbeatService.CompatibilityMemo Compatibility { get; } = new();
+    internal Microsoft.Extensions.Logging.ILogger<WorkflowHeartbeatService>? CapabilityLogger { get; init; }
 
-    internal Task<IReadOnlyDictionary<string, string>> GetCapabilitiesAsync(IWorkflowCatalog catalog) =>
-        CapabilitiesAsync(catalog, refresh: false);
+    internal Task<IReadOnlyDictionary<string, string>> GetCapabilitiesAsync(IWorkflowCatalog catalog)
+    {
+        // Ordinary placement reads keep using a valid snapshot while a refresh is in flight.
+        var snapshot = Volatile.Read(ref _capabilitySnapshot);
+        return snapshot != null && ReferenceEquals(snapshot.Catalog, catalog) && snapshot.Revision == catalog.DefinitionRevision
+            ? Task.FromResult(snapshot.Values) : CapabilitiesAsync(catalog, refresh: false);
+    }
 
     internal Task<IReadOnlyDictionary<string, string>> RefreshCapabilitiesAsync(IWorkflowCatalog catalog) =>
         CapabilitiesAsync(catalog, refresh: true);
+
+    internal async Task<IReadOnlyDictionary<string, string>?> RefreshDemandCapabilitiesAsync(IWorkflowCatalog catalog, TimeProvider time)
+    {
+        // A demand refresh never queues behind another refresh while holding an instance
+        // lease. Failed attempts also consume the interval, so outages cannot cause a storm.
+        if (!await _capabilityGate.WaitAsync(0)) return null;
+        try
+        {
+            var now = time.GetTimestamp();
+            if (_lastDemandRefresh is { } previous && time.GetElapsedTime(previous, now) < HeartbeatInterval) return null;
+            _lastDemandRefresh = now;
+            return await ReadCapabilitiesAsync(catalog);
+        }
+        catch (Exception error) when (error is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
+        { return null; }
+        finally { _capabilityGate.Release(); }
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>> ReadCapabilitiesAsync(IWorkflowCatalog catalog)
+    {
+        // Capture the revision before enumeration so a concurrent registration invalidates it.
+        var revision = catalog.DefinitionRevision;
+        var snapshot = MemberRegistry.SnapshotCapabilities(await WorkflowHeartbeatService.CapabilitiesAsync(catalog, this));
+        Volatile.Write(ref _capabilitySnapshot, new(catalog, revision, snapshot));
+        return snapshot;
+    }
 
     private async Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync(IWorkflowCatalog catalog, bool refresh)
     {
@@ -22,15 +55,12 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
             // Read the revision before enumerating. A registration racing the enumeration then
             // invalidates this snapshot on the next lookup instead of being cached as already seen.
             var revision = catalog.DefinitionRevision;
-            if (refresh || _capabilitySnapshot == null || !ReferenceEquals(_capabilityCatalog, catalog) ||
-                _definitionRevision != revision)
+            if (refresh || _capabilitySnapshot == null || !ReferenceEquals(_capabilitySnapshot.Catalog, catalog) ||
+                _capabilitySnapshot.Revision != revision)
             {
-                _capabilitySnapshot = MemberRegistry.SnapshotCapabilities(
-                    await WorkflowHeartbeatService.CapabilitiesAsync(catalog, this));
-                _capabilityCatalog = catalog;
-                _definitionRevision = revision;
+                await ReadCapabilitiesAsync(catalog);
             }
-            return _capabilitySnapshot;
+            return _capabilitySnapshot!.Values;
         }
         finally { _capabilityGate.Release(); }
     }
@@ -38,6 +68,7 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
     public const int DefaultMaxCrashes = 3;
     public bool Debugging { get; init; }
     public int MaxCrashes { get; init; } = DefaultMaxCrashes;
+    internal bool BundleHostingEnabled { get; init; }
 
     public Guid Id { get; } = Guid.NewGuid();
     public TimeSpan UnschedulableScanInterval { get; init; } = TimeSpan.FromSeconds(30);

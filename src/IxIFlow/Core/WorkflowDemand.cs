@@ -40,6 +40,7 @@ internal static class WorkflowDemands
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown unschedulable policy");
         var declarations = definition.Demands.Concat(registrationDemands ?? []).Concat(options.Demands).Append(
             new WorkflowDemand($"workflow:{definition.Name}@{definition.Version}", structureHash));
+        if (definition.BundleDigest != null) declarations = declarations.Append(new WorkflowDemand("bundle-host"));
         if (options.RequiredHostId is { } host)
         {
             if (host == Guid.Empty)

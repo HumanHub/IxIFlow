@@ -42,7 +42,7 @@ public sealed class ReplyTokenTests
         Assert.False(ReplyToken.TryRead(token, out var instance, out var wait, out var subject));
         Assert.Equal("", instance); Assert.Equal("", wait); Assert.Null(subject);
         var ingress = services.GetRequiredService<IWorkflowIngressClient>();
-        var entry = new WorkflowEvent("instance", "event", typeof(Answer).AssemblyQualifiedName!, "{}");
+        var entry = new WorkflowEvent("instance", "event", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Answer)), "{}");
         var ingressError = await Assert.ThrowsAsync<WorkflowEngineException>(() => ingress.AcceptReplyAsync(token, entry));
         Assert.Equal("Unknown reply token", ingressError.Message);
         store.VerifyNoOtherCalls();

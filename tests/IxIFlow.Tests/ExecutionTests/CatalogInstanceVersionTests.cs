@@ -104,7 +104,7 @@ public sealed class CatalogInstanceVersionTests
         await client.AwaitAsync(id);
 
         var parent = (await store.GetWorkflowInstanceAsync(id))!;
-        await store.AppendEventAsync(new(id, "continue", typeof(Data).AssemblyQualifiedName!, "{}", Key: "continue"));
+        await store.AppendEventAsync(new(id, "continue", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)), "{}", Key: "continue"));
         parent.Status = WorkflowStatus.Suspended;
         parent.ExecutionStateJson = StoreTestSupport.CheckpointJson;
         var host = await StoreTestSupport.ClaimAsync(provider);
@@ -319,7 +319,7 @@ public sealed class CatalogInstanceVersionTests
     {
         InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = name, WorkflowVersion = version,
         Status = WorkflowStatus.Suspended, ExecutionStateJson = StoreTestSupport.CheckpointJson,
-        WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = typeof(Data).AssemblyQualifiedName!
+        WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data))
     };
 
     private sealed class CallerRow { public string Name { get; set; } = ""; public int Version { get; set; } }

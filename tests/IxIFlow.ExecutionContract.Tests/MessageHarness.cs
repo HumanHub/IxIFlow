@@ -46,7 +46,7 @@ internal sealed class MessageHarness : IDisposable
         var instance = new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = definition.Name,
-            WorkflowVersion = definition.Version, WorkflowDataType = typeof(Data).AssemblyQualifiedName!,
+            WorkflowVersion = definition.Version, WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
             WorkflowDataJson = StoredJson.Inline("{\"Value\":\"input\"}"), Status = WorkflowStatus.Running,
             CorrelationId = "correlation", CreatedAt = now, StartedAt = now,
             ExecutionStateJson = JsonSerializer.Serialize(new

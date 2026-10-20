@@ -64,7 +64,8 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
                 _watched[instanceId] = subscribers = [];
             subscribers.Add(subscriber);
             if (_loop == null || _loop.IsCompleted)
-                _loop = Task.Run(RunAsync);
+                using (ExecutionContextFlow.SuppressIfNeeded())
+                    _loop = Task.Run(RunAsync);
         }
         return subscriber;
     }
@@ -222,12 +223,13 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     {
         lock (_lock)
             _reads[read] = description;
-        _ = read.ContinueWith(finished =>
-        {
-            lock (_lock)
-                _reads.Remove(finished);
-            _ = finished.Exception; // Observe failures even if shutdown had to abandon the read.
-        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        using (ExecutionContextFlow.SuppressIfNeeded())
+            _ = read.ContinueWith(finished =>
+            {
+                lock (_lock)
+                    _reads.Remove(finished);
+                _ = finished.Exception; // Observe failures even if shutdown had to abandon the read.
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         return read;
     }
 

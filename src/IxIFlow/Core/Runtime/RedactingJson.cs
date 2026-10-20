@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Collections;
 using System.Reflection;
 using System.Runtime.CompilerServices;
