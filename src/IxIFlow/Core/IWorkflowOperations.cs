@@ -104,7 +104,7 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
         if (instanceIds.Count > 1000) throw new ArgumentException("At most 1000 instance IDs", nameof(instanceIds));
         cancellationToken.ThrowIfCancellationRequested();
         return host.ReadAsync(async client => (IReadOnlyList<PendingWait>)(await client.GetOpenWaitsAsync(
-            new WaitQuery(Kind: WaitKind.Event, Limit: int.MaxValue, InstanceIds: instanceIds)))
+            new WaitQuery(Kind: WaitKind.Event, Limit: int.MaxValue, InstanceIds: instanceIds), cancellationToken))
             .Select(wait => new PendingWait(wait.InstanceId, wait.Key, wait.EventType, wait.DefaultPayloadJson,
                 wait.DeadlineUtc, wait.OpenedAtUtc)).ToArray());
     }

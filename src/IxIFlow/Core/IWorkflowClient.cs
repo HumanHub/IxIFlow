@@ -109,7 +109,7 @@ public interface IWorkflowClient
     /// For an instance filter, IsRemoved marks a removed ID. A token is the right to answer, so this listing is for trusted callers such as a task inbox. A
     /// child's waits are listed on the child; a request's answer goes to the token the request sent.
     /// </summary>
-    Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query);
+    Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Sends one event to every instance with an open wait for <paramref name="key"/>, under one
@@ -163,13 +163,13 @@ public interface IWorkflowClient
     Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId);
 
     /// <summary>Lists the saved activity attempts awaiting an operator decision; IsRemoved marks a removed ID.</summary>
-    Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId);
+    Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Where the instance's branches are and which scopes they are in, computed from its saved checkpoint and
     /// its registered definition; null when the instance does not exist.
     /// </summary>
-    Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId);
+    Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The instance's trace: what its runs recorded and committed, in order. A run's result carries the

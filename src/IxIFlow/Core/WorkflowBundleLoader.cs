@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.Loader;
+using System.Text.Json;
 using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
@@ -31,7 +32,7 @@ public sealed class WorkflowDefinitionLease : IDisposable
     }
 }
 
-internal sealed class BundleCache(IArtifactStore artifacts, string directory, WorkflowBundleReadLimits limits)
+internal sealed class BundleCache(IArtifactStore artifacts, string directory, WorkflowBundleReadLimits limits, TimeSpan fetchTimeout)
 {
     private readonly string _directory = Path.GetFullPath(directory);
 
@@ -50,7 +51,7 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
                 {
                     token.ThrowIfCancellationRequested();
                     try { cacheLock = new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
-                    catch (IOException error) when ((error.HResult & 0xffff) is 32 or 33 or 11)
+                    catch (IOException error) when (error is not (FileNotFoundException or DirectoryNotFoundException))
                     { await Task.Delay(25, token); }
                 }
             }
@@ -70,26 +71,38 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
             }
-            await using var download = await artifacts.OpenAsync(digest, token)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Bundle artifact {digest} is unavailable");
-            await using var temporary = new FileStream(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".bundle"),
-                FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.DeleteOnClose);
-            await WorkflowBundleArchive.CopyArchiveAsync(download, temporary, digest, limits, token);
-            var verified = await WorkflowBundleArchive.ReadVerifiedAsync(temporary, limits, token);
-            if (cacheLock != null)
+            // Lock contention has its own caller-controlled lifetime. Only the download and
+            // verification consume the fetch budget.
+            using var fetch = CancellationTokenSource.CreateLinkedTokenSource(token);
+            fetch.CancelAfter(fetchTimeout);
+            try
             {
-                var staging = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-                try
+                await using var download = await artifacts.OpenAsync(digest, fetch.Token)
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Bundle artifact {digest} is unavailable");
+                await using var temporary = new FileStream(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".bundle"),
+                    FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.DeleteOnClose);
+                await WorkflowBundleArchive.CopyArchiveAsync(download, temporary, digest, limits, fetch.Token);
+                var verified = await WorkflowBundleArchive.ReadVerifiedAsync(temporary, limits, fetch.Token);
+                if (cacheLock != null)
                 {
-                    temporary.Position = 0;
-                    await using (var output = new FileStream(staging, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, true))
-                        await temporary.CopyToAsync(output, token);
-                    File.Move(staging, path, overwrite: true);
+                    var staging = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                    try
+                    {
+                        temporary.Position = 0;
+                        await using (var output = new FileStream(staging, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, true))
+                            await temporary.CopyToAsync(output, fetch.Token);
+                        File.Move(staging, path, overwrite: true);
+                    }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+                    finally { TryDelete(staging); }
                 }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
-                finally { TryDelete(staging); }
+                return verified;
             }
-            return verified;
+            catch (OperationCanceledException error) when (!token.IsCancellationRequested && fetch.IsCancellationRequested)
+            {
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    $"Fetching bundle {digest} exceeded the configured timeout", error);
+            }
         }
         finally { cacheLock?.Dispose(); }
     }
@@ -162,18 +175,42 @@ public static class WorkflowSharedAssemblies
     {
         var profile = new Dictionary<string, AssemblyName>(StringComparer.OrdinalIgnoreCase);
         var runtime = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
-        var sharedRoot = Directory.GetParent(runtime.TrimEnd(Path.DirectorySeparatorChar))?.Parent?.FullName;
-        var paths = Directory.EnumerateFiles(runtime, "*.dll").Concat(
-            ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? "").Split(Path.PathSeparator)
-            .Where(path => sharedRoot != null && Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(path))) == sharedRoot));
-        foreach (var path in paths.Distinct(StringComparer.OrdinalIgnoreCase))
+        AddRuntimeAssemblies(profile, runtime);
+        // Additional framework assemblies must come from the shared framework layout,
+        // never an application's directory (including self-contained deployments).
+        var paths = ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? "").Split(Path.PathSeparator)
+            .Where(path => Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(path)))) == "shared");
+        foreach (var path in paths)
         {
             try { var identity = AssemblyName.GetAssemblyName(path); profile[identity.Name!] = identity; }
             catch (BadImageFormatException) { }
         }
-        // Only the declared SDK roots and their dependencies extend the runtime profile.
+        AddSdkAssemblies(profile, [typeof(WorkflowDefinition).Assembly]);
+        profile["IxIFlow.Templates"] = new AssemblyName("IxIFlow.Templates");
+        return profile;
+    }
+
+    internal static void AddRuntimeAssemblies(IDictionary<string, AssemblyName> profile, string runtimeDirectory)
+    {
+        using var manifest = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(runtimeDirectory, "Microsoft.NETCore.App.deps.json")));
+        foreach (var target in manifest.RootElement.GetProperty("targets").EnumerateObject())
+        foreach (var library in target.Value.EnumerateObject())
+        {
+            if (!library.Value.TryGetProperty("runtime", out var assets)) continue;
+            foreach (var asset in assets.EnumerateObject())
+            {
+                var path = Path.Combine(runtimeDirectory, asset.Name);
+                try { var identity = AssemblyName.GetAssemblyName(path); profile[identity.Name!] = identity; }
+                catch (Exception error) when (error is FileNotFoundException or FileLoadException or BadImageFormatException) { }
+            }
+        }
+    }
+
+    internal static void AddSdkAssemblies(IDictionary<string, AssemblyName> profile, IEnumerable<Assembly> roots)
+    {
+        // An optional transitive reference cannot poison the shared profile's initializer.
         var pending = new Queue<Assembly>();
-        pending.Enqueue(typeof(WorkflowDefinition).Assembly);
+        foreach (var root in roots) pending.Enqueue(root);
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         while (pending.TryDequeue(out var assembly))
         {
@@ -181,10 +218,12 @@ public static class WorkflowSharedAssemblies
             if (!visited.Add(identity.Name!)) continue;
             profile[identity.Name!] = identity;
             foreach (var reference in assembly.GetReferencedAssemblies())
-                if (!profile.ContainsKey(reference.Name!)) pending.Enqueue(AssemblyLoadContext.Default.LoadFromAssemblyName(reference));
+            {
+                if (profile.ContainsKey(reference.Name!)) continue;
+                try { pending.Enqueue(AssemblyLoadContext.Default.LoadFromAssemblyName(reference)); }
+                catch (Exception error) when (error is FileNotFoundException or FileLoadException or BadImageFormatException) { }
+            }
         }
-        profile["IxIFlow.Templates"] = new AssemblyName("IxIFlow.Templates");
-        return profile;
     }
 
     internal static bool IsCompatible(WorkflowBundleManifest manifest)
@@ -231,7 +270,7 @@ internal sealed class LoadedBundle(BundleLoadContext context, WorkflowDefinition
 internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBundleOptions options) : IDisposable
 {
     private readonly object _gate = new();
-    private readonly BundleCache _cache = new(artifacts, options.CacheDirectory, options.ReadLimits);
+    private readonly BundleCache _cache = new(artifacts, options.CacheDirectory, options.ReadLimits, options.FetchTimeout);
     private readonly Dictionary<ArtifactDigest, Entry> _loaded = [];
     private long _clock;
     private bool _disposed;
@@ -274,9 +313,7 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
     {
         try
         {
-            using var fetch = CancellationTokenSource.CreateLinkedTokenSource(token);
-            fetch.CancelAfter(options.FetchTimeout);
-            var bundle = await _cache.ReadAsync(digest, fetch.Token);
+            var bundle = await _cache.ReadAsync(digest, token);
             token.ThrowIfCancellationRequested();
             var context = new BundleLoadContext(bundle, digest);
             try
