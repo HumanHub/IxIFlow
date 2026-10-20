@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
@@ -56,10 +57,15 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
             : await catalog.GetLatestWorkflowVersionAsync(name);
         if (row == null)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Workflow version not found: {name}");
-        var definition = await catalog.GetWorkflowDefinitionAsync(name, row.Version)
-            ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                $"Workflow definition not found: {name} v{row.Version}");
-        return await StartDefinitionAsync(definition, workflowData, options, cancellationToken, versionOmitted);
+        using var lease = await catalog.AcquireWorkflowDefinitionAsync(name, row.Version, row.ArtifactDigest);
+        var definition = lease.Definition;
+        using var types = lease.EnterTypes();
+        object data = workflowData;
+        if (!definition.WorkflowDataType!.IsInstanceOfType(data))
+            data = JsonSerializer.Deserialize(JsonSerializer.Serialize(data),
+                definition.WorkflowDataType, System.Text.Json.JsonSerializerOptions.Web)
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow data is empty");
+        return await StartDefinitionAsync(definition, data, options, cancellationToken, versionOmitted);
     }
 
     public Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
@@ -161,11 +167,19 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         var waits = await host.ReadAsync(client => client.GetOpenWaitsAsync(query with { Kind = WaitKind.Event }));
         var removed = query.InstanceId is { } instanceId &&
             await GetStatusAsync(instanceId) == WorkflowExecutionStatus.Removed;
-        return new(removed ? [] : waits
-            .Select(wait => new OpenWait(wait.InstanceId, wait.WaitId, wait.Kind, wait.Key, wait.EventType,
-                EventSchema(wait.EventType), wait.DeadlineUtc, wait.OpenedAtUtc,
-                ReplyToken.Create(wait.InstanceId, wait.WaitId), wait.DefaultPayloadJson))
-            .ToArray(), removed);
+        var result = new List<OpenWait>();
+        if (!removed)
+            foreach (var wait in waits)
+            {
+                var instance = await repository.GetWorkflowInstanceSummaryAsync(wait.InstanceId);
+                using var lease = instance?.BundleDigest == null ? null
+                    : await catalog.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
+                using var types = lease?.EnterTypes();
+                result.Add(new OpenWait(wait.InstanceId, wait.WaitId, wait.Kind, wait.Key, wait.EventType,
+                    EventSchema(wait.EventType), wait.DeadlineUtc, wait.OpenedAtUtc,
+                    ReplyToken.Create(wait.InstanceId, wait.WaitId), wait.DefaultPayloadJson));
+            }
+        return new(result, removed);
     }
 
     private static string? EventSchema(string typeName) => InspectionRedactionPolicy.Default.EventSchema(typeName);

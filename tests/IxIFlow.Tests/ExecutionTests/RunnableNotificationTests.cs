@@ -73,7 +73,7 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
             var grant = await Claim(instance.InstanceId, "idle");
             instance.Status = WorkflowStatus.Suspended;
             var saved = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, grant.Epoch, 0,
-                openedWaits: [new OpenedWait("approval-" + instance.InstanceId, WaitKind.Event, "approval", typeof(Approval).AssemblyQualifiedName!, null)]));
+                openedWaits: [new OpenedWait("approval-" + instance.InstanceId, WaitKind.Event, "approval", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)), null)]));
             Assert.False(saved.Claimable);
             Assert.True(saved.Notice?.Idle);
             return (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
@@ -101,7 +101,7 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
             Assert.Null(park.Notice);
 
             var idle = await Idle();
-            var arrival = new WorkflowEvent(idle.InstanceId, "event", typeof(Approval).AssemblyQualifiedName!, "{}", Key: "approval");
+            var arrival = new WorkflowEvent(idle.InstanceId, "event", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)), "{}", Key: "approval");
             var appended = await store.AppendEventAsync(arrival);
             Assert.True(appended.Claimable);
             Check(appended.Notice, idle.InstanceId);
@@ -112,7 +112,7 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
             Assert.Equal(appended.Notice, (await store.AppendEventAsync(arrival)).Notice);
 
             var delivered = await Idle();
-            var delivery = new WorkflowEvent(delivered.InstanceId, "delivery", typeof(Approval).AssemblyQualifiedName!, "{}",
+            var delivery = new WorkflowEvent(delivered.InstanceId, "delivery", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)), "{}",
                 Key: "approval", DeliveryIdentity: Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N"));
             var accepted = await store.AppendEventAsync(delivery);
             Check(accepted.Notice, delivered.InstanceId);
@@ -313,7 +313,7 @@ public sealed class RunnableNotificationTests : IClassFixture<SqliteTestDatabase
                 ExecutionStateJson = StoreTestSupport.CheckpointJson };
             var owner = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
             var result = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, owner.Epoch, 0,
-                openedWaits: [new OpenedWait(instance.InstanceId + "-approval", WaitKind.Event, "approval", typeof(Approval).AssemblyQualifiedName!, null)]));
+                openedWaits: [new OpenedWait(instance.InstanceId + "-approval", WaitKind.Event, "approval", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)), null)]));
             instance.Revision = result.Revision;
             return instance;
         }

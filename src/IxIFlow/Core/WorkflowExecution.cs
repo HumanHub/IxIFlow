@@ -140,6 +140,9 @@ public class WorkflowOptions
 /// </summary>
 public class WorkflowInstance
 {
+    /// <summary>The immutable published bundle pin; null for code-defined workflows.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ArtifactDigest? BundleDigest { get; set; }
     /// <summary>The host that most recently claimed or committed this instance.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Guid? LastHostId { get; internal set; }
@@ -296,6 +299,7 @@ public class WorkflowInstance
 /// </summary>
 public class WorkflowExecutionSnapshot
 {
+    public ArtifactDigest? BundleDigest { get; set; }
     /// <summary>True when only the instance's removal tombstone remains; all collections are empty.</summary>
     public bool IsRemoved { get; set; }
 
@@ -596,6 +600,8 @@ public enum TraceEntryType
 /// </summary>
 public class WorkflowDefinition
 {
+    internal ArtifactDigest? BundleDigest { get; set; }
+    internal System.Runtime.Loader.AssemblyLoadContext? BundleContext { get; set; }
     /// <summary>Placement declarations, excluded from executable structure identity.</summary>
     public List<WorkflowDemand> Demands { get; set; } = [];
 

@@ -175,6 +175,11 @@ public sealed class DefinitionValidationTests
     // Models a custom registry that returns definitions without invoking the engine validator.
     private sealed class UncheckedRegistry(params WorkflowDefinition[] definitions) : IWorkflowCatalog
     {
+        public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest) =>
+            new((await GetWorkflowDefinitionAsync(name, version))!);
+        public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version) =>
+            AcquireWorkflowDefinitionAsync(name, version, null);
+
         public long DefinitionRevision => 0; // This registry's definition set is immutable.
         private readonly WorkflowCatalog _catalog = UncheckedCatalog(definitions);
         private static WorkflowCatalog UncheckedCatalog(WorkflowDefinition[] definitions)
@@ -222,7 +227,7 @@ public sealed class DefinitionValidationTests
             .AddSingleton<IWorkflowDefinitionSource>(new UncheckedRegistry(definition)).BuildServiceProvider();
         var executor = new WorkflowExecutor(uncheckedProvider, null!);
         var instance = new WorkflowInstance { WorkflowName = definition.Name, WorkflowVersion = definition.Version,
-            WorkflowDataType = typeof(RegistrationData).AssemblyQualifiedName!, WorkflowDataJson = JsonSerializer.Serialize(data),
+            WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(RegistrationData)), WorkflowDataJson = JsonSerializer.Serialize(data),
             ExecutionStateJson = JsonSerializer.Serialize(checkpoint) };
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => executor.ExecuteAsync(new(Guid.NewGuid(),
             instance, null, checkpoint.StructureHash, 1, 0, ExecutionLimits.Default, false, []), CancellationToken.None));

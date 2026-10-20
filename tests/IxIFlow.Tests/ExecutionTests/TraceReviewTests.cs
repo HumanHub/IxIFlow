@@ -321,7 +321,7 @@ public sealed class TraceReviewTests
         var checkpoint = new ExecutionCheckpoint { StructureHash = scopes.StructureHash,
             Continuations = [root, branch], Joins = [join], RootData = data };
         var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "verification-trace", WorkflowName = definition.Name,
-            WorkflowDataType = typeof(Data).AssemblyQualifiedName!, WorkflowDataJson = JsonSerializer.Serialize(data),
+            WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)), WorkflowDataJson = JsonSerializer.Serialize(data),
             Status = WorkflowStatus.Running, StartedAt = Start.UtcDateTime };
         var host = new VerificationHost();
         var commits = host.Commits;
@@ -335,7 +335,7 @@ public sealed class TraceReviewTests
         checkpoint.Trace.Add(new ExecutionTraceEntry { EntryType = TraceEntryType.ConditionTaken,
             Payload = new ConditionTrace("root/0", WorkflowStepType.Conditional, root.Id, 0, "root/0/then", ConditionPath.Then) });
         checkpoint.Trace.Add(new ExecutionTraceEntry { EntryType = TraceEntryType.EventReceived,
-            Payload = new ReceivedEventTrace("pending", "go", typeof(Go).AssemblyQualifiedName!, "wait", "root/0") });
+            Payload = new ReceivedEventTrace("pending", "go", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Go)), "wait", "root/0") });
         Assert.Equal(2, checkpoint.Trace.Pending.Count);
         var rejected = await Assert.ThrowsAsync<CheckpointVerificationException>(() =>
             ExecutionCheckpointWriter.CommitAsync(session, instance, checkpoint, data, scopes, Start.UtcDateTime));

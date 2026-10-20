@@ -132,12 +132,12 @@ public sealed class AssignmentRequestTests
     public async Task InboxAndWaitReadsUseAssignedRequestsAndKeepTheStorePage()
     {
         await using var run = await Assigned.CreateAsync();
-        var opened = new OpenedWait("wait", WaitKind.Event, "go", typeof(Go).AssemblyQualifiedName!, null);
+        var opened = new OpenedWait("wait", WaitKind.Event, "go", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Go)), null);
         var commit = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision,
             openedWaits: [opened]);
         Assert.Equal(CheckpointReplyKind.Ack, (await run.Host.CheckpointAsync(new(run.Identity, commit))).Kind);
         await run.Store.AppendEventAsync(new WorkflowEvent(run.Instance.InstanceId, "event",
-            typeof(Go).AssemblyQualifiedName!, "{}", "go"));
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Go)), "{}", "go"));
         var page = await run.Host.ReadInboxAsync(new(run.Identity, run.Instance.InstanceId, 0, 1));
         Assert.Equal(run.Identity, page.AssignmentId);
         Assert.Equal("event", Assert.Single(page.Page!.Events).EventId);
@@ -284,6 +284,11 @@ public sealed class AssignmentRequestTests
 
     private sealed class ParentOnlySource(WorkflowDefinition parent) : IWorkflowDefinitionSource
     {
+        public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest) =>
+            new((await GetWorkflowDefinitionAsync(name, version))!);
+        public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version) =>
+            AcquireWorkflowDefinitionAsync(name, version, null);
+
         public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version)
         {
             Assert.Equal(parent.Name, name);

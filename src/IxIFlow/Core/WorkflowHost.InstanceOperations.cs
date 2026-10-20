@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Text.Json;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
@@ -97,7 +98,7 @@ public sealed partial class WorkflowHost
                     WorkflowStatus.NeedsResolution)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                         "The workflow instance changed while cancellation was requested; retry");
-                return ExistingResult(existing);
+                return await ExistingResultAsync(existing);
             }
 
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
@@ -110,7 +111,7 @@ public sealed partial class WorkflowHost
                     ErrorMessage = "Cancellation was requested; the executing host will stop the workflow"
                 };
             if (instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
-                return ExistingResult(instance);
+                return await ExistingResultAsync(instance);
             return null;
         }
 
@@ -119,7 +120,7 @@ public sealed partial class WorkflowHost
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
-            return instance == null ? await RemovedResultAsync(instanceId) : ReadResult(instance);
+            return instance == null ? await RemovedResultAsync(instanceId) : await ReadResultAsync(instance);
         }
 
         /// <summary>The status of an instance as a result would report it, without reading its data.</summary>
@@ -161,9 +162,9 @@ public sealed partial class WorkflowHost
             var claim = await ClaimQueryAsync();
             if (!await MeetsDemandsAsync(instanceId, WorkflowDemands.Saved(instance), claim)) return Scheduled(instanceId);
 
-            var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    "The registered workflow definition is unavailable");
+            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
+            using var types = definitionLease.EnterTypes();
+            var definition = definitionLease.Definition;
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
             if (checkpoint.StructureHash != scopes.StructureHash)
@@ -185,9 +186,10 @@ public sealed partial class WorkflowHost
             if (ChildIsActive(child))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Resolve child workflow '{pending.ChildWorkflowId}' before recovering its parent invocation");
-            var childDataType = step.StepType == WorkflowStepType.WorkflowInvocation
-                ? await ResolveChildDataTypeAsync(step)
-                : null;
+            using var childDefinitionLease = step.StepType == WorkflowStepType.WorkflowInvocation && pending.ChildBundleDigest != null
+                ? await registry.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest) : null;
+            var childDataType = childDefinitionLease?.Definition.WorkflowDataType ?? (step.StepType == WorkflowStepType.WorkflowInvocation
+                ? await ResolveChildDataTypeAsync(step) : null);
             var decision = PrepareResolution(scopes, step, resolution, childDataType, _defaultActor);
             var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
@@ -229,9 +231,9 @@ public sealed partial class WorkflowHost
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance?.Status != WorkflowStatus.NeedsResolution || !HasStructuredCheckpoint(instance))
                 return [];
-            var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    "The registered workflow definition is unavailable");
+            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
+            using var types = definitionLease.EnterTypes();
+            var definition = definitionLease.Definition;
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
             if (checkpoint.StructureHash != scopes.StructureHash)
@@ -282,9 +284,9 @@ public sealed partial class WorkflowHost
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance == null || !HasStructuredCheckpoint(instance))
                 return null;
-            var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    "The registered workflow definition is unavailable");
+            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
+            using var types = definitionLease.EnterTypes();
+            var definition = definitionLease.Definition;
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
             if (checkpoint.StructureHash != scopes.StructureHash)
@@ -349,7 +351,7 @@ public sealed partial class WorkflowHost
                 {
                     try
                     {
-                        result = json.Deserialize(childDataType!, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                        result = JsonSerializer.Deserialize(json.GetRawText(), childDataType!, JsonSerializerOptions.Web)
                             ?? throw new JsonException();
                     }
                     catch (Exception error) when (error is JsonException or NotSupportedException)
@@ -387,7 +389,7 @@ public sealed partial class WorkflowHost
                     ?? throw new ArgumentException($"Activity has no output property '{name}'", nameof(resolution));
                 if (property.GetSetMethod(nonPublic: true) == null || property.GetIndexParameters().Length != 0)
                     throw new ArgumentException($"Activity output '{name}' is not writable", nameof(resolution));
-                var output = value is JsonElement json ? json.Deserialize(property.PropertyType, JsonSerializerOptions.Web) : value;
+                var output = value is JsonElement json ? JsonSerializer.Deserialize(json.GetRawText(), property.PropertyType, JsonSerializerOptions.Web) : value;
                 if ((output == null && property.PropertyType.IsValueType &&
                      Nullable.GetUnderlyingType(property.PropertyType) == null) ||
                     (output != null && !property.PropertyType.IsInstanceOfType(output)))
@@ -416,7 +418,10 @@ public sealed partial class WorkflowHost
                 WorkflowDefinitionValidator.Validate(definition);
                 return await ExistingStartAsync(repeated, definition, WorkflowDefinitionValidator.ForExecution(definition), versionOmitted);
             }
-            var registration = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
+            using var definitionLease = definition.BundleDigest is { } digest
+                ? await registry.AcquireWorkflowDefinitionAsync(definition.Name, definition.Version, digest) : null;
+            using var types = definitionLease?.EnterTypes();
+            var registration = definitionLease?.Definition ?? await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
             var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, workflowData, options, Now,
                 (services.GetService(typeof(DemandSettings)) as DemandSettings)?.HostPinLifetime,
                 registration?.RegistrationDemands);
@@ -446,7 +451,7 @@ public sealed partial class WorkflowHost
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } existing)
                     return await ExistingStartAsync(existing, definition, scopes, versionOmitted);
                 instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-                await registry.RegisterWorkflowAsync(definition);
+                if (definition.BundleDigest == null) await registry.RegisterWorkflowAsync(definition);
                 WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(definition.Name, definition.Version),
                     definition.Name, definition.Version);
                 if (options.WhenUnschedulable == WhenUnschedulable.Fail)
@@ -546,10 +551,19 @@ public sealed partial class WorkflowHost
         public async Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query)
         {
             var waits = await _store.GetOpenWaitsAsync(query);
-            return waits.Select(wait => wait.DefaultPayloadJson == null ? wait : wait with
+            var result = new List<StoredWait>();
+            foreach (var wait in waits)
             {
-                DefaultPayloadJson = InspectionRedactionPolicy.Default.StoredValue(wait.DefaultPayloadJson, wait.EventType, services).GetRawText()
-            }).ToArray();
+                var instance = await _store.GetWorkflowInstanceSummaryAsync(wait.InstanceId);
+                using var lease = instance?.BundleDigest == null ? null
+                    : await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
+                using var types = lease?.EnterTypes();
+                result.Add(wait.DefaultPayloadJson == null ? wait : wait with
+                {
+                    DefaultPayloadJson = InspectionRedactionPolicy.Default.StoredValue(wait.DefaultPayloadJson, wait.EventType, services).GetRawText()
+                });
+            }
+            return result;
         }
 
         /// <summary>
@@ -568,7 +582,7 @@ public sealed partial class WorkflowHost
             ArgumentNullException.ThrowIfNull(@event);
             ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
             var type = @event.GetType();
-            return new WorkflowEvent(instanceId, eventId, type.AssemblyQualifiedName!,
+            return new WorkflowEvent(instanceId, eventId, WorkflowTypeIdentity.SavedName(type),
                 JsonSerializer.Serialize(@event, type), key, targetWaitId, subject);
         }
 
@@ -627,15 +641,20 @@ public sealed partial class WorkflowHost
             // from saved positions. Read the schema envelope before interpreting its state.
             var checkedCheckpoint = HasStructuredCheckpoint(instance)
                 ? ExecutionCheckpoint.Read(instance.ExecutionStateJson) : null;
-            var checkedDefinition = checkedCheckpoint == null ? null
-                : await registry.GetWorkflowDefinitionAsync(instance!.WorkflowName, instance.WorkflowVersion);
+            var localDefinition = checkedCheckpoint != null && instance!.BundleDigest == null
+                ? await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion) : null;
+            using var definitionLease = checkedCheckpoint == null ? null : instance!.BundleDigest != null
+                ? await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest)
+                : localDefinition == null ? null : new WorkflowDefinitionLease(localDefinition);
+            using var types = definitionLease?.EnterTypes();
+            var checkedDefinition = definitionLease?.Definition;
             var checkedScopes = checkedDefinition == null ? null
                 : WorkflowDefinitionValidator.ForExecution(checkedDefinition);
             if (checkedScopes != null && checkedCheckpoint!.StructureHash != checkedScopes.StructureHash)
                 return Rejected(instanceId, checkedScopes.Mismatch(checkedDefinition!, checkedCheckpoint.StructureHash));
             // Recovery repeats a finished instance's saved result, as starting it again does.
             if (!release && !forEvent && instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
-                return ReadResult(instance);
+                return await ReadResultAsync(instance);
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
             var canRecover = instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
                 instance?.Status == WorkflowStatus.Suspended &&
@@ -710,8 +729,16 @@ public sealed partial class WorkflowHost
         }
 
         // A stopped instance is answered without reading its data, which may be what stopped it.
-        private static WorkflowExecutionResult ReadResult(WorkflowInstance instance) =>
-            ExecutionCheckpoint.StopOf(instance) is { } stop ? Stopped(instance, stop) : ExistingResult(instance);
+        private async Task<WorkflowExecutionResult> ReadResultAsync(WorkflowInstance instance) =>
+            ExecutionCheckpoint.StopOf(instance) is { } stop ? Stopped(instance, stop) : await ExistingResultAsync(instance);
+
+        private async Task<WorkflowExecutionResult> ExistingResultAsync(WorkflowInstance instance)
+        {
+            using var definition = instance.BundleDigest == null ? null
+                : await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
+            using var types = definition?.EnterTypes();
+            return ExistingResult(instance);
+        }
 
         private async Task<WorkflowExecutionResult> ExistingStartAsync(WorkflowInstance existing, WorkflowDefinition definition,
             WorkflowScopeCatalog scopes, bool versionOmitted)
@@ -720,19 +747,16 @@ public sealed partial class WorkflowHost
             if (existing.WorkflowName != definition.Name || (!versionOmitted && existing.WorkflowVersion != definition.Version))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"Workflow instance '{existing.InstanceId}' belongs to a different definition");
-            if (versionOmitted && existing.WorkflowVersion != definition.Version)
-            {
-                definition = await registry.GetWorkflowDefinitionAsync(existing.WorkflowName, existing.WorkflowVersion)
-                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                        $"Workflow definition not found: {existing.WorkflowName} v{existing.WorkflowVersion}");
-                scopes = WorkflowDefinitionValidator.ForExecution(definition);
-            }
+            using var savedDefinition = await registry.AcquireWorkflowDefinitionAsync(existing.WorkflowName, existing.WorkflowVersion, existing.BundleDigest);
+            using var types = savedDefinition.EnterTypes();
+            definition = savedDefinition.Definition;
+            scopes = WorkflowDefinitionValidator.ForExecution(definition);
             if (checkpoint.StructureHash != scopes.StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     scopes.Mismatch(definition, checkpoint.StructureHash));
             _control.Accept(existing.InstanceId);
             // A stopped instance is answered without reading its data, which may be what stopped it.
-            return checkpoint.OperatorStop is { } stop ? Stopped(existing, stop) : ExistingResult(existing);
+            return checkpoint.OperatorStop is { } stop ? Stopped(existing, stop) : await ExistingResultAsync(existing);
         }
 
         private static WorkflowExecutionResult Rejected(string instanceId, string reason, WorkflowErrorKind kind = WorkflowErrorKind.InvalidState) => new()
@@ -850,7 +874,7 @@ public sealed partial class WorkflowHost
                     _control.Schedule(saved.InstanceId, due);
                 else if (WorkflowStoreRules.IsTerminal(saved.Status))
                     _control.Unschedule(saved.InstanceId);
-                var result = ExistingResult(saved);
+                var result = await ExistingResultAsync(saved);
                 result.Status = outcome.Kind switch
                 {
                     AssignmentOutcomeKind.OwnershipLost when WorkflowStoreRules.IsTerminal(saved.Status) => StatusOf(saved.Status),
@@ -1045,10 +1069,9 @@ public sealed partial class WorkflowHost
 
         private async Task<StartChildReply> ValidateChildAsync(StartChild request, WorkflowInstance child)
         {
-            var definition = await registry.GetWorkflowDefinitionAsync(child.WorkflowName, child.WorkflowVersion);
-            if (definition == null)
-                return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
-                    Message: $"Workflow definition not found: {child.WorkflowName} v{child.WorkflowVersion}");
+            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(child.WorkflowName, child.WorkflowVersion, child.BundleDigest);
+            using var types = definitionLease.EnterTypes();
+            var definition = definitionLease.Definition;
             try
             {
                 // A child start is refused like a client start when its version is a draft or retired.
@@ -1065,10 +1088,10 @@ public sealed partial class WorkflowHost
             _ = WorkflowDefinitionValidator.ForExecution(definition);
             var hash = await registry.GetWorkflowStructureHashAsync(child.WorkflowName, child.WorkflowVersion);
             var checkpoint = ExecutionCheckpoint.Read(child.ExecutionStateJson);
-            if (child.WorkflowDataType != definition.WorkflowDataType!.AssemblyQualifiedName)
+            if (child.WorkflowDataType != WorkflowTypeIdentity.SavedName(definition.WorkflowDataType!))
                 return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,
                     Message: $"Workflow {definition.Name} v{definition.Version} differs from its registered definition: " +
-                        $"registered data type '{definition.WorkflowDataType.AssemblyQualifiedName}', " +
+                        $"registered data type '{WorkflowTypeIdentity.SavedName(definition.WorkflowDataType!)}', " +
                         $"loaded data type '{child.WorkflowDataType}'");
             if (hash != request.StructureHash || checkpoint.StructureHash != hash)
                 return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactUnavailable,

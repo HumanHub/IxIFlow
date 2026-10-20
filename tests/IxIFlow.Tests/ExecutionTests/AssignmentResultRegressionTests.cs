@@ -168,7 +168,7 @@ public sealed class AssignmentResultRegressionTests
         store.Replacement = missing ? null : new WorkflowInstance
         {
             InstanceId = instance.InstanceId, Incarnation = Guid.NewGuid(),
-            WorkflowName = "Replacement", WorkflowDataType = typeof(Data).AssemblyQualifiedName!,
+            WorkflowName = "Replacement", WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
             WorkflowDataJson = "not valid JSON", Status = WorkflowStatus.Completed,
             LastError = "replacement error", LastErrorStackTrace = "replacement stack"
         };

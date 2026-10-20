@@ -38,6 +38,7 @@ public sealed partial class SqlWorkflowStateRepository
         Statement.CatalogSharedLock => """
             DECLARE @catalogLock INT; EXEC @catalogLock = sys.sp_getapplock @Resource=N'IxIFlow.Catalog', @LockMode=N'Shared', @LockOwner=N'Transaction', @LockTimeout=30000; IF @catalogLock < 0 THROW 51000, 'Could not lock the workflow catalog', 1;
             """,
+        Statement.CatalogInstanceDigests => "SELECT DISTINCT BundleDigest FROM dbo.IxIFlowWorkflowInstances WHERE BundleDigest IS NOT NULL",
         Statement.CatalogVersions => """
             SELECT MetadataJson AS MetadataJson, State AS State FROM dbo.IxIFlowWorkflowVersions
             """,

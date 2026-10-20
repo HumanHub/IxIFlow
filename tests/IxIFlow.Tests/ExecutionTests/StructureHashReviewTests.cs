@@ -219,7 +219,7 @@ public sealed class StructureHashReviewTests
         var instance = new WorkflowInstance
         {
             InstanceId = "mismatch", WorkflowName = original.Name, WorkflowVersion = original.Version,
-            WorkflowDataType = typeof(StructureHashData).AssemblyQualifiedName!,
+            WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(StructureHashData)),
             WorkflowDataJson = JsonSerializer.Serialize(data), ExecutionStateJson = JsonSerializer.Serialize(checkpoint),
             Status = WorkflowStatus.Running, StartedAt = now, CreatedAt = now
         };
@@ -246,6 +246,11 @@ public sealed class StructureHashReviewTests
 
     private sealed class LoadedDefinitionSource(WorkflowDefinition loaded) : IWorkflowDefinitionSource
     {
+        public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest) =>
+            new((await GetWorkflowDefinitionAsync(name, version))!);
+        public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version) =>
+            AcquireWorkflowDefinitionAsync(name, version, null);
+
         public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version) =>
             Task.FromResult<WorkflowDefinition?>(loaded);
     }

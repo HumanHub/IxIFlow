@@ -192,7 +192,7 @@ public sealed class IncomingWebhookScenarios
         CheckpointCommit Commit() => CheckpointCommit.CreateAdmission(new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Race", WorkflowVersion = 1,
-            Status = WorkflowStatus.Running, WorkflowDataType = typeof(Data).AssemblyQualifiedName!, WorkflowDataJson = "{}",
+            Status = WorkflowStatus.Running, WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)), WorkflowDataJson = "{}",
             ExecutionStateJson = JsonSerializer.Serialize(new ExecutionCheckpoint
             {
                 StructureHash = "race", Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]

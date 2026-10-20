@@ -12,7 +12,10 @@ public sealed record WorkflowBundleManifest(
     int FormatVersion, string Name, int Version, string StructureHash, string DataType, string EntryType,
     string EngineVersion, int CheckpointContractVersion, string CombinerSignature,
     WorkflowCompilerSettings Compiler, IReadOnlyDictionary<string, string> SharedAssemblies,
-    IReadOnlyDictionary<string, ArtifactDigest> Entries);
+    IReadOnlyDictionary<string, ArtifactDigest> Entries)
+{
+    public IReadOnlyList<ArtifactDigest> ActivityPackages { get; init; } = [];
+}
 
 public sealed record WorkflowBundle(WorkflowBundleManifest Manifest, IReadOnlyDictionary<string, ReadOnlyMemory<byte>> Entries);
 
@@ -87,7 +90,7 @@ public static class WorkflowBundleArchive
         if (manifest.FormatVersion != 1 || string.IsNullOrWhiteSpace(manifest.Name) || manifest.Version < 1 ||
             string.IsNullOrWhiteSpace(manifest.StructureHash) || string.IsNullOrWhiteSpace(manifest.DataType) ||
             string.IsNullOrWhiteSpace(manifest.EntryType) || string.IsNullOrWhiteSpace(manifest.EngineVersion) ||
-            manifest.CheckpointContractVersion < 1 || manifest.Compiler == null || manifest.SharedAssemblies == null || manifest.Entries == null)
+            manifest.CheckpointContractVersion < 1 || manifest.Compiler == null || manifest.SharedAssemblies == null || manifest.Entries == null || manifest.ActivityPackages == null)
             throw Mismatch("Invalid bundle manifest metadata");
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ManifestPath };
         foreach (var (path, digest) in manifest.Entries)
