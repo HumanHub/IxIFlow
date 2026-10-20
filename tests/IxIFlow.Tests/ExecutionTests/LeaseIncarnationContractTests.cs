@@ -85,7 +85,7 @@ public sealed class LeaseIncarnationContractTests
 
                 // A different first commit conflicts without changing the committed incarnation.
                 var contender = caller.CopyForResume();
-                contender.WorkflowDataJson = "{\"contender\":true}";
+                contender.WorkflowDataJson = StoredJson.Inline("{\"contender\":true}");
                 var different = CheckpointCommit.Create(contender, epoch, 0);
                 Assert.NotEqual(first.Incarnation, different.Incarnation);
                 CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1),
@@ -121,7 +121,7 @@ public sealed class LeaseIncarnationContractTests
                     var unchanged = (await store.GetWorkflowInstanceAsync(id))!;
                     Assert.Equal(1, unchanged.Revision);
                     Assert.Equal(replacementFirst.Incarnation, unchanged.Incarnation);
-                    Assert.True(await store.RenewExecutionLeaseAsync(id, "replacement", duration));
+                    Assert.True((await store.RenewExecutionLeasesAsync([new(id, "replacement", duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
                 }
                 await Apply(store, CheckpointCommit.Create(replacement, grant.Epoch, 1));
             }
@@ -274,14 +274,14 @@ public sealed class LeaseIncarnationContractTests
                 var result = await store.CommitWorkflowInstanceAsync(late);
                 Assert.Equal(WorkflowCommitStatus.StaleEpoch, result.Status);
                 Assert.Equal(replacement.Revision, result.Revision);
-                Assert.True(await store.RenewExecutionLeaseAsync(id, "new-owner", duration));
+                Assert.True((await store.RenewExecutionLeasesAsync([new(id, "new-owner", duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
                 var unchanged = (await store.GetWorkflowInstanceAsync(id))!;
                 Assert.Equal(replacement.Revision, unchanged.Revision);
                 Assert.Equal(WorkflowStatus.Running, unchanged.Status);
                 Assert.Equal(replacement.Incarnation, unchanged.Incarnation);
             }
             Assert.False((await store.ReleaseExecutionLeaseAsync(id, "old-owner")).Released);
-            Assert.False(await store.RenewExecutionLeaseAsync(id, "old-owner", duration));
+            Assert.False((await store.RenewExecutionLeasesAsync([new(id, "old-owner", duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
 
             // A leased commit after the first must also name the row's incarnation.
             var wrongIncarnation = NewInstance(id);
@@ -329,7 +329,7 @@ public sealed class LeaseIncarnationContractTests
     private static WorkflowInstance NewInstance(string id) => new()
     { ExecutionStateJson = StoreTestSupport.CheckpointJson,
         InstanceId = id, WorkflowName = "LeaseIncarnation" + id,
-        Status = WorkflowStatus.Running, WorkflowDataJson = "{}"
+        Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{}")
     };
 
     private static async Task Apply(IWorkflowStateRepository store, CheckpointCommit commit)
@@ -425,7 +425,7 @@ public sealed class LeaseIncarnationContractTests
             await store.DeleteWorkflowInstanceAsync(id);
             await AssertLeaseRows(open, id, 0);
             Assert.Null(await store.GetTombstoneAsync(id));
-            Assert.False(await store.RenewExecutionLeaseAsync(id, "orphan", duration));
+            Assert.False((await store.RenewExecutionLeasesAsync([new(id, "orphan", duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
             Assert.False((await store.ReleaseExecutionLeaseAsync(id, "orphan")).Released);
             var grant = (await store.TryAcquireExecutionLeaseAsync(id, "after-delete", duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
             Assert.True(grant.Epoch > orphan.Epoch);
@@ -477,7 +477,7 @@ public sealed class LeaseIncarnationContractTests
                 Assert.Equal(parentWait, await store.GetWaitAsync(parentId, "notice"));
                 Assert.Equal(sequence, (await store.GetInboxSequencesAsync([parentId]))[parentId]);
                 Assert.Equal(JsonSerializer.Serialize(parentBefore), JsonSerializer.Serialize(await store.GetWorkflowInstanceAsync(parentId)));
-                Assert.True(await store.RenewExecutionLeaseAsync(replacement.InstanceId, "new-owner", duration));
+                Assert.True((await store.RenewExecutionLeasesAsync([new(replacement.InstanceId, "new-owner", duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
             }
         }
         finally

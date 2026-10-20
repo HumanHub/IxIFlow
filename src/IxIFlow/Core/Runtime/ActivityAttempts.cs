@@ -148,6 +148,9 @@ internal sealed class ActivityAttempts(
             {
                 Timestamp = Now,
                 EntryType = TraceEntryType.ActivityStarted,
+                StepId = scopes.Id(step),
+                ContinuationId = continuation.Id,
+                FrameActivationId = continuation.Stack[^1].ActivationId,
                 ActivityName = step.ActivityType?.Name ?? "Activity",
                 StepNumber = continuation.Stack[^1].NextStepIndex,
                 Metadata = new Dictionary<string, object>
@@ -341,6 +344,7 @@ internal sealed class ActivityAttempts(
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                         $"Child data type '{pending.ChildDataType}' is unavailable");
             continuation.AcceptedWait = null;
+            await host.Reader.ReadAsync(completed.DataJson);
             // Failures belong to the parent's catch contract, just as outputs belong to its
             // declared child-data contract. Restore saved types under the parent scope.
             var outcome = completed.Outcome(step.InvokedDataType ?? dataType);
@@ -386,6 +390,10 @@ internal sealed class ActivityAttempts(
             var data = ChildInputs.NewData(childDefinition, step, context);
             var prepared = WorkflowInstances.Start(childDefinition, data, instance, pending.Id,
                 Guid.NewGuid().ToString("N"), Now);
+            var child = prepared.Child!;
+            child.WorkflowDataJson = host.Payloads.Store(child.WorkflowDataJson);
+            prepared = new(prepared.ChildInstanceId, System.Text.Json.JsonSerializer.Serialize(child), prepared.ParentWaitId)
+                { Incarnation = prepared.Incarnation };
             var reply = await host.StartChildAsync(scopes.Id(step), prepared, childScopes.StructureHash);
             if (reply.Refusal == WorkflowErrorKind.ResourceExhausted)
             {
@@ -434,6 +442,9 @@ internal sealed class ActivityAttempts(
         {
             Timestamp = Now,
             EntryType = TraceEntryType.ActivityStarted,
+            StepId = pending.StepId,
+            ContinuationId = continuation.Id,
+            FrameActivationId = continuation.Stack[^1].ActivationId,
             ActivityName = step.Name,
             StepNumber = continuation.Stack[^1].NextStepIndex,
             Metadata = new Dictionary<string, object>
@@ -461,6 +472,7 @@ internal sealed class ActivityAttempts(
         checkpoint.Touch(activity.Continuation);
         // The branch's copy may have changed while its activity ran; it is recorded at the next commit.
         activity.Continuation.DataChanged = activity.Continuation.ParentJoinId != null;
+        if (activity.Continuation.ParentJoinId == null) checkpoint.RootDataChanged = true;
         try
         {
             var outcome = await activity.Task;
@@ -513,6 +525,8 @@ internal sealed class ActivityAttempts(
                         $"Activity returned, but its saga output could not be saved: {error.Message}", error);
                     return;
                 }
+                if (activity.Continuation.ParentJoinId == null && activity.Step.OutputMappings.Any(m => m.Direction == PropertyMappingDirection.Output))
+                    checkpoint.RootDataChanged = true;
                 if (activity.Prepared != null)
                     await activity.Prepared.ApplyOutputsAsync();
                 // A child's outcome is discarded while its branch unwinds outside cleanup (D-17).
@@ -629,6 +643,9 @@ internal sealed class ActivityAttempts(
         {
             Timestamp = Now,
             EntryType = error == null ? TraceEntryType.ActivityCompleted : TraceEntryType.ActivityFailed,
+            StepId = pending.StepId,
+            ContinuationId = running.Continuation.Id,
+            FrameActivationId = running.Continuation.Stack.LastOrDefault()?.ActivationId,
             ActivityName = running.Step.ActivityType?.Name ?? running.Step.Name,
             StepNumber = running.StepNumber,
             Duration = attempt.EndedAtUtc - attempt.StartedAtUtc,

@@ -37,10 +37,23 @@ internal sealed record DemandSet(string Id, WorkflowDemand[] Rows, WorkflowDeman
 
     internal static string StripPayload(string payload)
     {
+        // Engine-written updates already omit placement. Imported escaped property names still
+        // take the parser path, so their immutable demand set cannot be changed by an update.
+        if (!MayContainDemands(payload)) return payload;
         var root = JsonNode.Parse(payload)!;
-        if (root["ExecutionStateJson"] is JsonObject state) state.Remove("Demands");
-        return root.ToJsonString();
+        return root["ExecutionStateJson"] is JsonObject state && state.Remove("Demands")
+            ? root.ToJsonString() : payload;
     }
+
+    internal static string StripState(string json)
+    {
+        if (!MayContainDemands(json)) return json;
+        var state = JsonNode.Parse(json);
+        return state is JsonObject fields && fields.Remove("Demands") ? state.ToJsonString() : json;
+    }
+
+    private static bool MayContainDemands(string json) =>
+        json.Contains("\"Demands\"", StringComparison.Ordinal) || json.Contains("\\u", StringComparison.Ordinal);
 
     internal static WorkflowInstance Hydrate(WorkflowInstance instance, IEnumerable<WorkflowDemand> demands)
     {

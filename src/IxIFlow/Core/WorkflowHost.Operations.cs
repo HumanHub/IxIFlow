@@ -121,6 +121,7 @@ public sealed partial class WorkflowHost
             instance.LastErrorStackTrace = null;
             var state = JsonNode.Parse(instance.ExecutionStateJson)!;
             state["OperatorStop"] = null;
+            state.AsObject().Remove(nameof(ExecutionCheckpoint.Demands));
             // Termination closes activities, preserving operator-authored records and the latest failure.
             var prior = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
             var operatorIds = (prior.OperatorDiagnosticIds ?? []).ToHashSet(StringComparer.Ordinal);
@@ -136,9 +137,9 @@ public sealed partial class WorkflowHost
                 Payload = new CancellationTrace(reason.RequestedBy, reason.RequestedAt, reason.ReasonCode)
             };
             var checkpoint = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
-            return new(saved, epoch => CheckpointCommit.Create(instance, epoch, instance.Revision,
-                childCancellations: children, parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: [trace],
-                retainedDiagnosticIds: retained.Select(item => item.DiagnosticId).ToArray()));
+            return new(saved, epoch => CheckpointCommit.Terminate(saved, instance, epoch,
+                children, ChildCompleted.NoticeOf(instance, checkpoint), trace,
+                retained.Select(item => item.DiagnosticId).ToArray()));
         }
     }
 }

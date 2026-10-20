@@ -13,7 +13,7 @@ public static class BranchProgress
         var saved = await repository.GetWorkflowInstanceAsync(instanceId)
             ?? throw new InvalidOperationException($"Instance '{instanceId}' was not saved");
         var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);
-        checkpoint.RootData = JsonSerializer.Deserialize<T>(saved.WorkflowDataJson)!;
+        checkpoint.RootData = JsonSerializer.Deserialize<T>(saved.WorkflowDataJson.InlineText)!;
         var continuation = checkpoint.Continuations.Single(item => item.ParentJoinId == null);
         foreach (var index in branchPath)
         {

@@ -26,7 +26,13 @@ internal static class ExecutionSnapshotFactory
             snapshot.Pointers.Add(new ExecutionPointer
             {
                 PointerId = continuation.Id,
-                StepId = next?.Id ?? "",
+                Name = continuation.ParentJoinId == null ? "Root" : $"Branch {continuation.Sequence} ({continuation.ForkActivationId})",
+                ParentPointerId = checkpoint.Joins.SingleOrDefault(j => j.Id == continuation.ParentJoinId)?.ParentContinuationId,
+                ParentJoinId = continuation.ParentJoinId,
+                Sequence = continuation.Sequence,
+                ForkActivationId = continuation.ForkActivationId,
+                StepId = next == null ? "" : scopes.Id(next),
+                AuthorStepId = next?.Id ?? "",
                 StepIndex = position.NextStepIndex,
                 Status = continuation.Status.ToString(),
                 FrameId = position.ActivationId
@@ -37,15 +43,28 @@ internal static class ExecutionSnapshotFactory
                 var parent = index == 0 ? null : continuation.Stack[index - 1];
                 var owner = parent == null ? null :
                     scopes.Steps(parent.ScopeId).ElementAtOrDefault(parent.NextStepIndex);
+                var iteration = owner?.StepType == WorkflowStepType.Loop ? parent!.LoopIterationCount : frame.LoopIterationCount;
+                var name = owner?.Name ?? frame.ScopeId;
+                if (owner?.StepType == WorkflowStepType.Loop) name += $" (iteration {iteration})";
+                if (frame.ForEachIndex is { } itemIndex) name += $" (item {itemIndex})";
                 snapshot.Frames.Add(new ExecutionFrame
                 {
                     FrameId = frame.ActivationId,
+                    Name = name,
+                    LoopIteration = iteration,
+                    ForEachItemIndex = frame.ForEachIndex,
                     Kind = owner?.StepType.ToString() ?? frame.ScopeId,
                     StepId = frame.ScopeId,
                     ParentFrameId = parent?.ActivationId,
                     State = new Dictionary<string, string>
                     {
-                        ["NextStepIndex"] = frame.NextStepIndex.ToString()
+                        ["NextStepIndex"] = frame.NextStepIndex.ToString(),
+                        ["LoopIteration"] = iteration.ToString(),
+                        ["ForEachItemIndex"] = frame.ForEachIndex?.ToString() ?? "",
+                        ["ContinuationId"] = continuation.Id,
+                        ["ParentJoinId"] = continuation.ParentJoinId ?? "",
+                        ["Sequence"] = continuation.Sequence.ToString(),
+                        ["ForkActivationId"] = continuation.ForkActivationId ?? ""
                     }
                 });
             }

@@ -376,6 +376,11 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Built definition differs from the verified bundle manifest");
                 definition.BundleDigest = digest;
                 definition.BundleContext = context;
+                definition.BundleSources = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    [WorkflowBundleArchive.YamlPath] = System.Text.Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.YamlPath].Span),
+                    [WorkflowBundleArchive.SourcePath] = System.Text.Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.SourcePath].Span)
+                };
                 token.ThrowIfCancellationRequested();
                 return new(context, definition);
             }

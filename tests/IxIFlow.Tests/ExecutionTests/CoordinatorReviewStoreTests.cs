@@ -175,7 +175,7 @@ public sealed class CoordinatorReviewStoreTests : IClassFixture<SqliteTestDataba
             var second = Assert.IsType<ExecutionLeaseGrant>(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId,
                 "next", TimeSpan.FromMinutes(1), wrong, termination));
             Assert.True(second.Epoch > first.Epoch);
-            Assert.False(await store.RenewExecutionLeaseAsync(instance.InstanceId, "terminator", TimeSpan.FromMinutes(1)));
+            Assert.False((await store.RenewExecutionLeasesAsync([new(instance.InstanceId, "terminator", TimeSpan.FromMinutes(1))]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
             var saved = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
             saved.Status = WorkflowStatus.Terminated;
             saved.CancellationReason = await store.GetCancellationRequestAsync(instance.InstanceId);

@@ -51,7 +51,9 @@ public enum WorkflowStatus
     /// </summary>
     NeedsResolution,
     /// <summary>The whole-instance execution deadline expired.</summary>
-    TimedOut
+    TimedOut,
+    /// <summary>Execution is held until continued or cancelled.</summary>
+    Paused
 }
 
 /// <summary>
@@ -99,6 +101,7 @@ public class CancellationReason
 /// </summary>
 public class WorkflowOptions
 {
+    internal string? DebugStopOnEntryActor { get; set; }
     /// <summary>Additional capability constraints, resolved once at creation.</summary>
     public List<WorkflowDemand> Demands { get; set; } = [];
     /// <summary>A temporary pin, stamped with an expiry by the creating store.</summary>
@@ -214,7 +217,7 @@ public class WorkflowInstance
     /// <summary>
     ///     Serialized workflow data
     /// </summary>
-    public string WorkflowDataJson { get; set; } = "";
+    public StoredJson WorkflowDataJson { get; set; } = StoredJson.Inline("");
 
     /// <summary>
     ///     Workflow data type for deserialization
@@ -255,14 +258,14 @@ public class WorkflowInstance
     /// known; a commit writes only the parts that differ, and deletes those that are gone.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    internal IReadOnlyDictionary<string, string>? SavedParts { get; private set; }
+    internal IReadOnlyDictionary<string, StoredJson>? SavedParts { get; private set; }
 
     // The instance and the revision SavedParts are stored at.
     private string? _savedPartsInstanceId;
     private long _savedPartsRevision;
 
     /// <summary>Records the parts the instance is stored in at <paramref name="revision"/>.</summary>
-    internal void Saved(IReadOnlyDictionary<string, string> parts, long revision)
+    internal void Saved(IReadOnlyDictionary<string, StoredJson> parts, long revision)
     {
         SavedParts = parts;
         _savedPartsInstanceId = InstanceId;
@@ -273,7 +276,7 @@ public class WorkflowInstance
     /// The parts the instance is stored in at <paramref name="revision"/>, or null when they are not known for it: the
     /// object changed revision, or names another instance, since it was read or last committed through the engine.
     /// </summary>
-    internal IReadOnlyDictionary<string, string>? PartsAt(long revision) =>
+    internal IReadOnlyDictionary<string, StoredJson>? PartsAt(long revision) =>
         SavedParts != null && _savedPartsRevision == revision && _savedPartsInstanceId == InstanceId
             ? SavedParts : null;
 
@@ -281,12 +284,28 @@ public class WorkflowInstance
     [System.Text.Json.Serialization.JsonIgnore]
     internal Runtime.StoredCheckpoint? Stored { get; set; }
 
+    // Detach mutable metadata at the local message boundary without encoding and reparsing the
+    // entire checkpoint. Saved JSON values are immutable; the executor deserializes its own data.
+    internal WorkflowInstance CopyForAssignment()
+    {
+        var copy = (WorkflowInstance)MemberwiseClone();
+        copy.Properties = Properties.ToDictionary(pair => pair.Key, pair => pair.Value.Clone());
+        copy.CancellationReason = CancellationReason == null ? null :
+            System.Text.Json.JsonSerializer.Deserialize<CancellationReason>(
+                System.Text.Json.JsonSerializer.Serialize(CancellationReason));
+        copy.Stored = null;
+        copy.SavedParts = null;
+        copy._savedPartsInstanceId = null;
+        copy._savedPartsRevision = 0;
+        return copy;
+    }
+
     /// <summary>The instance's fields with <paramref name="trunk"/> as its state and no data, to store as a trunk.</summary>
     internal WorkflowInstance AsTrunk(string trunk)
     {
         var copy = (WorkflowInstance)MemberwiseClone();
         copy.ExecutionStateJson = trunk;
-        copy.WorkflowDataJson = "";
+        copy.WorkflowDataJson = StoredJson.Inline("");
         return copy;
     }
 
@@ -348,6 +367,13 @@ public class WorkflowExecutionSnapshot
 /// </summary>
 public class ExecutionPointer
 {
+    public string Name { get; set; } = "";
+    public string? ParentPointerId { get; set; }
+    public string? ParentJoinId { get; set; }
+    public int Sequence { get; set; }
+    public string? ForkActivationId { get; set; }
+    /// <summary>The author-supplied step identity.</summary>
+    public string AuthorStepId { get; set; } = string.Empty;
     /// <summary>
     ///     Pointer identity
     /// </summary>
@@ -379,6 +405,9 @@ public class ExecutionPointer
 /// </summary>
 public class ExecutionFrame
 {
+    public string Name { get; set; } = "";
+    public int LoopIteration { get; set; }
+    public int? ForEachItemIndex { get; set; }
     /// <summary>
     ///     Frame identity
     /// </summary>
@@ -416,6 +445,10 @@ public class ExecutionFrame
 /// </summary>
 public class ExecutionTraceEntry
 {
+    public string? ContinuationId { get; set; }
+    public string? FrameActivationId { get; set; }
+    /// <summary>The catalog identity of the activity step.</summary>
+    public string? StepId { get; set; }
     /// <summary>
     ///     Unique identifier for this trace entry
     /// </summary>
@@ -590,7 +623,14 @@ public enum TraceEntryType
     StepRetryScheduled,
     CompensationFailed,
     TraceBudgetReached,
-
+    Paused,
+    Continued,
+    BreakpointHit,
+    BreakpointsChanged,
+    /// <summary>A mandatory, value-free audit of a paused data edit.</summary>
+    DataEdited,
+    ReplayOrigin,
+    ThreadPosition,
     /// <summary>A versioned hard-stop command was acknowledged.</summary>
     WorkflowTerminated
 }
@@ -602,6 +642,10 @@ public class WorkflowDefinition
 {
     internal ArtifactDigest? BundleDigest { get; set; }
     internal System.Runtime.Loader.AssemblyLoadContext? BundleContext { get; set; }
+    internal IReadOnlyDictionary<string, string>? BundleSources { get; set; }
+    /// <summary>The executable definition's catalog, including author identities and call sites.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public StepTable StepTable => WorkflowDefinitionValidator.ForExecution(this).StepTable;
     /// <summary>Placement declarations, excluded from executable structure identity.</summary>
     public List<WorkflowDemand> Demands { get; set; } = [];
 

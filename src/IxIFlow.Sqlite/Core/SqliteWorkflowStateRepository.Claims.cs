@@ -51,7 +51,7 @@ public sealed partial class SqliteWorkflowStateRepository
                 WHERE instance.instance_id = @InstanceId
                   AND instance.status NOT IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
                   AND (instance.runnable_at_utc <= @Now OR (@Operator
-                      AND (instance.status = 'NeedsResolution' OR json_type(instance.state_json, '$.ExecutionStateJson.OperatorStop') = 'object')))
+                      AND (instance.status IN ('NeedsResolution', 'Paused') OR json_type(instance.state_json, '$.ExecutionStateJson.OperatorStop') = 'object')))
                   AND {PinMatches}
                   AND NOT EXISTS (SELECT 1 FROM ixiflow_demand_set_rows AS demand
                       LEFT JOIN capabilities AS capability ON capability.key = demand.demand_key
