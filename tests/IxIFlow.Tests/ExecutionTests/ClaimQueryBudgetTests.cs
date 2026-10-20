@@ -85,9 +85,9 @@ public sealed class ClaimQueryBudgetTests(ITestOutputHelper output)
             }
             await connection.ExecuteAsync(postgres ? """
                 INSERT INTO ixiflow_workflow_instances
-                    (instance_id, workflow_name, status, runnable_at_utc, state_json, revision, last_host_id,
+                    (instance_id, workflow_name, workflow_version, created_at_utc, status, runnable_at_utc, state_json, revision, last_host_id,
                      demand_set_id, pinned_host, pin_expires_at_utc)
-                SELECT n::text, 'budget', 'Running', clock_timestamp() - n * INTERVAL '1 millisecond', '{}', 1,
+                SELECT n::text, 'budget', 1, clock_timestamp(), 'Running', clock_timestamp() - n * INTERVAL '1 millisecond', '{"WorkflowVersion":1}', 1,
                     CASE n % 3 WHEN 0 THEN @HostId WHEN 1 THEN NULL ELSE @OtherHost END,
                     CASE WHEN n % 10000 = 0 THEN @Cuda ELSE @Metal END,
                     CASE WHEN n % 5 = 0 THEN CAST(@OtherHost AS text) END,
@@ -105,9 +105,9 @@ public sealed class ClaimQueryBudgetTests(ITestOutputHelper output)
                 WITH numbers AS (SELECT TOP (300000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS n
                     FROM sys.all_objects a CROSS JOIN sys.all_objects b)
                 INSERT INTO dbo.IxIFlowWorkflowInstances
-                    (InstanceId, WorkflowName, Status, RunnableAtUtc, StateJson, Revision, LastHostId,
+                    (InstanceId, WorkflowName, WorkflowVersion, CreatedAtUtc, Status, RunnableAtUtc, StateJson, Revision, LastHostId,
                      DemandSetId, PinnedHost, PinExpiresAtUtc)
-                SELECT CONVERT(nvarchar(100), n), 'budget', 'Running', DATEADD(MILLISECOND, -CONVERT(int, n), SYSUTCDATETIME()), '{}', 1,
+                SELECT CONVERT(nvarchar(100), n), 'budget', 1, SYSUTCDATETIME(), 'Running', DATEADD(MILLISECOND, -CONVERT(int, n), SYSUTCDATETIME()), '{"WorkflowVersion":1}', 1,
                     CASE n % 3 WHEN 0 THEN @HostId WHEN 1 THEN NULL ELSE @OtherHost END,
                     CASE WHEN n % 10000 = 0 THEN @Cuda ELSE @Metal END,
                     CASE WHEN n % 5 = 0 THEN CONVERT(nvarchar(100), @OtherHost) END,

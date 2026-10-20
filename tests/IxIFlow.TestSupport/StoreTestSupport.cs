@@ -24,9 +24,9 @@ public static class StoreTestSupport
 
     private static readonly ConditionalWeakTable<IWorkflowStateRepository, ConcurrentDictionary<string, Owner>> Owners = new();
 
-    /// <summary>Retains the test owner while active, or claims a new epoch after release or expiry.</summary>
+    /// <summary>Retains the test owner while active, or claims using saved demands and pin unless a query is supplied.</summary>
     public static async Task<ExecutionLeaseGrant> LeaseAsync(IWorkflowStateRepository store, string instanceId,
-        ClaimQuery? query = null)
+        ClaimQuery? query = null, ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
     {
         var owner = Owners.GetOrCreateValue(store).GetOrAdd(instanceId, _ => new Owner());
         await owner.Gate.WaitAsync();
@@ -35,8 +35,17 @@ public static class StoreTestSupport
             var duration = TimeSpan.FromMinutes(5);
             if (owner.Grant != null && await store.RenewExecutionLeaseAsync(instanceId, owner.Token, duration))
                 return owner.Grant;
+            if (query == null)
+            {
+                var demands = await store.GetWorkflowDemandsAsync(instanceId);
+                // A host that meets the instance's demands; a pinned host's identity must be stated explicitly,
+                // so a pin can still refuse a fixture claim.
+                var capabilities = demands.Where(demand => demand.Key != "host")
+                    .ToDictionary(demand => demand.Key, demand => demand.Value ?? "", StringComparer.Ordinal);
+                query = new ClaimQuery(Guid.Empty, capabilities);
+            }
             owner.Grant = await store.TryAcquireExecutionLeaseAsync(instanceId, owner.Token, duration,
-                query ?? new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+                query, kind);
             return owner.Grant ?? throw new InvalidOperationException($"The test could not claim '{instanceId}'");
         }
         finally { owner.Gate.Release(); }
