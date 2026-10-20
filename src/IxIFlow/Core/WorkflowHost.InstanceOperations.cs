@@ -442,7 +442,6 @@ public sealed partial class WorkflowHost
                     return await ExistingStartAsync(existing, definition, scopes, versionOmitted);
                 instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
                 await registry.RegisterWorkflowAsync(definition);
-                await _hostSettings.RegisteredWorkflowAsync(definition, scopes.StructureHash);
                 WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(definition.Name, definition.Version),
                     definition.Name, definition.Version);
                 if (options.WhenUnschedulable == WhenUnschedulable.Fail)

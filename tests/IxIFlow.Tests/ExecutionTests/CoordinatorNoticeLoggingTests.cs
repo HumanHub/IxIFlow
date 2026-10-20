@@ -9,6 +9,7 @@ using Microsoft.Extensions.Time.Testing;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Collection("Operational metrics")]
+[Trait("Feature", "recovery")]
 public sealed class CoordinatorNoticeLoggingTests
 {
     [Fact]

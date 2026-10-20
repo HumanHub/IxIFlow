@@ -9,6 +9,7 @@ using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "host")]
 public sealed class CoordinatorReviewStoreTests : IClassFixture<SqliteTestDatabase<CoordinatorReviewStoreTests>>
 {
     [Theory]

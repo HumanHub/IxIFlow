@@ -10,6 +10,7 @@ using Xunit.Abstractions;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
+[Trait("Feature", "recovery")]
 public sealed class CoordinatorDemandSetScaleTests(ITestOutputHelper output) : IClassFixture<SqliteTestDatabase<CoordinatorDemandSetScaleTests>>
 {
     [Theory]
