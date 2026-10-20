@@ -66,4 +66,4 @@ Operator calls record the supplied actor, falling back to `IxIFlowOptions.Actor`
 
 ## Planned debugger work
 
-Breakpoints, all-stop pause, stepping, paused timer policies, audited data edits, Debug Adapter Protocol and replay remain planned. Committed transition traces, event/operator entries, snapshots, logging and OpenTelemetry are already implemented. See the [roadmap](roadmap.md).
+Breakpoints, all-stop pause, stepping, audited data edits, Debug Adapter Protocol and inspection/replay tooling remain 1.0 work. Timers will keep running while paused; edits will record the actor, time, revision and edited paths. Committed transition traces, event/operator entries, snapshots, redaction, logging and OpenTelemetry are already implemented. See the [roadmap](roadmap.md).
