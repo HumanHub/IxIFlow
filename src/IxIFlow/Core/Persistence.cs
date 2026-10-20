@@ -470,6 +470,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 .OrderByDescending(instance => instance.LastHostId == query.HostId)
                 .ThenBy(instance => instance.RunnableAtUtc)
                 .ThenBy(instance => instance.InstanceId, StringComparer.Ordinal)
+                .Skip((int)Math.Min(int.MaxValue, query.ScanOffset))
                 .Take(query.Limit)
                 .Select(instance => new RunnableInstance(instance.InstanceId, instance.RunnableAtUtc!.Value))
                 .ToArray();

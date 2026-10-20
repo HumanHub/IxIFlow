@@ -54,7 +54,7 @@ public sealed partial class SqlWorkflowStateRepository
         WITH candidates AS (
             SELECT own.*, 0 AS Affinity FROM #ClaimMatched AS matched
             CROSS APPLY (
-                SELECT TOP (@Limit) instance.InstanceId, instance.RunnableAtUtc
+                SELECT TOP (@ScanLimit) instance.InstanceId, instance.RunnableAtUtc
                 FROM dbo.IxIFlowWorkflowInstances AS instance WITH (READCOMMITTEDLOCK, READPAST, FORCESEEK, INDEX(IX_IxIFlowInstances_SetAffinity))
                 WHERE instance.DemandSetId = matched.DemandSetId AND instance.LastHostId = @HostId
                   AND instance.RunnableAtUtc <= @Now AND {PinMatches}
@@ -64,7 +64,7 @@ public sealed partial class SqlWorkflowStateRepository
             UNION ALL
             SELECT other.*, 1 AS Affinity FROM #ClaimMatched AS matched
             CROSS APPLY (
-                SELECT TOP (@Limit) instance.InstanceId, instance.RunnableAtUtc
+                SELECT TOP (@ScanLimit) instance.InstanceId, instance.RunnableAtUtc
                 FROM dbo.IxIFlowWorkflowInstances AS instance WITH (READCOMMITTEDLOCK, READPAST, FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
                 WHERE instance.DemandSetId = matched.DemandSetId
                   AND (instance.LastHostId IS NULL OR instance.LastHostId <> @HostId)
@@ -74,9 +74,10 @@ public sealed partial class SqlWorkflowStateRepository
                 ORDER BY instance.RunnableAtUtc, instance.InstanceId) AS other)
         -- Under read committed, affinity can move between the two seeks.
         -- Deduplicate the bounded merge before applying the global limit.
-        SELECT TOP (@Limit) InstanceId, MIN(RunnableAtUtc) AS RunnableAtUtc FROM candidates
+        SELECT InstanceId, MIN(RunnableAtUtc) AS RunnableAtUtc FROM candidates
         GROUP BY InstanceId
         ORDER BY MIN(Affinity), MIN(RunnableAtUtc), InstanceId
+        OFFSET @ScanOffset ROWS FETCH NEXT @Limit ROWS ONLY
         OPTION (LOOP JOIN, RECOMPILE);
         DROP TABLE #ClaimMatched;
         DROP TABLE #ClaimCapabilities;
@@ -107,6 +108,12 @@ public sealed partial class SqlWorkflowStateRepository
         WHERE InstanceId = @InstanceId
         """;
 
+    internal override string ClaimStampHostSql => """
+        UPDATE dbo.IxIFlowWorkflowInstances WITH (ROWLOCK, NOWAIT) SET LastHostId =
+            (SELECT HostId FROM dbo.IxIFlowWorkflowLeases WHERE InstanceId = @InstanceId)
+        WHERE InstanceId = @InstanceId
+        """;
+
     internal override DynamicParameters PlacementParameters(ClaimQuery query, DateTime now, int limit)
     {
         var table = new DataTable();
@@ -116,6 +123,6 @@ public sealed partial class SqlWorkflowStateRepository
         foreach (var capability in query.Capabilities) table.Rows.Add(capability.Key, capability.Value, capability.Key.Length * 2);
         var parameters = WithTimes(new { query.HostId, Limit = limit, CapabilityHost = query.Capabilities.GetValueOrDefault("host") }, ("Now", now));
         parameters.Add("Capabilities", table.AsTableValuedParameter("dbo.IxIFlowClaimCapabilities"));
-        return parameters;
+        return WithScan(parameters, query, limit);
     }
 }

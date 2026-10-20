@@ -42,7 +42,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                   AND instance.runnable_at_utc <= @Now AND {PinMatches}
                   AND COALESCE((SELECT lease.expires_at_utc <= @Now FROM ixiflow_workflow_leases AS lease
                       WHERE lease.instance_id = instance.instance_id), true)
-                ORDER BY instance.runnable_at_utc, instance.instance_id LIMIT @Limit) AS own
+                ORDER BY instance.runnable_at_utc, instance.instance_id LIMIT @ScanLimit) AS own
             UNION ALL
             SELECT other.*, 1 AS affinity FROM matched
             CROSS JOIN LATERAL (
@@ -53,9 +53,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                   AND instance.runnable_at_utc <= @Now AND {PinMatches}
                   AND COALESCE((SELECT lease.expires_at_utc <= @Now FROM ixiflow_workflow_leases AS lease
                       WHERE lease.instance_id = instance.instance_id), true)
-                ORDER BY instance.runnable_at_utc, instance.instance_id LIMIT @Limit) AS other)
+                ORDER BY instance.runnable_at_utc, instance.instance_id LIMIT @ScanLimit) AS other)
         SELECT instance_id AS InstanceId, runnable_at_utc AS RunnableAtUtc FROM candidates
-        ORDER BY affinity, runnable_at_utc, instance_id LIMIT @Limit
+        ORDER BY affinity, runnable_at_utc, instance_id LIMIT @Limit OFFSET @ScanOffset
         """;
 
     internal override string ClaimEligibilitySql => $"""
@@ -84,8 +84,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository
 
     internal override DynamicParameters PlacementParameters(ClaimQuery query, DateTime now, int limit)
     {
-        return WithTimes(new { query.HostId, Limit = limit, CapabilityHost = query.Capabilities.GetValueOrDefault("host"),
+        return WithScan(WithTimes(new { query.HostId, Limit = limit, CapabilityHost = query.Capabilities.GetValueOrDefault("host"),
             CapabilityKeys = query.Capabilities.Keys.ToArray(),
-            CapabilityValues = query.Capabilities.Values.ToArray() }, ("Now", now));
+            CapabilityValues = query.Capabilities.Values.ToArray() }, ("Now", now)), query, limit);
     }
 }
