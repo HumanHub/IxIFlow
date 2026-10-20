@@ -16,6 +16,7 @@ public sealed class WorkflowExecutor
     private readonly EventIntake _intake;
     private readonly ILogger _logger;
     private readonly ILogger<SensitiveDiagnostics>? _sensitiveDiagnostics;
+    private readonly InspectionRedactionPolicy _inspectionPolicy;
 
     private readonly IExecutionHost _host;
     private readonly IWorkflowDefinitionSource _definitions;
@@ -24,6 +25,7 @@ public sealed class WorkflowExecutor
     public WorkflowExecutor(IServiceProvider services, IExecutionHost host)
     {
         _host = host;
+        _inspectionPolicy = (InspectionRedactionPolicy)services.GetService(typeof(InspectionRedactionPolicy))!;
         _definitions = (IWorkflowDefinitionSource)services.GetService(typeof(IWorkflowDefinitionSource))!;
         _executorName = (services.GetService(typeof(HostSettings)) as HostSettings ?? HostSettings.Default).Name;
         var activityExecutor = (IActivityExecutor)services.GetService(typeof(IActivityExecutor))!;
@@ -594,7 +596,7 @@ public sealed class WorkflowExecutor
                 continuation.Status = ContinuationStatus.Cancelled;
             }
             checkpoint.RecordDiagnostic(ex);
-            InspectionRedactionPolicy.Default.LogSensitive(_sensitiveDiagnostics, ex);
+            _inspectionPolicy.LogSensitive(_sensitiveDiagnostics, ex);
             instance.LastError = ex.Message;
             instance.LastErrorStackTrace = ex.StackTrace;
             instance.CompletedAt = Now;

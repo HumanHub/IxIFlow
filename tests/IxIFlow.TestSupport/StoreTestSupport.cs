@@ -9,6 +9,13 @@ namespace IxIFlow.Tests.Infrastructure;
 /// <summary>Valid checkpoint and leased setup operations shared by store contract tests.</summary>
 public static class StoreTestSupport
 {
+    /// <summary>Raw diagnostics of the instance's current incarnation, through the store's incarnation-bound read.</summary>
+    public static async Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(this IWorkflowStateRepository store,
+        string instanceId) =>
+        await store.GetWorkflowInstanceSummaryAsync(instanceId) is { } summary
+            ? await store.GetDiagnosticsForIncarnationAsync(instanceId, summary.Incarnation)
+            : [];
+
     public static string CheckpointJson { get; } = JsonSerializer.Serialize(new ExecutionCheckpoint
     {
         StructureHash = "store-contract",

@@ -47,7 +47,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
         ReadInstance,
         LockAndReadPage, DeleteLease,
-        DeleteState, DeleteParentInbox, DeleteRows, Trace, Diagnostics, DiagnosticIds, InsertDiagnostic, DeleteDiagnostics
+        DeleteState, DeleteParentInbox, DeleteRows, Trace, IncarnationDiagnostics, DiagnosticIds, InsertDiagnostic, DeleteDiagnostics
     }
 
     /// <summary>The result of the provider's atomic cancellation SQL.</summary>
@@ -1031,11 +1031,12 @@ public abstract partial class RelationalWorkflowStateRepository :
             JsonSerializer.Deserialize<ExecutionTraceEntry>(row.EntryJson)!)).ToArray();
     }
 
-    public async Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId)
+    public async Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation)
     {
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<string>(RequiredSql(Statement.Diagnostics), new { InstanceId = instanceId });
+        var rows = await connection.QueryAsync<string>(RequiredSql(Statement.IncarnationDiagnostics),
+            new { InstanceId = instanceId, Incarnation = incarnation });
         return rows.Select(json => JsonSerializer.Deserialize<WorkflowDiagnostic>(json)!).ToArray();
     }
 

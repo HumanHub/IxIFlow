@@ -15,6 +15,7 @@ internal sealed class ActivityAttempts(
 {
     private readonly ActivityTransitionExecutor _activities = new(activityExecutor);
     private readonly ILogger _logger = LogScope.Logger(services);
+    private readonly InspectionRedactionPolicy _inspectionPolicy = (InspectionRedactionPolicy)services.GetService(typeof(InspectionRedactionPolicy))!;
     private readonly string _hostName = (services.GetService(typeof(HostSettings)) as HostSettings ?? HostSettings.Default).Name;
 
     private DateTime Now => time.GetUtcNow().UtcDateTime;
@@ -117,7 +118,7 @@ internal sealed class ActivityAttempts(
         {
             pending!.ResolutionReason = $"Activity recovery could not be prepared: {error.Message}";
             pending.ResolutionDiagnostic = checkpoint.RecordDiagnostic(error);
-            InspectionRedactionPolicy.Default.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
+            _inspectionPolicy.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
             continuation.Status = ContinuationStatus.WaitingResolution;
             await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
             return null;
@@ -548,7 +549,7 @@ internal sealed class ActivityAttempts(
         pending.ResolutionDiagnostic = error != null ? checkpoint.RecordDiagnostic(error)
             : reason == null ? null : checkpoint.RecordDiagnostic("ActivityUnresolved", reason);
         if (error != null)
-            InspectionRedactionPolicy.Default.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
+            _inspectionPolicy.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
         pending.Attempts[^1].EndedAtUtc = Now;
         pending.Attempts[^1].Observation = "Unresolved";
         activity.Continuation.Status = ContinuationStatus.WaitingResolution;
@@ -589,7 +590,7 @@ internal sealed class ActivityAttempts(
     {
         var diagnostic = error == null ? null : checkpoint.RecordDiagnostic(error);
         if (error != null)
-            InspectionRedactionPolicy.Default.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
+            _inspectionPolicy.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
         var pending = running.Continuation.PendingActivity;
         if (pending == null)
             return;

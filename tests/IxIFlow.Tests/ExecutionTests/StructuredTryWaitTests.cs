@@ -1706,6 +1706,8 @@ public class StructuredTryWaitTests
             _inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
         public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId) =>
             _inner.GetDiagnosticsAsync(instanceId);
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation) =>
+            _inner.GetDiagnosticsForIncarnationAsync(instanceId, incarnation);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             _inner.GetTraceAsync(instanceId, afterSequence, limit);

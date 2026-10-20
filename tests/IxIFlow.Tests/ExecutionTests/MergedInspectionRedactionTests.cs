@@ -1,4 +1,4 @@
-using System.ComponentModel;
+using System.Text.Json.Schema;
 using System.Security.Claims;
 using System.Text.Json;
 using IxIFlow.ActivitySdk;
@@ -49,7 +49,12 @@ public sealed class MergedInspectionRedactionTests
             .Step<Throw>().Build(), new Data());
         var wait = Assert.Single(await client.GetOpenWaitsAsync(new(InstanceId: started.InstanceId)));
         Assert.DoesNotContain(Secret, JsonSerializer.Serialize(wait));
+        var unstripped = JsonSchemaExporter.GetJsonSchemaAsNode(JsonSerializerOptions.Default, typeof(Notice)).ToJsonString();
+        Assert.Contains(Secret, unstripped);
+        Assert.Contains("default", unstripped);
         Assert.Contains("Secret", wait.EventSchema);
+        Assert.DoesNotContain(Secret, wait.EventSchema);
+        Assert.DoesNotContain("default", wait.EventSchema);
         Assert.DoesNotContain(Secret, JsonSerializer.Serialize(new
         {
             page = await operations.SearchAsync(new(InstanceId: started.InstanceId)),
@@ -131,9 +136,18 @@ public sealed class MergedInspectionRedactionTests
         Assert.DoesNotContain(Secret, JsonSerializer.Serialize(result));
         Assert.Equal(typeof(InvalidOperationException).FullName, result.Error!.ErrorType);
         Assert.Equal(result.Error.ToString(), result.ErrorMessage);
-        var raw = Assert.Single(await provider.GetRequiredService<IWorkflowDiagnostics>().ReadAsync(started.InstanceId));
-        Assert.Equal(result.Error.DiagnosticId, raw.DiagnosticId);
-        Assert.Equal(Secret, raw.Message);
+        var raw = await provider.GetRequiredService<IWorkflowDiagnostics>().ReadAsync(started.InstanceId);
+        var failure = Assert.Single(raw, item => item.ErrorType != "OperatorNote");
+        Assert.Equal(result.Error.DiagnosticId, failure.DiagnosticId);
+        Assert.Equal(result.Error.ErrorType, failure.ErrorType);
+        Assert.Equal(Secret, failure.Message);
+        var note = Assert.Single(raw, item => item.ErrorType == "OperatorNote");
+        Assert.Equal(Secret, note.Message);
+        Assert.Null(note.StackTrace);
+        Assert.NotEqual(failure.DiagnosticId, note.DiagnosticId);
+        var resolved = Assert.Single(await client.GetTraceAsync(started.InstanceId),
+            entry => entry.EntryType == TraceEntryType.ActivityResolved);
+        Assert.Equal(note.DiagnosticId, resolved.Error!.DiagnosticId);
     }
 
     [Theory]
@@ -181,10 +195,9 @@ public sealed class MergedInspectionRedactionTests
         public ValueTask<WaitQuery> ScopeAsync(ClaimsPrincipal principal, WaitQuery query, CancellationToken cancellationToken) => ValueTask.FromResult(query);
     }
     public sealed class Data { [Sensitive] public string Secret { get; set; } = MergedInspectionRedactionTests.Secret; }
-    public sealed class Notice
+    public sealed class Notice(string secret = MergedInspectionRedactionTests.Secret)
     {
-        [Sensitive, Description(MergedInspectionRedactionTests.Secret), DefaultValue(MergedInspectionRedactionTests.Secret)]
-        public string Secret { get; set; } = "";
+        [Sensitive] public string Secret { get; set; } = secret;
     }
     public sealed class Noop : IAsyncActivity { public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask; }
     public sealed class Throw : IAsyncActivity { public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => throw new InvalidOperationException(Secret); }

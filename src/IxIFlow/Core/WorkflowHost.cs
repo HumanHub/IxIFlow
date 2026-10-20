@@ -42,6 +42,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
     private readonly ILogger<SensitiveDiagnostics>? _sensitiveDiagnostics;
+    private readonly InspectionRedactionPolicy _inspectionPolicy;
     private readonly SortedSet<(DateTime Due, string InstanceId)> _due = new(Comparer<(DateTime Due, string InstanceId)>
         .Create((left, right) => left.Due != right.Due
             ? left.Due.CompareTo(right.Due)
@@ -54,7 +55,8 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     private DateTime? _armedFor;
 
     internal WorkflowHost(IServiceScopeFactory scopes, HostSettings settings, TimeProvider? time = null,
-        ILogger<WorkflowHost>? logger = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null)
+        ILogger<WorkflowHost>? logger = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
+        InspectionRedactionPolicy? inspectionPolicy = null)
     {
         _scopes = scopes;
         _settings = settings;
@@ -62,6 +64,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         _time = time ?? TimeProvider.System;
         _logger = logger ?? NullLogger<WorkflowHost>.Instance;
         _sensitiveDiagnostics = sensitiveDiagnostics;
+        _inspectionPolicy = inspectionPolicy ?? InspectionRedactionPolicy.Default;
         // The timer must not carry the context of whoever first scheduled something: its callbacks
         // would then look like calls from inside that run.
         using (ExecutionContext.SuppressFlow())
@@ -187,7 +190,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         }
         catch (Exception error)
         {
-            InspectionRedactionPolicy.Default.Log(_logger, _sensitiveDiagnostics, LogLevel.Error, error, "Could not resume workflow {InstanceId} at its runnable time", instanceId);
+            _inspectionPolicy.Log(_logger, _sensitiveDiagnostics, LogLevel.Error, error, "Could not resume workflow {InstanceId} at its runnable time", instanceId);
         }
         lock (_lock)
         {

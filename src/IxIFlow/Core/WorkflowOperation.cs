@@ -19,6 +19,7 @@ public sealed class WorkflowOperation
 public sealed record WorkflowOperationResult(string InstanceId, WorkflowExecutionStatus Status, string? ErrorMessage = null)
 {
     public InspectionError? Error { get; init; }
+    public WorkflowErrorKind? ErrorKind { get; init; }
 }
 
 internal sealed partial class HostedWorkflowOperations
@@ -98,6 +99,7 @@ internal sealed partial class HostedWorkflowOperations
         if (result.Status is WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Running)
             result = await new HostedWorkflowClient(host, time, catalog, repository).AwaitAsync(result.InstanceId);
         var error = result.ErrorMessage == null ? null : InspectionRedactionPolicy.Default.ResultError(result);
-        return new(result.InstanceId, result.Status, error?.ToString()) { Error = error };
+        return new(result.InstanceId, result.Status, result.ErrorMessage == null ? null : InspectionRedactionPolicy.Default.ResultReason(result))
+            { Error = error, ErrorKind = result.ErrorKind };
     }
 }

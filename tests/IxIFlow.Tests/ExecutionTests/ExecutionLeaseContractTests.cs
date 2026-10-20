@@ -1501,6 +1501,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
         public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId) =>
             inner.GetDiagnosticsAsync(instanceId);
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation) =>
+            inner.GetDiagnosticsForIncarnationAsync(instanceId, incarnation);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             inner.GetTraceAsync(instanceId, afterSequence, limit);

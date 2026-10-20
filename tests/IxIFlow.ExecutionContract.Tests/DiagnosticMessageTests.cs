@@ -16,7 +16,7 @@ public sealed class DiagnosticMessageTests
         var assign = await harness.AssignAsync(Workflow.Create<MessageHarness.Data>("serialized-diagnostic")
             .Step<MessageHarness.Noop>().Step<Fail>().Build());
         await harness.ExecuteAsync();
-        var raw = Assert.Single(await harness.Host.Store.GetDiagnosticsAsync(assign.Instance.InstanceId));
+        var raw = Assert.Single(await harness.Host.Store.GetDiagnosticsForIncarnationAsync(assign.Instance.InstanceId, assign.Instance.Incarnation));
         Assert.Equal(Secret, raw.Message);
         Assert.Equal(typeof(InvalidOperationException).FullName, raw.ErrorType);
         Assert.Contains(nameof(Fail), raw.StackTrace);
