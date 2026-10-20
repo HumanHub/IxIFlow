@@ -8,8 +8,4 @@ public enum ExecutionLeaseRenewalStatus { Renewed, TerminationRequested, Refused
 
 /// <summary>A termination refusal includes the durable command that the owner must observe.</summary>
 public sealed record ExecutionLeaseRenewalResult(ExecutionLeaseRenewalStatus Status,
-    CancellationReason? PendingTermination = null)
-{
-    /// <summary>An unreadable per-lease outcome refuses ownership with its original error.</summary>
-    public Exception? Error { get; init; }
-}
+    CancellationReason? PendingTermination = null);

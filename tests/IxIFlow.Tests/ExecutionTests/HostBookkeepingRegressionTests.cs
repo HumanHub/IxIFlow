@@ -206,7 +206,7 @@ public sealed class HostBookkeepingRegressionTests
             control.OnUnscheduled(scheduler.Unschedule);
             _watch = new CancellationWatch(Store, Time);
             Operations = new(Services, Services.GetRequiredService<IActivityExecutor>(), Store,
-                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), Services.GetRequiredService<ExecutionLeaseRenewer>(),
                 timeProvider: Time, watch: _watch, control: control,
                 limits: new ExecutionLimits { MaxTraceEntriesPerInstance = 0 });
         }
@@ -225,7 +225,7 @@ public sealed class HostBookkeepingRegressionTests
         {
             var instance = await SeedAsync(Workflow.Create<Data>("Bookkeeping").Step<Noop>().Build());
             var owner = (await WorkflowExecutionLease.TryAcquireAsync(Store, instance,
-                ExecutionLeaseSettings.Default, _watch, await StoreTestSupport.ClaimAsync(Services), _ => { }, _ => { }, _ => { }, Time))!;
+                ExecutionLeaseSettings.Default, _watch, Services.GetRequiredService<ExecutionLeaseRenewer>(), await StoreTestSupport.ClaimAsync(Services), _ => { }, _ => { }, _ => { }, Time))!;
             var identity = Guid.NewGuid();
             return new(instance, owner, identity, Operations.Admit(instance, owner, identity));
         }

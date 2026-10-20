@@ -484,7 +484,8 @@ public abstract partial class RelationalWorkflowStateRepository :
     }
 
     internal abstract int RenewalBatchSize { get; }
-    internal abstract string RenewalSql(IReadOnlyList<ExecutionLeaseRenewal> leases, DynamicParameters parameters);
+    internal abstract string RenewalSql(IReadOnlyList<ExecutionLeaseRenewal> leases,
+        IReadOnlySet<string> terminations, DynamicParameters parameters);
 
     public async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
         IReadOnlyList<ExecutionLeaseRenewal> leases)
@@ -502,14 +503,21 @@ public abstract partial class RelationalWorkflowStateRepository :
             {
                 await using var connection = await OpenConnectionAsync(ownership: true);
                 await using var transaction = await BeginTransactionAsync(connection, Operation.LeaseRenew);
+                // Match single renewal: read pending commands without instance locks in this
+                // transaction. Decode each row in C# so corrupt JSON cannot fail the whole chunk.
+                var commands = await connection.QueryAsync<(string InstanceId, string CancellationJson)>(
+                    RequiredSql(Statement.Cancellations), new { InstanceIds = batch.Select(lease => lease.InstanceId).ToArray() }, transaction);
+                var terminations = commands.Select(command => (command.InstanceId, Reason: ReadReason(command.CancellationJson)))
+                    .Where(command => command.Reason?.Mode == WorkflowControlMode.Terminate)
+                    .ToDictionary(command => command.InstanceId, command => command.Reason!, StringComparer.Ordinal);
                 // SQLite captures its clock only after acquiring the writer lock.
                 var parameters = new DynamicParameters();
-                var sql = RenewalSql(batch, parameters);
+                var sql = RenewalSql(batch, terminations.Keys.ToHashSet(StringComparer.Ordinal), parameters);
                 var rows = (await connection.QueryAsync<RenewalRow>(sql, parameters, transaction)).ToArray();
                 if (rows.Length != batch.Length)
                     throw new InvalidOperationException("A renewal batch must return one result per lease");
-                var replies = rows.Select(row => new ExecutionLeaseRenewalResult(row.Status,
-                    row.Status == ExecutionLeaseRenewalStatus.TerminationRequested ? ReadReason(row.CancellationJson) : null)).ToArray();
+                var replies = rows.Select((row, index) => new ExecutionLeaseRenewalResult(row.Status,
+                    row.Status == ExecutionLeaseRenewalStatus.TerminationRequested ? terminations.GetValueOrDefault(batch[index].InstanceId) : null)).ToArray();
                 await CompleteAsync(transaction);
                 return replies;
             });
@@ -521,7 +529,6 @@ public abstract partial class RelationalWorkflowStateRepository :
     private sealed class RenewalRow
     {
         public ExecutionLeaseRenewalStatus Status { get; set; }
-        public string? CancellationJson { get; set; }
     }
 
     public async Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token)

@@ -220,7 +220,7 @@ public sealed class AssignmentResultRegressionTests
             Control.OnUnscheduled(host.Unschedule);
             _watch = new CancellationWatch(store, time);
             Operations = new(Services, Services.GetRequiredService<IActivityExecutor>(), store,
-                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), Services.GetRequiredService<ExecutionLeaseRenewer>(),
                 timeProvider: time, limits: limits, control: Control, watch: _watch);
         }
 
