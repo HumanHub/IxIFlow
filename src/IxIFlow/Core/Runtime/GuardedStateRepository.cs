@@ -7,6 +7,14 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
+    public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) =>
+        Guard(() => _store.RegisterPackageAsync(package, artifacts), "Registering package artifact");
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) =>
+        Guard(() => _store.GetPackagesAsync(id), "Reading package catalog");
+    public Task<WorkflowPackage?> GetPackageAsync(string id, string version) =>
+        Guard(() => _store.GetPackageAsync(id, version), "Reading package identity");
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) =>
+        Guard(() => _store.GetPackagePageAsync(id, afterVersion, limit), "Reading package catalog page");
     public IPayloadStore PayloadStore => _store.PayloadStore;
     public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
         CancellationToken cancellationToken = default) =>

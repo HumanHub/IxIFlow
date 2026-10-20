@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Operations;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Debugging;
 
@@ -22,10 +23,12 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, 
     private readonly List<WeakReference<AssemblyLoadContext>> _contexts = [];
     private readonly bool _hasFrameworkIdentities;
     private readonly Func<AssemblyName, bool> _isFrameworkAssembly;
+    private readonly ILogger? _logger;
     private bool _disposed;
 
-    public BreakpointConditionCompiler()
-        : this(WorkflowSharedAssemblies.HasFrameworkIdentities, WorkflowSharedAssemblies.IsFrameworkAssembly) { }
+    public BreakpointConditionCompiler(ILogger<BreakpointConditionCompiler>? logger = null)
+        : this(WorkflowSharedAssemblies.HasFrameworkIdentities, WorkflowSharedAssemblies.IsFrameworkAssembly)
+        => _logger = logger;
 
     internal BreakpointConditionCompiler(IReadOnlyDictionary<string, AssemblyName> frameworkIdentities)
         : this(frameworkIdentities.Count != 0, name => WorkflowSharedAssemblies.IsFrameworkAssembly(name, frameworkIdentities)) { }
@@ -79,7 +82,7 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, 
             }
         }
         // Unload is deferred while an in-flight evaluation still holds its delegate.
-        evicted?.LoadContext?.Unload();
+        if (evicted?.LoadContext is { } retired) BundleLoadContext.UnloadSafely(retired, _logger);
         return compiled.Compilation;
     }
 
@@ -129,7 +132,7 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, 
             // Retain only the empty retirement state so a later compile cannot recreate a cache.
             Detach(context, cache);
         }
-        foreach (var condition in conditions) condition.Unload();
+        foreach (var condition in conditions) BundleLoadContext.UnloadSafely(condition, _logger);
     }
 
     private static void Detach(AssemblyLoadContext context, ConditionCache cache)
@@ -152,7 +155,7 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, 
             foreach (var entry in _collectibleCaches) Detach(entry.Key, entry.Value);
             _collectibleCaches.Clear();
         }
-        foreach (var context in contexts) context.Unload();
+        foreach (var context in contexts) BundleLoadContext.UnloadSafely(context, _logger);
     }
 
     private sealed class CacheEntry(Func<object, object?, object?, int?, DateTimeOffset, bool>? evaluate,
@@ -235,7 +238,7 @@ public sealed class BreakpointConditionCompiler : IBreakpointConditionCompiler, 
                 .CreateDelegate<Func<object, object?, object?, int?, DateTimeOffset, bool>>();
             return new(predicate, [], loadContext);
         }
-        catch { loadContext.Unload(); throw; }
+        catch { BundleLoadContext.UnloadSafely(loadContext, _logger); throw; }
     }
 
     private sealed class ConditionLoadContext(string name, IReadOnlyDictionary<string, Assembly> assemblies)
