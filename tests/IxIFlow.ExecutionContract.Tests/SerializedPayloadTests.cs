@@ -35,7 +35,7 @@ public sealed class SerializedPayloadTests
         Assert.NotNull(saved.WorkflowDataJson.Reference);
         Assert.Equal(JsonSerializer.Serialize(new MessageHarness.Data { Value = Grow.Text }),
             Encoding.UTF8.GetString((await harness.Host.Store.PayloadStore.GetAsync(saved.WorkflowDataJson.Reference))!.Value.Span));
-        Assert.Null(await harness.Host.Store.PayloadStore.TryCollectAsync(saved.WorkflowDataJson.Reference, TimeSpan.Zero));
+        Assert.False(await harness.Host.Store.PayloadStore.CollectAsync(saved.WorkflowDataJson.Reference, TimeSpan.Zero));
         Assert.Contains(WorkflowCommitStatus.AlreadyApplied, harness.Host.Receipts);
     }
 

@@ -1295,6 +1295,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
     private sealed class PausedReadRepository(InMemoryWorkflowStateRepository inner) : IWorkflowStateRepository
     {
+        public IPayloadStore PayloadStore => inner.PayloadStore;
         public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
             inner.RegisterMemberAsync(member, cancellationToken);
         public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,

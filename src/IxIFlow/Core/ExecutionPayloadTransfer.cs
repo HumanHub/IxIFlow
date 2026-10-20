@@ -5,7 +5,7 @@ namespace IxIFlow.Core;
 /// <summary>Host-side whole payload exchange. Executors only use messages.</summary>
 public sealed class ExecutionPayloadTransfer(IPayloadStore store, ExecutionLimits limits)
 {
-    public async Task AcceptAsync(IReadOnlyList<PayloadBody> payloads)
+    public CheckpointCommit PrepareCommit(CheckpointCommit commit, IReadOnlyList<PayloadBody> payloads)
     {
         long bytes = 0;
         foreach (var payload in payloads)
@@ -16,26 +16,7 @@ public sealed class ExecutionPayloadTransfer(IPayloadStore store, ExecutionLimit
             bytes += payload.Reference.Bytes;
             payload.Reference.Verify(payload.Body);
         }
-        try
-        {
-            foreach (var payload in payloads)
-            {
-                // Publication precedes the referencing transaction. Replays publish the same immutable bytes.
-                if (payload.Dependencies.Count == 0)
-                {
-                    var actual = await store.PutAsync(payload.Body);
-                    if (actual != payload.Reference) throw new InvalidDataException("Payload identity differs");
-                }
-                else
-                {
-                    var reservation = await store.ReserveAsync(payload.Reference, TimeSpan.FromMinutes(5));
-                    if (!await store.PublishAsync(reservation, payload.Body, payload.Dependencies))
-                        throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "Payload publication expired");
-                }
-            }
-        }
-        catch (Exception error) when (error is not WorkflowEngineException and not OperationCanceledException and not InvalidDataException)
-        { throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "Payload publication failed", error); }
+        return commit.WithPayloadBodies(payloads);
     }
 
     public async Task<ReadPayloadReply> ReadAsync(ReadPayload request)
@@ -48,7 +29,7 @@ public sealed class ExecutionPayloadTransfer(IPayloadStore store, ExecutionLimit
             {
                 await store.InTransactionAsync(async (pins, ct) => await pins.PinAsync(reader, request.Reference, ct));
             }
-            catch (InvalidOperationException error) when (error.Message == "Payload unavailable or collection already owns its generation")
+            catch (InvalidOperationException error) when (error.Message == "Payload unavailable")
             { return new(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable); }
             try
             {

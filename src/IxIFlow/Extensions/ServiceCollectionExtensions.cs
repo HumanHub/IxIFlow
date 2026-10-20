@@ -41,8 +41,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(new OutboxSettings());
         services.TryAddSingleton(new PayloadStoreSettings());
         services.TryAddSingleton<IPayloadStore>(provider =>
-            (provider.GetRequiredService<IWorkflowStateRepository>() as IPayloadStoreProvider)?.PayloadStore
-            ?? throw new InvalidOperationException("The state store must provide payloads or configure UsePayloadStore"));
+            provider.GetRequiredService<IWorkflowStateRepository>().PayloadStore);
         // Registers before recovery starts; stops after the host has drained its work.
         services.AddHostedService<WorkflowHeartbeatService>();
         // Stops after the workflow host, so its final commits can be delivered during drain.

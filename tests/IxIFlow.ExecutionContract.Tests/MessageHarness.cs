@@ -139,9 +139,10 @@ internal sealed class MessageHarness : IDisposable
                 return LastReply = new(request.AssignmentId, CheckpointReplyKind.Conflict, Conflict: ConflictReason.NotAssigned);
             if (request.Commit.Epoch != Assignment.Epoch || request.Commit.Incarnation != Assignment.Incarnation)
                 return LastReply = new(request.AssignmentId, CheckpointReplyKind.Conflict, Conflict: ConflictReason.StaleEpoch);
-            if (request.Payloads is { Count: > 0 } payloads) await Payloads.AcceptAsync(payloads);
+            var commit = request.Payloads is { Count: > 0 } payloads
+                ? Payloads.PrepareCommit(request.Commit, payloads) : request.Commit;
             StoreCalls++;
-            var receipt = await Store.CommitWorkflowInstanceAsync(request.Commit);
+            var receipt = await Store.CommitWorkflowInstanceAsync(commit);
             Receipts.Add(receipt.Status);
             Saved = await Store.GetWorkflowInstanceAsync(request.Commit.InstanceId);
             if (LoseFirstReply && StoreCalls == 1 || LoseReply?.Invoke(request) == true)
