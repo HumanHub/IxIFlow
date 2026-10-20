@@ -170,7 +170,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
                     InstanceId = id, Status = WorkflowStatus.Running,
                     ExecutionStateJson = StoreTestSupport.CheckpointJson
                 });
-                Assert.True(await store.RequestCancellationAsync(id, new CancellationReason { ReasonCode = id }));
+                Assert.True((await store.RequestCancellationAsync(id, new CancellationReason { ReasonCode = id })).Accepted);
             }
             await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection(connectionString))
             {
@@ -232,8 +232,8 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
             Assert.Equal(WorkflowCommitStatus.Applied, first.Status);
             Assert.Null(first.PendingCancellation);
 
-            Assert.True(await repository.RequestCancellationAsync(instance.InstanceId,
-                new CancellationReason { ReasonCode = "pending" }));
+            Assert.True((await repository.RequestCancellationAsync(instance.InstanceId,
+                new CancellationReason { ReasonCode = "pending" })).Accepted);
             var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, first.Revision);
             var applied = await repository.CommitWorkflowInstanceAsync(commit);
             var repeated = await repository.CommitWorkflowInstanceAsync(commit);

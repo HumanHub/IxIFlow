@@ -11,6 +11,7 @@ public abstract partial class RelationalWorkflowStateRepository
 {
     private sealed class WebhookDeliveryRow
     {
+        public string? NoticeJson { get; set; }
         public byte[] PayloadHash { get; set; } = [];
         public long Sequence { get; set; }
         public short? Rejection { get; set; }
@@ -24,6 +25,7 @@ public abstract partial class RelationalWorkflowStateRepository
             WithTimes(new { workflowEvent.DeliveryIdentity }, ("Now", now)), transaction);
         return row == null ? null : row.PayloadHash.SequenceEqual(hash)
             ? new(EventAppendStatus.Duplicate, row.Sequence, Rejection: (EventRejection?)row.Rejection)
+                { Notice = ReadNotice(row.NoticeJson) }
             : new(EventAppendStatus.Conflict);
     }
 
@@ -33,12 +35,14 @@ public abstract partial class RelationalWorkflowStateRepository
         await connection.ExecuteAsync(RequiredSql(Statement.WebhookDeliveryDelete), new { workflowEvent.DeliveryIdentity }, transaction);
         await connection.ExecuteAsync(RequiredSql(Statement.WebhookDeliveryInsert), WithTimes(new
         {
-            workflowEvent.DeliveryIdentity, PayloadHash = hash, receipt.Sequence, Rejection = (short?)receipt.Rejection
+            workflowEvent.DeliveryIdentity, PayloadHash = hash, receipt.Sequence, Rejection = (short?)receipt.Rejection,
+            NoticeJson = receipt.Notice == null ? null : JsonSerializer.Serialize(receipt.Notice)
         }, ("Expires", now + (workflowEvent.DeliveryRetention ?? TimeSpan.FromHours(24)))), transaction);
     }
 
     private sealed class AdmissionRow
     {
+        public string? NoticeJson { get; set; }
         public Guid Incarnation { get; set; }
         public string Sender { get; set; } = "";
         public string Trigger { get; set; } = "";
@@ -75,7 +79,8 @@ public abstract partial class RelationalWorkflowStateRepository
         var row = await connection.QuerySingleOrDefaultAsync<AdmissionRow>(RequiredSql(Statement.AdmissionRead),
             WithTimes(new { Sender = sender, Trigger = trigger, Key = key }, ("Now", now)), transaction);
         return row == null ? null : new(row.Sender, row.Trigger, row.Key, row.Fingerprint, row.InstanceId,
-            row.WorkflowName, row.WorkflowVersion, ReadTime(row.ExpiresAtUtc), row.Incarnation);
+            row.WorkflowName, row.WorkflowVersion, ReadTime(row.ExpiresAtUtc), row.Incarnation)
+            { Notice = ReadNotice(row.NoticeJson) };
     }
 
     public async Task<WorkflowAdmissionRecord?> GetWorkflowAdmissionAsync(string sender, string trigger, string key)

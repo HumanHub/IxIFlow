@@ -111,7 +111,14 @@ public enum EventAppendStatus
 /// running or suspended instance due now.
 /// </summary>
 public sealed record EventAppendResult(EventAppendStatus Status, long Sequence = 0, bool MadeRunnable = false,
-    EventRejection? Rejection = null);
+    EventRejection? Rejection = null)
+{
+    /// <summary>The original append's claimable change, also returned on duplicate delivery.</summary>
+    public RunnableNotice? Notice { get; init; }
+
+    /// <summary>This append made the instance due with no live owner.</summary>
+    public bool Claimable => Notice?.Claimable == true;
+}
 
 public enum EventOutcome
 {

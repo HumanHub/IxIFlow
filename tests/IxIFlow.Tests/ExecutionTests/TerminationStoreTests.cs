@@ -37,7 +37,8 @@ public sealed class TerminationStoreTests : IClassFixture<SqliteTestDatabase<Ter
             var instance = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
             instance.CancellationReason = cancellation;
             var lease = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
-            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, lease.Epoch, instance.Revision))).Status);
+            Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, lease.Epoch, instance.Revision,
+                wakeAfter: TimeSpan.Zero))).Status);
             instance = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
             lease = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
             instance.Status = WorkflowStatus.Completed;
@@ -82,7 +83,7 @@ public sealed class TerminationStoreTests : IClassFixture<SqliteTestDatabase<Ter
                 childCancellations: [new ChildCancellation(finishedChild.InstanceId, terminating.CancellationReason, null)]);
             var applied = await store.CommitWorkflowInstanceAsync(terminal);
             Assert.Equal(WorkflowCommitStatus.Applied, applied.Status);
-            Assert.Contains(detached.InstanceId, applied.MadeRunnable);
+            Assert.Contains(detached.InstanceId, applied.MadeRunnable.Select(notice => notice.InstanceId));
             Assert.Equal(WorkflowStatus.Completed, (await store.GetWorkflowInstanceAsync(finishedChild.InstanceId))!.Status);
             Assert.Equal(WorkflowControlMode.Terminate, (await store.GetCancellationRequestAsync(detached.InstanceId))!.Mode);
         }

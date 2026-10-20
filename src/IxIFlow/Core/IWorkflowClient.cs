@@ -8,6 +8,10 @@ namespace IxIFlow.Core;
 /// </summary>
 public interface IWorkflowClient
 {
+    /// <summary>Operator read of due, unleased work that no live host can run. Applications control access.</summary>
+    Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Starts by declared identity. Without a version, selects the highest Published version.</summary>
     Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
         WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class;

@@ -43,28 +43,35 @@ public sealed record WorkflowCommitResult(
     CancellationReason? PendingCancellation = null,
     bool Parked = false,
     bool UnreadEvents = false,
-    IReadOnlyList<string>? MadeRunnable = null,
+    IReadOnlyList<RunnableNotice>? MadeRunnable = null,
     DateTime? RunnableAtUtc = null,
     DateTime StoreTimeUtc = default)
 {
+    /// <summary>The committing instance's change, captured inside the write transaction and retained for replay.</summary>
+    public RunnableNotice? Notice { get; init; }
+
+    /// <summary>The commit left its instance due with no live owner.</summary>
+    public bool Claimable => Notice?.Claimable == true;
+
     /// <summary>The winning admission, also returned to a losing duplicate for fingerprint comparison.</summary>
     public WorkflowAdmissionRecord? Admission { get; init; }
 
     /// <summary>
     /// Other instances the commit made runnable: the children it started, and a parent whose inbox took
-    /// the child's completion. A host may run them at once; the poll finds them otherwise.
+    /// the child's completion. These notices are retained for replay. A host may run them at once;
+    /// the poll finds them otherwise.
     /// </summary>
-    public IReadOnlyList<string> MadeRunnable { get; init; } = MadeRunnable ?? [];
+    public IReadOnlyList<RunnableNotice> MadeRunnable { get; init; } = MadeRunnable ?? [];
 
     /// <summary>Receipts are equal when every field is, the instances made runnable compared in order.</summary>
     public bool Equals(WorkflowCommitResult? other) =>
         other is not null && Status == other.Status && Revision == other.Revision &&
         Equals(Admission, other.Admission) && Equals(PendingCancellation, other.PendingCancellation) && Parked == other.Parked &&
         RunnableAtUtc == other.RunnableAtUtc && StoreTimeUtc == other.StoreTimeUtc &&
-        UnreadEvents == other.UnreadEvents && MadeRunnable.SequenceEqual(other.MadeRunnable, StringComparer.Ordinal);
+        UnreadEvents == other.UnreadEvents && Equals(Notice, other.Notice) && MadeRunnable.SequenceEqual(other.MadeRunnable);
 
     public override int GetHashCode() =>
-        HashCode.Combine(HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count, Admission),
+        HashCode.Combine(HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count, Admission, Notice),
             RunnableAtUtc, StoreTimeUtc);
 }
 
@@ -295,7 +302,8 @@ public sealed class CheckpointCommit
         // Stamp the caller too, so later checkpoints use the same incarnation as this immutable first commit.
         if (expectedRevision == 0)
             instance.Incarnation = Guid.NewGuid();
-        return FromFields(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(stored.Trunk)),
+        var trunk = expectedRevision == 0 ? stored.Trunk : stored.UpdateTrunk;
+        return FromFields(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(trunk)),
             written, deleted, saved == null, instance.Incarnation, epoch, commitId,
             expectedRevision, clearsCrashCount, parks, settlements ?? [], inboxReadThrough,
             openedWaits ?? [], armedWaits ?? [], closedWaits ?? [], wakeAfter, stopped,

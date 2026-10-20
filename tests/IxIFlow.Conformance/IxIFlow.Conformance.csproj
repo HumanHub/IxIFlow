@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../src/IxIFlow.Coordinator/IxIFlow.Coordinator.csproj" />
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.11.0" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.12" />
     <PackageReference Include="coverlet.collector" Version="6.0.2" />
@@ -28,6 +29,7 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <Compile Include="../IxIFlow.Tests/Infrastructure/TimerRecordingClock.cs" Link="Infrastructure/TimerRecordingClock.cs" />
   </ItemGroup>
 
 </Project>

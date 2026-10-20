@@ -31,6 +31,10 @@ internal sealed class RunControl
 
     public void Runnable(string instanceId) => _runnable?.Invoke(instanceId);
 
+    private Action<string>? _changed;
+    public void OnChanged(Action<string> changed) => _changed = changed;
+    public void Changed(string instanceId) => _changed?.Invoke(instanceId);
+
     private readonly ConcurrentDictionary<Guid, Action<Recycle>> _runs = new();
     private int _recycling;
 

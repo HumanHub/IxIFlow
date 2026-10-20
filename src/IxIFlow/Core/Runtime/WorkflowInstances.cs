@@ -9,7 +9,8 @@ internal static class WorkflowInstances
     /// saves it, and its initial checkpoint: a client's start, or a child a parent's commit starts.
     /// </summary>
     public static (WorkflowInstance Instance, ExecutionCheckpoint Checkpoint, WorkflowScopeCatalog Scopes)
-        NewInstance(WorkflowDefinition definition, object workflowData, WorkflowOptions options, DateTime now)
+        NewInstance(WorkflowDefinition definition, object workflowData, WorkflowOptions options, DateTime now, TimeSpan? hostPinLifetime = null,
+            IEnumerable<WorkflowDemand>? registrationDemands = null)
     {
         WorkflowDefinitionValidator.Validate(definition);
         var instance = new WorkflowInstance
@@ -31,6 +32,8 @@ internal static class WorkflowInstances
         var checkpoint = new ExecutionCheckpoint
         {
             StructureHash = scopes.StructureHash,
+            Demands = WorkflowDemands.Resolve(definition, workflowData, options, scopes.StructureHash, registrationDemands),
+            HostPinLifetime = options.RequiredHostId != null ? hostPinLifetime ?? DemandSettings.Default.HostPinLifetime : null,
             // The store stamps the execution deadline when the start is committed (D-35).
             ExecutionTimeout = options.ExecutionTimeout,
             ExecutionTimerId = options.ExecutionTimeout != null ? Guid.NewGuid().ToString("N") : null,
@@ -43,6 +46,7 @@ internal static class WorkflowInstances
                 }
             ]
         };
+        instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         return (instance, checkpoint, scopes);
     }
 
@@ -57,7 +61,8 @@ internal static class WorkflowInstances
         {
             InstanceId = childId,
             CorrelationId = parent.CorrelationId,
-            ParentInstanceId = parent.InstanceId
+            ParentInstanceId = parent.InstanceId,
+            Demands = WorkflowDemands.Saved(parent).Where(demand => demand.Inherit).ToList()
         }, now);
         child.ParentWaitId = parentWaitId;
         ExecutionCheckpointWriter.Prepare(child, checkpoint, data, scopes, now);

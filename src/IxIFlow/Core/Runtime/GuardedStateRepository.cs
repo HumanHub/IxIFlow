@@ -7,6 +7,11 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
+    public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default) =>
+        Guard(() => _store.GetUnschedulableAsync(limit, cursor, cancellationToken), "Reading unschedulable work");
+    public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
+        Guard(() => _store.CanScheduleAsync(demands, cancellationToken), "Checking live host eligibility");
     public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
         Guard(() => _store.GetDefinitionAsync(name, version), "Accessing workflow catalog or artifacts");
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
@@ -41,6 +46,9 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.HeartbeatAsync(memberId, capabilities, cancellationToken), "Renewing store member heartbeat");
     public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
         Guard(() => _store.UnregisterMemberAsync(memberId, cancellationToken), "Unregistering store member");
+    public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
+        Guard(() => _store.GetWorkflowDemandsAsync(instanceId), "Reading workflow demands");
+
     public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
         Guard(() => _store.GetLiveMembersAsync(cancellationToken), "Reading live store members");
 
@@ -82,7 +90,7 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
         Guard(() => _store.GetTombstoneAsync(instanceId), $"Reading retention tombstone for '{instanceId}'");
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+    public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
         Guard(() => _store.RequestCancellationAsync(instanceId, reason, expectedIncarnation),
             $"Requesting cancellation of workflow instance '{instanceId}'");
 
@@ -95,8 +103,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetCancellationRequestsAsync(instanceIds),
             $"Reading the cancellation requests of {instanceIds.Count} workflow instances");
 
-    public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
-        Guard(() => _store.GetRunnableInstancesAsync(limit), "Listing runnable workflow instances");
+    public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
+        Guard(() => _store.GetRunnableInstancesAsync(query), "Listing runnable workflow instances");
 
     public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
         Guard(() => _store.AppendEventAsync(workflowEvent),
@@ -135,15 +143,15 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetWorkflowAdmissionAsync(sender, trigger, key), "Reading workflow admission");
 
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
-        TimeSpan duration) =>
-        Guard(() => _store.TryAcquireExecutionLeaseAsync(instanceId, token, duration),
+        TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
+        Guard(() => _store.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind),
             $"Acquiring the execution lease of workflow instance '{instanceId}'");
 
     public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
         Guard(() => _store.RenewExecutionLeaseAsync(instanceId, token, duration),
             $"Renewing the execution lease of workflow instance '{instanceId}'");
 
-    public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+    public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         Guard(() => _store.ReleaseExecutionLeaseAsync(instanceId, token),
             $"Releasing the execution lease of workflow instance '{instanceId}'");
 

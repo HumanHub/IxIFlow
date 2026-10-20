@@ -200,7 +200,7 @@ public sealed class WorkflowDeadlineTests
         Assert.Contains(services.GetServices<IHostedService>(),
             service => service is WorkflowRecoveryService);
         time.Advance(TimeSpan.FromMinutes(2));
-        Assert.Contains(await repository.GetRunnableInstancesAsync(100),
+        Assert.Contains(await repository.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(services)),
             instance => instance.InstanceId == instanceId);
         using var scanner = new WorkflowRecoveryService(
             services.GetRequiredService<IServiceScopeFactory>(), repository,
@@ -225,7 +225,7 @@ public sealed class WorkflowDeadlineTests
         };
         await repository.SeedAsync(instance, TimeSpan.Zero);
 
-        Assert.Contains(await repository.GetRunnableInstancesAsync(100),
+        Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
             candidate => candidate.InstanceId == instance.InstanceId);
     }
 
@@ -461,6 +461,15 @@ public sealed class WorkflowDeadlineTests
             _inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
         public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
             _inner.UnregisterMemberAsync(memberId, cancellationToken);
+        public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
+            _inner.GetWorkflowDemandsAsync(instanceId);
+
+        public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetUnschedulableAsync(limit, cursor, cancellationToken);
+        public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
+            _inner.CanScheduleAsync(demands, cancellationToken);
+
         public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
             _inner.GetLiveMembersAsync(cancellationToken);
 
@@ -526,17 +535,17 @@ public sealed class WorkflowDeadlineTests
             return await _inner.CommitWorkflowInstanceAsync(commit);
         }
 
-        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
             _inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
-        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
-            _inner.GetRunnableInstancesAsync(limit);
-        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration);
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
+            _inner.GetRunnableInstancesAsync(query);
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
+            _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
         public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
             _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
-        public Task<bool> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>

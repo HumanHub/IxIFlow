@@ -32,7 +32,11 @@ public sealed record WorkflowAdmission(string Sender, string Trigger, string Key
 }
 
 public sealed record WorkflowAdmissionRecord(string Sender, string Trigger, string Key, string Fingerprint,
-    string InstanceId, string WorkflowName, int WorkflowVersion, DateTime ExpiresAtUtc, Guid Incarnation = default);
+    string InstanceId, string WorkflowName, int WorkflowVersion, DateTime ExpiresAtUtc, Guid Incarnation = default)
+{
+    /// <summary>The original admission's hint, retained for acknowledgement retries.</summary>
+    public RunnableNotice? Notice { get; init; }
+}
 
 /// <summary>Retained with the instance and its removal tombstone, independently of key expiry.</summary>
 public sealed record WorkflowOwnership(string InstanceId, string Sender, string Trigger, string Owner, string? Tenant,
@@ -60,7 +64,8 @@ public interface IWorkflowIngressClient
 }
 
 internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWorkflowCatalog registry,
-    WorkflowHost host, ExecutionLimits limits, TimeProvider time, ILogger<WorkflowIngressClient>? logger = null) : IWorkflowIngressClient
+    WorkflowHost host, ExecutionLimits limits, TimeProvider time, ILogger<WorkflowIngressClient>? logger = null,
+    RunnableNotifications? notifications = null) : IWorkflowIngressClient
 {
     private readonly IWorkflowAdmissionStore _admission = store;
 
@@ -72,11 +77,14 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
         admission.Validate();
         if (await _admission.GetWorkflowAdmissionAsync(admission.Sender, admission.Trigger, admission.Key) is { } existing)
         {
+            notifications?.Publish(existing.Notice);
             host.WakeNow(existing.InstanceId);
             return existing;
         }
+        var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
         var now = time.GetUtcNow().UtcDateTime;
-        var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, data, new(), now);
+        var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, data, new(), now,
+            registrationDemands: registered?.RegistrationDemands);
         var prepared = ExecutionCheckpointWriter.Prepare(instance, checkpoint, data, scopes, now,
             verify: limits.VerifyCheckpointParts);
         if (prepared.Bytes > limits.MaxCheckpointBytes)
@@ -100,6 +108,7 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             }
             if (result.Status is not (WorkflowCommitStatus.Applied or WorkflowCommitStatus.AlreadyApplied) || result.Admission is not { } record)
                 throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "Atomic admission was not acknowledged");
+            notifications?.Publish(result.Notice);
             host.WakeNow(record.InstanceId);
             return record;
         }
@@ -127,6 +136,7 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
     private async Task<EventAppendResult> AppendAsync(WorkflowEvent workflowEvent)
     {
         var receipt = await store.AppendEventAsync(workflowEvent);
+        notifications?.Publish(receipt.Notice);
         if (receipt.MadeRunnable) host.WakeNow(workflowEvent.InstanceId);
         return receipt;
     }

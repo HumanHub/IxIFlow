@@ -10,6 +10,12 @@ namespace IxIFlow.Builders.Interfaces;
 /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
 public interface IWorkflowBuilder<TWorkflowData>
 {
+    /// <summary>Requires a capability; explicitly inherited constraints also apply to children.</summary>
+    IWorkflowBuilder<TWorkflowData> Demand(string key, string? value = null, bool inherit = false);
+    /// <summary>Resolves a capability value once from start data using a pure expression.</summary>
+    IWorkflowBuilder<TWorkflowData> DemandFrom(string key,
+        Expression<Func<WorkflowContext<TWorkflowData>, string?>> expression, bool inherit = false);
+
     /// <summary>Sets the last step's stable ID and source location.</summary>
     IWorkflowBuilder<TWorkflowData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
@@ -66,6 +72,12 @@ public interface IWorkflowBuilder<TWorkflowData>
 public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     where TPreviousStepData : class
 {
+    /// <summary>Requires a capability; explicitly inherited constraints also apply to children.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Demand(string key, string? value = null, bool inherit = false);
+    /// <summary>Resolves a capability value once from start data using a pure expression.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> DemandFrom(string key,
+        Expression<Func<WorkflowContext<TWorkflowData>, string?>> expression, bool inherit = false);
+
     /// <summary>Sets the last step's stable ID and source location.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 

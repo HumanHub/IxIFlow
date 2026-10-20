@@ -59,7 +59,7 @@ public sealed class CheckpointLimitTests
         Assert.Null(stopped.RunnableAtUtc);
         Assert.DoesNotContain(new string('x', GrownLength), stopped.WorkflowDataJson);
         Assert.NotNull(ExecutionCheckpoint.Read(stopped.ExecutionStateJson).OperatorStop);
-        Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(100),
+        Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
             instance => instance.InstanceId == instanceId);
 
         // An operator raises the limit: a host with the higher limit and the same workflow releases it.

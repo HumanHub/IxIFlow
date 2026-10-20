@@ -15,6 +15,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Task _renewal;
     private readonly IDisposable _cancellationWatch;
+    private Action<ExecutionLeaseReleaseResult>? _released;
 
     private WorkflowExecutionLease(IWorkflowStateRepository repository, string instanceId,
         string token, ExecutionLeaseGrant grant, DateTime requestedAtUtc, ExecutionLeaseSettings settings,
@@ -64,8 +65,9 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
 
     public static async Task<WorkflowExecutionLease?> TryAcquireAsync(
         IWorkflowStateRepository repository, WorkflowInstance instance,
-        ExecutionLeaseSettings settings, CancellationWatch watch, Action<Exception> lost,
-        Action<CancellationReason> cancellation, Action<long> arrivals, TimeProvider? time = null)
+        ExecutionLeaseSettings settings, CancellationWatch watch, ClaimQuery query, Action<Exception> lost,
+        Action<CancellationReason> cancellation, Action<long> arrivals, TimeProvider? time = null,
+        ExecutionClaimKind kind = ExecutionClaimKind.Runnable, Action<ExecutionLeaseReleaseResult>? released = null)
     {
         if (settings.Duration <= TimeSpan.Zero || settings.RenewalInterval <= TimeSpan.Zero ||
             settings.RenewalInterval >= settings.Duration)
@@ -77,10 +79,10 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         // The store may have granted the lease at any point after it was asked.
         var requestedAtUtc = time.GetUtcNow().UtcDateTime;
         if (await repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, token,
-                settings.Duration) is not { } grant)
+                settings.Duration, query, kind) is not { } grant)
             return null;
         return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, requestedAtUtc, settings,
-            time, watch, lost, cancellation, arrivals);
+            time, watch, lost, cancellation, arrivals) { _released = released };
     }
 
     /// <summary>Records a cancellation request learned outside the watch, such as from a commit.</summary>
@@ -186,7 +188,8 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         _stop.Dispose();
         try
         {
-            await _repository.ReleaseExecutionLeaseAsync(_instanceId, _token).WaitAsync(ReleaseTimeout, _time);
+            var result = await _repository.ReleaseExecutionLeaseAsync(_instanceId, _token).WaitAsync(ReleaseTimeout, _time);
+            _released?.Invoke(result);
         }
         catch
         {

@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\IxIFlow\IxIFlow.csproj" />
+    <ProjectReference Include="..\..\src\IxIFlow.Coordinator\IxIFlow.Coordinator.csproj" />
     <ProjectReference Include="../../src/IxIFlow.AspNetCore/IxIFlow.AspNetCore.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.Webhooks\IxIFlow.Webhooks.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.Authoring\IxIFlow.Authoring.csproj" />
