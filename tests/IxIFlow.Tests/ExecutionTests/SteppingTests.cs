@@ -576,7 +576,7 @@ public sealed class SteppingTests
         if (compiler) services.AddBreakpointConditions();
         if (shortLease) services.AddSingleton(new ExecutionLeaseSettings(TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(100)));
         services.AddSingleton<IWorkflowStateRepository>(store); services.AddSingleton(probe);
-        services.AddSingleton<IWorkflowVersionRegistry>(probe.Registry);
+        services.AddSingleton<IWorkflowCatalog>(probe.Registry);
         return services.BuildServiceProvider();
     }
 
@@ -584,7 +584,7 @@ public sealed class SteppingTests
     public sealed class Go;
     public sealed class Probe
     {
-        public WorkflowVersionRegistry Registry { get; } = new(); public int Count;
+        public WorkflowCatalog Registry { get; } = new(); public int Count;
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Finish { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }

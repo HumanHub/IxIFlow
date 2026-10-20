@@ -54,5 +54,8 @@ public enum WorkflowExecutionStatus
     Removed,
 
     /// <summary>Held until an authorized continue or cancellation.</summary>
-    Paused
+    Paused,
+
+    /// <summary>A hard stop or an unhandled saga termination ended the instance.</summary>
+    Terminated
 }

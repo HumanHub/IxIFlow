@@ -47,9 +47,9 @@ public sealed class SqlServerReadInterleavingTests
         {
             "whole" => await reader.GetWorkflowInstanceAsync(id),
             "summary" => await reader.GetWorkflowInstanceSummaryAsync(id),
-            "name" => Assert.Single(await reader.GetWorkflowInstancesByNameAsync(original.WorkflowName)),
-            "correlation" => Assert.Single(await reader.GetWorkflowInstancesByCorrelationIdAsync(id)),
-            _ => Assert.Single(await reader.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running), i => i.InstanceId == id)
+            "name" => Assert.Single(await Task.WhenAll((await reader.QueryInstancesAsync(new InstanceQuery(WorkflowName: original.WorkflowName, Limit: int.MaxValue))).Items.Select(async row => (await reader.GetWorkflowInstanceAsync(row.InstanceId))!))),
+            "correlation" => Assert.Single(await Task.WhenAll((await reader.QueryInstancesAsync(new InstanceQuery(CorrelationId: id, Limit: int.MaxValue))).Items.Select(async row => (await reader.GetWorkflowInstanceAsync(row.InstanceId))!))),
+            _ => Assert.Single(await Task.WhenAll((await reader.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await reader.GetWorkflowInstanceAsync(row.InstanceId))!)), i => i.InstanceId == id)
         };
         var reading = Task.Run(Read);
         var replacement = CheckpointRaceContract.Instance(id, "new");

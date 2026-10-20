@@ -296,7 +296,7 @@ public sealed class BreakpointConditionTests
         var services = new ServiceCollection().AddLogging(); services.AddIxIFlow(o => o.Debugging = true);
         if (compiler) services.AddBreakpointConditions();
         services.AddSingleton<IWorkflowStateRepository>(store); services.AddSingleton(probe);
-        services.AddSingleton<IWorkflowVersionRegistry>(probe.Registry);
+        services.AddSingleton<IWorkflowCatalog>(probe.Registry);
         if (time != null) services.AddSingleton(time);
         return services.BuildServiceProvider();
     }
@@ -315,7 +315,7 @@ public sealed class BreakpointConditionTests
         public bool Helper() => true;
     }
     public sealed class Go;
-    public sealed class Probe { public WorkflowVersionRegistry Registry { get; } = new(); public int Count; }
+    public sealed class Probe { public WorkflowCatalog Registry { get; } = new(); public int Count; }
     public sealed class Count(Probe probe) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)

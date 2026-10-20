@@ -7,7 +7,7 @@ namespace IxIFlow.Core;
 internal static class InspectionPrivacy
 {
     // Defense in depth for copied capabilities. Classification-based redaction belongs to the redaction stack.
-    private static readonly Regex Canonical = new("WyIxIiwi[A-Za-z0-9_+/=-]*", RegexOptions.CultureInvariant);
+    private static readonly Regex Canonical = new("WyIzIiwi[A-Za-z0-9_+/=-]*", RegexOptions.CultureInvariant);
     private static readonly Regex Encoded = new("[A-Za-z0-9_+/=-]{20,}", RegexOptions.CultureInvariant);
     public static T Clean<T>(T value, IReadOnlyList<string> waitIds)
     {

@@ -361,7 +361,7 @@ public sealed class RequestStepTests
 
         var started = await engine.RunAsync(definition, new OrderData());
 
-        Assert.Equal(WorkflowExecutionStatus.Faulted, started.Status);
+        Assert.Equal(WorkflowExecutionStatus.Terminated, started.Status);
         EventAssert.Rejected(await engine.ReplyAsync(Assert.Single(outbox.Sent).Token,
             new ApprovalDecision { Approved = true }), EventRejection.WaitCancelled);
     }
@@ -426,7 +426,7 @@ public sealed class RequestStepTests
         store.FailCommit = _ => false;
         using var second = HostOn(store, outbox);
         var engine = second.GetRequiredService<IWorkflowClient>();
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, (await engine.RecoverAsync(instanceId)).Status);
 
         await engine.CancelAsync(instanceId, new CancellationReason { ReasonCode = "withdrawn" });
@@ -460,7 +460,7 @@ public sealed class RequestStepTests
         store.FailCommit = _ => false;
         using var second = HostOn(store, outbox, gate);
         var engine = second.GetRequiredService<IWorkflowClient>();
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         await engine.RecoverAsync(instanceId);
 
         // The other branch runs; the first is back to awaiting resolution when the cancellation arrives.

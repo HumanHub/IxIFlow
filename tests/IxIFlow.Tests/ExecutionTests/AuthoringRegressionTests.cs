@@ -59,12 +59,12 @@ public sealed class AuthoringRegressionTests
     [Fact]
     public async Task DiRegisteredChildMustMatchTheRegistryStructureHash()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await registry.RegisterWorkflowAsync(Workflow.Create<RegistrationData>("Customer approval", 3)
             .Step<RegistrationActivity>().Build());
         var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         services.RegisterWorkflow<NamedWorkflow>();
-        services.AddSingleton<IWorkflowVersionRegistry>(registry);
+        services.AddSingleton<IWorkflowCatalog>(registry);
         using var provider = services.BuildServiceProvider();
         var parent = Workflow.Create<ParentData>("Mismatch parent").Step<RegistrationActivity>()
             .Invoke<NamedWorkflow, RegistrationData>().Build();
@@ -354,7 +354,7 @@ public sealed class AuthoringRegressionTests
         };
         var options = YamlTestContracts.Create(("data", typeof(ItemData)), ("mapping", typeof(YamlMappingActivity)));
         options.Activities["mapping"] = new("mapping", "1.0");
-        var error = await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => YamlTestCompilation.BuildAsync(document, options));
+        var error = await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, options));
         Assert.Contains("requires version '1.0'", error.Message);
     }
 

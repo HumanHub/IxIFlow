@@ -61,6 +61,14 @@ public enum WorkflowStatus
 /// </summary>
 public class CancellationReason
 {
+    /// <summary>The durable command mode; termination supersedes cancellation without unwinding.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public WorkflowControlMode Mode { get; set; }
+
+    /// <summary>The version assigned by the store and acknowledged by the terminal commit.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public long CommandVersion { get; set; }
+
     /// <summary>
     ///     Reason code for cancellation
     /// </summary>
@@ -587,7 +595,9 @@ public enum TraceEntryType
     /// <summary>A mandatory, value-free audit of a paused data edit.</summary>
     DataEdited,
     ReplayOrigin,
-    ThreadPosition
+    ThreadPosition,
+    /// <summary>A versioned hard-stop command was acknowledged.</summary>
+    WorkflowTerminated
 }
 
 /// <summary>

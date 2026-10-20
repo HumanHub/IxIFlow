@@ -127,6 +127,8 @@ The reader is strict: an unknown or wrongly cased key fails the build with IXIYA
 
 ## Stores
 
+A [reply token](docs/reply-tokens.md) is a capability: holding it is the right to answer its wait. Share it only with the intended replier and keep it out of logs.
+
 Choose one store through the builder returned by `AddIxIFlow()`. All provider extensions use `IxIFlow.Extensions`; install the corresponding package.
 
 | Store | Registration | Use |
@@ -197,7 +199,7 @@ The following work is planned for 1.0 and is **not yet available**, or has an im
 | Authoring and catalog | Broader catalog API, code-defined workflows in the catalog, published code activities, inline calls, explicit workflow input/output contracts, YAML code activities and planned local registration support beyond the current installed-assembly registry; Native AOT publish/run validation. Full YAML construct coverage is implemented |
 | Editor support | The JSON Schema for workflow YAML ships in the package. A visual editor and debugger integration remain planned |
 | Debugger and audit | Breakpoints, all-stop pause, stepping including loops, audited data edits, paused timer behavior, Debug Adapter Protocol and replay. Separate committed transition/event/operator traces, snapshots, scoped logs and OpenTelemetry already work; transitions that never commit do not enter saved history |
-| Management and operations | Management API, operator listings, unused bundle retention, large-payload storage, residency policies and redaction. Instance retention, tombstones and outbox age/delivery telemetry are implemented |
+| Management and operations | Unused bundle retention, large-payload storage, residency policies and redaction. [HTTP management endpoints](docs/operations-http.md), [instance search, wait inspection, trace paging, hard termination and outbox administration](docs/operations.md), reply capabilities, instance retention, tombstones and outbox age/delivery telemetry are implemented |
 | Verification | Complete cross-configuration conformance and fault injection for the coordinator, process executors and nested joins as those paths land |
 
 After 1.0: broker publisher/consumer samples for RabbitMQ or Azure Service Bus, and a distributed map that pages external input, runs bounded child work and stores results outside the parent checkpoint. These are outside the 1.0 scope. SQLite single-host durability has moved into 1.0 and is implemented.

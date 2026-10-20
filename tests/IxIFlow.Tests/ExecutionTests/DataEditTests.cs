@@ -19,7 +19,7 @@ public sealed class DataEditTests
     [Fact]
     public async Task RootEditStaysPausedAndIsSeenAfterContinue()
     {
-        var store = new Store(); var registry = new WorkflowVersionRegistry();
+        var store = new Store(); var registry = new WorkflowCatalog();
         await using var services = Services(store, registry);
         var id = await Paused(services, Waiting("RootEdit"));
         var before = (await store.GetWorkflowInstanceAsync(id))!;
@@ -47,14 +47,14 @@ public sealed class DataEditTests
     [InlineData("missing-branch")]
     public async Task PreconditionsRefuseWithoutChangingDataOrAudit(string reason)
     {
-        var store = new Store(); var registry = new WorkflowVersionRegistry(); await using var services = Services(store, registry);
+        var store = new Store(); var registry = new WorkflowCatalog(); await using var services = Services(store, registry);
         var definition = Waiting("Precondition" + reason);
         var idle = await Client(services).RunAsync(definition, new Data());
         if (reason != "not-paused") await Ops(services).PauseAsync(idle.InstanceId, "pause");
         var before = (await store.GetWorkflowInstanceAsync(idle.InstanceId))!;
         if (reason == "structure")
         {
-            var changedRegistry = new WorkflowVersionRegistry();
+            var changedRegistry = new WorkflowCatalog();
             await changedRegistry.RegisterWorkflowAsync(new WorkflowBuilder<Data, object>([], definition.Name)
                 .WaitFor<Go>("go").Step<Noop>().Step<Noop>().Build());
             await using var changed = Services(store, changedRegistry);
@@ -170,7 +170,7 @@ public sealed class DataEditTests
     [Fact]
     public async Task LostResponseRetryOnAnotherHostReturnsTheOriginalReceiptEvenAfterContinue()
     {
-        var store = new Store(); var registry = new WorkflowVersionRegistry();
+        var store = new Store(); var registry = new WorkflowCatalog();
         await using var first = Services(store, registry); await using var second = Services(store, new());
         var id = await Paused(first, Waiting("Receipt"));
         var before = (await store.GetWorkflowInstanceAsync(id))!; var target = Target(before); var patches = new[] { Patch(["Number"], 7) };
@@ -192,7 +192,7 @@ public sealed class DataEditTests
     [Fact]
     public async Task ACrashBeforeEditCommitIsRecoveredByAnotherHost()
     {
-        var store = new Store(); var registry = new WorkflowVersionRegistry();
+        var store = new Store(); var registry = new WorkflowCatalog();
         await using var first = Services(store, registry); await using var second = Services(store, registry);
         var id = await Paused(first, Waiting("RecoverEdit")); var before = (await store.GetWorkflowInstanceAsync(id))!;
         store.FailEdit = true;
@@ -210,7 +210,7 @@ public sealed class DataEditTests
     [Fact]
     public async Task AConcurrentRetryRechecksTheReceiptBeforeItsNowStalePause()
     {
-        var store = new Store(); var registry = new WorkflowVersionRegistry();
+        var store = new Store(); var registry = new WorkflowCatalog();
         await using var first = Services(store, registry, independentGate: true); await using var second = Services(store, registry, independentGate: true);
         var id = await Paused(first, Waiting("ConcurrentReceipt")); var before = (await store.GetWorkflowInstanceAsync(id))!;
         var patches = new[] { Patch(["Number"], 7) }; var target = Target(before);
@@ -256,7 +256,7 @@ public sealed class DataEditTests
     [Fact]
     public async Task CheckpointLimitRefusesBeforeCommandAcceptanceAndRecoveryAppliesAcceptedEdit()
     {
-        var store = new Store(); var registry = new WorkflowVersionRegistry();
+        var store = new Store(); var registry = new WorkflowCatalog();
         await using var first = Services(store, registry);
         var id = await Paused(first, Waiting("EditLimits")); var before = (await store.GetWorkflowInstanceAsync(id))!;
         await using var small = Services(store, registry, maxCheckpointBytes: 4096);
@@ -274,7 +274,7 @@ public sealed class DataEditTests
     [Fact]
     public async Task ContinueAcceptedDuringEditKeepsItsWakeAndOrder()
     {
-        var store = new Store(); var registry = new WorkflowVersionRegistry(); await using var first = Services(store, registry);
+        var store = new Store(); var registry = new WorkflowCatalog(); await using var first = Services(store, registry);
         await using var second = Services(store, registry);
         var id = await Paused(first, Waiting("WakeEdit")); var before = (await store.GetWorkflowInstanceAsync(id))!;
         store.HoldEdit = true;
@@ -366,7 +366,7 @@ public sealed class DataEditTests
         Assert.Equal(WorkflowExecutionStatus.Paused, (await Ops(services).PauseAsync(idle.InstanceId, "pause")).Status);
         return idle.InstanceId;
     }
-    private static ServiceProvider Services(IWorkflowStateRepository store, WorkflowVersionRegistry registry, bool tracing = true, bool independentGate = false, long? maxCheckpointBytes = null)
+    private static ServiceProvider Services(IWorkflowStateRepository store, WorkflowCatalog registry, bool tracing = true, bool independentGate = false, long? maxCheckpointBytes = null)
     {
         var services = new ServiceCollection().AddLogging();
         services.AddIxIFlow(o => { o.Debugging = true;
@@ -374,7 +374,7 @@ public sealed class DataEditTests
             o.MaxTraceEntriesPerCommit = 1; o.MaxTraceEntriesPerInstance = 1; });
         if (independentGate) services.AddSingleton(new InProcessInstanceGate());
         services.AddSingleton(new TraceSetting(tracing));
-        services.AddSingleton(store); services.AddSingleton<IWorkflowVersionRegistry>(registry);
+        services.AddSingleton(store); services.AddSingleton<IWorkflowCatalog>(registry);
         return services.BuildServiceProvider();
     }
     private sealed record TraceSetting(bool Enabled);

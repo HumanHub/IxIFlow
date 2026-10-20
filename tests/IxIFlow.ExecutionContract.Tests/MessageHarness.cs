@@ -13,7 +13,7 @@ internal sealed class MessageHarness : IDisposable
 {
     internal static readonly TimeSpan Patience = TimeSpan.FromSeconds(10);
     private readonly ServiceProvider _services;
-    private readonly WorkflowVersionRegistry _definitions = new();
+    private readonly WorkflowCatalog _definitions = new();
     public HostEnd Host { get; } = new();
     public ActivityProbe Probe { get; } = new();
     public WorkflowExecutor Executor { get; }
@@ -60,7 +60,7 @@ internal sealed class MessageHarness : IDisposable
         Assert.Equal(WorkflowCommitStatus.Applied, (await Host.Store.CommitWorkflowInstanceAsync(initial)).Status);
         var saved = (await Host.Store.GetWorkflowInstanceAsync(instance.InstanceId))!;
         Assignment = new(Guid.NewGuid(), saved, initial.ApplyParts(null), hash, lease.Epoch,
-            0, ExecutionLimits.Default, false, []);
+            0, ExecutionLimits.Default with { PayloadThresholdBytes = 256 * 1024 }, false, []);
         Host.Assignment = Assignment;
         Host.Active = true;
         return Assignment;

@@ -313,7 +313,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         var saved = (await repository.GetWorkflowInstanceAsync(instanceId))!;
         Assert.Equal(WorkflowStatus.Running, saved.Status);
         using var next = Services(repository, slots: 1, time);
-        await next.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await next.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         Gate(next).Release();
         var recovered = await Client(next).RecoverAsync(instanceId).WaitAsync(Patience);
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);

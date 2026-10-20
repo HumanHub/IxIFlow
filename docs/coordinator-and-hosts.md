@@ -35,7 +35,7 @@ Choose a single provider on the builder returned by `AddIxIFlow()`. Memory is th
 
 The [store guide](stores.md) covers their operational differences. [Hosting.Services](../samples/IxIFlow.Samples/Hosting.cs) compiles all four registrations. Provider schemas initialize on first use.
 
-Load definitions into the in-memory `IWorkflowVersionRegistry` before recovery can need them. Every host sharing a database must have the matching definition versions and activity code. [Review's sample setup](../tests/IxIFlow.Samples.Tests/SampleTests.cs) registers its pinned child before starting the parent.
+Register code definitions with `IWorkflowCatalog` before recovery can need them; catalog versions and artifacts persist in the selected state store. Every host sharing a database must have the matching definition versions and activity code. [Review's sample setup](../tests/IxIFlow.Samples.Tests/SampleTests.cs) registers its pinned child before starting the parent.
 
 ## Host registry and capabilities
 
@@ -45,7 +45,7 @@ Starting the generic host registers a member in the store before recovery starts
 
 Automatic capabilities are `os` (`windows`, `linux`, `macos`, or an OS description), `arch` (the process architecture in lowercase), `runtime` (the .NET runtime description), `host` (the GUID), and `workflow:<name>@<version>` (the definition's fingerprint) for each registered definition. Set user values through `IxIFlowOptions.Capabilities`, for example `options.Capabilities["region"] = "eu"`. Keys and values are case-sensitive; an empty value can represent a presence-only capability. Configured values cannot replace automatic keys or use the `workflow:` prefix.
 
-Every heartbeat rebuilds the automatic capabilities from `IWorkflowVersionRegistry` and republishes the complete capability snapshot atomically with the heartbeat. A definition registered at runtime appears on the next heartbeat. User values are copied when services are configured. Register only definitions and activity code the host can actually load.
+Every heartbeat rebuilds the automatic capabilities from `IWorkflowCatalog` and republishes the complete capability snapshot atomically with the heartbeat. A definition registered at runtime appears on the next heartbeat. User values are copied when services are configured. Register only definitions and activity code the host can actually load.
 
 The store exposes `RegisterMemberAsync(MemberRegistration)`, `HeartbeatAsync(id, capabilities)`, `UnregisterMemberAsync(id)` and `GetLiveMembersAsync()`. Live-member reads return immutable capability snapshots with store timestamps. The relational providers persist advertisements in `ixiflow_hosts` and `ixiflow_host_capabilities`; memory provides the same contract. SQL Server and PostgreSQL use database time. Memory and SQLite use the store's injected `TimeProvider`. SQLite advertises one host, replaces any advertisement left by its previous process after exclusive file ownership is acquired, and refuses coordinator registration.
 

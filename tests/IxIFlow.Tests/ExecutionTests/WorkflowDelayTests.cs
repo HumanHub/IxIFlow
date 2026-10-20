@@ -73,7 +73,7 @@ public sealed class WorkflowDelayTests : IClassFixture<SqliteTestDatabase<Workfl
         }
 
         using var secondProvider = Services(repository, time);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(definition);
         var rejected = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "delay", new object());
@@ -183,7 +183,7 @@ public sealed class WorkflowDelayTests : IClassFixture<SqliteTestDatabase<Workfl
                 await firstOwner.DisposeAsync();
             repository = newRepository();
             await using var secondHost = Services(repository);
-            await secondHost.GetRequiredService<IWorkflowVersionRegistry>()
+            await secondHost.GetRequiredService<IWorkflowCatalog>()
                 .RegisterWorkflowAsync(definition);
             await Task.Delay(1200);
             using var scanner = new WorkflowRecoveryService(

@@ -306,7 +306,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
                 WorkflowStatus.Completed => WorkflowExecutionStatus.Success,
                 WorkflowStatus.Failed => WorkflowExecutionStatus.Faulted,
                 WorkflowStatus.Cancelled => WorkflowExecutionStatus.Cancelled,
-                WorkflowStatus.Terminated => WorkflowExecutionStatus.Failed,
+                WorkflowStatus.Terminated => WorkflowExecutionStatus.Terminated,
                 WorkflowStatus.TimedOut => WorkflowExecutionStatus.TimedOut,
                 _ => throw new ArgumentOutOfRangeException(nameof(status))
             }, result.Status);
@@ -355,9 +355,16 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         Assert.NotNull(await store.GetWorkflowInstanceAsync(parent.InstanceId));
         child.Status = WorkflowStatus.Completed;
         await Commit(child, new ParentNotice(parent.InstanceId, "detached-wait", "done", "child", """{"Value":42}"""));
+        // A finished parent stays while any child row exists: subtrees are purged leaves first.
+        Assert.Equal(0, (await Purge()).InstancesRemoved);
+        Assert.NotNull(await store.GetWorkflowInstanceAsync(parent.InstanceId));
+        Assert.NotNull(await store.GetWorkflowInstanceAsync(child.InstanceId));
+        await Advance(TimeSpan.FromDays(31));
+        Assert.Equal(1, (await Purge()).InstancesRemoved);
+        Assert.Null(await store.GetWorkflowInstanceAsync(child.InstanceId));
+        Assert.NotNull(await store.GetWorkflowInstanceAsync(parent.InstanceId));
         Assert.Equal(1, (await Purge()).InstancesRemoved);
         Assert.Null(await store.GetWorkflowInstanceAsync(parent.InstanceId));
-        Assert.NotNull(await store.GetWorkflowInstanceAsync(child.InstanceId));
     }
 
     private async Task ChildCompletionSurvivesRemoval()
@@ -509,7 +516,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         child.WorkflowDataJson = StoredJson.Inline("{\"Value\":43}");
         await Commit(child); // UpdateCommit rather than the initial insert.
         Assert.Equal(parent.InstanceId, (await store.GetWorkflowInstanceAsync(child.InstanceId))!.ParentInstanceId);
-        Assert.Equal(child.InstanceId, Assert.Single(await store.GetChildInstancesAsync(parent.InstanceId)).InstanceId);
+        Assert.Equal(child.InstanceId, Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: parent.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId);
         if (newConnection != null)
         {
             await using var connection = newConnection();

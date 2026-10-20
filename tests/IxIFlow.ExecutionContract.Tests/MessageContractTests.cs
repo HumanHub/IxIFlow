@@ -207,8 +207,8 @@ public sealed class MessageContractTests
     public void RegistryIsTheDefinitionSourceWithoutAnAdapter()
     {
         using var services = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
-        Assert.True(typeof(IWorkflowDefinitionSource).IsAssignableFrom(typeof(IWorkflowVersionRegistry)));
-        Assert.Same(services.GetRequiredService<IWorkflowVersionRegistry>(), services.GetRequiredService<IWorkflowDefinitionSource>());
+        Assert.True(typeof(IWorkflowDefinitionSource).IsAssignableFrom(typeof(IWorkflowCatalog)));
+        Assert.Same(services.GetRequiredService<IWorkflowCatalog>(), services.GetRequiredService<IWorkflowDefinitionSource>());
         Assert.DoesNotContain(typeof(WorkflowExecutor).Assembly.GetTypes(), type => type.Name == "RegisteredWorkflowDefinitionSource");
     }
 }

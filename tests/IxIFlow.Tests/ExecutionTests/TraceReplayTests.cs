@@ -88,7 +88,7 @@ public sealed class TraceReplayTests : IClassFixture<SqliteTestDatabase<TraceRep
         var child = new WorkflowBuilder<Data, object>([], "ReplayChild").WaitFor<Go>("child-go").Step<Noop>().Build();
         var parent = new WorkflowBuilder<Data, object>([], "ReplayParent").Invoke<Data>("ReplayChild", 1).Step<Noop>().Build();
         store.Definitions[child.Name] = child; store.Definitions[parent.Name] = parent;
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var client = services.GetRequiredService<IWorkflowClient>();
         var started = await client.RunAsync(parent, new Data());
         var parentState = ExecutionCheckpoint.Read((await store.GetWorkflowInstanceAsync(started.InstanceId))!.ExecutionStateJson);

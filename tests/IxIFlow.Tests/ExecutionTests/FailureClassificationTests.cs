@@ -34,7 +34,7 @@ public sealed class FailureClassificationTests
             .Invoke<ChildData>("ClassifiedTimedChild", 1, step => step
                 .Output(data => data.TimedOut).To(ctx => ctx.WorkflowData.ChildTimedOut))
             .Build();
-        var registry = services.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = services.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(child);
         await registry.RegisterWorkflowAsync(parent);
         var started = await Engine(services).RunAsync(parent, new ParentData());
@@ -53,7 +53,7 @@ public sealed class FailureClassificationTests
             }
         Assert.Equal(WorkflowStatus.Suspended, (await repository.GetWorkflowInstanceAsync(parentId))!.Status);
         Assert.NotEqual(WorkflowStatus.Failed,
-            Assert.Single(await repository.GetWorkflowInstancesByNameAsync("ClassifiedTimedChild")).Status);
+            Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "ClassifiedTimedChild", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Status);
 
         // The host's own timers fired with the clock as well; scan until the parent has finished.
         repository.FailCommit = _ => false;
@@ -88,7 +88,7 @@ public sealed class FailureClassificationTests
                 .Step<MarkActivity>(step => step
                     .Output(activity => activity.Marked).To(ctx => ctx.WorkflowData.Caught)))
             .Build();
-        var registry = services.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = services.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(child);
         await registry.RegisterWorkflowAsync(parent);
         repository.FailCommit = instance => instance.WorkflowName == "ClassifiedChild";

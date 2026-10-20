@@ -97,7 +97,7 @@ internal static class SagaScopeTransitions
             if (compensationErrors.Count > 0)
                 throw Terminated($"compensation failed: {string.Join("; ", compensationErrors)}", error);
             if (state.ErrorAction == SagaContinuationAction.Terminate && error != null)
-                throw new SagaTerminatedException("Error policy requested termination", error);
+                throw new SagaTerminatedException("Error policy requested termination", error, true);
             if (error != null)
                 throw error;
             if (isCancellationCleanup)

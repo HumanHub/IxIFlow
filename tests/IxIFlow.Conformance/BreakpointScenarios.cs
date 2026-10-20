@@ -13,7 +13,7 @@ public sealed class BreakpointScenarios
     public async Task BreakpointsCountsAndSkipSurviveAHostHandoff(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var definition = Workflow.Create<Data>("ConformanceBreakpoint").Step<Noop>().WaitFor<Go>("go")
             .Step<Noop>().WithId("target").Build();
         var repository = store.NewRepository();
@@ -46,10 +46,10 @@ public sealed class BreakpointScenarios
         Assert.Single(await secondRepository.GetTraceAsync(id), e => e.Entry.EntryType == TraceEntryType.BreakpointHit);
     }
 
-    private static ServiceProvider Services(IWorkflowStateRepository repository, WorkflowVersionRegistry registry)
+    private static ServiceProvider Services(IWorkflowStateRepository repository, WorkflowCatalog registry)
     {
         var services = new ServiceCollection().AddLogging(); services.AddIxIFlow(o => o.Debugging = true);
-        services.AddSingleton(repository); services.AddSingleton<IWorkflowVersionRegistry>(registry);
+        services.AddSingleton(repository); services.AddSingleton<IWorkflowCatalog>(registry);
         return services.BuildServiceProvider();
     }
     public sealed class Data;

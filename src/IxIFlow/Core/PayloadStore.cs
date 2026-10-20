@@ -52,7 +52,7 @@ public interface IPayloadTransaction
 
 public sealed class PayloadStoreSettings
 {
-    public const long DefaultPayloadThresholdBytes = 256L * 1024;
+    public const long DefaultPayloadThresholdBytes = 0;
     public const long DefaultMaxPayloadBytes = 64L * 1024 * 1024;
     public long MaxPayloadBytes { get; }
     public long PayloadThresholdBytes { get; }

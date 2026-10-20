@@ -296,7 +296,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
                 .Do(branch => branch.Step<GatedActivity>())
                 .Do(branch => branch.Invoke<ClockData>("SlotlessChild", 1)))
             .Build();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var instanceId = Guid.NewGuid().ToString("N");
         var run = Engine(services).RunAsync(parent, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -304,7 +304,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         // The child is started, but the parent's run holds the only slot, so the child has not run.
         WorkflowInstance? started = null;
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTime.UtcNow < deadline && (started = (await store.GetWorkflowInstancesByNameAsync("SlotlessChild"))
+        while (DateTime.UtcNow < deadline && (started = (await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "SlotlessChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
                    .SingleOrDefault(item => item.ParentInstanceId == instanceId)) == null)
             await Task.Delay(20);
         await Task.Delay(300);
@@ -340,7 +340,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
                 .Do(branch => branch.Step<GatedActivity>())
                 .Do(branch => branch.Invoke<ClockData>("StoreClockChild", 1)))
             .Build();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var instanceId = Guid.NewGuid().ToString("N");
         var run = Engine(services).RunAsync(parent, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -348,7 +348,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         // The child runs in the other slot, and its own deadline ends its wait.
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         WorkflowInstance? started = null;
-        while ((started = (await store.GetWorkflowInstancesByNameAsync("StoreClockChild"))
+        while ((started = (await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "StoreClockChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
                    .SingleOrDefault(item => item.ParentInstanceId == instanceId)) == null)
         {
             Assert.True(DateTime.UtcNow < deadline, "The child was never started");
@@ -359,7 +359,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         WorkflowInstance? childInstance = null;
         while (DateTime.UtcNow < deadline &&
-               (childInstance = (await store.GetWorkflowInstancesByNameAsync("StoreClockChild"))
+               (childInstance = (await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "StoreClockChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
                    .SingleOrDefault(item => item.ParentInstanceId == instanceId))?.Status != WorkflowStatus.Completed)
             await Task.Delay(20);
         Assert.Equal(WorkflowStatus.Completed, childInstance?.Status);
@@ -402,7 +402,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         store.Advance(TimeSpan.FromSeconds(61));
         correct.Advance(TimeSpan.FromSeconds(61));
         using var second = HostServices(correct, repository, failures);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         await RecoverOnceAsync(second, correct);
 
         Assert.Equal(WorkflowStatus.Completed, (await repository.GetWorkflowInstanceAsync(instanceId))!.Status);
@@ -848,7 +848,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             ExecutionDeadlineUtc = now + executionTimeout,
             Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
         };
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         var executor = new WorkflowExecutor(services, host);
         using var run = executor.PrepareAssignment(Guid.NewGuid());

@@ -3,13 +3,13 @@ title: Large payloads
 description: Checkpoint references, payload limits and recovery of unavailable data.
 ---
 
-IxIFlow stores whole JSON values larger than `PayloadThresholdBytes` outside the checkpoint and keeps their SHA-256 digest and exact UTF-8 byte length in the checkpoint. The default is **256 KiB**, enabled. Set the option to `0` to disable new claim checks. Existing references still need their payload store to read them.
+IxIFlow stores whole JSON values larger than `PayloadThresholdBytes` outside the checkpoint and keeps their SHA-256 digest and exact UTF-8 byte length in the checkpoint. Claim checking is **off by default** (`PayloadThresholdBytes = 0`), so values remain inline. Applications enable it by setting a positive threshold; **256 KiB** is suggested. Existing references still need their payload store to read them.
 
 The checkpoint seams include root workflow data, branch data changes, saved activity input copies, `Previous`, ForEach items and results, bound and accepted replies, and wait default payloads. Large structural parts can themselves be references; their nested references are recorded as dependencies. Unchanged immutable values reuse their cached encoding, length, digest and dependencies. Data observation detects writes through activity contexts and mappings without serializing or hashing unchanged string values. Opaque converter shapes are conservatively treated as changed.
 
 | Option | Default | What it bounds |
 | --- | --- | --- |
-| `PayloadThresholdBytes` | 256 KiB | Whole values above this UTF-8 size become references; zero disables new references |
+| `PayloadThresholdBytes` | 0 (off) | Whole values above this UTF-8 size become references; zero disables new references |
 | `MaxPayloadBytes` | 64 MiB | One payload put; an oversized put is refused with `WorkflowErrorKind.ResourceExhausted` |
 | `MaxHydratedPayloadBytes` | 128 MiB | Aggregate unique payload bytes hydrated in one run, and the new bodies one checkpoint carries |
 | `MaxCheckpointBytes` | 4 MiB | Checkpoint trunk and parts, counting a reference's encoded metadata instead of its body |

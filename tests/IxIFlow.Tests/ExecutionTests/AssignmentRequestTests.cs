@@ -183,7 +183,7 @@ public sealed class AssignmentRequestTests
     {
         using var services = Services();
         var definition = Definition("preparation");
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         foreach (var cancelled in new[] { false, true })
         {
             var assign = NewAssign(definition);
@@ -215,7 +215,7 @@ public sealed class AssignmentRequestTests
         collection.AddSingleton(activities.Object);
         using var services = collection.BuildServiceProvider();
         var definition = Definition("breakpoints");
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var endpoint = new ExecutorHost();
         var assign = NewAssign(definition) with
         {
@@ -244,7 +244,7 @@ public sealed class AssignmentRequestTests
     {
         var parent = Workflow.Create<Data>("parent-completion").Step<Noop>().Invoke<Data>("child-completion", 1).Build();
         using var services = Services();
-        var registry = services.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = services.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(parent);
         await registry.RegisterWorkflowAsync(Definition("child-completion"));
         var endpoint = new ExecutorHost();
@@ -291,7 +291,7 @@ public sealed class AssignmentRequestTests
         var parent = Workflow.Create<Data>("child-ownership").Step<Noop>()
             .Try(body => body.Invoke<Data>("refused-child", 1))
             .Catch<Exception>(handler => handler.Step<Noop>()).Build();
-        var registry = services.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = services.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(parent);
         await registry.RegisterWorkflowAsync(Definition("refused-child"));
         var endpoint = new ExecutorHost { NotAssignedAtChild = true };
@@ -338,7 +338,7 @@ public sealed class AssignmentRequestTests
         public required WorkflowHost.InstanceOperations Operations;
         public required WorkflowHost.InstanceOperations.HostedRun Admission;
         public required CancellationWatch Watch;
-        public IWorkflowVersionRegistry Registry => Services.GetRequiredService<IWorkflowVersionRegistry>();
+        public IWorkflowCatalog Registry => Services.GetRequiredService<IWorkflowCatalog>();
         public IExecutionHost Host => new WorkflowHost.InstanceOperations.ExecutionHost(Operations);
         public static async Task<Assigned> CreateAsync(IWorkflowStateRepository? store = null, ExecutionLimits? limits = null)
         {
@@ -349,7 +349,7 @@ public sealed class AssignmentRequestTests
             probe.Inner = store;
             var services = AssignmentRequestTests.Services(proxy);
             var definition = Definition("assigned");
-            await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+            await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
             var assign = NewAssign(definition);
             await proxy.SeedAsync(assign.Instance);
             if (store is HeldCommitStore held) held.Hold = true;
@@ -358,7 +358,7 @@ public sealed class AssignmentRequestTests
             var owner = (await WorkflowExecutionLease.TryAcquireAsync(proxy, instance,
                 new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, _ => { }, _ => { }, _ => { }, time))!;
             var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(), proxy,
-                services.GetRequiredService<IWorkflowVersionRegistry>(), new InProcessInstanceGate(), timeProvider: time, limits: limits);
+                services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), timeProvider: time, limits: limits);
             var identity = Guid.NewGuid();
             var admission = operations.Admit(instance, owner, identity);
             var result = new Assigned { Services = services, Store = proxy, Probe = probe, Instance = instance,

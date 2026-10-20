@@ -253,7 +253,7 @@ public sealed class SagaHandlerTests
 
         // Another host, reading the saved instance, takes the answer to the first and only payment.
         using var second = Services(repository, journal);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var result = await second.GetRequiredService<IWorkflowClient>()
             .ReplyAsync(Assert.Single(journal.Tokens), new PaymentReceived { Status = "paid" });
 
@@ -291,7 +291,7 @@ public sealed class SagaHandlerTests
                 .RunAsync(definition, new ShopData())).Status);
 
         using var second = Services(repository, journal);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var result = await second.GetRequiredService<IWorkflowClient>()
             .ReplyAsync(Assert.Single(journal.Tokens), new PaymentReceived { Status = "paid" });
 
@@ -672,7 +672,7 @@ public sealed class SagaHandlerTests
         // The saga is saved while it undoes, waiting in its handler; another host takes the payment's answer,
         // which the instance keeps while it still waits there, and then lets the retry go.
         using var second = Services(repository, journal);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var engine = second.GetRequiredService<IWorkflowClient>();
         var answered = await engine.ReplyAsync(Assert.Single(journal.Tokens), new PaymentReceived { Status = "paid" });
         EventAssert.Consumed(answered);
@@ -811,7 +811,7 @@ public sealed class SagaHandlerTests
         var journal = new Journal();
         using var services = Services(repository, journal, time);
         var engine = services.GetRequiredService<IWorkflowClient>();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ShopData>("CarrierClaim").Step<ValidateOrder>().WaitFor<Approval>("settled").Build());
         var definition = Workflow.Create<ShopData>("ChildInHandler")
             .Step<ValidateOrder>()
@@ -834,7 +834,7 @@ public sealed class SagaHandlerTests
         {
             Assert.True(DateTime.UtcNow < deadline, "The handler's child never waited");
             await Task.Delay(20);
-            child = (await repository.GetChildInstancesAsync(started.InstanceId)).SingleOrDefault();
+            child = (await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: started.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).SingleOrDefault();
         }
 
         await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
@@ -1154,7 +1154,7 @@ public sealed class SagaHandlerTests
         }
 
         using var second = Services(repository, journal);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         await second.GetRequiredService<IWorkflowClient>().ResumeAsync(instanceId, "ship", new Approval());
 
         Assert.Contains("undo CreatePayment paid True", journal.Entries);
@@ -1209,7 +1209,7 @@ public sealed class SagaHandlerTests
                 .RunAsync(definition, new ShopData(), new WorkflowOptions { InstanceId = instanceId }));
         store.FailCommit = _ => false;
         using var second = Services(store, journal);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var engine = second.GetRequiredService<IWorkflowClient>();
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, (await engine.RecoverAsync(instanceId)).Status);
 
@@ -1289,7 +1289,7 @@ public sealed class SagaHandlerTests
 
         // Another host reads the parked retry, with its restored frames and the kept payment's wait.
         using var second = Services(repository, journal, time);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var engine = second.GetRequiredService<IWorkflowClient>();
         time.Advance(TimeSpan.FromSeconds(3));
         // The retry has not run yet: the first host left before it was due.

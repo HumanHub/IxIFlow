@@ -52,43 +52,6 @@ public interface IWorkflowDebugStore
     Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds);
 }
 
-/// <summary>Authorized in-process debugger operations. The application authorizes the actor.</summary>
-public interface IWorkflowOperations
-{
-    /// <summary>Subscribes to local committed changes. Remote owners require bounded polling until coordinator notices are available.</summary>
-    IDisposable WatchChanges(string instanceId, Action changed);
-    Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string instanceId, CancellationToken cancellationToken = default);
-    /// <summary>Loads bounded, detached replay through the same privacy projection as inspection.</summary>
-    Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries = 10000, CancellationToken cancellationToken = default);
-    /// <summary>Reads only a source named by the instance's published step table; null when unavailable locally.</summary>
-    Task<string?> GetSourceAsync(string instanceId, string path, CancellationToken cancellationToken = default);
-    /// <summary>Starts a registered definition with an optional hold saved before any workflow code runs.</summary>
-    Task<string> LaunchAsync(string instanceId, string workflow, int version, JsonElement input, bool stopOnEntry,
-        string actor, CancellationToken cancellationToken = default);
-    /// <summary>Reads a projection of the saved checkpoint, never the checkpoint itself.</summary>
-    Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default);
-    /// <summary>Reads at most 1000 entries strictly after the given sequence. Sequence orders both clocks.</summary>
-    Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000,
-        CancellationToken cancellationToken = default);
-    /// <summary>Requests a durable pause; running activities finish before it is committed.</summary>
-    Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
-    /// <summary>Continues a pause under a fresh lease on this host.</summary>
-    Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
-    /// <summary>Accepts a durable continue and schedules it on the host, without waiting for workflow activities to finish.</summary>
-    Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default);
-    /// <summary>Runs only the selected continuation and branches it creates, under a fresh lease.</summary>
-    Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
-        string actor, CancellationToken cancellationToken = default);
-    /// <summary>Edits a paused root or branch view with an immutable, caller-supplied edit ID.</summary>
-    Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
-        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken = default);
-    /// <summary>Replaces the instance's breakpoint set and returns the resolved addresses.</summary>
-    Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId, IReadOnlyList<Breakpoint> breakpoints,
-        string actor, CancellationToken cancellationToken = default);
-    /// <summary>Reads the latest requested set with committed hit counts.</summary>
-    Task<IReadOnlyList<Breakpoint>> GetBreakpointsAsync(string instanceId, CancellationToken cancellationToken = default);
-}
-
 /// <summary>Application access to source files in a published workflow bundle, when build paths are absent locally.</summary>
 public interface IWorkflowDebugSourceProvider
 {

@@ -194,7 +194,7 @@ public sealed class DebugPauseTests
         services.AddIxIFlow(options => options.Debugging = debugging);
         services.AddSingleton<IWorkflowStateRepository>(store);
         services.AddSingleton(probe);
-        services.AddSingleton<IWorkflowVersionRegistry>(probe.Registry);
+        services.AddSingleton<IWorkflowCatalog>(probe.Registry);
         if (shortLease) services.AddSingleton(new ExecutionLeaseSettings(TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(100)));
         return services.BuildServiceProvider();
     }
@@ -204,7 +204,7 @@ public sealed class DebugPauseTests
     {
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Finish { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public WorkflowVersionRegistry Registry { get; } = new();
+        public WorkflowCatalog Registry { get; } = new();
         public int BlockCount; public int AfterCount;
     }
     public sealed class Noop : IAsyncActivity
