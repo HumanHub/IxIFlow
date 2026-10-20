@@ -297,17 +297,50 @@ internal static class WorkflowCatalogRules
                 .ActivityPackages.Select(package => package.Digest)))
             .ToHashSet();
 
-    internal static async Task<IReadOnlySet<ArtifactDigest>> RetentionReferencesAsync(IReadOnlyList<WorkflowVersion> versions,
+    internal sealed record OrphanPin(IReadOnlyList<ArtifactDigest> Packages, string? Error = null);
+
+    internal static async Task<IReadOnlyDictionary<ArtifactDigest, OrphanPin>> ReadOrphanPinsAsync(IReadOnlyList<WorkflowVersion> versions,
         IReadOnlyList<ArtifactDigest> instancePins, IArtifactStore artifacts, CancellationToken token)
+    {
+        var catalogPins = versions.Where(row => row.ArtifactDigest != null).Select(row => row.ArtifactDigest!.Value).ToHashSet();
+        var result = new Dictionary<ArtifactDigest, OrphanPin>();
+        foreach (var digest in instancePins.Distinct().Where(pin => !catalogPins.Contains(pin)))
+        {
+            try
+            {
+                await using var archive = await artifacts.OpenAsync(digest, token)
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Artifact unavailable");
+                var bundle = await WorkflowBundleArchive.ReadAsync(archive, digest, token);
+                result.Add(digest, new(bundle.Manifest.ActivityPackages.Select(package => package.Digest).ToArray()));
+            }
+            catch (Exception error) when (error is not (OperationCanceledException or OutOfMemoryException))
+            {
+                result.Add(digest, new([], error is WorkflowEngineException engine ? engine.Kind.ToString() : "Unreadable"));
+            }
+        }
+        return result;
+    }
+
+    // Called under the catalog lock after re-reading versions and pins. A newly orphaned pin
+    // asks the caller to retry preparation outside the lock; no artifact I/O happens here.
+    internal static IReadOnlySet<ArtifactDigest>? RetentionReferences(IReadOnlyList<WorkflowVersion> versions,
+        IReadOnlyList<ArtifactDigest> instancePins, IReadOnlyList<WorkflowPackage> packages,
+        IReadOnlyDictionary<ArtifactDigest, OrphanPin> prepared)
     {
         var references = ArtifactReferences(versions).Concat(instancePins).ToHashSet();
         var catalogPins = versions.Where(row => row.ArtifactDigest != null).Select(row => row.ArtifactDigest!.Value).ToHashSet();
         foreach (var digest in instancePins.Distinct().Where(pin => !catalogPins.Contains(pin)))
         {
-            await using var archive = await artifacts.OpenAsync(digest, token)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Cannot retain dependencies of unavailable instance bundle {digest}");
-            var bundle = await WorkflowBundleArchive.ReadAsync(archive, digest, token);
-            references.UnionWith(bundle.Manifest.ActivityPackages.Select(package => package.Digest));
+            if (!prepared.TryGetValue(digest, out var pin)) return null;
+            references.UnionWith(pin.Packages);
+            if (pin.Error != null)
+            {
+                // Unknown dependencies cannot be collected safely. Preserve package identities'
+                // content, but still collect unrelated abandoned bundles. Do not stop the pass.
+                references.UnionWith(packages.Select(package => package.Digest));
+                Runtime.Telemetry.ArtifactRetentionUnreadablePins.Add(1, new KeyValuePair<string, object?>("reason", pin.Error));
+                System.Diagnostics.Trace.TraceWarning($"Artifact retention: unreadable orphan instance pin {digest} ({pin.Error}); package content retained conservatively");
+            }
         }
         return references;
     }

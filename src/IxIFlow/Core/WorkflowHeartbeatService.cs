@@ -1,5 +1,8 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -37,11 +40,20 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
         return capabilities;
     }
 
-    private static bool Compatible(string? json)
+    private static readonly ConcurrentDictionary<string, Lazy<bool>> Compatibility = new(StringComparer.Ordinal);
+
+    internal static bool Compatible(string? json)
+    {
+        if (json == null) return false;
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
+        return Compatibility.GetOrAdd(hash, _ => new Lazy<bool>(() => ValidateCompatibility(json))).Value;
+    }
+
+    private static bool ValidateCompatibility(string json)
     {
         try
         {
-            return json != null && System.Text.Json.JsonSerializer.Deserialize<WorkflowBundleManifest>(json) is { } manifest &&
+            return System.Text.Json.JsonSerializer.Deserialize<WorkflowBundleManifest>(json) is { } manifest &&
                 WorkflowSharedAssemblies.IsCompatible(manifest);
         }
         catch (System.Text.Json.JsonException) { return false; }

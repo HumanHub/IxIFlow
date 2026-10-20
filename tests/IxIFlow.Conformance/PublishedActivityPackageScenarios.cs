@@ -122,6 +122,77 @@ public sealed class PublishedActivityPackageScenarios
         Assert.True(await files.ExistsAsync(version.ArtifactDigest!.Value));
     }
 
+    [Theory]
+    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    public async Task ConcurrentDifferentUploadsHaveExactlyOneImmutableWinner(string profile)
+    {
+        await using var database = await StoreProfiles.CreateAsync(profile);
+        var store = database.NewRepository();
+        Assert.Empty(await store.GetPackagesAsync());
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var packages = new[] { ActivityPackageFixture.Package("fixture.concurrent", "1.0.0-Beta", new() { ["first.txt"] = [1] }),
+            ActivityPackageFixture.Package("fixture.concurrent", "1.0.0-beta", new() { ["second.txt"] = [2] }) };
+        var tasks = packages.Select(bytes => Task.Run(async () =>
+        {
+            await gate.Task;
+            try { return (Package: await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(bytes)), Error: (WorkflowEngineException?)null); }
+            catch (WorkflowEngineException error) { return (Package: (WorkflowPackage?)null, Error: error); }
+        })).ToArray();
+        gate.SetResult();
+        var results = await Task.WhenAll(tasks);
+        var winner = Assert.Single(results, result => result.Package != null).Package!;
+        Assert.Equal(WorkflowErrorKind.InvalidRequest, Assert.Single(results, result => result.Error != null).Error!.Kind);
+        var saved = Assert.Single(await store.GetPackagesAsync("FIXTURE.CONCURRENT"));
+        Assert.Equal("1.0.0-beta", saved.Version);
+        Assert.Equal(winner.Digest, saved.Digest);
+        Assert.Equal(winner.Entries.OrderBy(pair => pair.Key), saved.Entries.OrderBy(pair => pair.Key));
+    }
+
+    [Theory]
+    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    public async Task UnreadableOrphanPinsReportAndPreservePackagesWhileUnrelatedBundlesAreCollected(string profile)
+    {
+        await using var database = await StoreProfiles.CreateAsync(profile);
+        var store = database.NewRepository();
+        var root = Folder();
+        var files = new FileSystemArtifactStore(root);
+        var publisher = new WorkflowPublisher(store, files);
+        var package = await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.conservative", "1.0.0", new())));
+        var missing = ArtifactDigest.Of([91]);
+        await store.SeedAsync(new WorkflowInstance
+        {
+            InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "LostCatalog", WorkflowVersion = 1,
+            BundleDigest = null, Status = WorkflowStatus.Completed,
+            WorkflowDataJson = "{}", ExecutionStateJson = StoreTestSupport.CheckpointJson
+        });
+        // Seed's normal catalog guard refuses an unregistered bundle. Model catalog loss
+        // with the same persisted pin fixture used by the existing retention scenarios.
+        if (store is InMemoryWorkflowStateRepository memory)
+        {
+            var instances = typeof(InMemoryWorkflowStateRepository).GetField("_instances", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(memory)!;
+            var values = (IEnumerable<WorkflowInstance>)instances.GetType().GetProperty("Values")!.GetValue(instances)!;
+            Assert.Single(values).BundleDigest = missing;
+        }
+        else
+        {
+            await using var connection = database.NewConnection();
+            await connection.ExecuteAsync(profile.StartsWith("distributed-sqlserver", StringComparison.Ordinal)
+                ? "UPDATE dbo.IxIFlowWorkflowInstances SET BundleDigest=@Digest" : "UPDATE ixiflow_workflow_instances SET bundle_digest=@Digest", new { Digest = missing.Value });
+        }
+        var abandoned = await files.PutAsync(ArtifactKind.Bundle, new MemoryStream([92]));
+        foreach (var file in Directory.EnumerateFiles(root, "*.artifact")) File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddDays(-100));
+        long unreadable = 0;
+        using var listener = new System.Diagnostics.Metrics.MeterListener();
+        listener.InstrumentPublished = (instrument, current) =>
+        { if (instrument.Name == "ixiflow.artifact.retention.unreadable_pin") current.EnableMeasurementEvents(instrument); };
+        listener.SetMeasurementEventCallback<long>((instrument, value, tags, state) => Interlocked.Add(ref unreadable, value));
+        listener.Start();
+        Assert.Equal(1, await store.PurgeArtifactsAsync(files, TimeSpan.FromDays(90), 100));
+        Assert.True(await files.ExistsAsync(package.Digest));
+        Assert.False(await files.ExistsAsync(abandoned));
+        Assert.True(Interlocked.Read(ref unreadable) > 0);
+    }
+
     private static string Folder()
     {
         var path = Path.Combine(Path.GetTempPath(), "IxIFlow.PackageConformance", Guid.NewGuid().ToString("N"));

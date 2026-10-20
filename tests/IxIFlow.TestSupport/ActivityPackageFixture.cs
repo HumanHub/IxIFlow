@@ -92,10 +92,7 @@ public static class ActivityPackageFixture
 
     public static byte[] NativeActivityPackage()
     {
-        var windows = OperatingSystem.IsWindows();
-        var library = windows ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "kernel32.dll")
-            : new[] { "/lib/x86_64-linux-gnu/libc.so.6", "/lib/aarch64-linux-gnu/libc.so.6", "/usr/lib/libSystem.B.dylib" }.First(File.Exists);
-        var extension = windows ? ".dll" : OperatingSystem.IsMacOS() ? ".dylib" : ".so";
+        var extension = OperatingSystem.IsWindows() ? ".dll" : OperatingSystem.IsMacOS() ? ".dylib" : ".so";
         var source = $$"""
             using System;
             using System.Threading;
@@ -107,12 +104,12 @@ public static class ActivityPackageFixture
             [WorkflowActivity("fixture.native-call", Version="1.0")]
             public sealed class Echo : IAsyncActivity
             {
-                [DllImport("fixture_native", EntryPoint="{{(windows ? "GetCurrentProcessId" : "getpid")}}")]
-                private static extern int GetProcess();
+                [DllImport("fixture_native", EntryPoint="fixture_value")]
+                private static extern int GetValue();
                 [ActivityInput] public string Text { get; set; } = "";
                 [ActivityOutput] public string Result { get; private set; } = "";
                 public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-                { Result = Text + ":" + (GetProcess() == Environment.ProcessId); return Task.CompletedTask; }
+                { Result = Text + ":" + (GetValue() == 42); return Task.CompletedTask; }
             }
             """;
         var emitted = WorkflowCompilation.Compile(source);
@@ -120,9 +117,68 @@ public static class ActivityPackageFixture
         return Package("fixture.native-call", "1.0.0", new()
         {
             ["lib/net10.0/NativeCall.dll"] = emitted.Assembly,
-            ["runtimes/" + System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier + "/native/fixture_native" + extension] = File.ReadAllBytes(library),
+            ["runtimes/" + System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier + "/native/fixture_native" + extension] = NativeLibraryBytes(),
             ["runtimes/test-other-platform/native/not-selected.bin"] = [9]
         });
+    }
+
+    private static readonly Lazy<byte[]> NativeLibrary = new(BuildNativeLibrary);
+    public static byte[] NativeLibraryBytes() => NativeLibrary.Value.ToArray();
+
+    private static byte[] BuildNativeLibrary()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "IxIFlow.NativeFixture", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "fixture.c"), "int fixture_value(void) { return 42; }");
+            var windows = OperatingSystem.IsWindows();
+            var output = Path.Combine(root, windows ? "fixture.dll" : OperatingSystem.IsMacOS() ? "fixture.dylib" : "fixture.so");
+            var compiler = windows ? Directory.EnumerateFiles(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Microsoft Visual Studio"),
+                "cl.exe", SearchOption.AllDirectories).First(path => path.Contains(Environment.Is64BitProcess ? "Hostx64" + Path.DirectorySeparatorChar + "x64" : "Hostx86" + Path.DirectorySeparatorChar + "x86", StringComparison.OrdinalIgnoreCase)) : "cc";
+            var start = new System.Diagnostics.ProcessStartInfo(compiler)
+            { WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var argument in windows ? new[] { "/nologo", "/LD", "/O2", "fixture.c", "/link", "/NOENTRY", "/NODEFAULTLIB", "/EXPORT:fixture_value", "/OUT:" + output }
+                : new[] { OperatingSystem.IsMacOS() ? "-dynamiclib" : "-shared", "-fPIC", "-nostdlib", "-o", output, "fixture.c" }) start.ArgumentList.Add(argument);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            Assert.True(process.WaitForExit(30000), "Native fixture compiler exceeded 30 seconds");
+            Assert.True(process.ExitCode == 0, stdout.GetAwaiter().GetResult() + stderr.GetAwaiter().GetResult());
+            return File.ReadAllBytes(output);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    public static byte[] LowerReferencePackage(string framework)
+    {
+        string root;
+        if (framework == "netstandard2.0")
+            root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages", "netstandard.library", "2.0.3", "build", framework, "ref");
+        else
+            root = Directory.EnumerateDirectories(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "packs", "Microsoft.NETCore.App.Ref"), "8.*")
+                .Order(StringComparer.Ordinal).Last() + Path.DirectorySeparatorChar + Path.Combine("ref", "net8.0");
+        var references = Directory.EnumerateFiles(root, "*.dll").Select(path => MetadataReference.CreateFromFile(path));
+        var compilation = CSharpCompilation.Create("Lower.Reference." + framework,
+            [CSharpSyntaxTree.ParseText("public sealed class LowerReference { public System.Collections.Generic.List<string> Values { get; } = new(); }")], references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        using var output = new MemoryStream();
+        var emitted = compilation.Emit(output);
+        Assert.True(emitted.Success, string.Join("; ", emitted.Diagnostics));
+        var package = Package("fixture.lower", "1.0.0", new() { ["lib/" + framework + "/Lower.Reference.dll"] = output.ToArray() },
+            framework == "netstandard2.0" ? "<dependency id=\"NETStandard.Library\" version=\"[2.0.3,)\" />" : "");
+        // The nuspec's dependency framework must match the actual compile target.
+        using var input = new System.IO.Compression.ZipArchive(new MemoryStream(package));
+        var entries = input.Entries.ToDictionary(entry => entry.FullName, entry =>
+        { using var source = entry.Open(); using var bytes = new MemoryStream(); source.CopyTo(bytes); return bytes.ToArray(); });
+        var nuspec = entries.Keys.Single(path => path.EndsWith(".nuspec", StringComparison.Ordinal));
+        var text = Encoding.UTF8.GetString(entries[nuspec]).Replace("targetFramework=\"net10.0\"", "targetFramework=\"" + framework + "\"");
+        entries.Remove(nuspec);
+        using var result = new MemoryStream();
+        using (var zip = new ZipArchive(result, ZipArchiveMode.Create, leaveOpen: true))
+            foreach (var pair in entries.Append(new(nuspec, Encoding.UTF8.GetBytes(text))))
+            { using var stream = zip.CreateEntry(pair.Key).Open(); stream.Write(pair.Value); }
+        return result.ToArray();
     }
 
     public static byte[] SharedAssemblyConflictPackage()

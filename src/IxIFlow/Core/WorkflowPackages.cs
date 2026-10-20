@@ -12,7 +12,12 @@ public sealed record WorkflowPackageAssets(IReadOnlyList<string> ManagedAssembli
 /// <summary>Asset selection is performed once by the publisher, never by an executor.</summary>
 public sealed record WorkflowPackagePin(string Id, string Version, ArtifactDigest Digest,
     IReadOnlyDictionary<string, ArtifactDigest> Entries, IReadOnlyList<string> ReferenceAssemblies,
-    IReadOnlyDictionary<string, WorkflowPackageAssets> RuntimeAssets, bool RequiresRuntimeIdentifier);
+    IReadOnlyDictionary<string, WorkflowPackageAssets> RuntimeAssets, bool RequiresRuntimeIdentifier)
+{
+    /// <summary>Null means all platforms; an empty list means no supported platform.</summary>
+    public IReadOnlyList<string>? ApplicableRuntimeIdentifiers { get; init; }
+    public bool AppliesTo(string rid) => ApplicableRuntimeIdentifiers == null || ApplicableRuntimeIdentifiers.Contains(rid, StringComparer.Ordinal);
+}
 
 public static class WorkflowPackageArchive
 {
@@ -32,7 +37,7 @@ public static class WorkflowPackageArchive
         try
         {
             using var zip = new ZipArchive(archive, ZipArchiveMode.Read, leaveOpen: true);
-            if (zip.Entries.Count > limits.MaxEntries) throw Mismatch("Package entry count exceeds the configured limit");
+            if (zip.Entries.Count > limits.MaxEntries) throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Package entry count exceeds the configured limit");
             var result = new Dictionary<string, ReadOnlyMemory<byte>>(StringComparer.Ordinal);
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             long expanded = 0;
@@ -42,7 +47,7 @@ public static class WorkflowPackageArchive
                 if (!SafePath(path.TrimEnd('/')) || !names.Add(path.TrimEnd('/')))
                     throw Mismatch($"Duplicate or unsafe package entry '{path}'");
                 if (entry.Length > limits.MaxEntryBytes || entry.Length > limits.MaxExpandedBytes - expanded)
-                    throw Mismatch("Package expanded size exceeds the configured limit");
+                    throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Package expanded size exceeds the configured limit");
                 if (path.EndsWith('/'))
                 {
                     if (entry.Length != 0) throw Mismatch("Package directory has content");
@@ -56,7 +61,7 @@ public static class WorkflowPackageArchive
                 {
                     expanded += count;
                     if (output.Length + count > entry.Length || output.Length + count > limits.MaxEntryBytes || expanded > limits.MaxExpandedBytes)
-                        throw Mismatch("Package expanded size exceeds the configured limit");
+                        throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Package expanded size exceeds the configured limit");
                     await output.WriteAsync(chunk.AsMemory(0, count), token);
                 }
                 if (output.Length != entry.Length) throw Mismatch("Package entry length differs from its declaration");
@@ -70,7 +75,15 @@ public static class WorkflowPackageArchive
 
     internal static bool SafePath(string path) => path.Length > 0 && !path.Contains('\\') && !path.Contains(':') &&
         path.Split('/').All(part => part.Length > 0 && part is not ("." or "..") &&
-            !part.EndsWith('.') && !part.EndsWith(' ') && !part.Any(char.IsControl));
+            !ReservedName(part) && !part.EndsWith('.') && !part.EndsWith(' ') && !part.Any(char.IsControl));
+
+    private static bool ReservedName(string part)
+    {
+        var stem = part.Split('.')[0].ToUpperInvariant();
+        return stem is "CON" or "PRN" or "AUX" or "NUL" or "CONIN$" or "CONOUT$" ||
+            stem.Length == 4 && (stem.StartsWith("COM", StringComparison.Ordinal) || stem.StartsWith("LPT", StringComparison.Ordinal)) &&
+            (stem[3] is >= '1' and <= '9' or '¹' or '²' or '³');
+    }
 
     internal static void Verify(WorkflowPackagePin pin, IReadOnlyDictionary<string, ReadOnlyMemory<byte>> entries)
     {
@@ -83,12 +96,25 @@ public static class WorkflowPackageArchive
 
 internal static class WorkflowPackageRules
 {
+    internal static bool ValidId(string? id) => id != null && id.Length is > 0 and <= 100 &&
+        System.Text.RegularExpressions.Regex.IsMatch(id, @"\A\w+([.-]\w+)*\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static bool CanonicalVersion(string? version)
+    {
+        if (version == null || version.Length > 100 || version != version.ToLowerInvariant()) return false;
+        var pieces = version.Split('-', 2);
+        var numbers = pieces[0].Split('.');
+        if (numbers.Length is not (3 or 4) || numbers.Any(number => !int.TryParse(number, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out var value) || number != value.ToString(System.Globalization.CultureInfo.InvariantCulture)) ||
+            numbers.Length == 4 && numbers[3] == "0") return false;
+        return pieces.Length == 1 || pieces[1].Split('.').All(label => label.Length > 0 && label.All(c => char.IsAsciiLetterOrDigit(c) || c == '-'));
+    }
+
     internal static WorkflowPackage Copy(WorkflowPackage package) => JsonSerializer.Deserialize<WorkflowPackage>(JsonSerializer.Serialize(package))!;
     internal static void Validate(WorkflowPackage package)
     {
-        if (string.IsNullOrWhiteSpace(package.Id) || package.Id != package.Id.ToLowerInvariant() || package.Id.Length > 100 ||
-            !package.Id.All(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_') ||
-            string.IsNullOrWhiteSpace(package.Version) || package.Version.Length > 100 || package.Entries == null || package.Entries.Count == 0)
+        if (!ValidId(package.Id) || package.Id != package.Id.ToLowerInvariant() ||
+            !CanonicalVersion(package.Version) || package.Entries == null || package.Entries.Count == 0)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Invalid package catalog metadata");
         _ = new ArtifactDigest(package.Digest.Value);
         foreach (var (path, hash) in package.Entries)

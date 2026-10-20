@@ -226,24 +226,33 @@ public partial class InMemoryWorkflowStateRepository
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retention, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
         cancellationToken.ThrowIfCancellationRequested();
-        await _catalogLock.WaitAsync(cancellationToken);
-        try
+        while (true)
         {
-            IReadOnlySet<ArtifactDigest> references;
             WorkflowVersion[] versions;
             ArtifactDigest[] pins;
-            DateTime cutoff;
             lock (_claimLock)
             {
                 versions = _versions.Values.Select(CopyVersion).ToArray();
-                pins = _instances.Values.Where(instance => instance.BundleDigest != null)
-                    .Select(instance => instance.BundleDigest!.Value).Distinct().ToArray();
-                cutoff = Now - retention;
+                pins = _instances.Values.Where(instance => instance.BundleDigest != null).Select(instance => instance.BundleDigest!.Value).Distinct().ToArray();
             }
-            references = await WorkflowCatalogRules.RetentionReferencesAsync(versions, pins, artifacts, cancellationToken);
-            return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);
+            var prepared = await WorkflowCatalogRules.ReadOrphanPinsAsync(versions, pins, artifacts, cancellationToken);
+            await _catalogLock.WaitAsync(cancellationToken);
+            try
+            {
+                IReadOnlySet<ArtifactDigest>? references;
+                DateTime cutoff;
+                lock (_claimLock)
+                {
+                    references = WorkflowCatalogRules.RetentionReferences(_versions.Values.ToArray(),
+                        _instances.Values.Where(instance => instance.BundleDigest != null).Select(instance => instance.BundleDigest!.Value).Distinct().ToArray(),
+                        _packages.Values.ToArray(), prepared);
+                    cutoff = Now - retention;
+                }
+                if (references == null) continue;
+                return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);
+            }
+            finally { _catalogLock.Release(); }
         }
-        finally { _catalogLock.Release(); }
     }
 
     public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc,

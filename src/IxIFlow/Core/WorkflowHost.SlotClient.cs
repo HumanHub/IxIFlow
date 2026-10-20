@@ -84,8 +84,8 @@ public sealed partial class WorkflowHost
             _runner.DeliverReplyAsync(instanceId, waitId, reply, eventId, subject);
 
         /// <summary>The result for an event the inbox answered without keeping it, or null when it was stored.</summary>
-        public Task<WorkflowExecutionResult?> AnswerAsync(string instanceId, string eventId, EventAppendResult appended) =>
-            _runner.AnswerAsync(instanceId, eventId, appended);
+        public Task<WorkflowExecutionResult?> AnswerAsync(string instanceId, string eventId, EventAppendResult appended, CancellationToken cancellationToken = default) =>
+            _runner.AnswerAsync(instanceId, eventId, appended, cancellationToken);
 
         /// <summary>Runs the instance so its owner decides a stored event.</summary>
         public Task<WorkflowExecutionResult> TakeEventAsync(string instanceId, string eventId,
@@ -95,7 +95,7 @@ public sealed partial class WorkflowHost
         public Task<EventReceipt?> ReadEventAsync(string instanceId, string eventId) =>
             _runner.ReadEventAsync(instanceId, eventId);
 
-        public Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query) => _runner.GetOpenWaitsAsync(query);
+        public Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default) => _runner.GetOpenWaitsAsync(query, cancellationToken);
 
         public Task<WorkflowExecutionResult> RecoverAsync(
             string instanceId,
@@ -132,7 +132,7 @@ public sealed partial class WorkflowHost
         }
 
         /// <summary>The saved state of an instance as a result, or null when it does not exist.</summary>
-        public Task<WorkflowExecutionResult?> ReadAsync(string instanceId) => _runner.ReadAsync(instanceId);
+        public Task<WorkflowExecutionResult?> ReadAsync(string instanceId, CancellationToken cancellationToken = default) => _runner.ReadAsync(instanceId, cancellationToken);
 
         public Task<WorkflowExecutionStatus?> ReadStatusAsync(string instanceId) => _runner.ReadStatusAsync(instanceId);
 
@@ -144,11 +144,11 @@ public sealed partial class WorkflowHost
         public Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
             _runner.GetTraceAsync(instanceId);
 
-        public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId)
+        public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId, CancellationToken cancellationToken = default)
         {
             try
             {
-                return await _runner.GetSnapshotAsync(instanceId);
+                return await _runner.GetSnapshotAsync(instanceId, cancellationToken);
             }
             catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error))
             {
@@ -157,11 +157,11 @@ public sealed partial class WorkflowHost
             }
         }
 
-        public async Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId)
+        public async Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId, CancellationToken cancellationToken = default)
         {
             try
             {
-                return await _runner.GetPendingActivitiesAsync(instanceId);
+                return await _runner.GetPendingActivitiesAsync(instanceId, cancellationToken);
             }
             catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error))
             {

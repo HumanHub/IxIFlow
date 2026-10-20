@@ -1,8 +1,15 @@
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>One assignment's coalesced control messages.</summary>
-internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : IDisposable
+internal sealed class ExecutionSignals : IDisposable
 {
+    private readonly Action<Guid> _close;
+    internal ExecutionSignals(Guid assignmentId, Action<Guid> close)
+    {
+        AssignmentId = assignmentId;
+        _close = close;
+        AcquisitionToken = _acquisitionStop.Token;
+    }
     private TaskCompletionSource _changed = NewSignal();
     private CancellationReason? _cancellation;
     private long _sequence;
@@ -13,7 +20,7 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
     private readonly object _stopGate = new();
     private bool _closed;
 
-    internal CancellationToken AcquisitionToken => _acquisitionStop.Token;
+    internal CancellationToken AcquisitionToken { get; }
     internal void Close()
     {
         lock (_stopGate)
@@ -29,8 +36,8 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
         lock (_stopGate) { if (!_closed) _acquisitionStop.Cancel(); }
     }
 
-    public Guid AssignmentId { get; } = assignmentId;
-    public void Dispose() => close(AssignmentId);
+    public Guid AssignmentId { get; }
+    public void Dispose() => _close(AssignmentId);
     public Task Changed => Volatile.Read(ref _changed).Task;
     public CancellationReason? Cancellation => Volatile.Read(ref _cancellation);
     public long InboxSequence => Interlocked.Read(ref _sequence);

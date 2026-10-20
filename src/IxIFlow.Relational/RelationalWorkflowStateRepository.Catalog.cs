@@ -324,20 +324,30 @@ public abstract partial class RelationalWorkflowStateRepository
         }, Operation.Artifact);
     }
 
-    public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
+    public async Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retention, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
-        cancellationToken.ThrowIfCancellationRequested();
-        return CatalogWriteAsync(async (connection, transaction) =>
+        while (true)
         {
-            var references = await WorkflowCatalogRules.RetentionReferencesAsync(await ReadVersionsAsync(connection, transaction),
+            cancellationToken.ThrowIfCancellationRequested();
+            var versions = await GetWorkflowVersionsAsync();
+            var pins = await CatalogConnectionAsync(async (connection, transaction) =>
                 (await connection.QueryAsync<string>(RequiredSql(Statement.CatalogInstanceDigests), transaction: transaction))
-                    .Select(value => new ArtifactDigest(value)).ToArray(), artifacts, cancellationToken);
-            var cutoff = await OutboxNowAsync(connection, transaction) - retention;
-            return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);
-        });
+                    .Select(value => new ArtifactDigest(value)).ToArray());
+            var prepared = await WorkflowCatalogRules.ReadOrphanPinsAsync(versions, pins, artifacts, cancellationToken);
+            var result = await CatalogWriteAsync<int?>(async (connection, transaction) =>
+            {
+                var references = WorkflowCatalogRules.RetentionReferences(await ReadVersionsAsync(connection, transaction),
+                    (await connection.QueryAsync<string>(RequiredSql(Statement.CatalogInstanceDigests), transaction: transaction)).Select(value => new ArtifactDigest(value)).ToArray(),
+                    (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackages), new { Id = (string?)null }, transaction)).Select(row => row.Value).ToArray(), prepared);
+                if (references == null) return null;
+                var cutoff = await OutboxNowAsync(connection, transaction) - retention;
+                return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);
+            });
+            if (result.HasValue) return result.Value;
+        }
     }
 
     internal virtual object ArtifactReferencesParameter(IReadOnlySet<ArtifactDigest> references) =>

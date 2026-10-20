@@ -55,7 +55,12 @@ public sealed partial class WorkflowHost
                 ? (await _store.GetPendingEventsAsync(instanceId, 0, 1)).StoreTimeUtc
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The store did not return its clock")
                 : DateTime.MinValue;
-            return DemandMatching.Meets(demands, query, now);
+            var unmet = demands.Where(demand => !DemandMatching.Meets([demand], query, now)).ToArray();
+            if (unmet.Length == 0) return true;
+            if (unmet.Any(demand => !demand.Key.StartsWith("workflow:", StringComparison.Ordinal))) return false;
+            // Another catalog instance may have published since this host's last heartbeat.
+            var refreshed = new ClaimQuery(_hostSettings.Id, await _hostSettings.RefreshCapabilitiesAsync(registry));
+            return DemandMatching.Meets(demands, refreshed, now);
         }
 
         private static WorkflowExecutionResult Scheduled(string instanceId) => new()
@@ -98,7 +103,7 @@ public sealed partial class WorkflowHost
                     WorkflowStatus.NeedsResolution)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                         "The workflow instance changed while cancellation was requested; retry");
-                return await ExistingResultAsync(existing);
+                return await ExistingResultAsync(existing, cancellationToken);
             }
 
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
@@ -111,16 +116,16 @@ public sealed partial class WorkflowHost
                     ErrorMessage = "Cancellation was requested; the executing host will stop the workflow"
                 };
             if (instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
-                return await ExistingResultAsync(instance);
+                return await ExistingResultAsync(instance, cancellationToken);
             return null;
         }
 
         /// <summary>The saved state of an instance as a result, or null when it does not exist.</summary>
-        public async Task<WorkflowExecutionResult?> ReadAsync(string instanceId)
+        public async Task<WorkflowExecutionResult?> ReadAsync(string instanceId, CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
-            return instance == null ? await RemovedResultAsync(instanceId) : await ReadResultAsync(instance);
+            return instance == null ? await RemovedResultAsync(instanceId) : await ReadResultAsync(instance, cancellationToken);
         }
 
         /// <summary>The status of an instance as a result would report it, without reading its data.</summary>
@@ -202,7 +207,7 @@ public sealed partial class WorkflowHost
             await using var owner = await AcquireAsync(instance, signals, ExecutionClaimKind.Operator);
             if (owner == null)
                 return Busy(instanceId);
-            using var assignment = Admit(instance, owner, signals.AssignmentId);
+            using var assignment = Admit(instance, owner, signals.AssignmentId, signals.AcquisitionToken);
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
             if (current?.Incarnation != instance.Incarnation || current.Revision != instance.Revision ||
                 current.Status != instance.Status)
@@ -225,13 +230,13 @@ public sealed partial class WorkflowHost
             return await AssignAsync(instance, assignment, signals, cancellationToken);
         }
 
-        public async Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId)
+        public async Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId, CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance?.Status != WorkflowStatus.NeedsResolution || !HasStructuredCheckpoint(instance))
                 return [];
-            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
+            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest, cancellationToken);
             using var types = definitionLease.EnterTypes();
             var definition = definitionLease.Definition;
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
@@ -278,13 +283,13 @@ public sealed partial class WorkflowHost
         /// Where the instance's branches are, computed from its saved checkpoint and its registered definition; none
         /// for an instance that does not exist or has no structured checkpoint.
         /// </summary>
-        public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId)
+        public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId, CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance == null || !HasStructuredCheckpoint(instance))
                 return null;
-            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
+            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest, cancellationToken);
             using var types = definitionLease.EnterTypes();
             var definition = definitionLease.Definition;
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
@@ -416,7 +421,7 @@ public sealed partial class WorkflowHost
                 await _store.GetWorkflowInstanceSummaryAsync(repeatedId) is { } repeated)
             {
                 WorkflowDefinitionValidator.Validate(definition);
-                return await ExistingStartAsync(repeated, definition, WorkflowDefinitionValidator.ForExecution(definition), versionOmitted);
+                return await ExistingStartAsync(repeated, definition, WorkflowDefinitionValidator.ForExecution(definition), versionOmitted, cancellationToken);
             }
             using var definitionLease = definition.BundleDigest is { } digest
                 ? await registry.AcquireWorkflowDefinitionAsync(definition.Name, definition.Version, digest, cancellationToken) : null;
@@ -435,7 +440,7 @@ public sealed partial class WorkflowHost
                 // never count as crashes of an instance another host lost (B-08).
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } started)
-                    return await ExistingStartAsync(started, definition, scopes, versionOmitted);
+                    return await ExistingStartAsync(started, definition, scopes, versionOmitted, cancellationToken);
                 using var signals = Executor.PrepareAssignment(Guid.NewGuid());
                 using var recycle = _control.Register(signals.AssignmentId, Executor.Deliver);
                 await using var owner = await AcquireAsync(instance, signals)
@@ -445,11 +450,11 @@ public sealed partial class WorkflowHost
                             : null);
                 if (owner == null)
                     return Busy(instance.InstanceId);
-                using var assignment = Admit(instance, owner, signals.AssignmentId);
+                using var assignment = Admit(instance, owner, signals.AssignmentId, signals.AcquisitionToken);
                 // Another start may have saved the instance since the first read.
                 if (options.InstanceId != null &&
                     await _store.GetWorkflowInstanceSummaryAsync(instance.InstanceId) is { } existing)
-                    return await ExistingStartAsync(existing, definition, scopes, versionOmitted);
+                    return await ExistingStartAsync(existing, definition, scopes, versionOmitted, cancellationToken);
                 instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
                 if (definition.BundleDigest == null) await registry.RegisterWorkflowAsync(definition);
                 WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(definition.Name, definition.Version),
@@ -520,14 +525,14 @@ public sealed partial class WorkflowHost
         /// the owner to decide.
         /// </summary>
         public async Task<WorkflowExecutionResult?> AnswerAsync(string instanceId, string eventId,
-            EventAppendResult appended) => appended.Status switch
+            EventAppendResult appended, CancellationToken cancellationToken = default) => appended.Status switch
         {
             EventAppendStatus.NotFound => throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 $"Workflow instance '{instanceId}' does not exist").At(instanceId),
             EventAppendStatus.Closed => await AnsweredAsync(instanceId,
-                new EventReceipt(eventId, EventOutcome.Closed, EventRejection.InstanceFinished)),
+                new EventReceipt(eventId, EventOutcome.Closed, EventRejection.InstanceFinished), cancellationToken),
             EventAppendStatus.Rejected => await AnsweredAsync(instanceId,
-                new EventReceipt(eventId, EventOutcome.Rejected, appended.Rejection)),
+                new EventReceipt(eventId, EventOutcome.Rejected, appended.Rejection), cancellationToken),
             _ => null
         };
 
@@ -548,7 +553,7 @@ public sealed partial class WorkflowHost
             await _store.GetEventAsync(instanceId, eventId) is { } stored ? EventReceipt.Of(stored) : null;
 
         /// <summary>Open waits that match the query, across instances.</summary>
-        public async Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query)
+        public async Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default)
         {
             var waits = await _store.GetOpenWaitsAsync(query);
             var result = new List<OpenWait>();
@@ -560,7 +565,7 @@ public sealed partial class WorkflowHost
                     var instance = await _store.GetWorkflowInstanceSummaryAsync(wait.InstanceId);
                     WorkflowDefinitionLease? lease = null;
                     if (instance?.BundleDigest is { } digest && !leases.TryGetValue(digest, out lease))
-                        leases.Add(digest, lease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, digest));
+                        leases.Add(digest, lease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, digest, cancellationToken));
                     using var types = lease?.EnterTypes();
                     result.Add(new OpenWait(wait.InstanceId, wait.WaitId, wait.Kind, wait.Key, wait.EventType,
                         InspectionRedactionPolicy.Default.EventSchema(wait.EventType), wait.DeadlineUtc, wait.OpenedAtUtc,
@@ -605,9 +610,9 @@ public sealed partial class WorkflowHost
         }
 
         // An event answered without running the instance: its state as saved, with the receipt.
-        private async Task<WorkflowExecutionResult> AnsweredAsync(string instanceId, EventReceipt receipt)
+        private async Task<WorkflowExecutionResult> AnsweredAsync(string instanceId, EventReceipt receipt, CancellationToken cancellationToken)
         {
-            var result = await ReadAsync(instanceId) ?? throw new WorkflowEngineException(
+            var result = await ReadAsync(instanceId, cancellationToken) ?? throw new WorkflowEngineException(
                 WorkflowErrorKind.InvalidRequest, $"Workflow instance '{instanceId}' does not exist").At(instanceId);
             if (result.Status == WorkflowExecutionStatus.Removed)
                 throw new WorkflowEngineException(WorkflowErrorKind.InstanceRemoved,
@@ -660,14 +665,14 @@ public sealed partial class WorkflowHost
                 return Rejected(instanceId, checkedScopes.Mismatch(checkedDefinition!, checkedCheckpoint.StructureHash));
             // Recovery repeats a finished instance's saved result, as starting it again does.
             if (!release && !forEvent && instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
-                return await ReadResultAsync(instance);
+                return await ReadResultAsync(instance, cancellationToken);
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
             var canRecover = instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
                 instance?.Status == WorkflowStatus.Suspended &&
                 (cancellationReason != null || await HasInboxWorkAsync(instanceId));
             // Another run may have decided the event since the instance was read, so it is read again.
             if (!canRecover || !HasStructuredCheckpoint(instance))
-                return forEvent && await ReadAsync(instanceId) is { } latest ? latest
+                return forEvent && await ReadAsync(instanceId, cancellationToken) is { } latest ? latest
                     : Rejected(instanceId, release
                         ? "The workflow instance is not stopped for an operator"
                         : "The workflow instance has no interrupted execution to recover");
@@ -695,7 +700,7 @@ public sealed partial class WorkflowHost
                 release ? ExecutionClaimKind.Operator : ExecutionClaimKind.Runnable);
             if (owner == null)
                 return Busy(instanceId);
-            using var assignment = Admit(instance, owner, signals.AssignmentId);
+            using var assignment = Admit(instance, owner, signals.AssignmentId, signals.AcquisitionToken);
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
             if (current?.Incarnation != instance.Incarnation || current.Revision != instance.Revision ||
                 current.Status != instance.Status)
@@ -735,25 +740,25 @@ public sealed partial class WorkflowHost
         }
 
         // A stopped instance is answered without reading its data, which may be what stopped it.
-        private async Task<WorkflowExecutionResult> ReadResultAsync(WorkflowInstance instance) =>
-            ExecutionCheckpoint.StopOf(instance) is { } stop ? Stopped(instance, stop) : await ExistingResultAsync(instance);
+        private async Task<WorkflowExecutionResult> ReadResultAsync(WorkflowInstance instance, CancellationToken cancellationToken) =>
+            ExecutionCheckpoint.StopOf(instance) is { } stop ? Stopped(instance, stop) : await ExistingResultAsync(instance, cancellationToken);
 
-        private async Task<WorkflowExecutionResult> ExistingResultAsync(WorkflowInstance instance)
+        private async Task<WorkflowExecutionResult> ExistingResultAsync(WorkflowInstance instance, CancellationToken cancellationToken)
         {
             using var definition = instance.BundleDigest == null ? null
-                : await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
+                : await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest, cancellationToken);
             using var types = definition?.EnterTypes();
             return ExistingResult(instance);
         }
 
         private async Task<WorkflowExecutionResult> ExistingStartAsync(WorkflowInstance existing, WorkflowDefinition definition,
-            WorkflowScopeCatalog scopes, bool versionOmitted)
+            WorkflowScopeCatalog scopes, bool versionOmitted, CancellationToken cancellationToken)
         {
             var checkpoint = ExecutionCheckpoint.ReadTrunk(existing.ExecutionStateJson);
             if (existing.WorkflowName != definition.Name || (!versionOmitted && existing.WorkflowVersion != definition.Version))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"Workflow instance '{existing.InstanceId}' belongs to a different definition");
-            using var savedDefinition = await registry.AcquireWorkflowDefinitionAsync(existing.WorkflowName, existing.WorkflowVersion, existing.BundleDigest);
+            using var savedDefinition = await registry.AcquireWorkflowDefinitionAsync(existing.WorkflowName, existing.WorkflowVersion, existing.BundleDigest, cancellationToken);
             using var types = savedDefinition.EnterTypes();
             definition = savedDefinition.Definition;
             scopes = WorkflowDefinitionValidator.ForExecution(definition);
@@ -762,7 +767,7 @@ public sealed partial class WorkflowHost
                     scopes.Mismatch(definition, checkpoint.StructureHash));
             _control.Accept(existing.InstanceId);
             // A stopped instance is answered without reading its data, which may be what stopped it.
-            return checkpoint.OperatorStop is { } stop ? Stopped(existing, stop) : await ExistingResultAsync(existing);
+            return checkpoint.OperatorStop is { } stop ? Stopped(existing, stop) : await ExistingResultAsync(existing, cancellationToken);
         }
 
         private static WorkflowExecutionResult Rejected(string instanceId, string reason, WorkflowErrorKind kind = WorkflowErrorKind.InvalidState) => new()
@@ -880,7 +885,7 @@ public sealed partial class WorkflowHost
                     _control.Schedule(saved.InstanceId, due);
                 else if (WorkflowStoreRules.IsTerminal(saved.Status))
                     _control.Unschedule(saved.InstanceId);
-                var result = await ExistingResultAsync(saved);
+                var result = await ExistingResultAsync(saved, cancellationToken);
                 result.Status = outcome.Kind switch
                 {
                     AssignmentOutcomeKind.OwnershipLost when WorkflowStoreRules.IsTerminal(saved.Status) => StatusOf(saved.Status),
@@ -1073,9 +1078,9 @@ public sealed partial class WorkflowHost
             throw new CheckpointLimitExceededException(size, _limits.MaxCheckpointBytes);
         }
 
-        private async Task<StartChildReply> ValidateChildAsync(StartChild request, WorkflowInstance child)
+        private async Task<StartChildReply> ValidateChildAsync(StartChild request, WorkflowInstance child, CancellationToken cancellationToken)
         {
-            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(child.WorkflowName, child.WorkflowVersion, child.BundleDigest);
+            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(child.WorkflowName, child.WorkflowVersion, child.BundleDigest, cancellationToken);
             using var types = definitionLease.EnterTypes();
             var definition = definitionLease.Definition;
             try
@@ -1126,9 +1131,9 @@ public sealed partial class WorkflowHost
                 ? null : ConflictReason.NotAssigned;
         }
 
-        internal HostedRun Admit(WorkflowInstance instance, WorkflowExecutionLease owner, Guid identity)
+        internal HostedRun Admit(WorkflowInstance instance, WorkflowExecutionLease owner, Guid identity, CancellationToken acquisitionToken = default)
         {
-            var run = new HostedRun(this, instance, owner, identity);
+            var run = new HostedRun(this, instance, owner, identity, acquisitionToken);
             if (!_assignments.TryAdd(identity, run)) throw new InvalidOperationException("Assignment already admitted");
             return run;
         }
@@ -1160,7 +1165,7 @@ public sealed partial class WorkflowHost
         }
 
         internal sealed class HostedRun(InstanceOperations operations, WorkflowInstance instance,
-            WorkflowExecutionLease owner, Guid identity) : IDisposable
+            WorkflowExecutionLease owner, Guid identity, CancellationToken acquisitionToken) : IDisposable
         {
             private readonly CommitQueue _queue = new();
             internal readonly RunReceipt Receipt = new();
@@ -1314,7 +1319,7 @@ public sealed partial class WorkflowHost
                     child.InstanceId != request.Start.ChildInstanceId || child.ParentWaitId != request.Start.ParentWaitId)
                     return new(identity, Refusal: WorkflowErrorKind.InvalidRequest, Message: "Invalid child start");
                 // Identity, activation and the registered hash are host decisions. No executor definition crosses here.
-                return await operations.ValidateChildAsync(request, child);
+                return await operations.ValidateChildAsync(request, child, acquisitionToken);
             }
         }
     }

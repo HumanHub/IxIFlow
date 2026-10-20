@@ -27,6 +27,9 @@ internal static class Telemetry
     public static readonly ActivitySource Source = new(Name);
     public static readonly Meter Meter = new(Name);
 
+    public static readonly Counter<long> ArtifactRetentionUnreadablePins = Meter.CreateCounter<long>(
+        "ixiflow.artifact.retention.unreadable_pin", "{pin}", "Orphan instance bundle pins that could not be read; package content was retained conservatively");
+
     public static readonly UpDownCounter<long> ActiveRuns = Meter.CreateUpDownCounter<long>(
         "ixiflow.run.active", "{run}", "Runs of instances in progress on this host");
 

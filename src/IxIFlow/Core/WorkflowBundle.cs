@@ -81,7 +81,7 @@ public static class WorkflowBundleArchive
         WorkflowBundleReadLimits limits, CancellationToken token)
     {
         if (archive.CanSeek && archive.Length - archive.Position > limits.MaxArchiveBytes)
-            throw Mismatch("Bundle archive exceeds the configured size limit");
+            throw Limit("Bundle archive exceeds the configured size limit");
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var buffer = new byte[81920];
         long size = 0;
@@ -89,7 +89,7 @@ public static class WorkflowBundleArchive
         while ((read = await archive.ReadAsync(buffer, token)) != 0)
         {
             size += read;
-            if (size > limits.MaxArchiveBytes) throw Mismatch("Bundle archive exceeds the configured size limit");
+            if (size > limits.MaxArchiveBytes) throw Limit("Bundle archive exceeds the configured size limit");
             hash.AppendData(buffer, 0, read);
             await destination.WriteAsync(buffer.AsMemory(0, read), token);
         }
@@ -104,7 +104,7 @@ public static class WorkflowBundleArchive
         try
         {
             using var zip = new ZipArchive(buffer, ZipArchiveMode.Read, leaveOpen: true);
-            if (zip.Entries.Count > limits.MaxEntries) throw Mismatch("Bundle entry count exceeds the configured limit");
+            if (zip.Entries.Count > limits.MaxEntries) throw Limit("Bundle entry count exceeds the configured limit");
             var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             long expanded = 0;
             foreach (var entry in zip.Entries)
@@ -113,7 +113,7 @@ public static class WorkflowBundleArchive
                     throw Mismatch($"Duplicate or unsafe bundle path '{entry.FullName}'");
                 var maximum = entry.FullName == ManifestPath ? limits.MaxManifestBytes : limits.MaxEntryBytes;
                 if (entry.Length > maximum || entry.Length > limits.MaxExpandedBytes - expanded)
-                    throw Mismatch("Bundle expanded size exceeds the configured limit");
+                    throw Limit("Bundle expanded size exceeds the configured limit");
                 expanded += entry.Length;
             }
             var manifestEntry = zip.GetEntry(ManifestPath) ?? throw Mismatch("The bundle has no manifest");
@@ -127,8 +127,9 @@ public static class WorkflowBundleArchive
                 while ((count = await input.ReadAsync(chunk, cancellationToken)) != 0)
                 {
                     actualExpanded += count;
-                    if (output.Length + count > maximum || output.Length + count > entry.Length || actualExpanded > limits.MaxExpandedBytes)
-                        throw Mismatch("Bundle expanded size exceeds the configured limit");
+                    if (output.Length + count > maximum || actualExpanded > limits.MaxExpandedBytes)
+                        throw Limit("Bundle expanded size exceeds the configured limit");
+                    if (output.Length + count > entry.Length) throw Mismatch("Bundle entry length differs from its declaration");
                     await output.WriteAsync(chunk.AsMemory(0, count), cancellationToken);
                 }
                 if (output.Length != entry.Length) throw Mismatch("Bundle entry length differs from its declaration");
@@ -212,6 +213,9 @@ public static class WorkflowBundleArchive
         using var stream = entry.Open();
         stream.Write(content);
     }
+
+    private static WorkflowEngineException Limit(string message) =>
+        new(WorkflowErrorKind.ResourceExhausted, message);
 
     private static WorkflowEngineException Mismatch(string message, Exception? inner = null) =>
         new(WorkflowErrorKind.ArtifactMismatch, message, inner);
