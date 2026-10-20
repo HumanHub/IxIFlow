@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Reflection;
@@ -545,6 +546,8 @@ internal sealed class ActivityInvocationState
     public string? ChildWorkflowId { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ChildDataType { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ArtifactDigest? ChildBundleDigest { get; set; }
     public List<ActivityAttemptState> Attempts { get; set; } = [];
     public string? ResolutionReason { get; set; }
     public InspectionError? ResolutionDiagnostic { get; set; }
@@ -675,7 +678,7 @@ internal sealed class ActivityInputValue
                 return (new ActivityInputValue(), null);
             var type = SavedType(input, value);
             var json = JsonSerializer.Serialize(value, type, OptionsFor(input));
-            var saved = new ActivityInputValue { Value = new SerializedValue { Type = type.AssemblyQualifiedName!, Json = StoredJson.Inline(json) } };
+            var saved = new ActivityInputValue { Value = new SerializedValue { Type = WorkflowTypeIdentity.SavedName(type), Json = StoredJson.Inline(json) } };
             return (saved, saved.ReadAs(type, input, services));
         }
         catch (Exception problem)
@@ -732,7 +735,7 @@ internal sealed class ActivityInputValue
     // Every property is written, as for branch data (D-14), so a null or default inside an input reads back as it was;
     // a converter or number handling on the input property applies as it would to the property. A converter for the
     // declared type also applies to a value of that type nested inside the input.
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<PropertyInfo, JsonSerializerOptions> Options = new();
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<PropertyInfo, JsonSerializerOptions> Options = new();
 
     private static readonly JsonSerializerOptions EveryProperty = EveryPropertyOptions();
 
@@ -746,7 +749,7 @@ internal sealed class ActivityInputValue
 
     private static JsonSerializerOptions OptionsFor(PropertyInfo input) => !HasJsonAttributes(input)
         ? EveryProperty
-        : Options.GetOrAdd(input, property =>
+        : Options.GetValue(input, property =>
         {
             var options = EveryPropertyOptions();
             if (PropertyConverter(property) is { } converter)
@@ -1111,7 +1114,7 @@ internal sealed class SerializedValue
         ? null
         : new SerializedValue
         {
-            Type = value.GetType().AssemblyQualifiedName!,
+            Type = WorkflowTypeIdentity.SavedName(value.GetType()),
             Json = StoredJson.Inline(JsonSerializer.Serialize(value, value.GetType()))
         };
 
@@ -1129,7 +1132,7 @@ internal sealed class SerializedValue
     public static object ReadActivity(Type type, string json, IServiceProvider services)
     {
         var activity = ActivityActivation.Create(type, services);
-        var properties = ActivityProperties.GetOrAdd(type, SettableProperties);
+        var properties = ActivityProperties.GetValue(type, SettableProperties);
         using var document = JsonDocument.Parse(json);
         foreach (var value in document.RootElement.EnumerateObject())
         {
@@ -1139,12 +1142,12 @@ internal sealed class SerializedValue
             var options = saved.Options.Value
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Converter for saved activity output '{type.Name}.{saved.Property.Name}' is unavailable");
-            saved.Property.SetValue(activity, value.Value.Deserialize(saved.Property.PropertyType, options));
+            saved.Property.SetValue(activity, JsonSerializer.Deserialize(value.Value.GetRawText(), saved.Property.PropertyType, options));
         }
         return activity;
     }
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type,
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Type,
         IReadOnlyDictionary<string, (PropertyInfo Property, Lazy<JsonSerializerOptions?> Options)>> ActivityProperties =
             new();
 

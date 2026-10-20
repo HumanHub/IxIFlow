@@ -265,7 +265,7 @@ public sealed record ChildStart(string ChildInstanceId, string Payload, string P
     {
         try
         {
-            return System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(payload);
+            return JsonSerializer.Deserialize<WorkflowInstance>(payload);
         }
         catch (System.Text.Json.JsonException)
         {

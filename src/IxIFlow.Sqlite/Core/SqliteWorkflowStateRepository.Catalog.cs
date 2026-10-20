@@ -34,6 +34,7 @@ public sealed partial class SqliteWorkflowStateRepository
     {
         Statement.CatalogLock => null,
         Statement.CatalogSharedLock => null,
+        Statement.CatalogInstanceDigests => "SELECT DISTINCT bundle_digest FROM ixiflow_workflow_instances WHERE bundle_digest IS NOT NULL",
         Statement.CatalogVersions => """
             SELECT metadata_json AS MetadataJson, state AS State FROM ixiflow_workflow_versions
             """,

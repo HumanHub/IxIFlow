@@ -19,7 +19,10 @@ public sealed class DebugPayloadCompilerFixTests
         load.Unloading += _ => unloading = true;
         for (var index = 0; index < 128; index++)
             compiler.Compile(new("structure", "(" + index, typeof(Data)));
-        var cache = compiler.GetType().GetField("_cache", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(compiler)!;
+        var caches = compiler.GetType().GetField("_caches", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(compiler)!;
+        var entry = ((System.Collections.IEnumerable)caches).Cast<object>().Single();
+        var owner = entry.GetType().GetProperty("Value")!.GetValue(entry)!;
+        var cache = owner.GetType().GetField("Entries", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner)!;
         Assert.True((int)cache.GetType().GetProperty("Count")!.GetValue(cache)! <= 128);
         Assert.True(unloading);
         Assert.True(compiled.Evaluate(new Data { Value = 1 }, null, null, null, DateTimeOffset.UtcNow));

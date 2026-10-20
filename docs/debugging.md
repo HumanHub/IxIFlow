@@ -14,6 +14,8 @@ services.AddIxIFlow(options => options.Debugging = true);
 
 Debugging is off by default. The application must authorize access to each instance and operation before calling `IWorkflowOperations`. The actor is an audit label supplied by that authorized application.
 
+Debug launch converts JSON input to the declared workflow data contract with `JsonSerializerOptions.Web`, just like a named start: property names are case-insensitive and numbers may be read from strings. Input that cannot be converted is reported as `WorkflowEngineException` with `InvalidRequest`.
+
 <!-- snippet: samples/IxIFlow.Samples/DebuggingExamples.cs#operate -->
 ```csharp
 var operations = provider.GetRequiredService<IWorkflowOperations>();

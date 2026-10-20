@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Reflection;
 using System.Text.Json;
 
@@ -9,7 +10,7 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class ChildCompleted
 {
-    public static string EventType { get; } = WorkflowTypeIdentity.StableName(typeof(ChildCompleted));
+    public static string EventType { get; } = WorkflowTypeIdentity.SavedName(typeof(ChildCompleted));
 
     public string ChildInstanceId { get; set; } = "";
     public WorkflowStatus Status { get; set; }
@@ -77,6 +78,8 @@ internal static class ChildInputs
         var underlying = Nullable.GetUnderlyingType(target.PropertyType) ?? target.PropertyType;
         try
         {
+            if (!typeof(IConvertible).IsAssignableFrom(underlying))
+                return JsonSerializer.Deserialize(JsonSerializer.Serialize(value), target.PropertyType);
             // A whole number takes an enum property as reflection assigns it.
             return underlying.IsEnum && Type.GetTypeCode(value.GetType()) is >= TypeCode.SByte and <= TypeCode.UInt64
                 ? Enum.ToObject(underlying, value)

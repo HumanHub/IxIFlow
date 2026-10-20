@@ -165,7 +165,7 @@ public sealed class SteppingTests
         Assert.Equal(WorkflowExecutionStatus.Paused, result.Status);
         Assert.Equal("Blocked", (await State(store, paused.InstanceId)).Debug.Stop!.Reason);
         Assert.Null((await store.GetWorkflowInstanceAsync(paused.InstanceId))!.RunnableAtUtc);
-        await store.AppendEventAsync(new(paused.InstanceId, "later-event", typeof(Go).AssemblyQualifiedName!, "{}", Key: "later"));
+        await store.AppendEventAsync(new(paused.InstanceId, "later-event", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Go)), "{}", Key: "later"));
         Assert.Equal(WorkflowExecutionStatus.Success, (await services.GetRequiredService<IWorkflowOperations>().ContinueAsync(paused.InstanceId, "continue")).Status);
     }
 
@@ -182,7 +182,7 @@ public sealed class SteppingTests
         var selected = before.Debug.Stop!.BranchId;
         var held = before.Continuations.Where(c => c.Id != selected).Select(c => JsonSerializer.Serialize(c)).ToArray();
         var joins = JsonSerializer.Serialize(before.Joins);
-        await store.AppendEventAsync(new(paused.InstanceId, "held", typeof(Go).AssemblyQualifiedName!, "{}", Key: "event"));
+        await store.AppendEventAsync(new(paused.InstanceId, "held", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Go)), "{}", Key: "event"));
         time.Advance(TimeSpan.FromMinutes(2));
         var result = await services.GetRequiredService<IWorkflowOperations>().StepAsync(paused.InstanceId, selected, DebugStepKind.Over, "step");
         Assert.Equal(WorkflowExecutionStatus.Paused, result.Status);

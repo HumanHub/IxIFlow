@@ -17,8 +17,10 @@ public sealed partial class WorkflowHost
             var instance = await _store.GetWorkflowInstanceAsync(instanceId)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow instance does not exist");
             RequireIncarnation(instance, expectedIncarnation);
-            var definition = await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow definition is unavailable");
+            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName,
+                instance.WorkflowVersion, instance.BundleDigest, cancellationToken);
+            using var types = definitionLease.EnterTypes();
+            var definition = definitionLease.Definition;
             if (WorkflowDefinitionValidator.ForExecution(definition).StructureHash !=
                 ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson).StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Workflow structure differs");

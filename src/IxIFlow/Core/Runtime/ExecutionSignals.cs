@@ -1,14 +1,24 @@
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>One assignment's coalesced control messages.</summary>
-internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : IDisposable
+internal sealed class ExecutionSignals : IDisposable
 {
+    private readonly Action<Guid> _close;
+    internal ExecutionSignals(Guid assignmentId, Action<Guid> close)
+    {
+        AssignmentId = assignmentId;
+        _close = close;
+        AcquisitionToken = _acquisitionStop.Token;
+    }
     private TaskCompletionSource _changed = NewSignal();
     private CancellationReason? _cancellation;
     private long _sequence;
     private int _runCancelled;
     private int _ownershipLost;
     private int _recycle;
+    private readonly CancellationTokenSource _acquisitionStop = new();
+    private readonly object _stopGate = new();
+    private bool _closed;
     private WorkflowDebugState? _debug;
     public WorkflowDebugState? Debug => Volatile.Read(ref _debug);
     public void Deliver(DebugCommands message)
@@ -24,12 +34,29 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
         }
     }
 
-    public Guid AssignmentId { get; } = assignmentId;
-    public void Dispose() => close(AssignmentId);
+    internal CancellationToken AcquisitionToken { get; }
+    internal void Close()
+    {
+        lock (_stopGate)
+        {
+            if (_closed) return;
+            _closed = true;
+            _acquisitionStop.Dispose();
+        }
+    }
+
+    private void StopAcquisition()
+    {
+        lock (_stopGate) { if (!_closed) _acquisitionStop.Cancel(); }
+    }
+
+    public Guid AssignmentId { get; }
+    public void Dispose() => _close(AssignmentId);
     public Task Changed => Volatile.Read(ref _changed).Task;
     public CancellationReason? Cancellation => Volatile.Read(ref _cancellation);
     public long InboxSequence => Interlocked.Read(ref _sequence);
     public bool RunCancelled => Volatile.Read(ref _runCancelled) != 0;
+    internal bool OwnershipLost => Volatile.Read(ref _ownershipLost) != 0;
     public bool Recycle => Volatile.Read(ref _recycle) != 0;
 
     public void Deliver(Cancel message)
@@ -43,6 +70,7 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
             _ => false
         };
         if (changed) Pulse();
+        if (message.Kind is CancelKind.Run or CancelKind.Ownership) StopAcquisition();
     }
 
     // The first request stands, except that a termination escalates an earlier graceful one.
@@ -79,7 +107,7 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
 
     public void ThrowIfOwnershipLost()
     {
-        if (Volatile.Read(ref _ownershipLost) != 0)
+        if (OwnershipLost)
             throw new ExecutionOwnershipLostException(new InvalidOperationException("The execution lease was lost"));
     }
 

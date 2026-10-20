@@ -274,8 +274,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     }
 
     internal override string InsertChildSql => """
-        INSERT INTO ixiflow_workflow_instances (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, runnable_at_utc, state_json, revision, parent_instance_id, parent_wait_id, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit)
-        VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @Now, @Payload, 1,
+        INSERT INTO ixiflow_workflow_instances (instance_id, incarnation, workflow_name, workflow_version, bundle_digest, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, runnable_at_utc, state_json, revision, parent_instance_id, parent_wait_id, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit)
+        VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @BundleDigest, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @Now, @Payload, 1,
             @ParentInstanceId, @ParentWaitId, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit)
         """;
 
@@ -524,7 +524,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // Identity serialization protects a missing instance; the row lock also orders appends.
         // Read clock_timestamp() in the next statement so commit time follows the lock wait (D-35).
         Statement.CommitState => """
-            SELECT state_json AS StateJson, revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
+            SELECT bundle_digest AS BundleDigest, state_json AS StateJson, revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
                 cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence, runnable_at_utc AS RunnableAtUtc
             FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
@@ -619,14 +619,14 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 """,
         Statement.InsertCommit => """
               INSERT INTO ixiflow_workflow_instances
-                  (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, parent_instance_id, parent_wait_id, runnable_at_utc, state_json, revision, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit)
-              VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @ParentInstanceId, @ParentWaitId, @RunnableAtUtc, @StateJson, @Revision, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit);
+                  (instance_id, incarnation, workflow_name, workflow_version, bundle_digest, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, parent_instance_id, parent_wait_id, runnable_at_utc, state_json, revision, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit)
+              VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @BundleDigest, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @ParentInstanceId, @ParentWaitId, @RunnableAtUtc, @StateJson, @Revision, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit);
               INSERT INTO ixiflow_workflow_commits (instance_id, commit_id, expected_revision, revision, payload_hash)
               VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
               """,
         Statement.UpdateCommit => """
               UPDATE ixiflow_workflow_instances SET
-                  workflow_name = @WorkflowName, workflow_version = @WorkflowVersion, created_at_utc = @CreatedAtUtc,
+                  workflow_name = @WorkflowName, workflow_version = @WorkflowVersion, bundle_digest = @BundleDigest, created_at_utc = @CreatedAtUtc,
                   stop_kind = @StopKind, stop_crash_count = @StopCrashCount, status = @Status,
                   correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId, parent_wait_id = @ParentWaitId,
                   runnable_at_utc = @RunnableAtUtc,
@@ -715,6 +715,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             instance_id varchar(100) COLLATE "C" NOT NULL PRIMARY KEY,
             workflow_name varchar(200) COLLATE "C" NOT NULL,
             workflow_version INTEGER NOT NULL,
+            bundle_digest TEXT NULL,
             created_at_utc timestamptz NOT NULL,
             stop_kind varchar(50) NULL,
             stop_crash_count INTEGER NULL,
@@ -743,6 +744,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_workflow_status_creation ON ixiflow_workflow_instances (workflow_name, status, created_at_utc DESC, instance_id ASC);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_version_creation ON ixiflow_workflow_instances (workflow_version, created_at_utc DESC, instance_id ASC);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_workflow_version_creation ON ixiflow_workflow_instances (workflow_name, workflow_version, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_bundle_digest ON ixiflow_workflow_instances (bundle_digest) WHERE bundle_digest IS NOT NULL;
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_stop_creation ON ixiflow_workflow_instances (stop_kind, created_at_utc DESC, instance_id ASC) WHERE stop_kind IS NOT NULL;
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_correlation_creation ON ixiflow_workflow_instances (correlation_id, created_at_utc DESC, instance_id ASC);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_parent_creation ON ixiflow_workflow_instances (parent_instance_id, created_at_utc DESC, instance_id ASC);

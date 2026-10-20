@@ -14,8 +14,8 @@ internal sealed partial class HostedWorkflowOperations
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
-        var (definition, data) = await host.ReadAsync(client => client.PrepareDebugLaunchAsync(workflow, version, input));
-        return await client.StartAsync(definition, data, new WorkflowOptions
+        if (!(hostSettings ?? Runtime.HostSettings.Default).Debugging) throw new InvalidOperationException("Debugging is disabled");
+        return await client.StartAsync(workflow, version, (object)input.Clone(), new WorkflowOptions
         { InstanceId = instanceId, DebugStopOnEntryActor = stopOnEntry ? actor : null }, cancellationToken);
     }
     public Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default) =>

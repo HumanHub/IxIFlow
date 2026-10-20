@@ -121,7 +121,7 @@ public sealed class CoordinatorFaultScenarios
     private static async Task NotifyAsync(IServiceProvider writer, string id)
     {
         var appended = await writer.GetRequiredService<IWorkflowStateRepository>().AppendEventAsync(new(id,
-            "approval-once", typeof(Approval).AssemblyQualifiedName!, JsonSerializer.Serialize(new Approval()), Key: "approval"));
+            "approval-once", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)), JsonSerializer.Serialize(new Approval()), Key: "approval"));
         Assert.Equal(EventAppendStatus.Stored, appended.Status);
         // Real production notification delivery, real authenticated stream, real Wake -> scanner.
         await writer.GetRequiredService<IRunnableNotifier>().NotifyAsync(appended.Notice!, CancellationToken.None);

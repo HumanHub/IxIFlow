@@ -44,7 +44,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     private const string ServerWaitColumns =
         "InstanceId, WaitId, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc, CloseReason, " +
         "ClosedAtUtc, DefaultPayloadJson";
-    private const string ServerRowColumns = "InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation, LastHostId, DemandSetId, PinnedHost, PinExpiresAtUtc, PinInherit";
+    private const string ServerRowColumns = "InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation, LastHostId, BundleDigest, DemandSetId, PinnedHost, PinExpiresAtUtc, PinInherit";
 
     // Lock and revalidate the instance before its lease and tombstone, including absent-key admission.
     internal override string DeleteRevalidationSql => """
@@ -268,8 +268,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     }
 
     internal override string InsertChildSql => """
-        INSERT INTO dbo.IxIFlowWorkflowInstances (InstanceId, Incarnation, WorkflowName, WorkflowVersion, CreatedAtUtc, StopKind, StopCrashCount, Status, CorrelationId, RunnableAtUtc, StateJson, Revision, ParentInstanceId, ParentWaitId, DemandSetId, PinnedHost, PinExpiresAtUtc, PinInherit)
-        VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @Now, @Payload, 1,
+        INSERT INTO dbo.IxIFlowWorkflowInstances (InstanceId, Incarnation, WorkflowName, WorkflowVersion, BundleDigest, CreatedAtUtc, StopKind, StopCrashCount, Status, CorrelationId, RunnableAtUtc, StateJson, Revision, ParentInstanceId, ParentWaitId, DemandSetId, PinnedHost, PinExpiresAtUtc, PinInherit)
+        VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @BundleDigest, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @Now, @Payload, 1,
             @ParentInstanceId, @ParentWaitId, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit)
         """;
 
@@ -533,7 +533,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         // The ID application lock excludes another insertion. Read the clock in the next
         // statement, after any lock wait, so the captured commit time cannot predate the lock (D-35).
         Statement.CommitState => """
-            SELECT StateJson, Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence, RunnableAtUtc
+            SELECT BundleDigest, StateJson, Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence, RunnableAtUtc
             FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId;
             SELECT SYSUTCDATETIME();
@@ -628,16 +628,16 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 """,
         Statement.InsertCommit => """
             INSERT INTO dbo.IxIFlowWorkflowInstances
-                (InstanceId, Incarnation, WorkflowName, WorkflowVersion, CreatedAtUtc, StopKind, StopCrashCount, Status, CorrelationId, ParentInstanceId, ParentWaitId, RunnableAtUtc,
+                (InstanceId, Incarnation, WorkflowName, WorkflowVersion, BundleDigest, CreatedAtUtc, StopKind, StopCrashCount, Status, CorrelationId, ParentInstanceId, ParentWaitId, RunnableAtUtc,
                  StateJson, Revision, DemandSetId, PinnedHost, PinExpiresAtUtc, PinInherit)
-            VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @ParentInstanceId, @ParentWaitId, @RunnableAtUtc,
+            VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @BundleDigest, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @ParentInstanceId, @ParentWaitId, @RunnableAtUtc,
                 @StateJson, @Revision, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit);
             INSERT INTO dbo.IxIFlowWorkflowCommits (InstanceId, CommitId, ExpectedRevision, Revision, PayloadHash)
             VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
             """,
         Statement.UpdateCommit => """
             UPDATE dbo.IxIFlowWorkflowInstances SET
-                WorkflowName = @WorkflowName, WorkflowVersion = @WorkflowVersion, CreatedAtUtc = @CreatedAtUtc,
+                WorkflowName = @WorkflowName, WorkflowVersion = @WorkflowVersion, BundleDigest = @BundleDigest, CreatedAtUtc = @CreatedAtUtc,
                 StopKind = @StopKind, StopCrashCount = @StopCrashCount, Status = @Status,
                 CorrelationId = @CorrelationId, ParentInstanceId = @ParentInstanceId, ParentWaitId = @ParentWaitId,
                 RunnableAtUtc = @RunnableAtUtc,
@@ -745,6 +745,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
                 WorkflowName NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
                 WorkflowVersion INT NOT NULL,
+                BundleDigest VARCHAR(71) NULL,
                 CreatedAtUtc DATETIME2 NOT NULL,
                 StopKind NVARCHAR(50) COLLATE Latin1_General_100_BIN2 NULL,
                 StopCrashCount INT NULL,
@@ -772,6 +773,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             CREATE INDEX IX_IxIFlowWorkflowInstances_workflow_creation ON dbo.IxIFlowWorkflowInstances (WorkflowName, CreatedAtUtc DESC, InstanceId ASC);
             CREATE INDEX IX_IxIFlowWorkflowInstances_workflow_status_creation ON dbo.IxIFlowWorkflowInstances (WorkflowName, Status, CreatedAtUtc DESC, InstanceId ASC);
             CREATE INDEX IX_IxIFlowWorkflowInstances_version_creation ON dbo.IxIFlowWorkflowInstances (WorkflowVersion, CreatedAtUtc DESC, InstanceId ASC);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_BundleDigest ON dbo.IxIFlowWorkflowInstances (BundleDigest) WHERE BundleDigest IS NOT NULL;
             CREATE INDEX IX_IxIFlowWorkflowInstances_workflow_version_creation ON dbo.IxIFlowWorkflowInstances (WorkflowName, WorkflowVersion, CreatedAtUtc DESC, InstanceId ASC);
             CREATE INDEX IX_IxIFlowWorkflowInstances_stop_creation ON dbo.IxIFlowWorkflowInstances (StopKind, CreatedAtUtc DESC, InstanceId ASC) WHERE StopKind IS NOT NULL;
             CREATE INDEX IX_IxIFlowWorkflowInstances_correlation_creation ON dbo.IxIFlowWorkflowInstances (CorrelationId, CreatedAtUtc DESC, InstanceId ASC);

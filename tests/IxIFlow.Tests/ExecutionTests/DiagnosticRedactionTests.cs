@@ -137,7 +137,7 @@ public sealed class DiagnosticRedactionTests : IClassFixture<SqliteTestDatabase<
         saved.Status = WorkflowStatus.Running;
         saved.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         await store.AppendEventAsync(new(saved.InstanceId, Guid.NewGuid().ToString("N"),
-            typeof(Notice).AssemblyQualifiedName!, "{}", Key: "gate"));
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Notice)), "{}", Key: "gate"));
         var committed = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved,
             (await StoreTestSupport.LeaseAsync(store, saved.InstanceId)).Epoch, saved.Revision));
         Assert.Equal(WorkflowCommitStatus.Applied, committed.Status);
