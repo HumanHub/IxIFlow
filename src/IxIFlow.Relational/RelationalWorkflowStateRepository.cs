@@ -43,7 +43,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         EnablePublisher, RetryDisabledDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
         TerminationState, TerminationRequest, TerminationChildren, Cancellation, Cancellations, Runnable, Running, ClaimLease, ReleaseLease, Notice,
-        LockIdentity, TryLockClaimIdentity, TryLockChildIdentity, LockInbox, ParentInbox, CommitState, Receipt, UpdateReceiptNotices, Lease, TakenChild,
+        LockIdentity, TryLockClaimIdentity, LockInbox, ParentInbox, CommitState, Receipt, UpdateReceiptNotices, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, UpdateEventNotice, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
         ReadInstance,
@@ -827,13 +827,10 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             foreach (var child in commit.ChildStarts.OrderBy(c => c.ChildInstanceId, StringComparer.Ordinal))
             {
-                // A child ID is known before insertion (including commit replay). Never wait
-                // for its identity after locking the parent: a deleter can hold that identity while
-                // waiting for this parent. Roll back the whole commit and retry instead.
-                if (Sql(Statement.TryLockChildIdentity) is { } childIdentitySql &&
-                    !await connection.ExecuteScalarAsync<bool>(CheckSql(nameof(Statement.TryLockChildIdentity), childIdentitySql),
-                        new { InstanceId = child.ChildInstanceId }, transaction))
-                    return new WorkflowCommitResult(WorkflowCommitStatus.Retry, currentRevision, StoreTimeUtc: now);
+                // Creation waits, just like deletion: parent row, child identity, child row.
+                // Claims never acquire a parent row while holding a child's identity.
+                await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity,
+                    new { InstanceId = child.ChildInstanceId });
                 // Lock an existing child row before checking its tombstone. If purge deletes that
                 // row while we wait, the following read sees the tombstone it committed atomically.
                 var (_, childNow) = await LockAsync<CommitState>(connection, transaction, Statement.CommitState, child.ChildInstanceId);

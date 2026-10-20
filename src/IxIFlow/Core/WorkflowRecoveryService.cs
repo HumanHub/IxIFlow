@@ -25,10 +25,14 @@ internal sealed partial class WorkflowRecoveryService(
     private readonly object _lock = new();
     // Instances a pass is recovering now, and instances this host could not run, with the time it
     // tries them again, so the earliest rows cannot keep every slot's worth of the poll to themselves.
-    private readonly HashSet<string> _recovering = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, object> _recovering = new(StringComparer.Ordinal);
+    // No-grant candidates sit out the following pass, then become eligible again.
+    private readonly Dictionary<string, long> _refused = new(StringComparer.Ordinal);
+    private long _passNumber;
     private readonly Dictionary<string, (DateTime Until, int Times)> _deferred = new(StringComparer.Ordinal);
     // Bound contention work even when discovery keeps finding more due instances.
     internal const int MaxCandidatesPerPass = 256;
+    internal const int RefillPageSize = 8;
 
     // A rejection may be a race, such as another pass or the host's timer getting there first, or
     // lasting, such as a definition this host lacks; the wait grows from seconds to minutes.
@@ -80,29 +84,38 @@ internal sealed partial class WorkflowRecoveryService(
             return Task.CompletedTask;
         }
         HashSet<string> skipped;
+        var owner = new object();
+        long passNumber;
         lock (_lock)
         {
+            passNumber = ++_passNumber;
+            foreach (var expired in _refused.Where(item => item.Value < passNumber).Select(item => item.Key).ToArray())
+                _refused.Remove(expired);
             var now = _time.GetUtcNow().UtcDateTime;
             // Expired entries stay a while, so a row rejected again waits longer; long-expired ones go.
             foreach (var stale in _deferred.Where(item => now - item.Value.Until > TimeSpan.FromMinutes(10))
                          .Select(item => item.Key).ToArray())
                 _deferred.Remove(stale);
-            skipped = new HashSet<string>(_recovering.Concat(_deferred.Where(item => item.Value.Until > now)
-                .Select(item => item.Key)), StringComparer.Ordinal);
+            skipped = new HashSet<string>(_recovering.Keys.Concat(_refused.Keys)
+                .Concat(_deferred.Where(item => item.Value.Until > now).Select(item => item.Key)), StringComparer.Ordinal);
         }
         ClaimQuery query;
         using (var probe = scopes.CreateScope())
             query = new ClaimQuery(_settings.Id, await _settings.GetCapabilitiesAsync(
                 probe.ServiceProvider.GetRequiredService<IWorkflowCatalog>()), limit);
-        var instances = await ReserveCandidatesAsync(query, skipped, limit, cancellationToken);
-        return RecoverReservedAsync(instances, query, skipped, cancellationToken);
+        var instances = await ReserveCandidatesAsync(query, skipped, limit, owner, cancellationToken);
+        return RecoverReservedAsync(instances, query, skipped, owner, cancellationToken);
     }
 
     private async Task<List<RunnableInstance>> ReserveCandidatesAsync(ClaimQuery query, HashSet<string> skipped,
-        int limit, CancellationToken cancellationToken)
+        int limit, object owner, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        lock (_lock) skipped.UnionWith(_recovering);
+        lock (_lock)
+        {
+            skipped.UnionWith(_recovering.Keys);
+            skipped.UnionWith(_refused.Keys);
+        }
         // Enlarge the ordered page past IDs excluded by this pass; each ID is tried at most once.
         var candidates = await repository.GetRunnableInstancesAsync(
             new ClaimQuery(query.HostId, query.Capabilities, limit + skipped.Count));
@@ -113,7 +126,7 @@ internal sealed partial class WorkflowRecoveryService(
             {
                 if (instances.Count == limit)
                     break;
-                if (!skipped.Contains(candidate.InstanceId) && _recovering.Add(candidate.InstanceId))
+                if (!skipped.Contains(candidate.InstanceId) && _recovering.TryAdd(candidate.InstanceId, owner))
                 {
                     skipped.Add(candidate.InstanceId);
                     instances.Add(candidate);
@@ -123,9 +136,10 @@ internal sealed partial class WorkflowRecoveryService(
     }
 
     private async Task RecoverReservedAsync(List<RunnableInstance> instances, ClaimQuery query,
-        HashSet<string> skipped, CancellationToken cancellationToken)
+        HashSet<string> skipped, object owner, CancellationToken cancellationToken)
     {
         using var discovery = new SemaphoreSlim(1, 1);
+        var page = new Queue<RunnableInstance>();
         var remaining = MaxCandidatesPerPass - instances.Count;
         try
         {
@@ -136,34 +150,50 @@ internal sealed partial class WorkflowRecoveryService(
             }, async (first, token) =>
             {
                 var instance = first;
-                while (!await RecoverAsync(instance, token))
+                while (!await RecoverAsync(instance, owner, token))
                 {
                     // A no-grant result did not use this slot. Refill immediately, even while
                     // other slots in this pass are still running, preserving discovery order.
-                    await discovery.WaitAsync(token);
                     try
                     {
-                        if (remaining == 0) return;
-                        var next = await ReserveCandidatesAsync(query, skipped, 1, token);
-                        if (next.Count == 0) return;
-                        remaining--;
-                        instance = next[0];
+                        await discovery.WaitAsync(token);
+                        try
+                        {
+                            if (page.Count == 0)
+                            {
+                                if (remaining == 0) return;
+                                var next = await ReserveCandidatesAsync(query, skipped,
+                                    Math.Min(RefillPageSize, remaining), owner, token);
+                                if (next.Count == 0) return;
+                                remaining -= next.Count;
+                                foreach (var candidate in next) page.Enqueue(candidate);
+                            }
+                            instance = page.Dequeue();
+                        }
+                        finally { discovery.Release(); }
                     }
-                    finally { discovery.Release(); }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                    catch (Exception error)
+                    {
+                        (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics,
+                            LogLevel.Error, error, "Could not refill workflows for recovery");
+                        return;
+                    }
                 }
             });
         }
         finally
         {
-            // Reservations of instances this pass never reached, for example after cancellation.
+            // Includes unused page entries. A completed attempt may have been reserved by a newer
+            // pass already; remove only reservations that still belong to this pass.
             lock (_lock)
-                foreach (var instance in instances)
-                    _recovering.Remove(instance.InstanceId);
+                foreach (var id in _recovering.Where(item => ReferenceEquals(item.Value, owner)).Select(item => item.Key).ToArray())
+                    _recovering.Remove(id);
         }
     }
 
     // Running is the client's ordinary busy/no-grant result; other results consumed this attempt's slot.
-    private async Task<bool> RecoverAsync(RunnableInstance instance, CancellationToken token)
+    private async Task<bool> RecoverAsync(RunnableInstance instance, object owner, CancellationToken token)
     {
         try
         {
@@ -183,7 +213,11 @@ internal sealed partial class WorkflowRecoveryService(
                 Defer(instance.InstanceId);
             else
                 lock (_lock)
+                {
                     _deferred.Remove(instance.InstanceId);
+                    if (result.Status == WorkflowExecutionStatus.Running)
+                        _refused[instance.InstanceId] = _passNumber + 1;
+                }
             return result.Status != WorkflowExecutionStatus.Running;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -203,7 +237,8 @@ internal sealed partial class WorkflowRecoveryService(
         finally
         {
             lock (_lock)
-                _recovering.Remove(instance.InstanceId);
+                if (_recovering.TryGetValue(instance.InstanceId, out var reservedBy) && ReferenceEquals(reservedBy, owner))
+                    _recovering.Remove(instance.InstanceId);
         }
         return true;
     }

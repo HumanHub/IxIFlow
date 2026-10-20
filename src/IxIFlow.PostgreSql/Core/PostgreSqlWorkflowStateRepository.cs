@@ -680,7 +680,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // commit, a claim and a delete must still not interleave. It is taken after the row lock of the instance's
         // parent, as a child's commit takes that one first, and before the instance's own row.
         Statement.LockIdentity => "SELECT pg_advisory_xact_lock(hashtextextended(@InstanceId, 0))",
-        Statement.TryLockClaimIdentity or Statement.TryLockChildIdentity => "SELECT pg_try_advisory_xact_lock(hashtextextended(@InstanceId, 0))",
+        Statement.TryLockClaimIdentity => "SELECT pg_try_advisory_xact_lock(hashtextextended(@InstanceId, 0))",
         Statement.DeleteAllParts => "DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId",
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key = ANY(@Keys)
