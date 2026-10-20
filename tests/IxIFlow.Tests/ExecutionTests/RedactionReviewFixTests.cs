@@ -74,12 +74,17 @@ public sealed class RedactionReviewFixTests : IClassFixture<SqliteTestDatabase<R
         using var registration = watch.Watch("watched", new(TaskCreationOptions.RunContinuationsAsynchronously),
             _ => { }, TimeSpan.FromMinutes(1), TimeSpan.FromMilliseconds(10), _ => { });
         await capture.InboxFailure.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        var entry = Assert.Single(capture.Entries, item => item.Text.Contains("Could not read inbox sequences"));
+        // The watch polls every 10 ms, so it may log the failure again before the assertions run; every entry must be safe.
+        var entries = capture.Entries.Where(item => item.Text.Contains("Could not read inbox sequences")).ToArray();
+        Assert.NotEmpty(entries);
         Assert.True(probe.InboxReads > 0);
-        Assert.Null(entry.Exception);
-        Assert.Contains("ErrorType", entry.Text);
-        Assert.Contains("DiagnosticId", entry.Text);
-        Assert.DoesNotContain(Secret, entry.Text);
+        Assert.All(entries, entry =>
+        {
+            Assert.Null(entry.Exception);
+            Assert.Contains("ErrorType", entry.Text);
+            Assert.Contains("DiagnosticId", entry.Text);
+            Assert.DoesNotContain(Secret, entry.Text);
+        });
         Assert.DoesNotContain(capture.Entries, item => item.Category == InspectionRedactionPolicy.SensitiveDiagnosticsCategory);
     }
 
