@@ -30,7 +30,7 @@ public partial class InMemoryWorkflowStateRepository
                 // Schedulable sets only visit their pin bucket, never their ordinary instance population.
                 var matchingPins = matching.Select(host => host.Capabilities.GetValueOrDefault("host"))
                     .Where(pin => pin != null).ToHashSet(StringComparer.Ordinal);
-                IEnumerable<string> members = matching.Length == 0 ? _demandSetMembers[setId] :
+                IEnumerable<string> members = matching.Length == 0 ? DueMembers(setId, now) :
                     _pinnedSetMembers.GetValueOrDefault(setId)?.Where(bucket => !matchingPins.Contains(bucket.Key))
                         .SelectMany(bucket => bucket.Value.GetViewBetween(new(now, "", true),
                             new(DateTime.MaxValue, "", true))).Select(pin => pin.Id) ?? [];
@@ -48,7 +48,7 @@ public partial class InMemoryWorkflowStateRepository
                 }
             }
             var rows = candidates.OrderBy(i => i.RunnableAtUtc).ThenBy(i => i.InstanceId, StringComparer.Ordinal)
-                .Take(limit + 1).Select(i => new UnschedulableInstance(i.InstanceId, i.WorkflowName, i.WorkflowVersion,
+                .Take(limit + 1).Select(i => new UnschedulableInstance(i.InstanceId, i.Incarnation, i.WorkflowName, i.WorkflowVersion,
                     i.RunnableAtUtc!.Value, UnschedulableWork.Explain(SavedDemands(i.InstanceId), hosts, now))).ToArray();
             return Task.FromResult(UnschedulableWork.Page(rows, limit, now));
         }

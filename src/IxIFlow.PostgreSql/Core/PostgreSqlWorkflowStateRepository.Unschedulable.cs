@@ -7,8 +7,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             demand.demand_value AS Value, demand.expires_at_utc AS ExpiresAtUtc, demand.value_expires_at_utc AS ValueExpiresAtUtc, demand.inherit AS Inherit
         FROM ixiflow_demand_sets AS sets LEFT JOIN ixiflow_demand_set_rows AS demand
             ON demand.demand_set_id = sets.demand_set_id
-        WHERE EXISTS (SELECT 1 FROM ixiflow_workflow_instances AS due
-                WHERE due.demand_set_id = sets.demand_set_id AND due.runnable_at_utc <= @Now)
+        WHERE (SELECT 1 FROM ixiflow_workflow_instances AS due
+                WHERE due.demand_set_id = sets.demand_set_id AND due.runnable_at_utc <= @Now
+                ORDER BY due.runnable_at_utc, due.instance_id COLLATE "C" LIMIT 1) = 1
         """;
 
     internal override string UnschedulableSql => """
@@ -61,7 +62,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 ORDER BY instance.runnable_at_utc, instance.instance_id COLLATE "C" LIMIT @Limit) AS candidate
             WHERE NOT sets.failed),
         page AS MATERIALIZED (SELECT * FROM candidates ORDER BY runnable_at_utc, instance_id COLLATE "C" LIMIT @Limit)
-        SELECT instance.instance_id AS InstanceId, instance.workflow_name AS WorkflowName,
+        SELECT instance.instance_id AS InstanceId, instance.incarnation AS Incarnation, instance.workflow_name AS WorkflowName,
             instance.state_json::jsonb ->> 'WorkflowVersion' AS WorkflowVersion, page.runnable_at_utc AS RunnableAtUtc,
             instance.demand_set_id AS DemandSetId, instance.pinned_host AS PinnedHost,
             instance.pin_expires_at_utc AS PinExpiresAtUtc, instance.pin_inherit AS PinInherit

@@ -72,6 +72,10 @@ public sealed class CoordinatorDemandSetScaleTests(ITestOutputHelper output) : I
                 }
                 var after = await Measure();
                 output.WriteLine($"Memory median claim/backlog with 4096 dormant sets: {before.TotalMilliseconds:F2} -> {after.TotalMilliseconds:F2} ms");
+                var sets = (IEnumerable<KeyValuePair<string, WorkflowDemand[]>>)store.GetType()
+                    .GetMethod("DueDemandSets", BindingFlags.NonPublic | BindingFlags.Instance)!
+                    .Invoke(store, [DateTime.UtcNow])!;
+                Assert.Single(sets);
             }
             Assert.Equal(due.InstanceId, Assert.Single(await store.GetRunnableInstancesAsync(query)).InstanceId);
             Assert.Equal(due.InstanceId, Assert.Single((await store.GetUnschedulableAsync()).Items).InstanceId);

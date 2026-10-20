@@ -24,8 +24,10 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         WITH {CapabilitySnapshotSql},
         matched AS MATERIALIZED (
             SELECT sets.demand_set_id FROM ixiflow_demand_sets AS sets
-            WHERE EXISTS (SELECT 1 FROM ixiflow_workflow_instances AS due
-                WHERE due.demand_set_id = sets.demand_set_id AND due.runnable_at_utc <= @Now)
+            -- A scalar ordered lookup cannot be flattened into a semi join over all instances.
+            WHERE (SELECT 1 FROM ixiflow_workflow_instances AS due
+                WHERE due.demand_set_id = sets.demand_set_id AND due.runnable_at_utc <= @Now
+                ORDER BY due.runnable_at_utc, due.instance_id COLLATE "C" LIMIT 1) = 1
               AND NOT EXISTS (SELECT 1 FROM ixiflow_demand_set_rows AS demand
                 LEFT JOIN capabilities AS capability ON capability.key = demand.demand_key
                 WHERE demand.demand_set_id = sets.demand_set_id AND {UnmetDemand})),

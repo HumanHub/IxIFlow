@@ -107,7 +107,7 @@ internal sealed partial class ProfileStore : IAsyncDisposable
         }.ConnectionString;
         return new ProfileStore(StoreProfiles.LocalSqlite,
             clock => new SqliteWorkflowStateRepository(connectionString, clock ?? time),
-            () => SqliteTestFiles.DeleteAsync(folder));
+            () => SqliteTestFiles.DeleteAsync(folder), () => new SqliteConnection(connectionString));
     }
 
     public static async Task<ProfileStore> SqlServerAsync()
@@ -125,6 +125,8 @@ internal sealed partial class ProfileStore : IAsyncDisposable
             _ => new PostgreSqlWorkflowStateRepository(connectionString),
             () => PostgreSqlTestServer.DropDatabaseAsync(connectionString), () => new NpgsqlConnection(connectionString));
     }
+
+    internal DbConnection NewConnection() => _newConnection!();
 
     internal async Task ExpireExecutionLeaseAsync(string instanceId)
     {

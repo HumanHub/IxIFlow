@@ -28,8 +28,9 @@ public sealed partial class SqliteWorkflowStateRepository
         WITH {CapabilitySnapshotSql},
         matched AS MATERIALIZED (
             SELECT sets.demand_set_id FROM ixiflow_demand_sets AS sets
-            WHERE EXISTS (SELECT 1 FROM ixiflow_workflow_instances AS due INDEXED BY ix_ixiflow_instances_set_runnable
-                WHERE due.demand_set_id = sets.demand_set_id AND due.runnable_at_utc <= @Now)
+            WHERE (SELECT 1 FROM ixiflow_workflow_instances AS due INDEXED BY ix_ixiflow_instances_set_runnable
+                WHERE due.demand_set_id = sets.demand_set_id AND due.runnable_at_utc <= @Now
+                ORDER BY due.runnable_at_utc, due.instance_id LIMIT 1) = 1
               AND NOT EXISTS (SELECT 1 FROM ixiflow_demand_set_rows AS demand
                 LEFT JOIN capabilities AS capability ON capability.key = demand.demand_key
                 WHERE demand.demand_set_id = sets.demand_set_id AND {UnmetDemand}))

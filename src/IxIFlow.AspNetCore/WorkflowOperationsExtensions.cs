@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using IxIFlow.Core;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
@@ -241,11 +243,14 @@ public static class WorkflowOperationsExtensions
     {
         var query = new Query(http);
         var limit = query.Limit();
+        var protector = http.RequestServices.GetRequiredService<IDataProtectionProvider>()
+            .CreateProtector("IxIFlow.Operations.UnschedulableCursor.v1");
         UnschedulableCursor? cursor = null;
         if (query.Text("cursor") is { } token)
         {
             if (token.Length > 4096) throw new ArgumentException("Invalid unschedulable cursor");
-            cursor = JsonSerializer.Deserialize<UnschedulableCursor>(Convert.FromBase64String(token));
+            try { cursor = JsonSerializer.Deserialize<UnschedulableCursor>(protector.Unprotect(token)); }
+            catch (CryptographicException error) { throw new ArgumentException("Invalid unschedulable cursor", error); }
             if (cursor == null || cursor.RunnableAtUtc == default || cursor.RunnableAtUtc.Kind != DateTimeKind.Utc ||
                 string.IsNullOrWhiteSpace(cursor.InstanceId) || cursor.InstanceId.Length > 400)
                 throw new ArgumentException("Invalid unschedulable cursor");
@@ -254,29 +259,38 @@ public static class WorkflowOperationsExtensions
         var scope = http.RequestServices.GetRequiredService<IInstanceQueryScope>();
         var items = new List<UnschedulableInstance>();
         DateTime now;
-        // Apply the application's scope as an exact store query and authorize each resource
-        // before counting it toward the HTTP page. Hidden rows never enter the returned cursor.
+        // Bound both store paging and per-resource scope/authorization work, even if all rows
+        // are hidden. Protect the continuation because it may name an excluded candidate.
+        var examined = 0;
+        var budget = Math.Max(100, limit + 1);
+        var more = false;
         do
         {
-            var page = await operations.GetUnschedulableAsync(100, cursor, http.RequestAborted);
+            var page = await operations.GetUnschedulableAsync(Math.Min(100, budget - examined), cursor, http.RequestAborted);
             now = page.StoreTimeUtc;
+            more = false;
             foreach (var item in page.Items)
             {
+                examined++;
+                var boundary = new UnschedulableCursor(item.RunnableAtUtc, item.InstanceId);
                 var scoped = await scope.ScopeAsync(http.User, new InstanceQuery(InstanceId: item.InstanceId, Limit: 1), http.RequestAborted);
                 var summary = (await operations.SearchAsync(scoped, http.RequestAborted)).Items
                     .SingleOrDefault(row => row.InstanceId == item.InstanceId);
-                if (summary == null || await AuthorizeAsync(http, summary, policy) != null) continue;
+                if (summary == null || summary.Incarnation != item.Incarnation || await AuthorizeAsync(http, summary, policy) != null)
+                {
+                    cursor = boundary;
+                    continue;
+                }
+                // Leave the extra visible candidate for the next request.
+                if (items.Count == limit) { more = true; break; }
                 items.Add(item);
-                if (items.Count > limit) break;
+                cursor = boundary;
             }
-            cursor = page.NextCursor;
-        } while (items.Count <= limit && cursor != null);
-        var more = items.Count > limit;
-        var visible = items.Take(limit).ToArray();
-        var last = visible.LastOrDefault();
-        var next = more && last != null ? Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(
-            new UnschedulableCursor(last.RunnableAtUtc, last.InstanceId))) : null;
-        return Results.Ok(new WorkflowUnschedulablePage(visible, next, now));
+            if (more) break;
+            more = page.NextCursor != null;
+        } while (examined < budget && more);
+        var next = more && cursor != null ? protector.Protect(JsonSerializer.Serialize(cursor)) : null;
+        return Results.Ok(new WorkflowUnschedulablePage(items, next, now));
     }
     private static string? WaitBoundary(string? token)
     {

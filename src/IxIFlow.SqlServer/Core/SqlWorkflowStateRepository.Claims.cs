@@ -40,8 +40,9 @@ public sealed partial class SqlWorkflowStateRepository
         -- Only distinct sets and their rows participate in capability matching.
         SELECT sets.DemandSetId INTO #ClaimMatched
         FROM dbo.IxIFlowDemandSets AS sets
-        WHERE EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowInstances AS due WITH (FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
-                WHERE due.DemandSetId = sets.DemandSetId AND due.RunnableAtUtc <= @Now)
+        WHERE (SELECT TOP (1) 1 FROM dbo.IxIFlowWorkflowInstances AS due WITH (FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
+                WHERE due.DemandSetId = sets.DemandSetId AND due.RunnableAtUtc <= @Now
+                ORDER BY due.RunnableAtUtc, due.InstanceId) = 1
           AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDemandSetRows AS demand
             LEFT JOIN #ClaimCapabilities AS capability ON {CapabilityKeyJoin}
             WHERE demand.DemandSetId = sets.DemandSetId AND {UnmetDemand})
