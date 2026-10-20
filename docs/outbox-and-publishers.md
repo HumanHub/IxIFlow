@@ -88,7 +88,7 @@ The publisher POSTs structured CloudEvents JSON with content type `application/c
 
 Delivery starts immediately. Retry delays are five seconds, five minutes, 30 minutes, two hours, five hours, ten hours, 14 hours, 20 hours and 24 hours, plus up to 5% positive jitter capped at one minute. Failure of attempt ten gives up the delivery. `Retry-After` can extend a delay up to 30 days, bounded by the host's remaining retry horizon. Requests time out after 30 seconds; leases renew while delivery is in flight.
 
-These details come from [WebhookOutboxPublisher.cs](../src/IxIFlow.Webhooks/WebhookOutboxPublisher.cs) and [WebhookBuilderExtensions.cs](../src/IxIFlow.Webhooks/WebhookBuilderExtensions.cs). **Incoming HTTP triggers are planned**; the outgoing package does not create endpoints that start workflows or receive replies.
+These details come from [WebhookOutboxPublisher.cs](../src/IxIFlow.Webhooks/WebhookOutboxPublisher.cs) and [WebhookBuilderExtensions.cs](../src/IxIFlow.Webhooks/WebhookBuilderExtensions.cs). [Incoming HTTP triggers](incoming-webhooks.md) are available through `IxIFlow.AspNetCore`, including workflow starts and event/reply admission.
 
 ## Versioned message templates
 
@@ -96,4 +96,4 @@ These details come from [WebhookOutboxPublisher.cs](../src/IxIFlow.Webhooks/Webh
 
 `RenderTemplate<TModel>` is recoverable by rendering again. `SendTemplateMessage` calls the application's `ITemplateMessageSender` with the activity invocation ID as message ID; the sender must deduplicate it. These are workflow activities, separate from outbox completion delivery.
 
-[QuoteMessage.cs](../samples/IxIFlow.Samples/QuoteMessage.cs) compiles and exercises publication, culture fallback and sending. The default template store is memory. Persistent workflow bundles, artifact storage and additional broker examples are [planned](roadmap.md).
+[QuoteMessage.cs](../samples/IxIFlow.Samples/QuoteMessage.cs) compiles and exercises publication, culture fallback and sending. The default template store is memory. Persistent workflow catalog metadata, verified YAML bundles, artifact storage and unreferenced artifact retention are implemented; see [publishing](yaml-authoring.md#publishing-and-boundaries) and [stores](stores.md). Bundle template dependencies remain 1.0 work. Broker publisher/consumer examples are [after 1.0](roadmap.md#after-10).

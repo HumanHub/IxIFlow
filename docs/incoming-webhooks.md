@@ -51,7 +51,7 @@ app.MapWorkflowTriggers(triggers =>
 app.Run();
 ```
 
-`OrderWorkflow`, its workflow data, and the request and event types above are application types. Routes belong to the web application. Their configuration does not change the workflow definition's fingerprint.
+`OrderWorkflow`, its workflow data, and the request and event types above are application types. Routes belong to the web application. Their configuration does not change the workflow definition's structure hash.
 
 The stable trigger identity, such as `orders.create`, must survive a route rename. Identities must be unique. Conflicting HTTP routes, missing policies, unknown policies, absent typed mappings, and empty event allowlists are refused during registration or by the workflow host's startup lifecycle validation, before `ApplicationStarted`. Conflicts with ordinary application endpoints also fail startup before any request is needed. Register exactly one status endpoint. Status and event endpoints require both a general policy and an instance policy. Named policies are checked by the endpoint filter after signature verification. Authentication middleware and any application-wide authorization rules still run before the endpoint filter.
 

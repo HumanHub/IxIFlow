@@ -14,7 +14,7 @@ using Npgsql;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "host")]
-public sealed class DemandSetTests
+public sealed class DemandSetTests : IClassFixture<SqliteTestDatabase<DemandSetTests>>
 {
     [Fact]
     public Task MemoryInterningAndCollection() => Contract(new InMemoryWorkflowStateRepository());
