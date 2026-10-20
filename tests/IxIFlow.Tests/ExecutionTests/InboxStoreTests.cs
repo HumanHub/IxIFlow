@@ -486,8 +486,8 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             Assert.Equal(EventAppendStatus.Stored, (await inbox.AppendEventAsync(
                 Event(instanceId, "child-done", "{}") with { Key = null, TargetWaitId = child })).Status);
 
-            // Open waits can be listed by instance, key, type and kind, in wait ID order, and paged.
-            Assert.Equal(new[] { first, next, child }.Order(StringComparer.Ordinal),
+            // Open waits can be listed by instance, key, type and kind, in wait reference order, and paged.
+            Assert.Equal(new[] { first, next, child }.OrderBy(id => WaitReference.Of(instanceId, id), StringComparer.Ordinal),
                 (await inbox.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId))).Select(wait => wait.WaitId));
             Assert.Equal([child], (await inbox.GetOpenWaitsAsync(
                 new WaitQuery(InstanceId: instanceId, Kind: WaitKind.Child))).Select(wait => wait.WaitId));
@@ -495,8 +495,8 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
                 new WaitQuery(InstanceId: instanceId, Key: "approval", EventType: "Approval", Limit: 1));
             var firstByKey = Assert.Single(byKey);
             var secondByKey = Assert.Single(await inbox.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId,
-                Key: "approval", EventType: "Approval", AfterWaitId: firstByKey.WaitId)));
-            Assert.Equal(new[] { first, next }.Order(StringComparer.Ordinal),
+                Key: "approval", EventType: "Approval", AfterWaitRef: WaitReference.Of(instanceId, firstByKey.WaitId))));
+            Assert.Equal(new[] { first, next }.OrderBy(id => WaitReference.Of(instanceId, id), StringComparer.Ordinal),
                 new[] { firstByKey.WaitId, secondByKey.WaitId });
 
             // A closed wait leaves the open set.
@@ -707,7 +707,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             var cancelled = await store.CommitWorkflowInstanceAsync(cancelling);
             Assert.Equal(WorkflowCommitStatus.Applied, cancelled.Status);
             Assert.Equal("parent", (await store.GetCancellationRequestAsync(childId))!.ReasonCode);
-            Assert.Equal([childId], (await store.GetChildInstancesAsync(parentId)).Select(item => item.InstanceId));
+            Assert.Equal([childId], (await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: parentId, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!))).Select(item => item.InstanceId));
 
             // The child's terminal commit puts its completion in the parent's inbox, addressed to the wait.
             var grant = (await store.TryAcquireExecutionLeaseAsync(childId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;

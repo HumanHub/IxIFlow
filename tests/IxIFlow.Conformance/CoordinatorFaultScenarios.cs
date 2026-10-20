@@ -23,7 +23,7 @@ public sealed class CoordinatorFaultScenarios
         await using var profile = await StoreProfiles.CreateAsync(profileName);
         var probe = new Probe();
         probe.Finish.TrySetResult();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var id = await SeedAsync(profile, registry, probe);
         await using var polling = Host(profile, registry, probe, linked: false);
         await using var doomed = Host(profile, registry, probe, linked: true);
@@ -55,7 +55,7 @@ public sealed class CoordinatorFaultScenarios
     {
         await using var profile = await StoreProfiles.CreateAsync(profileName);
         var probe = new Probe();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var id = await SeedAsync(profile, registry, probe);
         await using var polling = Host(profile, registry, probe, linked: false);
         await using var woken = Host(profile, registry, probe, linked: true);
@@ -90,7 +90,7 @@ public sealed class CoordinatorFaultScenarios
         finally { releaseClaims.TrySetResult(); probe.Finish.TrySetResult(); }
     }
 
-    private static async Task<string> SeedAsync(ProfileStore profile, IWorkflowVersionRegistry registry, Probe probe)
+    private static async Task<string> SeedAsync(ProfileStore profile, IWorkflowCatalog registry, Probe probe)
     {
         var definition = Workflow.Create<Data>("CoordinatorFault")
             .Step<Noop>().WaitFor<Approval>("approval").Step<Count>().Build();
@@ -101,7 +101,7 @@ public sealed class CoordinatorFaultScenarios
         return result.InstanceId;
     }
 
-    private static TestHost Host(ProfileStore profile, IWorkflowVersionRegistry registry, Probe probe, bool linked)
+    private static TestHost Host(ProfileStore profile, IWorkflowCatalog registry, Probe probe, bool linked)
     {
         var services = new ServiceCollection().AddLogging();
         services.AddIxIFlow();

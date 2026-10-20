@@ -474,7 +474,7 @@ public sealed class CoordinatorTests
         if (endpoint != null || discover) builder.UseCoordinators(o => { o.AllowInsecure = true; if (endpoint != null) o.Coordinators.Add(endpoint); configure?.Invoke(o); });
         services.AddTransient<Noop>();
         var provider = services.BuildServiceProvider();
-        provider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Definition()).GetAwaiter().GetResult();
+        provider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(Definition()).GetAwaiter().GetResult();
         return provider;
     }
     private static async Task<string> SeedAsync(TimeProvider time, IWorkflowStateRepository store)

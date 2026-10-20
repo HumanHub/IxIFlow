@@ -139,16 +139,16 @@ public sealed class WorkflowDemandTests
             var saved = await store.GetWorkflowInstanceAsync(result.InstanceId);
             var pending = Assert.Single(ExecutionCheckpoint.Read(saved!.ExecutionStateJson).Continuations).PendingActivity!;
             Assert.Contains("Conflicting demands", pending.ResolutionReason);
-            Assert.Empty(await store.GetChildInstancesAsync(result.InstanceId));
+            Assert.Empty((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: 1000))).Items);
             return;
         }
-        var savedChild = Assert.Single(await store.GetChildInstancesAsync(result.InstanceId));
+        var savedChild = Assert.Single((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: 1000))).Items);
         var childDemands = await store.GetWorkflowDemandsAsync(savedChild.InstanceId);
         Assert.Contains(new WorkflowDemand("region", "eu", Inherit: true), childDemands);
         Assert.DoesNotContain(childDemands, d => d.Key == "parent-only");
         // Explicit recovery makes this deterministic without starting a background recovery service.
         await provider.GetRequiredService<IWorkflowClient>().RecoverAsync(savedChild.InstanceId);
-        var savedGrandchild = Assert.Single(await store.GetChildInstancesAsync(savedChild.InstanceId));
+        var savedGrandchild = Assert.Single((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: savedChild.InstanceId, Limit: 1000))).Items);
         var grandchildDemands = await store.GetWorkflowDemandsAsync(savedGrandchild.InstanceId);
         Assert.Contains(new WorkflowDemand("region", "eu", Inherit: true), grandchildDemands);
         Assert.DoesNotContain(grandchildDemands, d => d.Key == "child-only" || d.Key == "parent-only");
@@ -167,7 +167,7 @@ public sealed class WorkflowDemandTests
         services.AddSingleton(child);
         await using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(parent, new Data { Region = "eu" });
-        var children = (await store.GetChildInstancesAsync(result.InstanceId)).ToArray();
+        var children = ((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: 1000))).Items).ToArray();
         Assert.Equal(3, children.Length);
         foreach (var saved in children)
         {
@@ -206,7 +206,7 @@ public sealed class WorkflowDemandTests
             Assert.Equal(options.InstanceId, await client.StartAsync(definition, new Data(), options, patience.Token));
             await using var matching = Services(store, capabilities: new() { ["gpu"] = "present", ["region"] = "eu" })
                 .BuildServiceProvider();
-            await matching.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+            await matching.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
             Assert.Equal(WorkflowExecutionStatus.Success,
                 (await matching.GetRequiredService<IWorkflowClient>().RecoverAsync(options.InstanceId, patience.Token)).Status);
         }
@@ -234,7 +234,7 @@ public sealed class WorkflowDemandTests
         var store = new InMemoryWorkflowStateRepository();
         var definition = Workflow.Create<Data>("Pinned").Demand("gpu", "cuda").Step<Noop>().Build();
         await using var matching = Services(store, capabilities: new() { ["gpu"] = "cuda" }).BuildServiceProvider();
-        await matching.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await matching.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var pinned = matching.GetRequiredService<HostSettings>().Id;
         Dictionary<string, string> Capabilities(Guid id, bool gpu)
         {
@@ -291,13 +291,13 @@ public sealed class WorkflowDemandTests
     private static async Task StoreContract(IWorkflowStateRepository store)
     {
         var id = Guid.NewGuid().ToString("N");
-        var (instance, checkpoint, scopes) = WorkflowHost.InstanceOperations.NewInstance(Definition("eu"), new Data(),
+        var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(Definition("eu"), new Data(),
             new() { InstanceId = id, RequiredHostId = Guid.NewGuid() }, DateTime.UtcNow.AddYears(20));
         ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), scopes, DateTime.UtcNow);
         var lease = (await store.TryAcquireExecutionLeaseAsync(id, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         var childId = Guid.NewGuid().ToString("N");
         var wait = Guid.NewGuid().ToString("N");
-        var (child, _, _) = WorkflowHost.InstanceOperations.NewInstance(
+        var (child, _, _) = WorkflowInstances.NewInstance(
             Workflow.Create<Data>("ChildRows").Demand("residency", "eu", inherit: true).Step<Noop>().Build(),
             new Data(), new() { InstanceId = childId, ParentInstanceId = id }, DateTime.UtcNow);
         child.ParentWaitId = wait;
@@ -324,7 +324,7 @@ public sealed class WorkflowDemandTests
         Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
         Assert.Equal(demands, await store.GetWorkflowDemandsAsync(id));
         // A taken child refuses an entire new parent creation, including its demand rows.
-        var (loser, _, _) = WorkflowHost.InstanceOperations.NewInstance(Definition("us"), new Data(), new(), DateTime.UtcNow);
+        var (loser, _, _) = WorkflowInstances.NewInstance(Definition("us"), new Data(), new(), DateTime.UtcNow);
         child.ParentInstanceId = loser.InstanceId;
         var loserOwner = (await store.TryAcquireExecutionLeaseAsync(loser.InstanceId, "loser", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         await Assert.ThrowsAnyAsync<Exception>(() => store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(loser,
@@ -373,7 +373,7 @@ public sealed class WorkflowDemandTests
             """);
         try
         {
-            var (instance, checkpoint, scopes) = WorkflowHost.InstanceOperations.NewInstance(
+            var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(
                 Workflow.Create<Data>("Rollback").Demand("refuse").Step<Noop>().Build(), new Data(), new(), DateTime.UtcNow);
             ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), scopes, DateTime.UtcNow);
             var owner = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;

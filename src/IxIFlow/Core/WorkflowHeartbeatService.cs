@@ -7,13 +7,13 @@ using Microsoft.Extensions.Logging;
 namespace IxIFlow.Core;
 
 /// <summary>Publishes this process and a fresh capability snapshot for as long as its host runs.</summary>
-internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository repository, IWorkflowVersionRegistry registry,
+internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository repository, IWorkflowCatalog registry,
     HostSettings settings, TimeProvider time, ILogger<WorkflowHeartbeatService> logger) : BackgroundService
 {
     internal static bool IsAutomaticCapability(string key) =>
         key is "os" or "arch" or "runtime" or "host" || key.StartsWith("workflow:", StringComparison.Ordinal);
 
-    internal static async Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync(IWorkflowVersionRegistry registry, HostSettings settings)
+    internal static async Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync(IWorkflowCatalog registry, HostSettings settings)
     {
         var capabilities = new Dictionary<string, string>(settings.Capabilities, StringComparer.Ordinal)
         {

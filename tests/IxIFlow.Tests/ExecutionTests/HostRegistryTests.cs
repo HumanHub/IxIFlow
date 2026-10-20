@@ -70,7 +70,7 @@ public sealed class HostRegistryTests
             Assert.Equal(storeTime.GetUtcNow().UtcDateTime, renewed.HeartbeatAtUtc);
 
             var child = Workflow.Create<RegistryData>("RuntimeChild", 2).Step<Noop>().Build();
-            await host.Services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+            await host.Services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
             Assert.False(renewed.Capabilities.ContainsKey("workflow:RuntimeChild@2"));
             storeTime.Advance(interval);
             hostTime.Advance(interval);
@@ -94,7 +94,7 @@ public sealed class HostRegistryTests
         var abandoned = MemberRegistryContract.Registration();
         await store.RegisterMemberAsync(abandoned);
         var settings = HostSettings.Default;
-        using var service = new WorkflowHeartbeatService(store, new WorkflowVersionRegistry(), settings, time,
+        using var service = new WorkflowHeartbeatService(store, new WorkflowCatalog(), settings, time,
             NullLogger<WorkflowHeartbeatService>.Instance);
         await service.StartAsync(default);
         var initial = await store.Registrations.Reader.ReadAsync().AsTask().WaitAsync(Patience);

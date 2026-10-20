@@ -70,7 +70,7 @@ public sealed class MemberRegistryTests
         {
             await using var connection = open();
             await connection.ExecuteAsync(connection is SqlConnection
-                ? "UPDATE dbo.ixiflow_hosts SET heartbeat_at_utc=DATEADD(SECOND,-@Seconds,heartbeat_at_utc) WHERE member_id=@Id"
+                ? "UPDATE dbo.IxIFlowHosts SET HeartbeatAtUtc=DATEADD(SECOND,-@Seconds,HeartbeatAtUtc) WHERE MemberId=@Id"
                 : "UPDATE ixiflow_hosts SET heartbeat_at_utc=heartbeat_at_utc-@Seconds * INTERVAL '1 second' WHERE member_id=@Id",
                 new { Id = id, Seconds = (int)by.TotalSeconds });
         }, async () =>
@@ -84,10 +84,13 @@ public sealed class MemberRegistryTests
     private static async Task AssertRemoved(Func<DbConnection> open, Guid id)
     {
         await using var connection = open();
+        var (hosts, capabilities, memberId) = connection is SqlConnection
+            ? ("dbo.IxIFlowHosts", "dbo.IxIFlowHostCapabilities", "MemberId")
+            : ("ixiflow_hosts", "ixiflow_host_capabilities", "member_id");
         Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM ixiflow_hosts WHERE member_id=@Id", new { Id = id }));
+            $"SELECT COUNT(*) FROM {hosts} WHERE {memberId}=@Id", new { Id = id }));
         Assert.Equal(0, await connection.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM ixiflow_host_capabilities WHERE member_id=@Id", new { Id = id }));
+            $"SELECT COUNT(*) FROM {capabilities} WHERE {memberId}=@Id", new { Id = id }));
     }
 
     private static SqliteConnection InspectSqlite(string connectionString) =>

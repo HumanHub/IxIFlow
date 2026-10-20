@@ -25,7 +25,7 @@ public sealed class WorkflowRecoveryServiceTests
         var engine = new BlockingRecoveryEngine();
         var services = new ServiceCollection();
         services.AddSingleton<IWorkflowClient>(engine);
-        services.AddSingleton<IWorkflowVersionRegistry>(new WorkflowVersionRegistry());
+        services.AddSingleton<IWorkflowCatalog>(new WorkflowCatalog());
         using var provider = services.BuildServiceProvider();
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
@@ -62,7 +62,7 @@ public sealed class WorkflowRecoveryServiceTests
             .Build();
         await EngineAssert.StoreFailureAsync(() => provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new RecoveryData()));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -93,7 +93,7 @@ public sealed class WorkflowRecoveryServiceTests
             .Build();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new RecoveryData()));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -129,7 +129,7 @@ public sealed class WorkflowRecoveryServiceTests
         var engine = new RecordingEngine();
         var services = new ServiceCollection();
         services.AddSingleton<IWorkflowClient>(engine);
-        services.AddSingleton<IWorkflowVersionRegistry>(new WorkflowVersionRegistry());
+        services.AddSingleton<IWorkflowCatalog>(new WorkflowCatalog());
         using var provider = services.BuildServiceProvider();
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
@@ -220,7 +220,7 @@ public sealed class WorkflowRecoveryServiceTests
             .Build();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new RecoveryData()));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         await engine.RecoverAsync(saved.InstanceId);
         Assert.Equal(WorkflowStatus.NeedsResolution,
             (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
@@ -248,6 +248,12 @@ public sealed class WorkflowRecoveryServiceTests
         public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
+        public Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
+        public Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
         public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
@@ -317,6 +323,12 @@ public sealed class WorkflowRecoveryServiceTests
         public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
 
+        public Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
+        public Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
+            WorkflowOptions? options = null, CancellationToken cancellationToken = default)
+            where TWorkflowData : class => throw new NotSupportedException();
         public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();

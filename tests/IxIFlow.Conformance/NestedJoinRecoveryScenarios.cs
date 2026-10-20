@@ -23,7 +23,7 @@ public sealed class NestedJoinRecoveryScenarios
     public async Task FreshHostRecoversTheInnerMergeExactlyOnce(string profileName, string point)
     {
         await using var profile = await StoreProfiles.CreateAsync(profileName);
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var effects = new Effects();
         var definition = Workflow.Create<Data>("NestedJoinCrash")
             .Step<Noop>()
@@ -75,7 +75,7 @@ public sealed class NestedJoinRecoveryScenarios
         Assert.Single(joins, join => join.StepId == OuterStep && join.Path == JoinPath.Merged);
     }
 
-    private static ServiceProvider Services(ProfileStore profile, IWorkflowStateRepository store, IWorkflowVersionRegistry registry, Effects effects)
+    private static ServiceProvider Services(ProfileStore profile, IWorkflowStateRepository store, IWorkflowCatalog registry, Effects effects)
     {
         var services = new ServiceCollection();
         services.AddLogging();

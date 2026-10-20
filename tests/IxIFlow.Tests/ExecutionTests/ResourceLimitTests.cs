@@ -50,7 +50,7 @@ public sealed class ResourceLimitTests
         }
 
         using var raised = Services(store, options => options.MaxActiveBranches = 3);
-        await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await raised.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var released = await Client(raised).ReleaseAsync(instanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, released.Status);
@@ -89,7 +89,7 @@ public sealed class ResourceLimitTests
         }
 
         using var raised = Services(store, options => options.MaxActiveBranches = 4);
-        await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await raised.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         Probe(raised).Gate.SetResult();
         var released = await Client(raised).ReleaseAsync(instanceId);
 
@@ -170,13 +170,13 @@ public sealed class ResourceLimitTests
         // beside the waiting sibling.
         using (var lowered = Services(store, options => options.MaxActiveBranches = 1))
         {
-            await lowered.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+            await lowered.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
             var stopped = await Client(lowered).ResumeAsync(instanceId, "item", new Signal());
             Assert.Equal(WorkflowExecutionStatus.NeedsResolution, stopped.Status);
         }
 
         using var raised = Services(store, options => options.MaxActiveBranches = 10);
-        await raised.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await raised.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         Assert.Equal(WorkflowExecutionStatus.Suspended, (await Client(raised).ReleaseAsync(instanceId)).Status);
         Assert.Equal(WorkflowExecutionStatus.Suspended,
             (await Client(raised).ResumeAsync(instanceId, "item", new Signal())).Status);
@@ -206,7 +206,7 @@ public sealed class ResourceLimitTests
 
         // The first item's completion decides the join, so it starts no other item and needs no room.
         using var lowered = Services(store, options => options.MaxActiveBranches = 1);
-        await lowered.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await lowered.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         Assert.Equal(WorkflowExecutionStatus.Suspended,
             (await Client(lowered).ResumeAsync(instanceId, "item", new Signal())).Status);
         var finished = await Client(lowered).ResumeAsync(instanceId, "sibling", new Signal());
@@ -293,12 +293,14 @@ public sealed class ResourceLimitTests
         var store = new HangingRenewalStore();
         var settings = new ExecutionLeaseSettings(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(1));
         var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Hanging" };
+        var loss = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var watch = new CancellationWatch(store, time);
         await using var lease = (await WorkflowExecutionLease.TryAcquireAsync(store, instance, settings,
-            new CancellationWatch(store, time), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), time))!;
+            watch, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), error => loss.TrySetResult(error), _ => { }, _ => { }, time))!;
         store.Hang = true;
 
         var started = time.GetUtcNow();
-        while (!lease.Loss.IsCompleted)
+        while (!loss.Task.IsCompleted)
         {
             await Task.Delay(20);
             time.Advance(TimeSpan.FromMilliseconds(250));
@@ -307,7 +309,7 @@ public sealed class ResourceLimitTests
 
         // The hanging renewal was sent one second in, while the lease ran until three.
         Assert.True(time.GetUtcNow() - started <= TimeSpan.FromSeconds(3.5));
-        Assert.IsType<TimeoutException>(await (Task<Exception>)lease.Loss);
+        Assert.IsType<TimeoutException>(await loss.Task);
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository store, Action<IxIFlowOptions> configure)

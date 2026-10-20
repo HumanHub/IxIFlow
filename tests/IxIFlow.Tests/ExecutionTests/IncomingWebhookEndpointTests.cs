@@ -18,7 +18,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>Invokes the real endpoint delegates, filters, policies, host and store without a network socket.</summary>
 [Trait("Spec", "D-10")]
 [Trait("Feature", "durability")]
-public sealed class IncomingWebhookEndpointTests
+public sealed partial class IncomingWebhookEndpointTests
 {
     public const string OldSecret = "whsec_AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
     public const string NewSecret = "whsec_AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
@@ -51,7 +51,7 @@ public sealed class IncomingWebhookEndpointTests
         public int Mappings;
         public TimeProvider Time { get; }
         public Harness(IWorkflowStateRepository? store = null, TimeProvider? time = null,
-            IWorkflowVersionRegistry? registry = null, Action<WorkflowTriggerBuilder>? registrations = null)
+            IWorkflowCatalog? registry = null, Action<WorkflowTriggerBuilder>? registrations = null)
         {
             Time = time ?? TimeProvider.System;
             Store = store ?? new InMemoryWorkflowStateRepository(Time);
@@ -288,7 +288,7 @@ public sealed class IncomingWebhookEndpointTests
         var response = await host.Send("/orders/{orderId}", new string('x', 1024 * 1024 + 1), contentLength: false);
         Assert.Equal(413, response.Status);
         Assert.Equal(0, host.Mappings);
-        Assert.Empty(await host.Store.GetWorkflowInstancesByNameAsync("IncomingWait"));
+        Assert.Empty(await Task.WhenAll((await host.Store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "IncomingWait", Limit: int.MaxValue))).Items.Select(async row => (await host.Store.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Fact]
@@ -304,7 +304,7 @@ public sealed class IncomingWebhookEndpointTests
         });
         using var disconnected = new CancellationTokenSource();
         var pending = host.Send("/disconnect", requestAborted: disconnected.Token);
-        var instance = Assert.Single(await host.Store.GetWorkflowInstancesByNameAsync("Disconnect"));
+        var instance = Assert.Single(await Task.WhenAll((await host.Store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "Disconnect", Limit: int.MaxValue))).Items.Select(async row => (await host.Store.GetWorkflowInstanceAsync(row.InstanceId))!)));
         await host.Client.AwaitAsync(instance.InstanceId).WaitAsync(TimeSpan.FromSeconds(10));
         Assert.False(pending.IsCompleted);
         disconnected.Cancel();
@@ -374,7 +374,7 @@ public sealed class IncomingWebhookEndpointTests
     public async Task StartRepeatLostResponseAndConflictAreDurableAndScoped()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await using var firstHost = new Harness(repository, registry: registry);
         var first = await firstHost.Send("/orders/{orderId}", "{\"value\":2}", key: "once");
         Assert.Equal(202, first.Status);
@@ -410,7 +410,7 @@ public sealed class IncomingWebhookEndpointTests
     public async Task RenamingARouteAndDeployingANewVersionKeepsTheOriginalAdmissionPinned()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await using var firstHost = new Harness(repository, registry: registry);
         var first = await firstHost.Send("/orders/{orderId}", key: "deployment");
         var nextVersion = Workflow.Create<Data>("IncomingWait", 2).Step<Noop>().WaitFor<Approval>("approval").Build();
@@ -431,10 +431,10 @@ public sealed class IncomingWebhookEndpointTests
     [Fact]
     public async Task DeactivationRefusesNewStartsButStillAnswersAnAlreadyAdmittedRetry()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await using var host = new Harness(registry: registry);
         var first = await host.Send("/orders/{orderId}", key: "deactivate");
-        await registry.DeactivateWorkflowVersionAsync("IncomingWait", 1);
+        await registry.RetireWorkflowVersionAsync("IncomingWait", 1);
         var retry = await host.Send("/orders/{orderId}", key: "deactivate");
         Assert.Equal(202, retry.Status);
         Assert.Equal(first.Id, retry.Id);

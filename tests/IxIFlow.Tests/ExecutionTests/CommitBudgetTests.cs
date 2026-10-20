@@ -192,7 +192,7 @@ public sealed class CommitBudgetTests
     {
         var store = new MeasuringStore();
         using var services = Services(store);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<BudgetData>("BudgetChild").Step<WorkActivity>().Build());
         var definition = Workflow.Create<BudgetData>("BudgetParent")
             .Step<WorkActivity>()

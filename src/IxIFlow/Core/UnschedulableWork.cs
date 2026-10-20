@@ -11,25 +11,6 @@ public sealed record UnschedulableInstance(string InstanceId, string WorkflowNam
 public sealed record UnschedulablePage(IReadOnlyList<UnschedulableInstance> Items,
     UnschedulableCursor? NextCursor, DateTime StoreTimeUtc);
 
-/// <summary>Operator reads of the workflow backlog. Applications control access to this service.</summary>
-public interface IWorkflowOperations
-{
-    Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
-        CancellationToken cancellationToken = default);
-}
-
-internal sealed class WorkflowOperations(IWorkflowStateRepository store) : IWorkflowOperations
-{
-    private readonly IWorkflowStateRepository _store = Runtime.GuardedStateRepository.Wrap(store);
-
-    public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
-        CancellationToken cancellationToken = default)
-    {
-        UnschedulableWork.Validate(limit, cursor);
-        return _store.GetUnschedulableAsync(limit, cursor, cancellationToken);
-    }
-}
-
 internal static class UnschedulableWork
 {
     internal static void Validate(int limit, UnschedulableCursor? cursor)

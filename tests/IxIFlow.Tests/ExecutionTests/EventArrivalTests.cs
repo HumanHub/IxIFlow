@@ -51,7 +51,7 @@ public sealed class EventArrivalTests
         var repository = new EventReadingStore();
         using var services = Services(repository);
         var engine = services.GetRequiredService<IWorkflowClient>();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("ChildWithApproval")
                 .Step<StartActivity>()
                 .WaitFor<Approval>("approval", configure: wait => wait

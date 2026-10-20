@@ -41,8 +41,8 @@ public sealed class PlacementScenarios
         await using var matching = Host("matching");
         var definition = Workflow.Create<Data>("DistributedPlacement").Demand("gpu", "cuda").Demand("region", "eu")
             .Step<RecordHost>().WaitFor<Go>("go").Step<RecordHost>().Build();
-        await wrong.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
-        await matching.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await wrong.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+        await matching.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         await store.StartHostLinksAsync(wrong);
         await store.StartHostLinksAsync(matching);
         var first = wrong.GetRequiredService<IWorkflowClient>();

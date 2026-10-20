@@ -12,6 +12,12 @@ public interface IWorkflowClient
     Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Starts by declared identity. Without a version, selects the highest Published version.</summary>
+    Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
+        WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class;
+    Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
+        WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class;
+
     /// <summary>Starts an instance of the definition and runs it until it is idle.</summary>
     Task<WorkflowExecutionResult> RunAsync<TWorkflowData>(
         WorkflowDefinition definition,

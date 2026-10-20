@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Text;
 
 namespace IxIFlow.Generators.Tests;
 
@@ -32,8 +33,8 @@ public sealed class InvalidActivityInputTypeTests
         {
             var mapped = diagnostic.Location.GetMappedLineSpan();
             Assert.Equal("wrong-input.yaml", mapped.Path);
-            Assert.Equal(8, mapped.StartLinePosition.Line);
-            Assert.True(mapped.StartLinePosition.Character > 0);
+            // The constant's YAML position (line 10, column 39), not the target's line.
+            Assert.Equal(new LinePosition(9, 38), mapped.StartLinePosition);
         });
         using var stream = new MemoryStream();
         Assert.False(output.Emit(stream).Success);

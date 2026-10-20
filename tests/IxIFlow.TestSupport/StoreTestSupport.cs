@@ -46,12 +46,12 @@ public static class StoreTestSupport
     public static async Task<ClaimQuery> ClaimAsync(IServiceProvider host, int limit = 100)
     {
         var settings = (HostSettings)host.GetService(typeof(HostSettings))!;
-        var registry = (IWorkflowVersionRegistry)host.GetService(typeof(IWorkflowVersionRegistry))!;
+        var registry = (IWorkflowCatalog)host.GetService(typeof(IWorkflowCatalog))!;
         return new ClaimQuery(settings.Id, await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings), limit);
     }
 
     /// <summary>A simulated host with the definitions in this registry and no configured tags.</summary>
-    public static async Task<ClaimQuery> ClaimAsync(IWorkflowVersionRegistry registry, int limit = 100)
+    public static async Task<ClaimQuery> ClaimAsync(IWorkflowCatalog registry, int limit = 100)
     {
         var settings = HostSettings.Default;
         return new ClaimQuery(settings.Id, await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings), limit);

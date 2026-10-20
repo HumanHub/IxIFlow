@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>Signals between the host and the runs in one work item's scope.</summary>
@@ -33,8 +35,26 @@ internal sealed class RunControl
     public void OnChanged(Action<string> changed) => _changed = changed;
     public void Changed(string instanceId) => _changed?.Invoke(instanceId);
 
-    /// <summary>Cancelled when the host drains; runs stop starting new steps.</summary>
-    public CancellationToken Drain { get; set; }
+    private readonly ConcurrentDictionary<Guid, Action<Recycle>> _runs = new();
+    private int _recycling;
+
+    public IDisposable Register(Guid runId, Action<Recycle> deliver)
+    {
+        _runs[runId] = deliver;
+        if (Volatile.Read(ref _recycling) != 0) deliver(new Recycle(runId));
+        return new Registration(() => _runs.TryRemove(runId, out _));
+    }
+
+    public void Recycle()
+    {
+        Interlocked.Exchange(ref _recycling, 1);
+        foreach (var (runId, deliver) in _runs) deliver(new Recycle(runId));
+    }
+
+    private sealed class Registration(Action remove) : IDisposable
+    {
+        public void Dispose() => remove();
+    }
 
     /// <summary>Called once, with the instance ID, when a start's initial checkpoint is committed.</summary>
     public void OnAccepted(Action<string> accepted) => _accepted = accepted;

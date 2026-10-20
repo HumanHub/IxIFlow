@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging;
 namespace IxIFlow.Coordinator;
 
 internal sealed class CoordinatorLinks(CoordinatorClientOptions options, IWorkflowStateRepository store,
-    WorkflowHost host, HostSettings settings, IWorkflowVersionRegistry registry, CoordinationState state,
+    WorkflowHost host, HostSettings settings, IWorkflowCatalog registry, CoordinationState state,
     TimeProvider time, ILogger<CoordinatorLinks> logger) : BackgroundService, IRunnableNotifier
 {
     private readonly object _gate = new();

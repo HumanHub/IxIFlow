@@ -61,7 +61,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     // sp_getapplock reports a deadlock through its return code, translated to 51001 by interning.
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 or 51001 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease
+        operation is Operation.Catalog or Operation.Termination or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease
             ? await connection.BeginTransactionAsync() : null;
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
@@ -72,7 +72,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     }
 
     internal override async Task<CancellationOutcome> RequestCancellationAsync(DbConnection connection,
-        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? now)
+        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? now, Guid? expectedIncarnation = null)
     {
         var clock = now == null ? "SYSUTCDATETIME()" : "@Now";
         var update = $"""
@@ -82,9 +82,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                     THEN 0 ELSE CancellationAcknowledged END,
                 RunnableAtUtc = CASE WHEN CancellationJson IS NULL OR CancellationAcknowledged = 0
                     THEN {clock} ELSE RunnableAtUtc END
-            WHERE InstanceId = @InstanceId AND Status IN ('Running', 'Suspended', 'NeedsResolution')
+            WHERE InstanceId = @InstanceId AND (@ExpectedIncarnation IS NULL OR Incarnation = @ExpectedIncarnation) AND Status IN ('Running', 'Suspended', 'NeedsResolution')
             """;
-        var parameters = new DynamicParameters(new { InstanceId = instanceId, ReasonJson = reasonJson });
+        var parameters = new DynamicParameters(new { InstanceId = instanceId, ReasonJson = reasonJson, ExpectedIncarnation = expectedIncarnation });
         if (now == null)
         {
             var changed = await connection.ExecuteAsync(update, parameters, transaction);
@@ -110,8 +110,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         };
     }
 
-    // Six parameters per opened wait, plus shared values, stay below SQL Server's 2,100 limit.
-    private const int StatementBatch = 300;
+    // Rows per statement. The widest row, an opened wait, binds 7 parameters; SQL Server allows 2,100 per request.
+    private const int StatementBatch = 250;
 
     internal override async Task InsertWaitsAsync(DbConnection connection, DbTransaction transaction,
         string instanceId, IReadOnlyList<OpenedWait> waits, long inboxSequence, DateTime now)
@@ -121,8 +121,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         for (var index = 0; index < waits.Count; index++)
         {
             var wait = waits[index];
-            rows.Add($"(@OW{index}, @OK{index}, @OY{index}, @OT{index}, @OD{index}, @OP{index})");
+            rows.Add($"(@OW{index}, @OR{index}, @OK{index}, @OY{index}, @OT{index}, @OD{index}, @OP{index})");
             parameters.Add($"OW{index}", wait.WaitId);
+            parameters.Add($"OR{index}", WaitReference.Of(instanceId, wait.WaitId));
             parameters.Add($"OK{index}", (byte)wait.Kind);
             parameters.Add($"OY{index}", wait.Key);
             parameters.Add($"OT{index}", wait.EventType);
@@ -131,10 +132,10 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         }
         await connection.ExecuteAsync($"""
                 INSERT INTO dbo.IxIFlowWorkflowWaits
-                    (InstanceId, WaitId, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc, DefaultPayloadJson)
-                SELECT @InstanceId, opened.WaitId, opened.Kind, opened.WaitKey, opened.EventType, opened.DeadlineUtc,
+                    (InstanceId, WaitId, WaitRef, Kind, WaitKey, EventType, DeadlineUtc, OpenedSequence, OpenedAtUtc, DefaultPayloadJson)
+                SELECT @InstanceId, opened.WaitId, opened.WaitRef, opened.Kind, opened.WaitKey, opened.EventType, opened.DeadlineUtc,
                     @Sequence, @Now, opened.DefaultPayloadJson
-                FROM (VALUES {string.Join(", ", rows)}) AS opened (WaitId, Kind, WaitKey, EventType, DeadlineUtc, DefaultPayloadJson)
+                FROM (VALUES {string.Join(", ", rows)}) AS opened (WaitId, WaitRef, Kind, WaitKey, EventType, DeadlineUtc, DefaultPayloadJson)
                 WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowWaits AS stored
                     WHERE stored.InstanceId = @InstanceId AND stored.WaitId = opened.WaitId);
 
@@ -249,9 +250,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     }
 
     internal override string InsertChildSql => """
-        INSERT INTO dbo.IxIFlowWorkflowInstances (InstanceId, Incarnation, WorkflowName, Status, CorrelationId, RunnableAtUtc, StateJson, Revision, ParentInstanceId, DemandSetId, PinnedHost, PinExpiresAtUtc, PinInherit)
-        VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @Now, @Payload, 1,
-            @ParentInstanceId, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit)
+        INSERT INTO dbo.IxIFlowWorkflowInstances (InstanceId, Incarnation, WorkflowName, WorkflowVersion, CreatedAtUtc, StopKind, StopCrashCount, Status, CorrelationId, RunnableAtUtc, StateJson, Revision, ParentInstanceId, ParentWaitId, DemandSetId, PinnedHost, PinExpiresAtUtc, PinInherit)
+        VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @Now, @Payload, 1,
+            @ParentInstanceId, @ParentWaitId, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit)
         """;
 
     internal override string ReadInstanceSql(string filter, bool wholly) => $"""
@@ -263,10 +264,12 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 WHERE InstanceId = @InstanceId;
                 """;
 
-    internal override string QuerySql(string filter) => $"SELECT {ServerRowColumns} FROM dbo.IxIFlowWorkflowInstances WHERE {filter}";
 
     internal override string? Sql(Statement statement) => statement switch
     {
+        Statement.TerminationChildren => "SELECT InstanceId FROM dbo.IxIFlowWorkflowInstances WHERE ParentInstanceId=@InstanceId ORDER BY InstanceId",
+        Statement.TerminationState => "SELECT Incarnation, Status, CancellationJson FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK) WHERE InstanceId = @InstanceId; SELECT SYSUTCDATETIME()",
+        Statement.TerminationRequest => "UPDATE dbo.IxIFlowWorkflowInstances SET CancellationJson=@ReasonJson, CancellationAcknowledged=0, RunnableAtUtc=@Now WHERE InstanceId=@InstanceId",
         Statement.OutboxClock => """
             SELECT SYSUTCDATETIME()
             """,
@@ -288,21 +291,21 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             VALUES (@Name, @TypesJson);
             """,
         Statement.Publishers => """
-            SELECT Name AS Name, TypesJson AS TypesJson, DisabledAtUtc AS DisabledAtUtc, LastError AS LastError
+            SELECT Name AS Name, TypesJson AS TypesJson, DisabledAtUtc AS DisabledAtUtc, LastError AS LastError, EnabledAtUtc AS EnabledAtUtc, EnabledBy AS EnabledBy, UnregisteredAtUtc AS UnregisteredAtUtc, UnregisteredBy AS UnregisteredBy
             FROM dbo.IxIFlowOutboxPublishers
             """,
         Statement.PublisherRead => """
-            SELECT Name AS Name, TypesJson AS TypesJson, DisabledAtUtc AS DisabledAtUtc, LastError AS LastError
+            SELECT Name AS Name, TypesJson AS TypesJson, DisabledAtUtc AS DisabledAtUtc, LastError AS LastError, EnabledAtUtc AS EnabledAtUtc, EnabledBy AS EnabledBy, UnregisteredAtUtc AS UnregisteredAtUtc, UnregisteredBy AS UnregisteredBy
             FROM dbo.IxIFlowOutboxPublishers
             WHERE Name=@Name
             """,
         Statement.BackfillDeliveries => """
-            INSERT INTO dbo.IxIFlowOutboxDeliveries (EventId, PublisherName, Attempts, NextAttemptAtUtc, Status, LastError)
+            INSERT INTO dbo.IxIFlowOutboxDeliveries (EventId, PublisherName, Attempts, NextAttemptAtUtc, Status, LastError, GivenUpReason)
             SELECT e.EventId, @Name, 0, @Now, CASE WHEN p.DisabledAtUtc IS NULL THEN 0 ELSE 2 END,
-                p.LastError
+                p.LastError, CASE WHEN p.DisabledAtUtc IS NULL THEN NULL ELSE 2 END
             FROM dbo.IxIFlowOutboxEvents e
             CROSS JOIN dbo.IxIFlowOutboxPublishers p
-            WHERE p.Name=@Name
+            WHERE p.Name=@Name AND p.UnregisteredAtUtc IS NULL
               AND e.EventType=@EventType
               AND NOT EXISTS (SELECT 1
             FROM dbo.IxIFlowOutboxDeliveries d
@@ -322,8 +325,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
               AND event.EventType=@EventType)
             """,
         Statement.InsertDelivery => """
-            INSERT INTO dbo.IxIFlowOutboxDeliveries (EventId, PublisherName, Attempts, NextAttemptAtUtc, Status, LastError)
-            VALUES (@EventId, @Name, 0, @Now, @Status, @LastError)
+            INSERT INTO dbo.IxIFlowOutboxDeliveries (EventId, PublisherName, Attempts, NextAttemptAtUtc, Status, LastError, GivenUpReason)
+            VALUES (@EventId, @Name, 0, @Now, @Status, @LastError, @GivenUpReason)
             """,
         Statement.ClaimDeliveries => """
             SELECT TOP (@Limit) d.EventId AS EventId,
@@ -332,6 +335,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 d.FirstAttemptAtUtc AS FirstAttemptAtUtc,
                 d.NextAttemptAtUtc AS NextAttemptAtUtc,
                 d.Status AS Status,
+                d.RetriedBy AS RetriedBy,
+                d.RetriedAtUtc AS RetriedAtUtc,
+                d.GivenUpReason AS GivenUpReason,
                 d.LastError AS LastError,
                 d.LeaseToken AS LeaseToken,
                 d.LeaseUntilUtc AS LeaseUntilUtc,
@@ -340,7 +346,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             JOIN dbo.IxIFlowOutboxEvents e ON e.EventId=d.EventId
             JOIN dbo.IxIFlowOutboxPublishers p ON p.Name=d.PublisherName
             WHERE d.PublisherName=@Name
-              AND p.DisabledAtUtc IS NULL
+              AND p.DisabledAtUtc IS NULL AND p.UnregisteredAtUtc IS NULL
               AND d.Status=0
               AND d.NextAttemptAtUtc<=SYSUTCDATETIME()
               AND (d.LeaseUntilUtc IS NULL OR d.LeaseUntilUtc<=SYSUTCDATETIME())
@@ -354,6 +360,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 d.FirstAttemptAtUtc AS FirstAttemptAtUtc,
                 d.NextAttemptAtUtc AS NextAttemptAtUtc,
                 d.Status AS Status,
+                d.RetriedBy AS RetriedBy,
+                d.RetriedAtUtc AS RetriedAtUtc,
+                d.GivenUpReason AS GivenUpReason,
                 d.LastError AS LastError,
                 d.LeaseToken AS LeaseToken,
                 d.LeaseUntilUtc AS LeaseUntilUtc,
@@ -370,6 +379,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 d.FirstAttemptAtUtc AS FirstAttemptAtUtc,
                 d.NextAttemptAtUtc AS NextAttemptAtUtc,
                 d.Status AS Status,
+                d.RetriedBy AS RetriedBy,
+                d.RetriedAtUtc AS RetriedAtUtc,
+                d.GivenUpReason AS GivenUpReason,
                 d.LastError AS LastError,
                 d.LeaseToken AS LeaseToken,
                 d.LeaseUntilUtc AS LeaseUntilUtc,
@@ -381,22 +393,35 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             """,
         Statement.DeliveryUpdate => """
             UPDATE dbo.IxIFlowOutboxDeliveries
-            SET FirstAttemptAtUtc=@FirstAttemptAtUtc, Attempts=@Attempts, NextAttemptAtUtc=@NextAttemptAtUtc, Status=@Status, LastError=@LastError, LeaseToken=@LeaseToken, LeaseUntilUtc=@LeaseUntilUtc
+            SET GivenUpReason=@GivenUpReason, RetriedAtUtc=@RetriedAtUtc, RetriedBy=@RetriedBy, FirstAttemptAtUtc=@FirstAttemptAtUtc, Attempts=@Attempts, NextAttemptAtUtc=@NextAttemptAtUtc, Status=@Status, LastError=@LastError, LeaseToken=@LeaseToken, LeaseUntilUtc=@LeaseUntilUtc
             WHERE EventId=@EventId
               AND PublisherName=@Name
             """,
         Statement.UnregisterPublisher => """
+            UPDATE dbo.IxIFlowOutboxPublishers SET UnregisteredAtUtc=@Now, UnregisteredBy=@Actor WHERE Name=@Name;
+            IF @@ROWCOUNT=0 INSERT INTO dbo.IxIFlowOutboxPublishers (Name, TypesJson, UnregisteredAtUtc, UnregisteredBy) VALUES (@Name, '[]', @Now, @Actor);
             UPDATE dbo.IxIFlowOutboxDeliveries
-            SET Status=2, LeaseToken=NULL, LeaseUntilUtc=NULL
+            SET Status=2, GivenUpReason=3, LeaseToken=NULL, LeaseUntilUtc=NULL
             WHERE PublisherName=@Name AND Status=0;
-            DELETE FROM dbo.IxIFlowOutboxPublishers WHERE Name=@Name;
+            """,
+        Statement.EnablePublisher => """
+            UPDATE dbo.IxIFlowOutboxPublishers SET DisabledAtUtc=NULL, LastError=NULL,
+                EnabledAtUtc=@Now, EnabledBy=@Actor WHERE Name=@Name
+            """,
+        Statement.RetryDisabledDeliveries => """
+            UPDATE TOP (1000) dbo.IxIFlowOutboxDeliveries
+            SET Status=0, Attempts=0, FirstAttemptAtUtc=NULL, NextAttemptAtUtc=@Now,
+                GivenUpReason=NULL, LastError=NULL, LeaseToken=NULL, LeaseUntilUtc=NULL,
+                RetriedAtUtc=@Now, RetriedBy=@Actor
+            WHERE PublisherName=@Name AND Status=2 AND GivenUpReason=2
+
             """,
         Statement.DisablePublisher => """
             UPDATE dbo.IxIFlowOutboxPublishers
             SET DisabledAtUtc=COALESCE(DisabledAtUtc, @Now), LastError=@Error
             WHERE Name=@Name;
             UPDATE dbo.IxIFlowOutboxDeliveries
-            SET Status=2, LastError=@Error, LeaseToken=NULL, LeaseUntilUtc=NULL
+            SET Status=2, GivenUpReason=2, LastError=@Error, LeaseToken=NULL, LeaseUntilUtc=NULL
             WHERE PublisherName=@Name
               AND Status=0;
             """,
@@ -480,7 +505,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
         // A first commit must exclude another insertion of this ID. Read the clock in the next
         // statement, after any lock wait, so the captured commit time cannot predate the lock (D-35).
         Statement.CommitState => """
-            SELECT Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence
+            SELECT Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence, RunnableAtUtc
             FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
             WHERE InstanceId = @InstanceId;
             SELECT SYSUTCDATETIME();
@@ -566,8 +591,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
               AND (@Key IS NULL OR WaitKey = @Key)
               AND (@EventType IS NULL OR EventType = @EventType)
               AND (@Kind IS NULL AND Kind NOT IN (@Delay, @Execution) OR Kind = @Kind)
-              AND (@AfterWaitId IS NULL OR WaitId > @AfterWaitId)
-            ORDER BY WaitId
+              AND (@AfterWaitRef IS NULL OR WaitRef > @AfterWaitRef)
+            ORDER BY WaitRef
             """,
         Statement.EarliestDeadline => """
                 SELECT MIN(DeadlineUtc) FROM dbo.IxIFlowWorkflowWaits
@@ -575,17 +600,17 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 """,
         Statement.InsertCommit => """
             INSERT INTO dbo.IxIFlowWorkflowInstances
-                (InstanceId, Incarnation, WorkflowName, Status, CorrelationId, ParentInstanceId, RunnableAtUtc,
+                (InstanceId, Incarnation, WorkflowName, WorkflowVersion, CreatedAtUtc, StopKind, StopCrashCount, Status, CorrelationId, ParentInstanceId, ParentWaitId, RunnableAtUtc,
                  StateJson, Revision, DemandSetId, PinnedHost, PinExpiresAtUtc, PinInherit)
-            VALUES (@InstanceId, @Incarnation, @WorkflowName, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc,
+            VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @ParentInstanceId, @ParentWaitId, @RunnableAtUtc,
                 @StateJson, @Revision, @DemandSetId, @PinnedHost, @PinExpiresAtUtc, @PinInherit);
             INSERT INTO dbo.IxIFlowWorkflowCommits (InstanceId, CommitId, ExpectedRevision, Revision, PayloadHash)
             VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
             """,
         Statement.UpdateCommit => """
             UPDATE dbo.IxIFlowWorkflowInstances SET
-                WorkflowName = @WorkflowName, Status = @Status,
-                CorrelationId = @CorrelationId, ParentInstanceId = @ParentInstanceId,
+                WorkflowName = @WorkflowName, WorkflowVersion, CreatedAtUtc, StopKind, StopCrashCount, Status = @Status,
+                CorrelationId = @CorrelationId, ParentInstanceId = @ParentInstanceId, ParentWaitId = @ParentWaitId,
                 RunnableAtUtc = @RunnableAtUtc,
                 InboxReadThrough = COALESCE(@InboxReadThrough, InboxReadThrough),
                 StateJson = @StateJson, Revision = @Revision,
@@ -607,11 +632,6 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                         ELSE ExpiresAtUtc END,
                     CrashCount = CASE WHEN @ClearsCrashCount = 1 THEN 0 ELSE CrashCount END
                 WHERE InstanceId = @InstanceId
-                """,
-        Statement.ReadParts => """
-                SELECT InstanceId, PartKey, Json FROM dbo.IxIFlowWorkflowParts WHERE InstanceId IN @Ids;
-                SELECT InstanceId, Revision, Incarnation FROM dbo.IxIFlowWorkflowInstances
-                WHERE InstanceId IN @Ids;
                 """,
         Statement.DeleteState => """
             SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WHERE InstanceId = @InstanceId
@@ -644,15 +664,11 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             ORDER BY Sequence
             """,
         Statement.DeleteLease => "DELETE FROM dbo.IxIFlowWorkflowLeases WHERE InstanceId = @InstanceId",
-        Statement.ByName => "WorkflowName = @Value",
-        Statement.ByStatus => "Status = @Value",
-        Statement.ByCorrelation => "CorrelationId = @Value",
-        Statement.ByParent => "ParentInstanceId = @Value",
         Statement.DeleteAllParts => "DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId",
         Statement.DeleteParts => """
                     DELETE FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId AND PartKey IN @Keys
                     """,
-        _ => RegistrySql(statement) ?? AdmissionSql(statement)
+        _ => CatalogSql(statement) ?? RegistrySql(statement) ?? AdmissionSql(statement)
     };
 
     internal override async Task CreateSchemaAsync(DbConnection connection)
@@ -680,13 +696,19 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     }
     await connection.ExecuteAsync(DemandsSchema, transaction: transaction);
     await connection.ExecuteAsync("""
+        IF TYPE_ID(N'dbo.IxIFlowSearchValues') IS NULL
+            EXEC(N'CREATE TYPE dbo.IxIFlowSearchValues AS TABLE (Value NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY)');
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowInstances', N'U') IS NULL
         BEGIN
             CREATE TABLE dbo.IxIFlowWorkflowInstances (
                 InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
-                WorkflowName NVARCHAR(200) NOT NULL,
-                Status NVARCHAR(50) NOT NULL,
-                CorrelationId NVARCHAR(100) NULL,
+                WorkflowName NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                WorkflowVersion INT NOT NULL,
+                CreatedAtUtc DATETIME2 NOT NULL,
+                StopKind NVARCHAR(50) COLLATE Latin1_General_100_BIN2 NULL,
+                StopCrashCount INT NULL,
+                Status NVARCHAR(50) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                CorrelationId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
                 RunnableAtUtc DATETIME2 NULL,
                 LastHostId UNIQUEIDENTIFIER NULL,
                 DemandSetId VARCHAR(64) COLLATE Latin1_General_100_BIN2 NOT NULL REFERENCES dbo.IxIFlowDemandSets (DemandSetId),
@@ -701,12 +723,27 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 InboxSequence BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_InboxSequence DEFAULT 0,
                 InboxReadThrough BIGINT NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_InboxReadThrough DEFAULT 0,
                 Incarnation UNIQUEIDENTIFIER NOT NULL CONSTRAINT DF_IxIFlowWorkflowInstances_Incarnation DEFAULT NEWID(),
-                ParentInstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL
+                ParentInstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
+                ParentWaitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL
             );
+            CREATE INDEX IX_IxIFlowWorkflowInstances_creation ON dbo.IxIFlowWorkflowInstances (CreatedAtUtc DESC, InstanceId ASC);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_status_creation ON dbo.IxIFlowWorkflowInstances (Status, CreatedAtUtc DESC, InstanceId ASC);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_workflow_creation ON dbo.IxIFlowWorkflowInstances (WorkflowName, CreatedAtUtc DESC, InstanceId ASC);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_workflow_status_creation ON dbo.IxIFlowWorkflowInstances (WorkflowName, Status, CreatedAtUtc DESC, InstanceId ASC);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_version_creation ON dbo.IxIFlowWorkflowInstances (WorkflowVersion, CreatedAtUtc DESC, InstanceId ASC);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_workflow_version_creation ON dbo.IxIFlowWorkflowInstances (WorkflowName, WorkflowVersion, CreatedAtUtc DESC, InstanceId ASC);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_stop_creation ON dbo.IxIFlowWorkflowInstances (StopKind, CreatedAtUtc DESC, InstanceId ASC) WHERE StopKind IS NOT NULL;
+            CREATE INDEX IX_IxIFlowWorkflowInstances_correlation_creation ON dbo.IxIFlowWorkflowInstances (CorrelationId, CreatedAtUtc DESC, InstanceId ASC);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_parent_creation ON dbo.IxIFlowWorkflowInstances (ParentInstanceId, CreatedAtUtc DESC, InstanceId ASC);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_ended_creation ON dbo.IxIFlowWorkflowInstances (EndedAtUtc, CreatedAtUtc DESC, InstanceId ASC);
             CREATE INDEX IX_IxIFlowWorkflowInstances_Status
                 ON dbo.IxIFlowWorkflowInstances (Status);
             CREATE INDEX IX_IxIFlowWorkflowInstances_WorkflowName
                 ON dbo.IxIFlowWorkflowInstances (WorkflowName);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_UnfinishedWorkflow
+                ON dbo.IxIFlowWorkflowInstances (WorkflowName, WorkflowVersion)
+                WHERE Status <> 'Completed' AND Status <> 'Failed' AND Status <> 'Cancelled'
+                    AND Status <> 'Terminated' AND Status <> 'TimedOut';
             CREATE INDEX IX_IxIFlowWorkflowInstances_CorrelationId
                 ON dbo.IxIFlowWorkflowInstances (CorrelationId);
             EXEC(N'CREATE INDEX IX_IxIFlowWorkflowInstances_Parent
@@ -714,6 +751,9 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             EXEC(N'CREATE INDEX IX_IxIFlowInstances_Ended
                 ON dbo.IxIFlowWorkflowInstances (EndedAtUtc, InstanceId) WHERE EndedAtUtc IS NOT NULL');
         END
+        CREATE INDEX IX_IxIFlowWorkflowInstances_Runnable
+            ON dbo.IxIFlowWorkflowInstances (RunnableAtUtc, InstanceId)
+            INCLUDE (LastHostId) WHERE RunnableAtUtc IS NOT NULL;
         CREATE INDEX IX_IxIFlowInstances_DemandSet ON dbo.IxIFlowWorkflowInstances (DemandSetId);
         CREATE INDEX IX_IxIFlowInstances_SetRunnable
             ON dbo.IxIFlowWorkflowInstances (DemandSetId, RunnableAtUtc, InstanceId) INCLUDE (LastHostId, PinnedHost, PinExpiresAtUtc) WHERE RunnableAtUtc IS NOT NULL;
@@ -764,6 +804,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             CREATE TABLE dbo.IxIFlowWorkflowWaits (
                 InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
                 WaitId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+                WaitRef VARCHAR(16) COLLATE Latin1_General_100_BIN2 NOT NULL,
                 Kind TINYINT NOT NULL,
                 WaitKey NVARCHAR(400) NOT NULL,
                 EventType NVARCHAR(400) NOT NULL,
@@ -776,7 +817,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 CONSTRAINT PK_IxIFlowWorkflowWaits PRIMARY KEY (InstanceId, WaitId)
             );
             EXEC(N'CREATE INDEX IX_IxIFlowWorkflowWaits_Open
-                ON dbo.IxIFlowWorkflowWaits (WaitKey, EventType, WaitId) WHERE CloseReason IS NULL');
+                ON dbo.IxIFlowWorkflowWaits (WaitKey, EventType, WaitRef) WHERE CloseReason IS NULL');
+            EXEC(N'CREATE INDEX IX_IxIFlowWorkflowWaits_Page ON dbo.IxIFlowWorkflowWaits (WaitRef) WHERE CloseReason IS NULL');
         END
         IF OBJECT_ID(N'dbo.IxIFlowWorkflowCommits', N'U') IS NULL
             CREATE TABLE dbo.IxIFlowWorkflowCommits (
@@ -809,6 +851,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(CatalogSchema, transaction: transaction);
     await transaction.CommitAsync();
     }
 }

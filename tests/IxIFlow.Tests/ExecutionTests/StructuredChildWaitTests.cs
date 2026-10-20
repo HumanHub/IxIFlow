@@ -27,7 +27,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("OwnInstanceChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("OwnInstanceChild"));
         var parent = Workflow.Create<ParentData>("OwnInstanceParent")
             .Step<NoopActivity>()
             .Invoke<ChildData>("OwnInstanceChild", 1, step => step
@@ -60,7 +60,7 @@ public sealed class StructuredChildWaitTests
     public async Task AnEventForTheChildSentToItsParentFindsNoWait()
     {
         using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("AddressedChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("AddressedChild"));
         var parent = Workflow.Create<ParentData>("AddressedChildParent")
             .Step<NoopActivity>()
             .Invoke<ChildData>("AddressedChild", 1, step => step
@@ -88,7 +88,7 @@ public sealed class StructuredChildWaitTests
             ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations.Any(item =>
                 item.PendingActivity == null && item.Stack.Any(position => position.NextStepIndex > 0)) };
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(Workflow.Create<ChildData>("UnresolvedChild").Step<NoopActivity>().Build());
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("UnresolvedChild"));
         var parent = Workflow.Create<ParentData>("UnresolvedChildParent")
             .Step<NoopActivity>()
             .Invoke<ChildData>("UnresolvedChild", 1)
@@ -121,7 +121,7 @@ public sealed class StructuredChildWaitTests
     public async Task CancellingAParentCancelsItsWaitingChildAndRunsFinallyOnceTheChildHasEnded()
     {
         using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("CancellableChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("CancellableChild"));
         var parent = Workflow.Create<ParentData>("CancellableParent")
             .Step<NoopActivity>()
             .Try(body => body.Invoke<ChildData>("CancellableChild", 1))
@@ -147,7 +147,7 @@ public sealed class StructuredChildWaitTests
     public async Task ACancelledParentWaitsForAChildAnotherHostOwns()
     {
         using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("RemotelyOwnedChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("RemotelyOwnedChild"));
         var parent = Workflow.Create<ParentData>("ParentWithRemotelyOwnedChild")
             .Step<NoopActivity>()
             .Try(body => body.Invoke<ChildData>("RemotelyOwnedChild", 1))
@@ -189,7 +189,7 @@ public sealed class StructuredChildWaitTests
             .Try(body => body.WaitFor<Approval>("approval"))
             .Finally(body => body.Step<ThrowChildActivity>())
             .Build();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var parent = Workflow.Create<ParentData>("ParentWithFailingCancellationChild")
             .Step<NoopActivity>()
             .Invoke<ChildData>("FailingCancellationChild", 1)
@@ -221,7 +221,7 @@ public sealed class StructuredChildWaitTests
         };
         probe.Release.TrySetResult();
         using var services = Services(store, probe);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("UnsettledChild").Step<ActiveChildActivity>().Build());
         var parent = Workflow.Create<ParentData>("UnsettledChildParent")
             .Step<NoopActivity>()
@@ -268,7 +268,7 @@ public sealed class StructuredChildWaitTests
     public async Task AChildInvokedInsideFinallyRunsWhileItsParentIsCancelled()
     {
         using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("CancellationCleanupChild")
                 .Step<ApproveActivity>(step => step
                     .Output(activity => activity.Approved).To(ctx => ctx.WorkflowData.Approved))
@@ -288,8 +288,7 @@ public sealed class StructuredChildWaitTests
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
         Assert.True(Assert.IsType<ParentData>(cancelled.WorkflowData).ChildApproved);
-        var child = Assert.Single(await services.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstancesByNameAsync("CancellationCleanupChild"));
+        var child = Assert.Single(await Task.WhenAll((await services.GetRequiredService<IWorkflowStateRepository>().QueryInstancesAsync(new InstanceQuery(WorkflowName: "CancellationCleanupChild", Limit: int.MaxValue))).Items.Select(async row => (await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(row.InstanceId))!)));
         Assert.Equal(WorkflowStatus.Completed, child.Status);
     }
 
@@ -298,7 +297,7 @@ public sealed class StructuredChildWaitTests
     public async Task AChildInsideFinallyTakesItsOwnEventsWhileItsParentIsCancelled()
     {
         using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             ApprovingChild("WaitingCleanupChild", "cleanup"));
         var parent = Workflow.Create<ParentData>("WaitingCleanupParent")
             .Step<NoopActivity>()
@@ -311,8 +310,7 @@ public sealed class StructuredChildWaitTests
 
         var cancelling = await engine.CancelAsync(started.InstanceId, new CancellationReason { ReasonCode = "operator" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, cancelling.Status);
-        var childId = Assert.Single(await services.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstancesByNameAsync("WaitingCleanupChild")).InstanceId;
+        var childId = Assert.Single(await Task.WhenAll((await services.GetRequiredService<IWorkflowStateRepository>().QueryInstancesAsync(new InstanceQuery(WorkflowName: "WaitingCleanupChild", Limit: int.MaxValue))).Items.Select(async row => (await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
         await ChildWaitingAsync(services, childId, "cleanup");
         EventAssert.Consumed(await engine.ResumeAsync(childId, "cleanup", new Approval()));
 
@@ -326,7 +324,7 @@ public sealed class StructuredChildWaitTests
     public async Task AChildWithSeveralWaitsTakesEachInItsOwnInbox()
     {
         using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("TwoWaitChild")
                 .Step<NoopActivity>()
                 .WaitFor<Approval>("first")
@@ -358,7 +356,7 @@ public sealed class StructuredChildWaitTests
     {
         var probe = new ActiveChildProbe();
         using var services = Services(activeChildProbe: probe);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("BusyChild").Step<ActiveChildActivity>().Build());
         var parent = Workflow.Create<ParentData>("ParentBesideBusyChild")
             .Step<NoopActivity>()
@@ -384,7 +382,7 @@ public sealed class StructuredChildWaitTests
     public async Task ParallelChildrenTakeTheirAnswersInTheirOwnInboxes()
     {
         using var services = Services();
-        var registry = services.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = services.GetRequiredService<IWorkflowCatalog>();
         foreach (var (name, key) in new[] { ("FinanceApprovalChild", "finance"), ("LegalApprovalChild", "legal") })
             await registry.RegisterWorkflowAsync(ApprovingChild(name, key));
         var parent = Workflow.Create<ParentData>("ParallelChildApprovals")
@@ -399,8 +397,8 @@ public sealed class StructuredChildWaitTests
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var started = await engine.RunAsync(parent, new ParentData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
-        var finance = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("FinanceApprovalChild")).InstanceId;
-        var legal = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("LegalApprovalChild")).InstanceId;
+        var finance = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "FinanceApprovalChild", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
+        var legal = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "LegalApprovalChild", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
 
         await ChildWaitingAsync(services, finance, "finance");
         Assert.Equal(WorkflowExecutionStatus.Success, (await engine.ResumeAsync(finance, "finance", new Approval())).Status);
@@ -436,7 +434,7 @@ public sealed class StructuredChildWaitTests
         string childId;
         using (var firstProvider = Services(repository))
         {
-            await firstProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+            await firstProvider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
             var started = await firstProvider.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             parentId = started.InstanceId;
@@ -445,7 +443,7 @@ public sealed class StructuredChildWaitTests
         }
 
         using var secondProvider = Services(repository);
-        var registry = secondProvider.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = secondProvider.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(child);
         await registry.RegisterWorkflowAsync(parent);
         var engine = secondProvider.GetRequiredService<IWorkflowClient>();
@@ -480,16 +478,16 @@ public sealed class StructuredChildWaitTests
         string parentId;
         using (var firstProvider = Services(store))
         {
-            await firstProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+            await firstProvider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
             await EngineAssert.StoreFailureAsync(() => firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(parent, new ParentData()));
-            parentId = Assert.Single(await store.GetWorkflowInstancesByNameAsync("CrashWindowParent")).InstanceId;
-            Assert.Empty(await store.GetWorkflowInstancesByNameAsync("CrashWindowChild"));
+            parentId = Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "CrashWindowParent", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
+            Assert.Empty(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "CrashWindowChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)));
         }
         store.FailCommit = _ => false;
         using var secondProvider = Services(store);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(parent);
+        await secondProvider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
+        await secondProvider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(parent);
         if (cancelBeforeRecovery)
             await store.RequestCancellationAsync(parentId, new CancellationReason { ReasonCode = "operator" });
 
@@ -498,12 +496,12 @@ public sealed class StructuredChildWaitTests
         if (cancelBeforeRecovery)
         {
             Assert.Equal(WorkflowExecutionStatus.Cancelled, recovered.Status);
-            Assert.Empty(await store.GetWorkflowInstancesByNameAsync("CrashWindowChild"));
+            Assert.Empty(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "CrashWindowChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)));
         }
         else
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
-            var started = Assert.Single(await store.GetWorkflowInstancesByNameAsync("CrashWindowChild"));
+            var started = Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "CrashWindowChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)));
             Assert.Equal(await ChildIdAsync(secondProvider, parentId), started.InstanceId);
         }
     }
@@ -513,7 +511,7 @@ public sealed class StructuredChildWaitTests
     public async Task AParentReadsItsNamedChildsDataAsThePreviousStep()
     {
         using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("WaitingChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("WaitingChild"));
         var parent = Workflow.Create<ParentData>("WaitingChildParent")
             .Step<NoopActivity>()
             .Invoke<ChildData>("WaitingChild", 1, step => step
@@ -542,7 +540,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("NotesChild")
                 .Step<ApproveActivity>(step => step
                     .Output(activity => activity.Approved).To(ctx => ctx.WorkflowData.Approved))
@@ -568,7 +566,7 @@ public sealed class StructuredChildWaitTests
     public async Task AGrandchildsCompletionWakesItsParentWhichWakesItsOwn()
     {
         using var services = Services();
-        var registry = services.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = services.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(ApprovingChild("Grandchild"));
         await registry.RegisterWorkflowAsync(Workflow.Create<ChildData>("MiddleChild")
             .Step<NoopActivity>()
@@ -602,7 +600,7 @@ public sealed class StructuredChildWaitTests
     {
         var probe = new ActiveChildProbe();
         using var services = Services(activeChildProbe: probe);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("RunningChild")
                 .Step<ActiveChildActivity>()
                 .Step<ApproveActivity>(step => step
@@ -633,7 +631,7 @@ public sealed class StructuredChildWaitTests
     public async Task InvocationInputsAcceptDerivedResumeEvent()
     {
         using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("EventInputChild").Step<NoopActivity>().Build());
         var parent = Workflow.Create<ParentData>("DerivedEventInputParent")
             .Step<NoopActivity>()
@@ -659,7 +657,7 @@ public sealed class StructuredChildWaitTests
     {
         var time = new FakeTimeProvider();
         using var services = Services(time: time);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("TimedChild")
                 .Step<NoopActivity>()
                 .WaitFor<Approval>("approval", configure: wait => wait
@@ -688,7 +686,7 @@ public sealed class StructuredChildWaitTests
     public async Task ParentCatchMatchesChildExceptionType()
     {
         using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("FailingChild").Step<ThrowChildActivity>().Build());
         var parent = Workflow.Create<ParentData>("CatchingParent")
             .Step<NoopActivity>()
@@ -712,7 +710,7 @@ public sealed class StructuredChildWaitTests
     public async Task AChildCancelledOnItsOwnRaisesChildWorkflowEndedExceptionInItsParent()
     {
         using var services = Services();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("CancelledAlone"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("CancelledAlone"));
         var parent = Workflow.Create<ParentData>("ParentOfCancelledChild")
             .Step<NoopActivity>()
             .Try(body => body.Invoke<ChildData>("CancelledAlone", 1))
@@ -738,7 +736,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        var registry = services.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = services.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(ApprovingChild("FineChild"));
         // A registered definition the engine cannot start: it has no data type.
         await registry.RegisterWorkflowAsync(new WorkflowDefinition { Name = "Untyped", Version = 1, Steps = [] });
@@ -754,7 +752,7 @@ public sealed class StructuredChildWaitTests
         // The first branch's child was to start in the commit the failure now makes; it is not started.
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(WorkflowStatus.Failed, (await repository.GetWorkflowInstanceAsync(result.InstanceId))!.Status);
-        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Fact]
@@ -763,9 +761,9 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        var registry = services.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = services.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(ApprovingChild("RetiredChild"));
-        await registry.DeactivateWorkflowVersionAsync("RetiredChild", 1);
+        await registry.RetireWorkflowVersionAsync("RetiredChild", 1);
         var parent = Workflow.Create<ParentData>("ParentOfRetired")
             .Step<NoopActivity>()
             .Invoke<ChildData>("RetiredChild", 1)
@@ -775,7 +773,7 @@ public sealed class StructuredChildWaitTests
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData()));
         Assert.Contains("is deactivated", error.Message);
-        Assert.Empty(await repository.GetWorkflowInstancesByNameAsync("RetiredChild"));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "RetiredChild", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Fact]
@@ -784,7 +782,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("LateChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("LateChild"));
         var parent = Workflow.Create<ParentData>("ParentUnwindingAtCompletion")
             .Step<NoopActivity>()
             .Try(body => body.Invoke<ChildData>("LateChild", 1, step => step
@@ -822,7 +820,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("DeletedChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("DeletedChild"));
         var parent = Workflow.Create<ParentData>("ParentOfDeleted")
             .Step<NoopActivity>()
             .Try(body => body.Invoke<ChildData>("DeletedChild", 1))
@@ -847,7 +845,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("DetachedChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("DetachedChild"));
         var parent = Workflow.Create<ParentData>("ParentOfDetached")
             .Step<NoopActivity>()
             .Invoke<ChildData>("DetachedChild", 1, step => step.CancelWithParent(false))
@@ -877,7 +875,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("OutlivingChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("OutlivingChild"));
         var parent = Workflow.Create<ParentData>("FailingParentOfDetached")
             .Step<NoopActivity>()
             .Parallel(parallel => parallel
@@ -886,7 +884,7 @@ public sealed class StructuredChildWaitTests
             .Build();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(parent, new ParentData());
-        var childId = Assert.Single(await repository.GetChildInstancesAsync(started.InstanceId)).InstanceId;
+        var childId = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: started.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
         await ChildWaitingAsync(services, childId, "approval");
 
         var failed = await engine.ResumeAsync(started.InstanceId, "fail", new Approval());
@@ -902,7 +900,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("NeverStarted"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("NeverStarted"));
         // The other branch wins the join in the same pass, before the child's start is committed.
         var parent = Workflow.Create<ParentData>("ParentWonBeforeStart")
             .Step<NoopActivity>()
@@ -914,7 +912,7 @@ public sealed class StructuredChildWaitTests
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     // An input mapped to a property the child's data does not have is an invalid definition, not skipped (F-23).
@@ -924,7 +922,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("NarrowChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("NarrowChild"));
         var parent = Workflow.Create<ParentData>("ParentOfNarrowChild")
             .Step<NoopActivity>()
             .Invoke<WideChildData>("NarrowChild", 1, step => step
@@ -935,7 +933,7 @@ public sealed class StructuredChildWaitTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("Child workflow input 'ChildData.Extra' is not a property of its data", result.ErrorMessage);
-        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     // A whole number takes a child's enum property, as reflection assigned it before conversion was checked.
@@ -945,7 +943,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<LevelData>("LevelChild").Step<NoopActivity>().Build());
         var parent = Workflow.Create<ParentData>("ParentOfLevelChild")
             .Step<NoopActivity>()
@@ -957,7 +955,7 @@ public sealed class StructuredChildWaitTests
         var result = await FinishedAsync(engine, started.InstanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        var child = Assert.Single(await repository.GetChildInstancesAsync(result.InstanceId));
+        var child = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         Assert.Contains("\"Level\":2", child.WorkflowDataJson);
     }
 
@@ -968,7 +966,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("StrictChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("StrictChild"));
         var parent = Workflow.Create<ParentData>("ParentOfStrictChild")
             .Step<NoopActivity>()
             .Invoke<WideChildData>("StrictChild", 1, step => step
@@ -979,7 +977,7 @@ public sealed class StructuredChildWaitTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("Child workflow input 'ChildData.Approved' takes Boolean, not String", result.ErrorMessage);
-        Assert.Empty(await repository.GetChildInstancesAsync(result.InstanceId));
+        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     // An engine failure ends the parent at once, without unwinding its branches; the children it waits for are
@@ -990,7 +988,7 @@ public sealed class StructuredChildWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(ApprovingChild("AbandonedChild"));
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(ApprovingChild("AbandonedChild"));
         var parent = Workflow.Create<ParentData>("ParentEndedByEngineFailure")
             .Step<NoopActivity>()
             .Parallel(parallel => parallel
@@ -1001,7 +999,7 @@ public sealed class StructuredChildWaitTests
             .Build();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(parent, new ParentData());
-        var childId = Assert.Single(await repository.GetChildInstancesAsync(started.InstanceId)).InstanceId;
+        var childId = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: started.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId;
         await ChildWaitingAsync(services, childId, "approval");
 
         var failed = await engine.ResumeAsync(started.InstanceId, "fail", new Approval());

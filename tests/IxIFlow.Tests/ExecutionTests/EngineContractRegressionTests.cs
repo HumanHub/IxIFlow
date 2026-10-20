@@ -284,8 +284,8 @@ public class EngineContractRegressionTests
             .Step<MarkChildActivity>()
             .Suspend<RegressionApprovalEvent>("termination")
             .Build();
-        await provider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
-        var (checkpoint, _, _) = WorkflowHost.InstanceOperations.NewInstance(definition, new RegressionData(), new(), DateTime.UtcNow);
+        await provider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+        var (checkpoint, _, _) = WorkflowInstances.NewInstance(definition, new RegressionData(), new(), DateTime.UtcNow);
         var instance = checkpoint;
         var store = provider.GetRequiredService<IWorkflowStateRepository>();
         checkpoint.Status = WorkflowStatus.Terminated;
@@ -299,7 +299,7 @@ public class EngineContractRegressionTests
             .CancelAsync(instance.InstanceId,
                 new CancellationReason { ReasonCode = "operator" });
 
-        Assert.Equal(WorkflowExecutionStatus.Failed, result.Status);
+        Assert.Equal(WorkflowExecutionStatus.Terminated, result.Status);
     }
 
     // A cancellation that arrives after the instance completed changes nothing and does not report it cancelled.
@@ -849,7 +849,7 @@ public class EngineContractRegressionTests
     [Fact]
     public async Task PublishedWorkflowVersion_CannotBeSilentlyReplaced()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var original = new WorkflowDefinition { Name = "Order", Version = 1, Description = "published" };
         await registry.RegisterWorkflowAsync(original);
 
@@ -875,7 +875,7 @@ public class EngineContractRegressionTests
             Then = [new ActivityStepDocument { Id = "yes", Activity = "Mark" }]
         });
 
-        var definition = await YamlTestCompilation.BuildAsync(document, ResolvedContracts());
+        var definition = await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts());
         Assert.Single(definition.Steps);
         Assert.Equal(WorkflowStepType.Conditional, definition.Steps[0].StepType);
         Assert.Single(definition.Steps[0].ThenSteps);
@@ -886,7 +886,7 @@ public class EngineContractRegressionTests
     public async Task GeneratedYaml_RejectsExternalStepReferences()
     {
         var document = Document(new StepReferenceStepDocument { Id = "external", Ref = "SharedSequence" });
-        await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => YamlTestCompilation.BuildAsync(document, ResolvedContracts()));
+        await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts()));
     }
 
     [Trait("Feature", "documents")]
@@ -909,7 +909,7 @@ public class EngineContractRegressionTests
             }]
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts(typeof(YamlMappingActivity)))).Steps);
+        var step = Assert.Single((await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts(typeof(YamlMappingActivity)))).Steps);
         var data = new RegressionData { Value = "input" };
         var context = new WorkflowContext<RegressionData> { WorkflowData = data };
 
@@ -938,7 +938,7 @@ public class EngineContractRegressionTests
             }]
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts(typeof(YamlMappingActivity)))).Steps);
+        var step = Assert.Single((await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts(typeof(YamlMappingActivity)))).Steps);
         Assert.Equal(true, Assert.Single(step.InputMappings).SourceFunction(new WorkflowContext<RegressionData>
         {
             WorkflowData = new RegressionData()
@@ -976,7 +976,7 @@ public class EngineContractRegressionTests
             ResumeCondition = new PathExpressionDocument { Path = "event.Approved" }
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts())).Steps);
+        var step = Assert.Single((await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts())).Steps);
         Assert.NotNull(step.CompiledCondition);
         Assert.False(step.CompiledCondition(new ResumeEventContext<RegressionData, RegressionApprovalEvent>
         {
@@ -998,7 +998,7 @@ public class EngineContractRegressionTests
             Workflow = new WorkflowReferenceDocument { Name = "Child", Version = 1 }
         });
 
-        var step = Assert.Single((await YamlTestCompilation.BuildAsync(document, ResolvedContracts())).Steps);
+        var step = Assert.Single((await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, ResolvedContracts())).Steps);
         Assert.Null(step.WorkflowType);
         Assert.Equal("Child", step.WorkflowName);
     }
@@ -1012,7 +1012,7 @@ public class EngineContractRegressionTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
-        var registry = scope.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = scope.ServiceProvider.GetRequiredService<IWorkflowCatalog>();
         var child = Workflow.Create<ChildData>("Child")
             .Step<MarkChildActivity>(setup => setup
                 .Input(a => a.Value).From(ctx => ctx.WorkflowData.Value)
@@ -1053,10 +1053,10 @@ public class EngineContractRegressionTests
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => engine.RunAsync(parent, new RegressionData()));
         Assert.Contains("Workflow definition not found: MissingChild v1", error.Message);
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("MissingChildParent"));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "MissingChildParent", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         Assert.NotEqual(WorkflowStatus.Failed, saved.Status);
 
-        await scope.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await scope.ServiceProvider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("MissingChild")
                 .Step<MarkChildActivity>(setup => setup
                     .Output(a => a.Executed).To(ctx => ctx.WorkflowData.Executed))
