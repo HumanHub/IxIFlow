@@ -583,11 +583,16 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 DELETE FROM ixiflow_outbox_events WHERE instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=ixiflow_outbox_events.event_id);
                 DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId;
+                DELETE FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_events WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_commits WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId;
                 """,
+        Statement.IncarnationDiagnostics => "SELECT d.diagnostic_json FROM ixiflow_workflow_diagnostics d JOIN ixiflow_workflow_instances i ON i.instance_id = d.instance_id WHERE i.instance_id = @InstanceId AND i.incarnation = @Incarnation ORDER BY d.diagnostic_id",
+        Statement.DiagnosticIds => "SELECT diagnostic_id FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId",
+        Statement.InsertDiagnostic => "INSERT INTO ixiflow_workflow_diagnostics (instance_id, diagnostic_id, diagnostic_json) VALUES (@InstanceId, @DiagnosticId, @DiagnosticJson)",
+        Statement.DeleteDiagnostics => "DELETE FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId AND diagnostic_id IN @Ids",
         Statement.Trace => """
             SELECT sequence, entry_json FROM ixiflow_workflow_traces
             WHERE instance_id = @InstanceId AND sequence > @AfterSequence
@@ -685,6 +690,12 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             part_key TEXT COLLATE BINARY NOT NULL,
             json TEXT NOT NULL,
             PRIMARY KEY (instance_id, part_key)
+        );
+        CREATE TABLE IF NOT EXISTS ixiflow_workflow_diagnostics (
+            instance_id TEXT COLLATE BINARY NOT NULL,
+            diagnostic_id TEXT COLLATE BINARY NOT NULL,
+            diagnostic_json TEXT NOT NULL,
+            PRIMARY KEY (instance_id, diagnostic_id)
         );
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_traces (
             instance_id TEXT COLLATE BINARY NOT NULL,

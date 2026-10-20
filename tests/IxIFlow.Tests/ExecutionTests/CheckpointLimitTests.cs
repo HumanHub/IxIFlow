@@ -151,7 +151,10 @@ public sealed class CheckpointLimitTests
 
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
         var pending = Assert.Single(await Engine(services).GetPendingActivitiesAsync(result.InstanceId));
-        Assert.Contains("The child workflow could not start", pending.Reason);
+        Assert.Matches(@"^ActivityUnresolved \([0-9a-f]{32}\)$", pending.Reason!);
+        var raw = Assert.Single(await services.GetRequiredService<IWorkflowDiagnostics>().ReadAsync(result.InstanceId));
+        Assert.Contains("The child workflow could not start", raw.Message);
+        Assert.Equal(pending.Reason, new InspectionError(raw.ErrorType, raw.DiagnosticId).ToString());
     }
 
     [Fact]
@@ -179,6 +182,7 @@ public sealed class CheckpointLimitTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(repository);
+        IxIFlow.Tests.Infrastructure.DiagnosticTestAccess.Allow(services);
         services.AddIxIFlow(options => options.MaxCheckpointBytes = maxCheckpointBytes);
         services.AddTransient<NoopActivity>();
         services.AddTransient<GrowActivity>();

@@ -152,12 +152,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
             .ToArray(), removed);
     }
 
-    // The JSON schema of an event type that this process can load, or null.
-    private static string? EventSchema(string typeName) =>
-        WorkflowTypeIdentity.Resolve(typeName) is { } type
-            ? System.Text.Json.Schema.JsonSchemaExporter.GetJsonSchemaAsNode(
-                System.Text.Json.JsonSerializerOptions.Default, type).ToJsonString()
-            : null;
+    private static string? EventSchema(string typeName) => InspectionRedactionPolicy.Default.EventSchema(typeName);
 
     private async Task<WorkflowExecutionResult> DecideAsync(string instanceId, string eventId,
         Func<WorkflowHost.SlotClient, Task<EventAppendResult>> deliver, CancellationToken cancellationToken)
