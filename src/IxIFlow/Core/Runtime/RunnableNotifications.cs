@@ -62,7 +62,7 @@ internal sealed class RunnableNotifications(IRunnableNotifier notifier,
                     catch (OperationCanceledException) when (_stop.IsCancellationRequested) { throw; }
                     catch (Exception failure)
                     {
-                        _logger.LogError(failure, "Runnable notifier failed after timing out for {InstanceId}", notice.InstanceId);
+                        (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(_logger, sensitiveDiagnostics, LogLevel.Error, failure, "Runnable notifier failed after timing out for {InstanceId}", notice.InstanceId);
                     }
                 }
                 catch (OperationCanceledException) when (_stop.IsCancellationRequested) { throw; }
