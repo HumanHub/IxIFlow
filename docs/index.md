@@ -18,11 +18,13 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [Execution model](execution-model.md) | Commits, recovery, leases, inboxes, waits, children and parallel data |
 | [Sagas](sagas.md) | Compensation, saved faults and retry scopes |
 | [Reply tokens](reply-tokens.md) | Capability tokens, safe handling and reply authorization |
-| [Hosting](coordinator-and-hosts.md) | The core host, slots, store selection, recovery and shutdown |
+| [Hosting](coordinator-and-hosts.md) | The core host, message contract, slots, demands, recovery, shutdown and unschedulable work |
+| [Placement and data residency](coordinator-and-hosts.md#placement-and-data-residency) | Inherited compute demands and a separate cluster/store per region |
 | [Coordinators](coordinators.md) | Local matching services, host links, awaits, discovery and fallback |
 | [Workflow operations](operations.md) | Instance search, wait inspection, trace pages and hard termination |
 | [Operations over HTTP](operations-http.md) | Management endpoints, policies, query scope, actors and bounded waits |
-| [Stores](stores.md) | Memory, SQLite, SQL Server and PostgreSQL |
+| [Stores](stores.md) | Memory, SQLite, SQL Server and PostgreSQL; persistent catalog and artifact retention |
+| [YAML publishing](yaml-authoring.md#publishing-and-boundaries) | Import-free drafts, verified immutable bundles and remaining deployment boundaries |
 | [Large payloads](large-payloads.md) | Checkpoint claim checks, byte limits and unavailable-payload recovery |
 | [Incoming webhooks](incoming-webhooks.md) | Authorized triggers, atomic idempotency, CloudEvents and public status |
 | [Outbox and publishers](outbox-and-publishers.md) | Completion delivery, custom publishers, outgoing webhooks and templates |
