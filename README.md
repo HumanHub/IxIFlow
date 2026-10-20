@@ -208,6 +208,6 @@ After 1.0: broker publisher/consumer samples for RabbitMQ or Azure Service Bus, 
 
 Start with [getting started](docs/getting-started.md) or [samples and their feature map](samples/README.md). The [docs index](docs/index.md) links every guide, including the [fluent API](docs/fluent-api.md), [YAML](docs/yaml-authoring.md), [execution model](docs/execution-model.md), [activity SDK](docs/activity-sdk.md), [hosting](docs/coordinator-and-hosts.md), [publishers](docs/outbox-and-publishers.md) and [roadmap](docs/roadmap.md).
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and the [MIT license](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md). IxIFlow is licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE).
 
 Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in `IxIFlow.Core`. `RegisterWorkflow<TWorkflow,TData>()` and `Invoke<TWorkflow,TData>(setup)` read it from the type without constructing the class to discover identity; missing attributes are refused. Typed YAML children need only `workflowType`, with no duplicate name/version field.
