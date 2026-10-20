@@ -59,7 +59,8 @@ public sealed partial class WorkflowHost
             if (unmet.Length == 0) return true;
             if (unmet.Any(demand => !demand.Key.StartsWith("workflow:", StringComparison.Ordinal))) return false;
             // Another catalog instance may have published since this host's last heartbeat.
-            var refreshed = new ClaimQuery(_hostSettings.Id, await _hostSettings.RefreshCapabilitiesAsync(registry));
+            if (await _hostSettings.RefreshDemandCapabilitiesAsync(registry, _time) is not { } capabilities) return false;
+            var refreshed = new ClaimQuery(_hostSettings.Id, capabilities);
             return DemandMatching.Meets(demands, refreshed, now);
         }
 

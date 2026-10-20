@@ -187,7 +187,7 @@ public sealed class ActivityPackageReviewFixTests
         Assert.Equal(WorkflowErrorKind.ResourceExhausted, upload.Kind);
         var pin = await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(bytes));
         var packagePin = new WorkflowPackagePin(pin.Id, pin.Version, pin.Digest, pin.Entries, [], new Dictionary<string, WorkflowPackageAssets> { [""] = new([], []) }, false);
-        var host = await Assert.ThrowsAsync<WorkflowEngineException>(() => new BundleCache(store, Folder(), limits, TimeSpan.FromSeconds(5)).ReadPackageAsync(packagePin, default));
+        var host = await Assert.ThrowsAsync<WorkflowEngineException>(() => new BundleCache(store, Folder(), limits, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5)).ReadPackageAsync(packagePin, default));
         Assert.Equal(WorkflowErrorKind.ResourceExhausted, host.Kind);
     }
 

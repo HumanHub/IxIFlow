@@ -33,30 +33,46 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
         if (settings.BundleHostingEnabled)
         {
             capabilities.Add("bundle-host", "");
-            foreach (var row in await registry.GetWorkflowVersionsAsync())
-                if (row.ArtifactDigest != null && Compatible(row.ManifestJson))
+            var rows = await registry.GetWorkflowVersionsAsync();
+            var retained = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var row in rows)
+                if (row.ArtifactDigest != null && settings.Compatibility.Compatible(row.ManifestJson, retained, settings.CapabilityLogger))
                     capabilities[$"workflow:{row.Name}@{row.Version}"] = row.StructureHash;
+            settings.Compatibility.Retain(retained);
         }
         return capabilities;
     }
 
-    private static readonly ConcurrentDictionary<string, Lazy<bool>> Compatibility = new(StringComparer.Ordinal);
-
-    internal static bool Compatible(string? json)
+    internal sealed class CompatibilityMemo
     {
-        if (json == null) return false;
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
-        return Compatibility.GetOrAdd(hash, _ => new Lazy<bool>(() => ValidateCompatibility(json))).Value;
-    }
+        private readonly ConcurrentDictionary<string, Lazy<bool>> _entries = new(StringComparer.Ordinal);
 
-    private static bool ValidateCompatibility(string json)
-    {
-        try
+        internal bool Compatible(string? json, ISet<string> retained, ILogger? logger)
         {
-            return System.Text.Json.JsonSerializer.Deserialize<WorkflowBundleManifest>(json) is { } manifest &&
-                WorkflowSharedAssemblies.IsCompatible(manifest);
+            if (json == null) return false;
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
+            retained.Add(hash);
+            return _entries.GetOrAdd(hash, _ => new Lazy<bool>(() =>
+            {
+                try
+                {
+                    return System.Text.Json.JsonSerializer.Deserialize<WorkflowBundleManifest>(json) is { } manifest &&
+                        WorkflowSharedAssemblies.IsCompatible(manifest);
+                }
+                catch (Exception error) when (error is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
+                {
+                    // Do not log untrusted manifest content or exception details.
+                    logger?.LogWarning("Could not validate bundle manifest {ManifestHash}; treating it as incompatible", hash);
+                    return false;
+                }
+            })).Value;
         }
-        catch (System.Text.Json.JsonException) { return false; }
+
+        internal void Retain(IReadOnlySet<string> hashes)
+        {
+            foreach (var hash in _entries.Keys)
+                if (!hashes.Contains(hash)) _entries.TryRemove(hash, out _);
+        }
     }
 
     private Task RegisterAsync(IReadOnlyDictionary<string, string> capabilities, CancellationToken token) =>

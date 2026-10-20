@@ -208,7 +208,7 @@ public static class WorkflowOperationsExtensions
                 http.Items[typeof(InstanceSummary)] = summary;
             }
             return await next(invocation);
-        });
+        }, inspectionRead: HttpMethods.IsGet(invocation.HttpContext.Request.Method));
     }
 
     private static async Task<IResult> MutateAsync(HttpContext http, string id, WorkflowOperationsOptions options,

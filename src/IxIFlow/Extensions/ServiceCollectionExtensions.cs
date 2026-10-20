@@ -28,7 +28,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IWorkflowDiagnostics, WorkflowDiagnostics>();
         // Core workflow services
         services.TryAddSingleton<HostSettings>(provider => HostSettings.Default with
-        { BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null });
+        { BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
+            CapabilityLogger = provider.GetService<ILogger<WorkflowHeartbeatService>>() });
         services.TryAddSingleton(RetentionSettings.Default);
         services.TryAddSingleton<IRunnableNotifier, NullRunnableNotifier>();
         services.TryAddSingleton<CoordinationState>();
@@ -138,6 +139,7 @@ public static class ServiceCollectionExtensions
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
             { HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes,
                 BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
+                CapabilityLogger = provider.GetService<ILogger<WorkflowHeartbeatService>>(),
                 UnschedulableScanInterval = options.UnschedulableScanInterval }));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
