@@ -138,6 +138,25 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                         _time, _stop.Token);
                     if (!renewed)
                     {
+                        try
+                        {
+                            var request = _repository.GetCancellationRequestAsync(_instanceId);
+                            remaining = expiresAtUtc - Now;
+                            var reason = await request.WaitAsync(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero,
+                                _time, _stop.Token);
+                            if (reason?.Mode == WorkflowControlMode.Terminate)
+                            {
+                                // Termination refuses renewal but leaves the current lease valid until
+                                // expiry, so its owner can still acknowledge the hard stop at a commit.
+                                ObserveCancellation(reason);
+                                return;
+                            }
+                        }
+                        catch (Exception error) when (error is not OperationCanceledException)
+                        {
+                            Lose(error);
+                            return;
+                        }
                         Lose(new InvalidOperationException(
                             $"Execution lease for workflow instance '{_instanceId}' was lost"));
                         return;
