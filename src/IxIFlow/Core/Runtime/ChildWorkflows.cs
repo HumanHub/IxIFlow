@@ -14,7 +14,7 @@ internal sealed class ChildCompleted
 
     public string ChildInstanceId { get; set; } = "";
     public WorkflowStatus Status { get; set; }
-    public string DataJson { get; set; } = "";
+    public StoredJson DataJson { get; set; } = StoredJson.Inline("");
     public SerializedException? Error { get; set; }
 
     /// <summary>The notice a child's terminal commit carries, or null for an instance with no parent waiting.</summary>
@@ -26,9 +26,10 @@ internal sealed class ChildCompleted
                 {
                     ChildInstanceId = instance.InstanceId,
                     Status = instance.Status,
-                    DataJson = instance.WorkflowDataJson,
+                    DataJson = instance.Status != WorkflowStatus.Completed ? StoredJson.Inline("")
+                        : instance.WorkflowDataJson,
                     Error = instance.Status == WorkflowStatus.Failed ? checkpoint.UnhandledError : null
-                }))
+                })) { PayloadDependencies = instance.Status == WorkflowStatus.Completed && instance.WorkflowDataJson.Reference is { } reference ? [reference] : [] }
             : null;
 
     /// <summary>
@@ -38,7 +39,7 @@ internal sealed class ChildCompleted
     /// </summary>
     public ActivityRunResult Outcome(Type dataType) => Status switch
     {
-        WorkflowStatus.Completed => ActivityRunResult.Returned(JsonSerializer.Deserialize(DataJson, dataType)),
+        WorkflowStatus.Completed => ActivityRunResult.Returned(JsonSerializer.Deserialize(DataJson.InlineText, dataType)),
         WorkflowStatus.Failed => ActivityRunResult.Threw(Error?.ForPropagation()
             ?? new InvalidOperationException($"Child workflow '{ChildInstanceId}' failed")),
         _ => ActivityRunResult.Threw(new ChildWorkflowEndedException(ChildInstanceId, Status))

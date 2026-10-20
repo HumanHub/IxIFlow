@@ -171,7 +171,7 @@ public sealed class OperationsTests
         var child = await SeedAsync(store, WorkflowStatus.Suspended, parent.InstanceId, "child-wait");
         await services.GetRequiredService<IWorkflowOperations>().TerminateAsync(child.InstanceId, "stop");
         var inbox = await store.GetPendingEventsAsync(parent.InstanceId, 0, 10);
-        Assert.Equal(WorkflowStatus.Terminated, JsonSerializer.Deserialize<ChildCompleted>(Assert.Single(inbox.Events).PayloadJson)!.Status);
+        Assert.Equal(WorkflowStatus.Terminated, JsonSerializer.Deserialize<ChildCompleted>(Assert.Single(inbox.Events).PayloadJson.InlineText)!.Status);
     }
 
     [Theory]
@@ -329,7 +329,7 @@ public sealed class OperationsTests
         string? parent = null, string? parentWait = null)
     {
         var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Unregistered",
-            WorkflowVersion = 1, Status = status, CreatedAt = DateTime.UtcNow, WorkflowDataJson = "{}",
+            WorkflowVersion = 1, Status = status, CreatedAt = DateTime.UtcNow, WorkflowDataJson = StoredJson.Inline("{}"),
             WorkflowDataType = "unavailable type", ExecutionStateJson = StoreTestSupport.CheckpointJson,
             ParentInstanceId = parent, ParentWaitId = parentWait };
         var lease = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);

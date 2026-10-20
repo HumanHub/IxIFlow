@@ -90,7 +90,7 @@ internal sealed class FaultProjection
             return new EmptyFault();
         if (error.Fault is { } savedFault && savedFault.Type == WorkflowTypeIdentity.SavedName(_faultType) &&
             error.FaultCatchType == WorkflowTypeIdentity.SavedName(_exceptionType))
-            return JsonSerializer.Deserialize(savedFault.Json, _faultType)
+            return JsonSerializer.Deserialize(savedFault.Json.InlineText, _faultType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Saved fault '{_faultType.Name}' could not be restored");
 

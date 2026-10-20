@@ -21,6 +21,10 @@ internal sealed class ExecutionCheckpoint
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool TraceBudgetExhausted { get; set; }
 
+    /// <summary>Whether this instance's replay origin has been recorded, including for child starts.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool TraceReplayInitialized { get; set; }
+
     [JsonRequired]
     public string Runtime { get; set; } = "structured-v2";
     /// <summary>
@@ -45,6 +49,9 @@ internal sealed class ExecutionCheckpoint
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool StoredTrunk { get; set; }
+    /// <summary>Store-owned retry metadata for branches whose parts are payloads.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<PayloadRetry>? PayloadRetries { get; set; }
 
     /// <summary>
     /// Answers to requests that arrived before their <c>WaitFor</c> was reached. Each is taken
@@ -144,6 +151,8 @@ internal sealed class ExecutionCheckpoint
     /// </summary>
     public OperatorStopState? OperatorStop { get; set; }
 
+    public DebugCheckpoint Debug { get; set; } = new();
+
     [JsonIgnore]
     public Exception? RuntimeUnhandledError { get; set; }
 
@@ -194,7 +203,12 @@ internal sealed class ExecutionCheckpoint
     {
         // Check the envelope before interpreting state that belongs to another schema.
         using var document = JsonDocument.Parse(json);
-        var root = document.RootElement;
+        ValidateEnvelope(document.RootElement);
+        return JsonSerializer.Deserialize<ExecutionCheckpoint>(json)!;
+    }
+
+    internal static void ValidateEnvelope(JsonElement root)
+    {
         var version = root.ValueKind == JsonValueKind.Object && root.TryGetProperty(nameof(SchemaVersion), out var savedVersion)
             ? savedVersion.ToString() : "missing";
         if (root.ValueKind != JsonValueKind.Object ||
@@ -204,7 +218,6 @@ internal sealed class ExecutionCheckpoint
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Unsupported execution checkpoint version '{version}'; expected 4. " +
                 "Saved instances from earlier builds cannot be read; no migration is available");
-        return JsonSerializer.Deserialize<ExecutionCheckpoint>(json)!;
     }
 
     /// <summary>
@@ -222,11 +235,15 @@ internal sealed class ExecutionCheckpoint
 
     /// <summary>The earliest time, in the host's clock, at which a wait or the execution deadline may be due.</summary>
     public DateTime? NextDeadlineLocal() =>
-        Waits.Select(wait => wait.DeadlineUtc is { } deadline ? Clock.ToLocal(deadline) : (DateTime?)null)
-            .Append(ExecutionTimerOpen && ExecutionDeadlineUtc is { } execution ? Clock.ToLocal(execution) : null)
+        Waits.Where(wait => SteppingPolicy.Allows(this, wait.ContinuationId)).Select(wait => wait.DeadlineUtc is { } deadline ? Clock.ToLocal(deadline) : (DateTime?)null)
+            .Append(Debug.Stepping == null && ExecutionTimerOpen && ExecutionDeadlineUtc is { } execution ? Clock.ToLocal(execution) : null)
             .Min();
 
     private object? _rootData;
+    [JsonIgnore]
+    public bool RootDataChanged { get; set; } = true;
+    [JsonIgnore]
+    public Func<object, bool>? RootDataUnchanged { get; set; }
 
     /// <summary>The instance's workflow data, which the root continuation reads and writes.</summary>
     [JsonIgnore]
@@ -394,6 +411,12 @@ internal sealed class ExecutionCheckpoint
     }
 }
 
+internal sealed class PayloadRetry
+{
+    public string Id { get; set; } = "";
+    public DateTime? RetryAfterUtc { get; set; }
+}
+
 internal sealed class OperatorStopState
 {
     public InspectionError? Diagnostic { get; set; }
@@ -412,6 +435,8 @@ internal sealed class OperatorStopState
         OperatorStopKind.Verification =>
             $"The workflow instance is stopped because the engine could not verify a commit ({Reason}); its last " +
             "checkpoint is kept. Release it to run it again, or cancel it",
+        OperatorStopKind.PayloadUnavailable =>
+            $"The workflow instance is stopped because a payload is unavailable ({Reason}); its checkpoint is kept. Restore the payload and release it",
         _ => $"The workflow instance is stopped at a resource limit ({Reason}); " +
             "raise the limit and release it, or cancel it"
     };
@@ -423,7 +448,8 @@ internal enum OperatorStopKind
     Quarantine,
 
     /// <summary>A commit failed the checkpoint parts' verification, which points at an engine fault.</summary>
-    Verification
+    Verification,
+    PayloadUnavailable
 }
 
 internal enum ContinuationStatus
@@ -444,6 +470,12 @@ internal sealed class ContinuationState
 
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string? ParentJoinId { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ForkActivationId { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ScopePosition? PendingJoinFrame { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public SerializedException? DeferredFailure { get; set; }
 
     /// <summary>For a branch, its place in the order the instance's branches started; the root's is zero.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -646,7 +678,7 @@ internal sealed class ActivityInputValue
                 return (new ActivityInputValue(), null);
             var type = SavedType(input, value);
             var json = JsonSerializer.Serialize(value, type, OptionsFor(input));
-            var saved = new ActivityInputValue { Value = new SerializedValue { Type = WorkflowTypeIdentity.SavedName(type), Json = json } };
+            var saved = new ActivityInputValue { Value = new SerializedValue { Type = WorkflowTypeIdentity.SavedName(type), Json = StoredJson.Inline(json) } };
             return (saved, saved.ReadAs(type, input, services));
         }
         catch (Exception problem)
@@ -677,8 +709,8 @@ internal sealed class ActivityInputValue
 
     private object? ReadAs(Type type, PropertyInfo input, IServiceProvider services) =>
         typeof(IAsyncActivity).IsAssignableFrom(type) && !HasConverter(input)
-            ? SerializedValue.ReadActivity(type, Value!.Json, services)
-            : JsonSerializer.Deserialize(Value!.Json, type, OptionsFor(input));
+            ? SerializedValue.ReadActivity(type, Value!.Json.InlineText, services)
+            : JsonSerializer.Deserialize(Value!.Json.InlineText, type, OptionsFor(input));
 
     // A value is saved under its own type, read back by name, which keeps a derived value whole. A non-public
     // collection, such as a LINQ iterator, is saved under the input's declared type: what it holds is its elements, and
@@ -767,7 +799,7 @@ internal sealed class ScopePosition
 
     /// <summary>For an item's frame, the value its result step gave, as JSON of the result type.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? ForEachResult { get; set; }
+    public StoredJson? ForEachResult { get; set; }
 
     [JsonIgnore]
     public object? RuntimeEntryPrevious { get; set; }
@@ -791,11 +823,11 @@ internal sealed class ForEachState
     /// <summary>This run of the step, which names its list and results where they are stored.</summary>
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
-    public List<string> Items { get; set; } = [];
+    public List<StoredJson> Items { get; set; } = [];
     public int Next { get; set; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public List<string?>? Results { get; set; }
+    public List<StoredJson?>? Results { get; set; }
 
     /// <summary>In parallel, the items whose branches completed.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -992,7 +1024,7 @@ internal sealed class WaitState
     public string Key { get; set; } = "";
     public string EventType { get; set; } = "";
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? DefaultPayloadJson { get; set; }
+    public StoredJson? DefaultPayloadJson { get; set; }
     public DateTime RegisteredAtUtc { get; set; }
 
     /// <summary>
@@ -1076,14 +1108,14 @@ internal sealed class AcceptedWaitState
 internal sealed class SerializedValue
 {
     public string Type { get; set; } = "";
-    public string Json { get; set; } = "";
+    public StoredJson Json { get; set; } = StoredJson.Inline("");
 
     public static SerializedValue? From(object? value) => value == null
         ? null
         : new SerializedValue
         {
             Type = WorkflowTypeIdentity.SavedName(value.GetType()),
-            Json = JsonSerializer.Serialize(value, value.GetType())
+            Json = StoredJson.Inline(JsonSerializer.Serialize(value, value.GetType()))
         };
 
     public object? Read(IServiceProvider services)
@@ -1092,8 +1124,8 @@ internal sealed class SerializedValue
             ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Saved value type '{Type}' is unavailable");
         return typeof(IAsyncActivity).IsAssignableFrom(type)
-            ? ReadActivity(type, Json, services)
-            : JsonSerializer.Deserialize(Json, type);
+            ? ReadActivity(type, Json.InlineText, services)
+            : JsonSerializer.Deserialize(Json.InlineText, type);
     }
 
     /// <summary>An activity created through the container, with each saved property set as its own attributes read it.</summary>

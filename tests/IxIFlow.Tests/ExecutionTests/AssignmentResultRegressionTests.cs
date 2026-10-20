@@ -169,7 +169,7 @@ public sealed class AssignmentResultRegressionTests
         {
             InstanceId = instance.InstanceId, Incarnation = Guid.NewGuid(),
             WorkflowName = "Replacement", WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
-            WorkflowDataJson = "not valid JSON", Status = WorkflowStatus.Completed,
+            WorkflowDataJson = StoredJson.Inline("not valid JSON"), Status = WorkflowStatus.Completed,
             LastError = "replacement error", LastErrorStackTrace = "replacement stack"
         };
         store.LoseOnCommit = true;
@@ -220,7 +220,7 @@ public sealed class AssignmentResultRegressionTests
             Control.OnUnscheduled(host.Unschedule);
             _watch = new CancellationWatch(store, time);
             Operations = new(Services, Services.GetRequiredService<IActivityExecutor>(), store,
-                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), Services.GetRequiredService<ExecutionLeaseRenewer>(),
                 timeProvider: time, limits: limits, control: Control, watch: _watch);
         }
 
@@ -282,12 +282,13 @@ public sealed class AssignmentResultRegressionTests
             return await base.CommitWorkflowInstanceAsync(commit);
         }
 
-        Task<bool> IWorkflowStateRepository.RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
+        async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> IWorkflowStateRepository.RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
         {
-            if (!_holdRenewal) return base.RenewExecutionLeaseAsync(id, token, duration);
+            if (!_holdRenewal) return await base.RenewExecutionLeasesAsync(leases);
             Interlocked.Increment(ref HeldRenewals);
             _renewalStarted.TrySetResult();
-            return Renewal.Task;
+            var renewed = await Renewal.Task;
+            return leases.Select(_ => new ExecutionLeaseRenewalResult(renewed ? ExecutionLeaseRenewalStatus.Renewed : ExecutionLeaseRenewalStatus.Refused)).ToArray();
         }
 
         Task<WorkflowInstance?> IWorkflowStateRepository.GetWorkflowInstanceAsync(string id) =>
@@ -307,6 +308,7 @@ public sealed class AssignmentResultRegressionTests
         public Task<StartChildReply> StartChildAsync(StartChild request) => inner.StartChildAsync(request);
         public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => inner.ReadInboxAsync(request);
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => inner.ReadWaitAsync(request);
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) => inner.ReadPayloadAsync(request);
     }
 
     private sealed class RefusingHost : IExecutionHost
@@ -320,6 +322,7 @@ public sealed class AssignmentResultRegressionTests
         public Task<StartChildReply> StartChildAsync(StartChild request) => throw new NotSupportedException();
         public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => throw new NotSupportedException();
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => throw new NotSupportedException();
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) => throw new NotSupportedException();
     }
 
     public sealed class Data

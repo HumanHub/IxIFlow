@@ -64,7 +64,7 @@ public sealed class StoreWideEpochContractTests
             Assert.Equal(first.Epoch, await observer.ExecuteScalarAsync<long>(
                 "SELECT epoch FROM ixiflow_execution_epoch WHERE id = 1"));
             Assert.Equal(dataVersion, await observer.ExecuteScalarAsync<long>("PRAGMA data_version"));
-            Assert.True(await store.RenewExecutionLeaseAsync(id, "owner", Duration));
+            Assert.True((await store.RenewExecutionLeasesAsync([new(id, "owner", Duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
 
             Assert.True((await store.ReleaseExecutionLeaseAsync(id, "owner")).Released);
             var next = (await store.TryAcquireExecutionLeaseAsync(id, "next", Duration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
@@ -168,7 +168,7 @@ public sealed class StoreWideEpochContractTests
                 "SELECT Epoch, Token FROM dbo.IxIFlowWorkflowLeases WHERE InstanceId = @Id", new { Id = id });
             Assert.Equal(grant.Epoch, installed.Epoch);
             Assert.Equal("waiting", installed.Token);
-            Assert.True(await store.RenewExecutionLeaseAsync(id, "waiting", Duration));
+            Assert.True((await store.RenewExecutionLeasesAsync([new(id, "waiting", Duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
         }
         finally
         {
@@ -324,14 +324,14 @@ public sealed class StoreWideEpochContractTests
             CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 0),
                 await store.CommitWorkflowInstanceAsync(late));
             Assert.Null(await store.GetWorkflowInstanceAsync(id));
-            Assert.True(await store.RenewExecutionLeaseAsync(id, "host-b", Duration));
+            Assert.True((await store.RenewExecutionLeasesAsync([new(id, "host-b", Duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
             CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1),
                 await store.CommitWorkflowInstanceAsync(first));
             CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 1),
                 await store.CommitWorkflowInstanceAsync(late));
             var saved = (await store.GetWorkflowInstanceAsync(id))!;
             Assert.Equal(first.Incarnation, saved.Incarnation);
-            Assert.Equal("{\"owner\":\"replacement\"}", saved.WorkflowDataJson);
+            Assert.Equal("{\"owner\":\"replacement\"}", saved.WorkflowDataJson.InlineText);
             Assert.Equal(1, saved.Revision);
         }
         finally { await store.DeleteWorkflowInstanceAsync(id); }
@@ -410,7 +410,7 @@ public sealed class StoreWideEpochContractTests
             Assert.Equal(replacement.Revision, unchanged.Revision);
             Assert.Equal(replacement.Incarnation, unchanged.Incarnation);
             Assert.Equal(before, JsonSerializer.Serialize(unchanged));
-            Assert.True(await store.RenewExecutionLeaseAsync(id, "current-owner", Duration));
+            Assert.True((await store.RenewExecutionLeasesAsync([new(id, "current-owner", Duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
             CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, replacement.Revision + 1),
                 await store.CommitWorkflowInstanceAsync(
                     CheckpointCommit.Create(unchanged.CopyForResume(), current.Epoch, unchanged.Revision)));
@@ -425,6 +425,6 @@ public sealed class StoreWideEpochContractTests
     private static WorkflowInstance Instance(string id, string owner = "first") => new()
     { ExecutionStateJson = StoreTestSupport.CheckpointJson,
         InstanceId = id, WorkflowName = "StoreWideEpoch", Status = WorkflowStatus.Running,
-        WorkflowDataJson = "{\"owner\":\"" + owner + "\"}"
+        WorkflowDataJson = StoredJson.Inline("{\"owner\":\"" + owner + "\"}")
     };
 }

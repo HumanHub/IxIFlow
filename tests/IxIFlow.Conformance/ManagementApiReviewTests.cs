@@ -31,11 +31,12 @@ public sealed class ManagementApiReviewTests
         var instance = await SeedAsync(inner, WorkflowStatus.Running);
         var store = ReviewRepository.Wrap(inner, out var probe);
         await using var services = Services(store);
+        await using var renewer = new ExecutionLeaseRenewer(inner);
         await using var watch = new CancellationWatch(inner);
         var owner = (await WorkflowExecutionLease.TryAcquireAsync(inner, instance,
-            new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), _ => { }, _ => { }, _ => { }))!;
+            new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, renewer, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), _ => { }, _ => { }, _ => { }))!;
         var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
-            store, services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+            store, services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), services.GetRequiredService<ExecutionLeaseRenewer>(),
             limits: new ExecutionLimits { MaxCheckpointBytes = 10_000 });
         var identity = Guid.NewGuid();
         using var assignment = operations.Admit(instance, owner, identity);
@@ -45,7 +46,7 @@ public sealed class ManagementApiReviewTests
         if (stage == "limit") probe.Read = async id =>
         {
             var saved = (await inner.GetWorkflowInstanceAsync(id))!;
-            saved.WorkflowDataJson = JsonSerializer.Serialize(new string('x', 20_000));
+            saved.WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new string('x', 20_000)));
             return saved;
         };
         if (stage == "commit") probe.Commit = commit => commit.Instance.Status == WorkflowStatus.Terminated
@@ -54,6 +55,18 @@ public sealed class ManagementApiReviewTests
         var reply = Cross(await new WorkflowHost.InstanceOperations.ExecutionHost(operations).CheckpointAsync(request));
         Assert.Equal(CheckpointReplyKind.Conflict, reply.Kind);
         Assert.Equal(WorkflowControlMode.Terminate, reply.PendingCancellation!.Mode);
+        if (stage == "limit")
+        {
+            // Termination writes metadata only, so an instance over the size limit is still terminated,
+            // and its saved data stays as it was.
+            Assert.Null(assignment.LastCommitError);
+            var terminated = (await inner.GetWorkflowInstanceAsync(instance.InstanceId))!;
+            Assert.Equal(WorkflowStatus.Terminated, terminated.Status);
+            Assert.Equal(instance.WorkflowDataJson, terminated.WorkflowDataJson);
+            probe.Read = null;
+            await owner.DisposeAsync();
+            return;
+        }
         Assert.NotNull(assignment.LastCommitError);
         Assert.Equal(WorkflowStatus.Running, (await inner.GetWorkflowInstanceSummaryAsync(instance.InstanceId))!.Status);
         probe.Search = null; probe.Read = null; probe.Commit = null;
@@ -243,7 +256,7 @@ public sealed class ManagementApiReviewTests
         { invocationId = pending.InvocationId, kind = "Completed", note = "observed", invocationResult = new { number = 42 } });
         Assert.Contains(resolved.StatusCode, new[] { HttpStatusCode.OK, HttpStatusCode.Accepted });
         Assert.Equal(WorkflowExecutionStatus.Success, (await factory.Engine.AwaitAsync(stopped.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(Patience)).Status);
-        Assert.Equal(42, JsonSerializer.Deserialize<Data>((await store.GetWorkflowInstanceAsync(stopped.InstanceId))!.WorkflowDataJson)!.Number);
+        Assert.Equal(42, JsonSerializer.Deserialize<Data>((await store.GetWorkflowInstanceAsync(stopped.InstanceId))!.WorkflowDataJson.InlineText)!.Number);
         Assert.Empty((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: stopped.InstanceId))).Items);
     }
 
@@ -341,7 +354,7 @@ public sealed class ManagementApiReviewTests
         var instance = new WorkflowInstance
         {
             InstanceId = id ?? Guid.NewGuid().ToString("N"), WorkflowName = "ReviewUnregistered", Status = status,
-            CreatedAt = DateTime.UtcNow, WorkflowDataJson = "{}", WorkflowDataType = "unavailable type",
+            CreatedAt = DateTime.UtcNow, WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = "unavailable type",
             ExecutionStateJson = StoreTestSupport.CheckpointJson, ParentInstanceId = parent, ParentWaitId = parentWait
         };
         await store.SeedAsync(instance);

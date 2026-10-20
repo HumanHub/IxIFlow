@@ -43,7 +43,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         _ids.Add(id);
         return new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = id, WorkflowName = "Retention", WorkflowVersion = 1,
             Status = status, ParentInstanceId = parent, WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(ResultData)),
-            WorkflowDataJson = """{"Value":42}""", CompletedAt = DateTime.MinValue };
+            WorkflowDataJson = StoredJson.Inline("""{"Value":42}"""), CompletedAt = DateTime.MinValue };
     }
     private async Task<CheckpointCommit> Commit(WorkflowInstance instance, ParentNotice? notice = null)
     {
@@ -386,7 +386,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         Assert.Null(await store.GetWorkflowInstanceAsync(child.InstanceId));
         Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(start)).Status);
         Assert.True((await store.GetWaitAsync(parent.InstanceId, "child-wait"))!.IsOpen);
-        Assert.Equal("""{"Value":42}""", Assert.Single((await store.GetPendingEventsAsync(parent.InstanceId, 0, 100)).Events).PayloadJson);
+        Assert.Equal("""{"Value":42}""", Assert.Single((await store.GetPendingEventsAsync(parent.InstanceId, 0, 100)).Events).PayloadJson.InlineText);
         Assert.Contains(parent.InstanceId, (await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100))).Select(i => i.InstanceId));
     }
 
@@ -513,7 +513,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         var child = Instance(WorkflowStatus.Running, parent.InstanceId);
         await Commit(child);
         child = (await store.GetWorkflowInstanceAsync(child.InstanceId))!;
-        child.WorkflowDataJson = "{\"Value\":43}";
+        child.WorkflowDataJson = StoredJson.Inline("{\"Value\":43}");
         await Commit(child); // UpdateCommit rather than the initial insert.
         Assert.Equal(parent.InstanceId, (await store.GetWorkflowInstanceAsync(child.InstanceId))!.ParentInstanceId);
         Assert.Equal(child.InstanceId, Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: parent.InstanceId, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!))).InstanceId);
@@ -549,7 +549,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         Assert.True(current.Epoch > previous.Epoch);
         Assert.NotEqual(instance.Incarnation, replacement.Incarnation);
         Assert.False((await store.ReleaseExecutionLeaseAsync(instance.InstanceId, "previous")).Released);
-        Assert.False(await store.RenewExecutionLeaseAsync(instance.InstanceId, "previous", TimeSpan.FromMinutes(1)));
+        Assert.False((await store.RenewExecutionLeasesAsync([new(instance.InstanceId, "previous", TimeSpan.FromMinutes(1))]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
         Assert.Equal(WorkflowCommitStatus.StaleEpoch, (await store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(instance, previous.Epoch, instance.Revision))).Status);
     }

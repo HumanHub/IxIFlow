@@ -102,7 +102,7 @@ public sealed class ActivityRecoveryTests
         Assert.Contains("checkpoint", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
         var saved = await store.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.Equal(WorkflowStatus.Failed, saved?.Status);
-        Assert.Null(JsonSerializer.Deserialize<CheckpointData>(saved!.WorkflowDataJson)?.Payload);
+        Assert.Null(JsonSerializer.Deserialize<CheckpointData>(saved!.WorkflowDataJson.InlineText)?.Payload);
     }
 
     [Fact]
@@ -882,6 +882,7 @@ public sealed class ActivityRecoveryTests
 
     public sealed class FaultStore : IWorkflowStateRepository
     {
+        public IPayloadStore PayloadStore => _inner.PayloadStore;
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
             _inner.GetDefinitionAsync(name, version);
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
@@ -981,8 +982,8 @@ public sealed class ActivityRecoveryTests
             _inner.GetRunnableInstancesAsync(query);
         public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
-        public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
+        public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
+            _inner.RenewExecutionLeasesAsync(leases);
         public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
         public int FailNextCommits { get; set; }
@@ -1001,10 +1002,9 @@ public sealed class ActivityRecoveryTests
             }
             if (instance.Status == WorkflowStatus.Failed && FailFailureCommits-- > 0)
                 throw new IOException("Checkpoint unavailable");
-            var started = commit.ReadTraceEntries().LastOrDefault()?.EntryType ==
-                TraceEntryType.ActivityStarted;
-            var completed = commit.ReadTraceEntries().LastOrDefault()?.EntryType ==
-                TraceEntryType.ActivityCompleted;
+            var entries = commit.ReadTraceEntries();
+            var started = entries.Any(entry => entry.EntryType == TraceEntryType.ActivityStarted);
+            var completed = entries.Any(entry => entry.EntryType == TraceEntryType.ActivityCompleted);
             if (completed && FailCompletionBeforeApply-- > 0)
                 throw new IOException("Completion commit unavailable");
             var result = await _inner.CommitWorkflowInstanceAsync(commit);
@@ -1019,9 +1019,12 @@ public sealed class ActivityRecoveryTests
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
             _inner.GetWorkflowInstanceSummaryAsync(instanceId);
-        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-            IReadOnlyCollection<string> instanceIds) =>
-            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
+        public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
+            _inner.GetControlRequestsAsync(instanceIds);
+        public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+            _inner.RequestDebugCommandAsync(instanceId, command);
+        public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
+            _inner.GetDebugStatesAsync(instanceIds);
 
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);

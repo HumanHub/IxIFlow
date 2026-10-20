@@ -51,7 +51,7 @@ public sealed class SequentialRequestRecoveryScenarios
         var trace = await secondStore.GetTraceAsync(id);
         Assert.Single(trace, e => e.Entry.EntryType == TraceEntryType.EventReceived);
         Assert.Equal(37, System.Text.Json.JsonDocument.Parse((await secondStore.GetWorkflowInstanceAsync(id))!
-            .WorkflowDataJson).RootElement.GetProperty("Value").GetInt32());
+            .WorkflowDataJson.InlineText).RootElement.GetProperty("Value").GetInt32());
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository store, IWorkflowCatalog registry, Probe probe, TimeProvider time)

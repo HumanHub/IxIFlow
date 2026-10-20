@@ -15,7 +15,19 @@ namespace IxIFlow.Core;
 [JsonDerivedType(typeof(ReleaseTrace), "release")]
 [JsonDerivedType(typeof(TraceTruncation), "truncation")]
 [JsonDerivedType(typeof(TraceBudget), "budget")]
+[JsonDerivedType(typeof(DataEditedTrace), "dataEdited")]
+[JsonDerivedType(typeof(DebugCommandTrace), "debugCommand")]
+[JsonDerivedType(typeof(BreakpointHitTrace), "breakpointHit")]
+[JsonDerivedType(typeof(ReplayOriginTrace), "replayOrigin")]
+[JsonDerivedType(typeof(ThreadPositionTrace), "threadPosition")]
 public abstract record TracePayload;
+
+/// <summary>Versioned, value-free replay facts. Position deltas record decisions after execution, never expressions.</summary>
+public sealed record ReplayOriginTrace(string InstanceId, string StructureHash, long BaseRevision, TraceDetail Detail) : TracePayload
+{
+    public IReadOnlyList<InspectionThread> Threads { get; init; } = [];
+}
+public sealed record ThreadPositionTrace(string ContinuationId, InspectionThread? Thread) : TracePayload;
 
 /// <summary>Identifiers only; item indices start at zero and loop iterations at one.</summary>
 public record ControlFlowTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,
@@ -69,3 +81,11 @@ public sealed record TraceBudget(long Limit) : TracePayload
 public enum TraceDetail { Activities, Full }
 
 public enum TraceClock { Host, Store }
+
+public sealed record DebugCommandTrace(string Actor, string CommandId, long PauseGeneration) : TracePayload;
+public sealed record BreakpointHitTrace(string BranchId, string StepId, string BreakpointId,
+    long HitCount, long PauseGeneration) : TracePayload
+{
+    public string? Reason { get; init; }
+    public IReadOnlyList<BreakpointConditionDiagnostic> Diagnostics { get; init; } = [];
+}

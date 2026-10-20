@@ -12,8 +12,12 @@ public sealed record ExecutionLimits
 
     public static ExecutionLimits Default { get; } = new();
 
-    /// <summary>The largest checkpoint, in bytes of workflow data and execution state.</summary>
+    /// <summary>The largest checkpoint, counting inline JSON and encoded reference metadata.</summary>
     public long MaxCheckpointBytes { get; init; } = DefaultMaxCheckpointBytes;
+    public long PayloadThresholdBytes { get; init; } = PayloadStoreSettings.DefaultPayloadThresholdBytes;
+    public long MaxPayloadBytes { get; init; } = PayloadStoreSettings.DefaultMaxPayloadBytes;
+    /// <summary>Aggregate bytes hydrated or being transferred in one run.</summary>
+    public long MaxHydratedPayloadBytes { get; init; } = 128L * 1024 * 1024;
 
     /// <summary>The maximum trace entries per commit, including a truncation marker when needed.</summary>
     public int MaxTraceEntriesPerCommit { get; init; } = DefaultMaxTraceEntriesPerCommit;

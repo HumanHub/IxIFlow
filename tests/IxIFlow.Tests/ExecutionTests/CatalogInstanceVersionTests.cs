@@ -319,7 +319,7 @@ public sealed class CatalogInstanceVersionTests
     {
         InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = name, WorkflowVersion = version,
         Status = WorkflowStatus.Suspended, ExecutionStateJson = StoreTestSupport.CheckpointJson,
-        WorkflowDataJson = "{}", WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data))
+        WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data))
     };
 
     private sealed class CallerRow { public string Name { get; set; } = ""; public int Version { get; set; } }

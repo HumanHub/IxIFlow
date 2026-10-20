@@ -1,0 +1,43 @@
+{
+  "name": "ixiflow-debug",
+  "displayName": "IxIFlow Debugger",
+  "description": "Attach VS Code to the debugger hosted by an IxIFlow application.",
+  "version": "0.1.0",
+  "publisher": "ixiflow-local",
+  "engines": { "vscode": "^1.85.0" },
+  "main": "./extension.js",
+  "activationEvents": ["onDebug:ixiflow"],
+  "contributes": {
+    "debuggers": [{
+      "type": "ixiflow",
+      "label": "IxIFlow",
+      "languages": ["yaml", "csharp"],
+      "configurationAttributes": {
+        "attach": {
+          "required": ["instanceId", "endpoint"],
+          "properties": {
+            "instanceId": { "type": "string", "description": "Saved workflow instance ID." },
+            "endpoint": { "type": "string", "description": "pipe:name or tcp://127.0.0.1:port" },
+            "sessionToken": { "type": "string", "description": "Application-issued TCP token. Prefer a password input." },
+            "sourceRoots": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Build source directories mapped to local checkout directories." },
+            "continueOnDisconnect": { "type": "boolean", "default": false },
+            "replay": { "type": "boolean", "default": false }
+          }
+        },
+        "launch": {
+          "required": ["workflow", "version", "endpoint", "input"],
+          "properties": {
+            "workflow": { "type": "string" },
+            "version": { "type": "integer", "minimum": 1 },
+            "input": { "type": "object" },
+            "stopOnEntry": { "type": "boolean", "default": true },
+            "endpoint": { "type": "string" },
+            "sessionToken": { "type": "string" },
+            "sourceRoots": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        }
+      },
+      "initialConfigurations": [{ "type": "ixiflow", "request": "attach", "name": "Attach to workflow", "instanceId": "", "endpoint": "pipe:ixiflow-debug" }]
+    }]
+  }
+}

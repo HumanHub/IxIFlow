@@ -36,7 +36,7 @@ public sealed class PublishedBundleScenarios
         WorkflowInstance Instance(ArtifactDigest pin) => new()
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Pinned", WorkflowVersion = 1,
-            BundleDigest = pin, Status = WorkflowStatus.Running, WorkflowDataJson = "{}",
+            BundleDigest = pin, Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{}"),
             ExecutionStateJson = StoreTestSupport.CheckpointJson
         };
         var wrong = Instance(different);
@@ -75,7 +75,7 @@ public sealed class PublishedBundleScenarios
         await store.SeedAsync(new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "PinRetention", WorkflowVersion = 1,
-            BundleDigest = pinned, Status = WorkflowStatus.Completed, WorkflowDataJson = "{}",
+            BundleDigest = pinned, Status = WorkflowStatus.Completed, WorkflowDataJson = StoredJson.Inline("{}"),
             ExecutionStateJson = StoreTestSupport.CheckpointJson
         });
         // Deliberate catalog-loss fixture: the public catalog cannot delete immutable versions.

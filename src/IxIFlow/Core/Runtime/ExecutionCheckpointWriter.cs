@@ -29,7 +29,7 @@ internal static class ExecutionCheckpointWriter
         try
         {
             stored = Prepare(instance, checkpoint, workflowData, scopes, now, preserveSavedWorkflowData,
-                host.Limits.VerifyCheckpointParts, preserveContinuationState);
+                host.Limits.VerifyCheckpointParts, preserveContinuationState, host.Payloads);
         }
         catch (CheckpointVerificationException)
         {
@@ -48,16 +48,39 @@ internal static class ExecutionCheckpointWriter
             throw new CheckpointLimitExceededException(size, host.Limits.MaxCheckpointBytes);
         }
 
+        try
+        {
+            return await CommitPreparedAsync(host, instance, checkpoint, stored, now, clearsCrashCount, parkFor);
+        }
+        catch (CheckpointLimitExceededException)
+        {
+            lastCommitted.RestoreTo(instance);
+            throw;
+        }
+    }
+
+    /// <summary>Sends an already validated, prepared checkpoint without serializing its data again.</summary>
+    public static async Task<bool> CommitPreparedAsync(ExecutionSession host, WorkflowInstance instance,
+        ExecutionCheckpoint checkpoint, StoredCheckpoint stored, DateTime now, bool clearsCrashCount = true,
+        TimeSpan? parkFor = null)
+    {
+        checkpoint.Signals?.ThrowIfOwnershipLost();
+        var size = stored.Bytes;
         // The commit carries the run's inbox decisions and the waits it opened, armed and closed (D-33).
         // It says how long, not until when: the store stamps deadlines and the runnable time (D-35).
         var (opened, armed, closed) = checkpoint.Inbox.WaitChanges(checkpoint);
+        if (host.Limits.PayloadThresholdBytes != 0)
+        {
+            opened = opened.Select(wait => wait with { DefaultPayloadJson = wait.DefaultPayloadJson is { } value ? host.Payloads.Store(value) : null }).ToArray();
+            armed = armed.Select(wait => wait with { DefaultPayloadJson = wait.DefaultPayloadJson is { } value ? host.Payloads.Store(value) : null }).ToArray();
+        }
         // Children start, and are asked to cancel, in the commit that records the parent's waits for
         // them; a child's terminal commit tells its parent (D-17).
         var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision,
             clearsCrashCount: clearsCrashCount, parks: parkFor != null,
             settlements: checkpoint.Inbox.Settlements, inboxReadThrough: checkpoint.Inbox.ReadThrough,
             openedWaits: opened, closedWaits: closed, armedWaits: armed, wakeAfter: parkFor,
-            stopped: checkpoint.OperatorStop != null, childStarts: checkpoint.ChildStarts.ToArray(),
+            stopped: checkpoint.OperatorStop != null || instance.Status == WorkflowStatus.Paused, childStarts: checkpoint.ChildStarts.ToArray(),
             childCancellations: checkpoint.ChildCancellations.ToArray(),
             parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: checkpoint.Trace.Pending,
             diagnostics: checkpoint.PendingDiagnostics,
@@ -76,7 +99,7 @@ internal static class ExecutionCheckpointWriter
             }
             catch (CheckpointLimitExceededException)
             {
-                lastCommitted.RestoreTo(instance);
+                SavedForm.Of(host.SavedInstance ?? instance).RestoreTo(instance);
                 checkpoint.RestoreMarks(stored.Marks);
                 checkpoint.Trace.DiscardPending();
                 throw;
@@ -104,6 +127,9 @@ internal static class ExecutionCheckpointWriter
                     throw new ExecutionOwnershipLostException(new InvalidOperationException(reply.Error));
                 case CheckpointReplyKind.Retry or CheckpointReplyKind.Unknown when attempt < MaxAttempts:
                     // The commit is immutable, so sending it again cannot apply a different payload.
+                    // A final commit may have released the lease before its reply was lost. Let the
+                    // host resolve this exact outstanding commit even after ownership loss.
+                    await Task.Delay(TimeSpan.FromMilliseconds(25 * (1 << (attempt - 1))));
                     continue;
                 default:
                     throw new CheckpointInterruptedException(reply.Error == null ? null :
@@ -137,7 +163,7 @@ internal static class ExecutionCheckpointWriter
     /// </summary>
     public static StoredCheckpoint Prepare(WorkflowInstance instance, ExecutionCheckpoint checkpoint,
         object? workflowData, WorkflowScopeCatalog scopes, DateTime now, bool preserveSavedWorkflowData = false,
-        bool verify = false, bool preserveContinuationState = false)
+        bool verify = false, bool preserveContinuationState = false, CheckpointPayloads? payloads = null)
     {
         try
         {
@@ -146,18 +172,26 @@ internal static class ExecutionCheckpointWriter
                 ContinuationTransitions.PrepareCheckpoint(checkpoint, scopes);
             checkpoint.RetainDiagnostics();
             checkpoint.RecordBranchChanges();
-            var dataJson = preserveSavedWorkflowData
+            // Recording changes the persisted trace-budget counters; do it before splitting the checkpoint.
+            checkpoint.Trace.CapturePositions(now);
+            var reuseData = instance.SavedParts != null && (!checkpoint.RootDataChanged ||
+                workflowData != null && checkpoint.RootDataUnchanged?.Invoke(workflowData) == true);
+            var dataJson = preserveSavedWorkflowData || reuseData
                 ? instance.WorkflowDataJson
-                : BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData)));
+                : StoredJson.Inline(BranchData.Snapshot(workflowData ?? throw new ArgumentNullException(nameof(workflowData))));
             var stored = StoredCheckpoint.Split(checkpoint, dataJson, instance.PartsAt(instance.Revision),
                 checkpoint.TakeMarks(),
-                verify);
-            instance.WorkflowDataJson = dataJson;
+                verify, payloads);
+            instance.WorkflowDataJson = stored.Parts[CheckpointParts.DataKey];
+            checkpoint.RootDataChanged = false;
+            if (!preserveSavedWorkflowData && workflowData != null && !reuseData)
+                checkpoint.RootDataUnchanged = BranchData.Observe(workflowData);
             instance.ExecutionStateJson = stored.Trunk;
             instance.Stored = stored;
             return stored;
         }
-        catch (Exception ex) when (ex is not CheckpointVerificationException)
+        catch (Exception ex) when (ex is not CheckpointVerificationException and not ResourceLimitExceededException &&
+                                   ex is not WorkflowEngineException { Kind: WorkflowErrorKind.ResourceExhausted })
         {
             throw new CheckpointDataException(ex);
         }
@@ -166,7 +200,7 @@ internal static class ExecutionCheckpointWriter
     public sealed class CheckpointDataException(Exception inner) : Exception(
         $"The workflow state could not be checkpointed: {inner.Message}", inner);
 
-    private sealed record SavedForm(string WorkflowDataJson, string ExecutionStateJson, StoredCheckpoint? Stored)
+    private sealed record SavedForm(StoredJson WorkflowDataJson, string ExecutionStateJson, StoredCheckpoint? Stored)
     {
         public static SavedForm Of(WorkflowInstance instance) => new(instance.WorkflowDataJson,
             instance.ExecutionStateJson, instance.Stored);

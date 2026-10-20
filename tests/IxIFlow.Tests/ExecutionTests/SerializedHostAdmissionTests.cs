@@ -32,12 +32,13 @@ public sealed class SerializedHostAdmissionTests
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         await store.SeedAsync(instance);
         instance = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
-        // The watch reads the unwrapped store, so its background reads cannot change the probe's count.
+        // Background control reads bypass the probe; every call by the host is still counted.
+        await using var renewer = new ExecutionLeaseRenewer(store, time);
         await using var watch = new CancellationWatch(probe.Inner, time);
         await using var owner = (await WorkflowExecutionLease.TryAcquireAsync(store, instance,
-            new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, await StoreTestSupport.ClaimAsync(services), _ => { }, _ => { }, _ => { }, time))!;
+            new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, renewer, await StoreTestSupport.ClaimAsync(services), _ => { }, _ => { }, _ => { }, time))!;
         var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
-            store, registry, new InProcessInstanceGate(), timeProvider: time);
+            store, registry, new InProcessInstanceGate(), renewer, timeProvider: time);
         var identity = Guid.NewGuid();
         using var admission = operations.Admit(instance, owner, identity);
         var host = new WorkflowHost.InstanceOperations.ExecutionHost(operations);
