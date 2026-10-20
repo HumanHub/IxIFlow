@@ -299,6 +299,12 @@ public static class WorkflowSharedAssemblies
     public static AssemblyName? Identity(string name) => Profile.TryGetValue(name, out var identity)
         ? identity.Version == null ? AssemblyLoadContext.Default.LoadFromAssemblyName(identity).GetName() : new AssemblyName(identity.FullName!) : null;
 
+    /// <summary>
+    /// Whether this process found its runtime and SDK identities. Self-contained single-file processes
+    /// expose no runtime manifest, so they can neither publish nor host bundles.
+    /// </summary>
+    public static bool IsUsable => IsShared(typeof(WorkflowDefinition).Assembly.GetName());
+
     public static bool IsShared(AssemblyName name) => name.Name != null &&
         Profile.TryGetValue(name.Name, out var identity) &&
         (name.CultureName ?? "") == (identity.CultureName ?? "") &&
@@ -383,7 +389,8 @@ public static class WorkflowSharedAssemblies
             return manifest.ActivityPackages.All(package => !package.AppliesTo(System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier) || !package.RequiresRuntimeIdentifier ||
                 package.RuntimeAssets.ContainsKey(System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier));
         }
-        catch (Exception error) when (error is WorkflowEngineException or ArgumentException or FileLoadException or BadImageFormatException) { return false; }
+        // An incompatible profile is an ordinary answer; a corrupt manifest reaches the caller's memo, which logs it once.
+        catch (Exception error) when (error is WorkflowEngineException { Kind: not WorkflowErrorKind.ArtifactMismatch } or ArgumentException or FileLoadException or BadImageFormatException) { return false; }
     }
 
     internal static IReadOnlyDictionary<string, Assembly> Validate(WorkflowBundleManifest manifest)
