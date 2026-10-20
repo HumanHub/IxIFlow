@@ -577,7 +577,7 @@ public sealed class WorkflowExecutor
 
             signals.ThrowIfOwnershipLost();
             checkpoint.UnhandledError ??= SerializedException.From(ex);
-            instance.Status = WorkflowStatus.Failed;
+            instance.Status = IsPolicyTermination(ex) ? WorkflowStatus.Terminated : WorkflowStatus.Failed;
             // A reply wait whose scope already ended, such as a saga abandoned in this pass, closed as cancelled.
             checkpoint.CloseEndedRequests();
             // A run that fails ends every branch.
@@ -615,6 +615,10 @@ public sealed class WorkflowExecutor
         }
     }
 
+    private static bool IsPolicyTermination(Exception error) =>
+        error is SagaTerminatedException { IsPolicyTermination: true } or
+            DurableWorkflowException { Saved.IsPolicyTermination: true };
+
     private static bool CancellationPending(ExecutionCheckpoint checkpoint) =>
         ContinuationTransitions.CancellationPending(checkpoint);
 
@@ -625,6 +629,13 @@ public sealed class WorkflowExecutor
         // A run learns of requests from the host's cancellation watch and from its own commit
         // replies (B-10); it never reads them itself.
         var requested = observedReason;
+        if (requested?.Mode == WorkflowControlMode.Terminate)
+        {
+            // Cross a commit boundary before applying cancellation or running cleanup. The store
+            // refuses this ordinary transition and the host acknowledges the winning hard stop.
+            await host.CheckpointAsync(CheckpointCommit.Create(instance, host.Epoch, instance.Revision));
+            throw new ExecutionOwnershipLostException(new InvalidOperationException("Termination superseded the run"));
+        }
         if (checkpoint.CancellationRequested || requested == null)
             return false;
         var root = checkpoint.Continuations[0];

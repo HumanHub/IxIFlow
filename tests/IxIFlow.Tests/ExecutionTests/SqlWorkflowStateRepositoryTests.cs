@@ -70,14 +70,14 @@ public class SqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDatabase<
             Assert.NotNull(restored);
             Assert.Equal(WorkflowStatus.Suspended, restored.Status);
             Assert.Equal("{\"Value\":42}", restored.WorkflowDataJson);
-            Assert.Contains(await secondRepository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended),
+            Assert.Contains(await Task.WhenAll((await secondRepository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Suspended], Limit: int.MaxValue))).Items.Select(async row => (await secondRepository.GetWorkflowInstanceAsync(row.InstanceId))!)),
                 candidate => candidate.InstanceId == instanceId);
 
             restored.Status = WorkflowStatus.Completed;
             await secondRepository.SeedAsync(restored);
-            Assert.DoesNotContain(await secondRepository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Suspended),
+            Assert.DoesNotContain(await Task.WhenAll((await secondRepository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Suspended], Limit: int.MaxValue))).Items.Select(async row => (await secondRepository.GetWorkflowInstanceAsync(row.InstanceId))!)),
                 candidate => candidate.InstanceId == instanceId);
-            Assert.Contains(await secondRepository.GetWorkflowInstancesByNameAsync("DurableTest"),
+            Assert.Contains(await Task.WhenAll((await secondRepository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "DurableTest", Limit: int.MaxValue))).Items.Select(async row => (await secondRepository.GetWorkflowInstanceAsync(row.InstanceId))!)),
                 candidate => candidate.InstanceId == instanceId);
         }
         finally

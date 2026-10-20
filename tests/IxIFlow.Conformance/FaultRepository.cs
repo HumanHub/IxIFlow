@@ -59,7 +59,11 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
 
     public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
         inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
-    public Task UnregisterPublisherAsync(string name) => inner.UnregisterPublisherAsync(name);
+    public Task UnregisterPublisherAsync(string name, string actor = "host") => inner.UnregisterPublisherAsync(name, actor);
+    public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) => inner.ListDeliveriesAsync(query);
+    public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => inner.RetryDeliveryAsync(eventId, publisherName, actor);
+    public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() => inner.ListPublishersAsync();
+    public Task<bool> EnablePublisherAsync(string publisherName, string actor) => inner.EnablePublisherAsync(publisherName, actor);
     public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
         inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
     public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
@@ -106,8 +110,8 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         return result;
     }
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
-        inner.RequestCancellationAsync(instanceId, reason);
+    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
     public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         inner.GetCancellationRequestAsync(instanceId);
     public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
@@ -123,17 +127,14 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
 
     public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
         inner.GetWorkflowInstanceSummaryAsync(instanceId);
-    public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
-        inner.GetChildInstancesAsync(parentInstanceId);
 
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
         inner.GetWorkflowInstanceAsync(instanceId);
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
-        inner.GetWorkflowInstancesByNameAsync(workflowName);
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
-        inner.GetWorkflowInstancesByStatusAsync(status);
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
-        inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+    public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
+        inner.QueryInstancesAsync(query);
+
+    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
         int limit = 1000) =>
         inner.GetTraceAsync(instanceId, afterSequence, limit);

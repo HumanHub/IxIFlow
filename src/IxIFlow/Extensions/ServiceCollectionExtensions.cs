@@ -32,6 +32,7 @@ public static class ServiceCollectionExtensions
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
+        services.AddSingleton<IWorkflowOperations, HostedWorkflowOperations>();
         services.AddSingleton<IWorkflowIngressClient, WorkflowIngressClient>();
         services.AddScoped<WorkflowHost.SlotClient>();
         services.AddScoped<RunControl>();
@@ -51,7 +52,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(ExecutionLimits.Default);
         services.TryAddSingleton(new ClientActor(null));
-        
+
         // Workflow state and persistence
         services.AddSingleton<IWorkflowCatalog>(provider => new WorkflowCatalog(
             provider.GetRequiredService<IWorkflowStateRepository>(), provider.GetServices<WorkflowDefinition>(),
@@ -157,20 +158,20 @@ public static class ServiceCollectionExtensions
         var workflowInterface = typeof(TWorkflow)
             .GetInterfaces()
             .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IWorkflow<>));
-        
+
         if (workflowInterface == null)
             throw new ArgumentException($"{typeof(TWorkflow).Name} must implement IWorkflow<T>");
-        
+
         var workflowDataType = workflowInterface.GetGenericArguments()[0];
-        
+
         // Register the workflow class
         services.AddTransient<TWorkflow>();
-        
+
         // Use reflection to call the generic BuildWorkflowDefinition method
         var buildMethod = typeof(ServiceCollectionExtensions)
             .GetMethod(nameof(BuildWorkflowDefinition), BindingFlags.Public | BindingFlags.Static)!
             .MakeGenericMethod(typeof(TWorkflow), workflowDataType);
-        
+
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
@@ -199,7 +200,7 @@ public static class ServiceCollectionExtensions
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
         // Register the workflow class
         services.AddTransient<TWorkflow>();
-        
+
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();

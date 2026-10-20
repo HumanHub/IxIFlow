@@ -61,7 +61,7 @@ public sealed class WorkflowRecoveryServiceTests
             .Build();
         await EngineAssert.StoreFailureAsync(() => provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new RecoveryData()));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -92,7 +92,7 @@ public sealed class WorkflowRecoveryServiceTests
             .Build();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new RecoveryData()));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -218,7 +218,7 @@ public sealed class WorkflowRecoveryServiceTests
             .Build();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new RecoveryData()));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         await engine.RecoverAsync(saved.InstanceId);
         Assert.Equal(WorkflowStatus.NeedsResolution,
             (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);

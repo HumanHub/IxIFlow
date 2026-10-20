@@ -98,7 +98,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     private static DateTimeOffset? Timestamp(DateTime? value) => value is { } time ? Timestamp(time) : null;
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
         operation is Operation.Catalog or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
-            or Operation.CancellationRequest or Operation.LeaseRelease
+            or Operation.CancellationRequest or Operation.LeaseRelease or Operation.Termination
             ? await connection.BeginTransactionAsync() : null;
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
@@ -109,11 +109,11 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     }
 
     internal override async Task<CancellationOutcome> RequestCancellationAsync(DbConnection connection,
-        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? time)
+        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? time, Guid? expectedIncarnation = null)
     {
         var now = time == null ? "clock_timestamp()" : "@Now";
         var nowValue = Timestamp(time);
-        var parameters = new DynamicParameters(new { InstanceId = instanceId, ReasonJson = reasonJson });
+        var parameters = new DynamicParameters(new { InstanceId = instanceId, ReasonJson = reasonJson, ExpectedIncarnation = expectedIncarnation });
         if (nowValue != null)
             parameters.Add("Now", nowValue);
         // An updating statement's other parts read the row as it was before, so it still says whether it existed.
@@ -125,7 +125,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                         THEN false ELSE cancellation_acknowledged END,
                     runnable_at_utc = CASE WHEN cancellation_json IS NULL OR NOT cancellation_acknowledged
                         THEN {now} ELSE runnable_at_utc END
-                WHERE instance_id = @InstanceId AND status IN ('Running', 'Suspended', 'NeedsResolution')
+                WHERE instance_id = @InstanceId AND (CAST(@ExpectedIncarnation AS uuid) IS NULL OR incarnation = @ExpectedIncarnation) AND status IN ('Running', 'Suspended', 'NeedsResolution')
                 RETURNING cancellation_acknowledged
             )
             SELECT CASE
@@ -141,12 +141,12 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_waits
-                    (instance_id, wait_id, kind, wait_key, event_type, deadline_utc, opened_sequence, opened_at_utc, default_payload_json)
-                SELECT @InstanceId, opened.wait_id, opened.kind, opened.wait_key, opened.event_type,
+                    (instance_id, wait_id, wait_ref, kind, wait_key, event_type, deadline_utc, opened_sequence, opened_at_utc, default_payload_json)
+                SELECT @InstanceId, opened.wait_id, opened.wait_ref, opened.kind, opened.wait_key, opened.event_type,
                     opened.deadline_utc, @Sequence, @Now, opened.default_payload_json
-                FROM unnest(@WaitIds::text[], @Kinds::smallint[], @Keys::text[], @EventTypes::text[],
+                FROM unnest(@WaitIds::text[], @WaitRefs::text[], @Kinds::smallint[], @Keys::text[], @EventTypes::text[],
                     @Deadlines::timestamptz[], @DefaultPayloads::text[])
-                    AS opened (wait_id, kind, wait_key, event_type, deadline_utc, default_payload_json)
+                    AS opened (wait_id, wait_ref, kind, wait_key, event_type, deadline_utc, default_payload_json)
                 ON CONFLICT (instance_id, wait_id) DO NOTHING
                 """, new
         {
@@ -154,6 +154,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             Sequence = inboxSequence,
             Now = Timestamp(now),
             WaitIds = waits.Select(wait => wait.WaitId).ToArray(),
+            WaitRefs = waits.Select(wait => WaitReference.Of(instanceId, wait.WaitId)).ToArray(),
             Kinds = waits.Select(wait => (short)wait.Kind).ToArray(),
             Keys = waits.Select(wait => wait.Key).ToArray(),
             EventTypes = waits.Select(wait => wait.EventType).ToArray(),
@@ -252,18 +253,22 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     {
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_instances
-                    (instance_id, incarnation, workflow_name, workflow_version, status, correlation_id, runnable_at_utc, state_json, revision,
-                     parent_instance_id)
-                SELECT child.instance_id, child.incarnation, child.workflow_name, child.workflow_version, child.status, child.correlation_id, @Now,
-                    child.state_json, 1, @ParentInstanceId
-                FROM unnest(@Ids::text[], @Incarnations::uuid[], @Names::text[], @Versions::integer[], @Statuses::text[], @CorrelationIds::text[],
-                    @Payloads::text[]) AS child (instance_id, incarnation, workflow_name, workflow_version, status, correlation_id, state_json)
+                    (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, runnable_at_utc, state_json, revision,
+                     parent_instance_id, parent_wait_id)
+                SELECT child.instance_id, child.incarnation, child.workflow_name, child.workflow_version, child.created_at_utc, child.stop_kind, child.stop_crash_count, child.status, child.correlation_id, @Now,
+                    child.state_json, 1, @ParentInstanceId, child.parent_wait_id
+                FROM unnest(@Ids::text[], @Incarnations::uuid[], @Names::text[], @Statuses::text[], @CorrelationIds::text[],
+                    @Payloads::text[], @Versions::integer[], @Created::timestamptz[], @StopKinds::text[], @StopCrashCounts::integer[], @ParentWaitIds::text[]) AS child (instance_id, incarnation, workflow_name, status, correlation_id, state_json, workflow_version, created_at_utc, stop_kind, stop_crash_count, parent_wait_id)
                 """, new
         {
             Now = Timestamp(now),
             ParentInstanceId = parentInstanceId,
+            ParentWaitIds = children.Select(child => child.ParentWaitId).ToArray(),
             Ids = children.Select(child => child.Instance!.InstanceId).ToArray(),
             Incarnations = children.Select(_ => Guid.NewGuid()).ToArray(),
+            StopKinds = children.Select(child => child.Instance!.StopKind?.ToString()).ToArray(),
+            StopCrashCounts = children.Select(child => child.Instance!.StopCrashCount).ToArray(),
+            Created = children.Select(child => Timestamp(child.Instance!.CreatedAt)).ToArray(),
             Names = children.Select(child => child.Instance!.WorkflowName).ToArray(),
             Versions = children.Select(child => child.Instance!.WorkflowVersion).ToArray(),
             Statuses = children.Select(child => child.Instance!.Status.ToString()).ToArray(),
@@ -282,10 +287,12 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 WHERE instance_id = @InstanceId;
                 """;
 
-    internal override string QuerySql(string filter) => $"SELECT {StampedRowColumns} FROM ixiflow_workflow_instances WHERE {filter}";
 
     internal override string? Sql(Statement statement) => statement switch
     {
+        Statement.TerminationChildren => "SELECT instance_id FROM ixiflow_workflow_instances WHERE parent_instance_id=@InstanceId ORDER BY instance_id",
+        Statement.TerminationState => "SELECT incarnation AS Incarnation, status AS Status, cancellation_json AS CancellationJson FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE; SELECT clock_timestamp()",
+        Statement.TerminationRequest => "UPDATE ixiflow_workflow_instances SET cancellation_json=@ReasonJson, cancellation_acknowledged=false, runnable_at_utc=@Now WHERE instance_id=@InstanceId",
         Statement.OutboxClock => """
             SELECT clock_timestamp()
             """,
@@ -302,21 +309,21 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             SET types_json=excluded.types_json
             """,
         Statement.Publishers => """
-            SELECT name AS Name, types_json AS TypesJson, disabled_at_utc AS DisabledAtUtc, last_error AS LastError
+            SELECT name AS Name, types_json AS TypesJson, disabled_at_utc AS DisabledAtUtc, last_error AS LastError, enabled_at_utc AS EnabledAtUtc, enabled_by AS EnabledBy, unregistered_at_utc AS UnregisteredAtUtc, unregistered_by AS UnregisteredBy
             FROM ixiflow_outbox_publishers
             """,
         Statement.PublisherRead => """
-            SELECT name AS Name, types_json AS TypesJson, disabled_at_utc AS DisabledAtUtc, last_error AS LastError
+            SELECT name AS Name, types_json AS TypesJson, disabled_at_utc AS DisabledAtUtc, last_error AS LastError, enabled_at_utc AS EnabledAtUtc, enabled_by AS EnabledBy, unregistered_at_utc AS UnregisteredAtUtc, unregistered_by AS UnregisteredBy
             FROM ixiflow_outbox_publishers
             WHERE name=@Name
             """,
         Statement.BackfillDeliveries => """
-            INSERT INTO ixiflow_outbox_deliveries (event_id, publisher_name, attempts, next_attempt_at_utc, status, last_error)
+            INSERT INTO ixiflow_outbox_deliveries (event_id, publisher_name, attempts, next_attempt_at_utc, status, last_error, given_up_reason)
             SELECT e.event_id, @Name, 0, @Now, CASE WHEN p.disabled_at_utc IS NULL THEN 0 ELSE 2 END,
-                p.last_error
+                p.last_error, CASE WHEN p.disabled_at_utc IS NULL THEN NULL ELSE 2 END
             FROM ixiflow_outbox_events e
             CROSS JOIN ixiflow_outbox_publishers p
-            WHERE p.name=@Name
+            WHERE p.name=@Name AND p.unregistered_at_utc IS NULL
               AND e.event_type=@EventType
               AND NOT EXISTS (SELECT 1
             FROM ixiflow_outbox_deliveries d
@@ -336,8 +343,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
               AND event.event_type=@EventType)
             """,
         Statement.InsertDelivery => """
-            INSERT INTO ixiflow_outbox_deliveries (event_id, publisher_name, attempts, next_attempt_at_utc, status, last_error)
-            VALUES (@EventId, @Name, 0, @Now, @Status, @LastError)
+            INSERT INTO ixiflow_outbox_deliveries (event_id, publisher_name, attempts, next_attempt_at_utc, status, last_error, given_up_reason)
+            VALUES (@EventId, @Name, 0, @Now, @Status, @LastError, @GivenUpReason)
             """,
         Statement.ClaimDeliveries => """
             SELECT d.event_id AS EventId,
@@ -346,6 +353,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 d.first_attempt_at_utc AS FirstAttemptAtUtc,
                 d.next_attempt_at_utc AS NextAttemptAtUtc,
                 d.status AS Status,
+                d.retried_by AS RetriedBy,
+                d.retried_at_utc AS RetriedAtUtc,
+                d.given_up_reason AS GivenUpReason,
                 d.last_error AS LastError,
                 d.lease_token AS LeaseToken,
                 d.lease_until_utc AS LeaseUntilUtc,
@@ -354,7 +364,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             JOIN ixiflow_outbox_events e ON e.event_id=d.event_id
             JOIN ixiflow_outbox_publishers p ON p.name=d.publisher_name
             WHERE d.publisher_name=@Name
-              AND p.disabled_at_utc IS NULL
+              AND p.disabled_at_utc IS NULL AND p.unregistered_at_utc IS NULL
               AND d.status=0
               AND d.next_attempt_at_utc<=clock_timestamp()
               AND (d.lease_until_utc IS NULL OR d.lease_until_utc<=clock_timestamp())
@@ -370,6 +380,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 d.first_attempt_at_utc AS FirstAttemptAtUtc,
                 d.next_attempt_at_utc AS NextAttemptAtUtc,
                 d.status AS Status,
+                d.retried_by AS RetriedBy,
+                d.retried_at_utc AS RetriedAtUtc,
+                d.given_up_reason AS GivenUpReason,
                 d.last_error AS LastError,
                 d.lease_token AS LeaseToken,
                 d.lease_until_utc AS LeaseUntilUtc,
@@ -387,6 +400,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 d.first_attempt_at_utc AS FirstAttemptAtUtc,
                 d.next_attempt_at_utc AS NextAttemptAtUtc,
                 d.status AS Status,
+                d.retried_by AS RetriedBy,
+                d.retried_at_utc AS RetriedAtUtc,
+                d.given_up_reason AS GivenUpReason,
                 d.last_error AS LastError,
                 d.lease_token AS LeaseToken,
                 d.lease_until_utc AS LeaseUntilUtc,
@@ -398,22 +414,36 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             """,
         Statement.DeliveryUpdate => """
             UPDATE ixiflow_outbox_deliveries
-            SET first_attempt_at_utc=@FirstAttemptAtUtc, attempts=@Attempts, next_attempt_at_utc=@NextAttemptAtUtc, status=@Status, last_error=@LastError, lease_token=@LeaseToken, lease_until_utc=@LeaseUntilUtc
+            SET given_up_reason=@GivenUpReason, retried_at_utc=@RetriedAtUtc, retried_by=@RetriedBy, first_attempt_at_utc=@FirstAttemptAtUtc, attempts=@Attempts, next_attempt_at_utc=@NextAttemptAtUtc, status=@Status, last_error=@LastError, lease_token=@LeaseToken, lease_until_utc=@LeaseUntilUtc
             WHERE event_id=@EventId
               AND publisher_name=@Name
             """,
         Statement.UnregisterPublisher => """
+            INSERT INTO ixiflow_outbox_publishers (name, types_json, unregistered_at_utc, unregistered_by)
+            VALUES (@Name, '[]', @Now, @Actor)
+            ON CONFLICT (name) DO UPDATE SET unregistered_at_utc=excluded.unregistered_at_utc, unregistered_by=excluded.unregistered_by;
             UPDATE ixiflow_outbox_deliveries
-            SET status=2, lease_token=NULL, lease_until_utc=NULL
+            SET status=2, given_up_reason=3, lease_token=NULL, lease_until_utc=NULL
             WHERE publisher_name=@Name AND status=0;
-            DELETE FROM ixiflow_outbox_publishers WHERE name=@Name;
+            """,
+        Statement.EnablePublisher => """
+            UPDATE ixiflow_outbox_publishers SET disabled_at_utc=NULL, last_error=NULL,
+                enabled_at_utc=@Now, enabled_by=@Actor WHERE name=@Name
+            """,
+        Statement.RetryDisabledDeliveries => """
+            UPDATE ixiflow_outbox_deliveries
+            SET status=0, attempts=0, first_attempt_at_utc=NULL, next_attempt_at_utc=@Now,
+                given_up_reason=NULL, last_error=NULL, lease_token=NULL, lease_until_utc=NULL,
+                retried_at_utc=@Now, retried_by=@Actor
+            WHERE publisher_name=@Name AND status=2 AND given_up_reason=2
+              AND event_id IN (SELECT event_id FROM ixiflow_outbox_deliveries WHERE publisher_name=@Name AND status=2 AND given_up_reason=2 ORDER BY event_id LIMIT 1000)
             """,
         Statement.DisablePublisher => """
             UPDATE ixiflow_outbox_publishers
             SET disabled_at_utc=COALESCE(disabled_at_utc, @Now), last_error=@Error
             WHERE name=@Name;
             UPDATE ixiflow_outbox_deliveries
-            SET status=2, last_error=@Error, lease_token=NULL, lease_until_utc=NULL
+            SET status=2, given_up_reason=2, last_error=@Error, lease_token=NULL, lease_until_utc=NULL
             WHERE publisher_name=@Name
               AND status=0;
             """,
@@ -565,8 +595,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
               AND (@Key::text IS NULL OR wait_key = @Key)
               AND (@EventType::text IS NULL OR event_type = @EventType)
               AND (@Kind::smallint IS NULL AND kind NOT IN (@Delay, @Execution) OR kind = @Kind)
-              AND (@AfterWaitId::text IS NULL OR wait_id > @AfterWaitId)
-            ORDER BY wait_id
+              AND (@AfterWaitRef::text IS NULL OR wait_ref > @AfterWaitRef)
+            ORDER BY wait_ref
             LIMIT @Limit
             """,
         Statement.EarliestDeadline => """
@@ -575,15 +605,16 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 """,
         Statement.InsertCommit => """
               INSERT INTO ixiflow_workflow_instances
-                  (instance_id, incarnation, workflow_name, workflow_version, status, correlation_id, parent_instance_id, runnable_at_utc, state_json, revision)
-              VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @Status, @CorrelationId, @ParentInstanceId, @RunnableAtUtc, @StateJson, @Revision);
+                  (instance_id, incarnation, workflow_name, workflow_version, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, parent_instance_id, parent_wait_id, runnable_at_utc, state_json, revision)
+              VALUES (@InstanceId, @Incarnation, @WorkflowName, @WorkflowVersion, @CreatedAtUtc, @StopKind, @StopCrashCount, @Status, @CorrelationId, @ParentInstanceId, @ParentWaitId, @RunnableAtUtc, @StateJson, @Revision);
               INSERT INTO ixiflow_workflow_commits (instance_id, commit_id, expected_revision, revision, payload_hash)
               VALUES (@InstanceId, @CommitId, @ExpectedRevision, @Revision, @PayloadHash);
               """,
         Statement.UpdateCommit => """
               UPDATE ixiflow_workflow_instances SET
-                  workflow_name = @WorkflowName, workflow_version = @WorkflowVersion, status = @Status,
-                  correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId,
+                  workflow_name = @WorkflowName, workflow_version = @WorkflowVersion, created_at_utc = @CreatedAtUtc,
+                  stop_kind = @StopKind, stop_crash_count = @StopCrashCount, status = @Status,
+                  correlation_id = @CorrelationId, parent_instance_id = @ParentInstanceId, parent_wait_id = @ParentWaitId,
                   runnable_at_utc = @RunnableAtUtc,
                   inbox_read_through = COALESCE(@InboxReadThrough, inbox_read_through),
                   state_json = @StateJson, revision = @Revision,
@@ -605,13 +636,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                     crash_count = CASE WHEN @ClearsCrashCount THEN 0 ELSE crash_count END
                 WHERE instance_id = @InstanceId
                 """,
-        Statement.ReadParts => """
-            SELECT instance_id AS InstanceId, part_key AS PartKey, json AS Json FROM ixiflow_workflow_parts
-            WHERE instance_id = ANY(@Ids);
-            SELECT instance_id AS InstanceId, revision AS Revision, incarnation AS Incarnation
-            FROM ixiflow_workflow_instances
-            WHERE instance_id = ANY(@Ids);
-            """,
         Statement.DeleteState => """
             SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId
             """,
@@ -639,10 +663,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // commit, a claim and a delete must still not interleave. It is taken after the row lock of the instance's
         // parent, as a child's commit takes that one first, and before the instance's own row.
         Statement.LockIdentity => "SELECT pg_advisory_xact_lock(hashtextextended(@InstanceId, 0))",
-        Statement.ByName => "workflow_name = @Value",
-        Statement.ByStatus => "status = @Value",
-        Statement.ByCorrelation => "correlation_id = @Value",
-        Statement.ByParent => "parent_instance_id = @Value",
         Statement.DeleteAllParts => "DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId",
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key = ANY(@Keys)
@@ -670,7 +690,10 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id varchar(100) COLLATE "C" NOT NULL PRIMARY KEY,
             workflow_name varchar(200) COLLATE "C" NOT NULL,
-            workflow_version integer NOT NULL,
+            workflow_version INTEGER NOT NULL,
+            created_at_utc timestamptz NOT NULL,
+            stop_kind varchar(50) NULL,
+            stop_crash_count INTEGER NULL,
             status varchar(50) COLLATE "C" NOT NULL,
             correlation_id varchar(100) COLLATE "C" NULL,
             runnable_at_utc timestamptz NULL,
@@ -682,8 +705,19 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             inbox_sequence bigint NOT NULL DEFAULT 0,
             inbox_read_through bigint NOT NULL DEFAULT 0,
             incarnation uuid NOT NULL DEFAULT gen_random_uuid(),
-            parent_instance_id varchar(100) COLLATE "C" NULL
+            parent_instance_id varchar(100) COLLATE "C" NULL,
+            parent_wait_id varchar(100) COLLATE "C" NULL
         );
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_creation ON ixiflow_workflow_instances (created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_status_creation ON ixiflow_workflow_instances (status, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_workflow_creation ON ixiflow_workflow_instances (workflow_name, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_workflow_status_creation ON ixiflow_workflow_instances (workflow_name, status, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_version_creation ON ixiflow_workflow_instances (workflow_version, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_workflow_version_creation ON ixiflow_workflow_instances (workflow_name, workflow_version, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_stop_creation ON ixiflow_workflow_instances (stop_kind, created_at_utc DESC, instance_id ASC) WHERE stop_kind IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_correlation_creation ON ixiflow_workflow_instances (correlation_id, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_parent_creation ON ixiflow_workflow_instances (parent_instance_id, created_at_utc DESC, instance_id ASC);
+        CREATE INDEX IF NOT EXISTS ix_ixiflow_instances_ended_creation ON ixiflow_workflow_instances (ended_at_utc, created_at_utc DESC, instance_id ASC);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_status
             ON ixiflow_workflow_instances (status);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_workflow_name
@@ -731,6 +765,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_waits (
             instance_id varchar(100) COLLATE "C" NOT NULL,
             wait_id varchar(100) COLLATE "C" NOT NULL,
+            wait_ref varchar(16) COLLATE "C" NOT NULL,
             kind smallint NOT NULL,
             wait_key varchar(400) COLLATE "C" NOT NULL,
             event_type varchar(400) COLLATE "C" NOT NULL,
@@ -743,7 +778,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             PRIMARY KEY (instance_id, wait_id)
         );
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_waits_open
-            ON ixiflow_workflow_waits (wait_key, event_type, wait_id) WHERE close_reason IS NULL;
+            ON ixiflow_workflow_waits (wait_key, event_type, wait_ref) WHERE close_reason IS NULL;
+        CREATE INDEX IF NOT EXISTS ixiflow_workflow_waits_page
+            ON ixiflow_workflow_waits (wait_ref) WHERE close_reason IS NULL;
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_commits (
             instance_id varchar(100) COLLATE "C" NOT NULL,
             commit_id varchar(100) COLLATE "C" NOT NULL,

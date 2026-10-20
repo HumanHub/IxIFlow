@@ -185,8 +185,8 @@ public sealed class DeclaredStructureHashTests
         var client = provider.GetRequiredService<IWorkflowClient>();
         Assert.Equal(WorkflowExecutionStatus.Success,
             (await client.RunToEndAsync(parent, new StructureHashData())).Status);
-        var child = Assert.Single(await provider.GetRequiredService<IWorkflowStateRepository>()
-            .GetWorkflowInstancesByNameAsync("Pinned child"));
+        var child = Assert.Single((await provider.GetRequiredService<IWorkflowStateRepository>()
+            .QueryInstancesAsync(new(WorkflowName: "Pinned child", Limit: int.MaxValue))).Items);
         Assert.Equal(3, child.WorkflowVersion);
         var wrongParent = Parent();
         wrongParent.Name = "Wrong version parent";

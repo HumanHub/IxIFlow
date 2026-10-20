@@ -127,7 +127,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         ArgumentNullException.ThrowIfNull(reply);
         ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
         if (!ReplyToken.TryRead(token, out var instanceId, out var waitId, out var subject))
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "The text is not a reply token");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown reply token");
         return DecideAsync(instanceId, eventId,
             client => client.DeliverReplyAsync(instanceId, waitId, reply, eventId, subject), cancellationToken);
     }
@@ -137,7 +137,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         ArgumentNullException.ThrowIfNull(query);
         // Only waits without a request are listed: a request's answer goes to the token the request
         // sent, and a child's waits shown on its parent are listed on the child (D-33). The store
-        // applies the filter, so paging by wait ID never skips a listed wait.
+        // applies the filter, so paging by wait reference never skips a listed wait.
         if (query.InstanceId is { } id && await GetStatusAsync(id) == WorkflowExecutionStatus.Removed)
             return new([], isRemoved: true);
         if (query.Kind is not (null or WaitKind.Event))
@@ -206,7 +206,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         {
             cancellationToken.ThrowIfCancellationRequested();
             var waits = await host.ReadAsync(client => client.GetOpenWaitsAsync(
-                new WaitQuery(Key: key, Kind: WaitKind.Event, AfterWaitId: after, Limit: PublishPageSize)));
+                new WaitQuery(Key: key, Kind: WaitKind.Event, AfterWaitRef: after, Limit: PublishPageSize)));
             foreach (var instanceId in waits.Select(wait => wait.InstanceId).Where(reached.Add))
             {
                 var appended = await host.ReadAsync(client => client.DeliverAsync(instanceId, key, @event, eventId));
@@ -217,7 +217,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
             }
             if (waits.Count < PublishPageSize)
                 return deliveries;
-            after = waits[^1].WaitId;
+            after = WaitReference.Of(waits[^1].InstanceId, waits[^1].WaitId);
         }
     }
 
@@ -338,5 +338,5 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
             ? status != WorkflowExecutionStatus.Running
             : status is WorkflowExecutionStatus.Success or WorkflowExecutionStatus.Faulted or
                 WorkflowExecutionStatus.Failed or WorkflowExecutionStatus.Cancelled or
-                WorkflowExecutionStatus.TimedOut or WorkflowExecutionStatus.Removed;
+                WorkflowExecutionStatus.TimedOut or WorkflowExecutionStatus.Removed or WorkflowExecutionStatus.Terminated;
 }
