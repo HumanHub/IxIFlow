@@ -234,7 +234,7 @@ public sealed class AssignmentRequestTests
         var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
         var continuation = Assert.Single(checkpoint.Continuations);
         var pending = continuation.PendingActivity!;
-        Assert.Equal(typeof(Data).AssemblyQualifiedName, pending.ChildDataType);
+        Assert.Equal(WorkflowTypeIdentity.SavedName(typeof(Data)), pending.ChildDataType);
         if (unavailable) pending.ChildDataType = "missing-child-data, missing-assembly";
         continuation.Status = ContinuationStatus.Active;
         continuation.AcceptedWait = new AcceptedWaitState { StepId = pending.StepId,

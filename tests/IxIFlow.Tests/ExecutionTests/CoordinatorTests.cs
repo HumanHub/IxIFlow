@@ -590,7 +590,7 @@ public sealed class CoordinatorTests
     }
     private static async Task AppendAsync(IWorkflowStateRepository store, string id) =>
         Assert.Equal(EventAppendStatus.Stored, (await store.AppendEventAsync(new(id, Guid.NewGuid().ToString("N"),
-            typeof(Approval).AssemblyQualifiedName!, JsonSerializer.Serialize(new Approval()), Key: "approval"))).Status);
+            WorkflowTypeIdentity.SavedName(typeof(Approval)), JsonSerializer.Serialize(new Approval()), Key: "approval"))).Status);
     private static Task ConnectedAsync(Host host, int count) => EventuallyAsync(() => host.Provider.GetRequiredService<CoordinatorLinks>().ConnectedCount == count);
     private static Task EventuallyAsync(Func<bool> predicate) => EventuallyAsync(() => Task.FromResult(predicate()));
     private static async Task EventuallyAsync(Func<Task<bool>> predicate)
