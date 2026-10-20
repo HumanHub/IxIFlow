@@ -9,10 +9,15 @@ public sealed partial class WorkflowHost
     internal sealed partial class InstanceOperations
     {
         public async Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName) =>
-            await _store.GetDeliveryAsync(eventId, publisherName) is { } delivery ? DeliverySummary.From(delivery) : null;
-        public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) => _store.ListDeliveriesAsync(query);
+            await _store.GetDeliveryAsync(eventId, publisherName) is { } delivery ? InspectionRedactionPolicy.Default.Delivery(DeliverySummary.From(delivery)) : null;
+        public async Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query)
+        {
+            var page = await _store.ListDeliveriesAsync(query);
+            return page with { Items = page.Items.Select(InspectionRedactionPolicy.Default.Delivery).ToArray() };
+        }
         public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => _store.RetryDeliveryAsync(eventId, publisherName, actor);
-        public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() => _store.ListPublishersAsync();
+        public async Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() =>
+            (await _store.ListPublishersAsync()).Select(InspectionRedactionPolicy.Default.Publisher).ToArray();
         public Task<bool> EnablePublisherAsync(string publisherName, string actor) => _store.EnablePublisherAsync(publisherName, actor);
         public Task UnregisterPublisherAsync(string publisherName, string actor) => _store.UnregisterPublisherAsync(publisherName, actor);
         private static WorkflowExecutionResult TerminatedResult(string instanceId) =>
@@ -108,6 +113,13 @@ public sealed partial class WorkflowHost
             instance.LastErrorStackTrace = null;
             var state = JsonNode.Parse(instance.ExecutionStateJson)!;
             state["OperatorStop"] = null;
+            // Termination closes activities, preserving operator-authored records and the latest failure.
+            var prior = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
+            var operatorIds = (prior.OperatorDiagnosticIds ?? []).ToHashSet(StringComparer.Ordinal);
+            var latest = prior.Diagnostics?.LastOrDefault(item => !operatorIds.Contains(item.DiagnosticId));
+            var retained = prior.Diagnostics?.Where(item => operatorIds.Contains(item.DiagnosticId) || item == latest).ToArray() ?? [];
+            state["ResultDiagnostic"] = null;
+            state["Diagnostics"] = retained.Length == 0 ? null : JsonSerializer.SerializeToNode(retained);
             instance.ExecutionStateJson = state.ToJsonString();
             instance.Stored = null;
             var trace = new ExecutionTraceEntry
@@ -117,7 +129,8 @@ public sealed partial class WorkflowHost
             };
             var checkpoint = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
             return new(saved, epoch => CheckpointCommit.Create(instance, epoch, instance.Revision,
-                childCancellations: children, parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: [trace]));
+                childCancellations: children, parentNotice: ChildCompleted.NoticeOf(instance, checkpoint), traceEntries: [trace],
+                retainedDiagnosticIds: retained.Select(item => item.DiagnosticId).ToArray()));
         }
     }
 }

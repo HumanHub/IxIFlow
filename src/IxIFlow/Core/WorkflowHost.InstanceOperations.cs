@@ -83,6 +83,7 @@ public sealed partial class WorkflowHost
                 {
                     InstanceId = instanceId,
                     Status = WorkflowExecutionStatus.Running,
+                    ErrorKind = WorkflowErrorKind.InvalidState,
                     ErrorMessage = "Cancellation was requested; the executing host will stop the workflow"
                 };
             if (instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
@@ -108,7 +109,7 @@ public sealed partial class WorkflowHost
 
         private async Task<WorkflowExecutionResult?> RemovedResultAsync(string instanceId) =>
             await _store.GetTombstoneAsync(instanceId) != null
-                ? new WorkflowExecutionResult { InstanceId = instanceId, Status = WorkflowExecutionStatus.Removed,
+                ? new WorkflowExecutionResult { InstanceId = instanceId, Status = WorkflowExecutionStatus.Removed, ErrorKind = WorkflowErrorKind.InstanceRemoved,
                     ErrorMessage = "The workflow instance and its retained result were removed by retention" }
                 : null;
 
@@ -143,7 +144,8 @@ public sealed partial class WorkflowHost
             if (checkpoint.StructureHash != scopes.StructureHash)
                 return Rejected(instanceId, scopes.Mismatch(definition, checkpoint.StructureHash));
             if (checkpoint.OperatorStop is { } stop)
-                return Rejected(instanceId, stop.Describe());
+                return new WorkflowExecutionResult { InstanceId = instanceId, Status = WorkflowExecutionStatus.Faulted,
+                    ErrorMessage = stop.Describe(), Diagnostic = stop.Diagnostic };
             var continuation = checkpoint.Continuations.SingleOrDefault(item =>
                 item.PendingActivity?.Id == invocationId && item.Status == ContinuationStatus.WaitingResolution)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
@@ -220,7 +222,7 @@ public sealed partial class WorkflowHost
                 var child = pending.ChildWorkflowId == null
                     ? null : await _store.GetWorkflowInstanceSummaryAsync(pending.ChildWorkflowId);
                 pendingActivities.Add(new PendingActivityInfo(pending.Id, pending.StepId,
-                    step.ActivityType?.Name ?? step.Name, pending.ResolutionReason,
+                    step.ActivityType?.Name ?? step.Name, InspectionRedactionPolicy.Default.Reason(pending.ResolutionDiagnostic),
                     pending.StartedAtUtc,
                     step.OutputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Output)
                         .Select(mapping => mapping.TargetProperty).Distinct().ToArray(),
@@ -263,7 +265,10 @@ public sealed partial class WorkflowHost
             if (checkpoint.StructureHash != scopes.StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     scopes.Mismatch(definition, checkpoint.StructureHash));
-            return ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
+            var snapshot = ExecutionSnapshotFactory.Create(instance, checkpoint, scopes, Now);
+            snapshot.Data = InspectionRedactionPolicy.Default.StoredValue(
+                instance.WorkflowDataJson, instance.WorkflowDataType, services);
+            return snapshot;
         }
 
         private static void RequireIncarnation(WorkflowInstance? instance, Guid? expected)
@@ -487,7 +492,14 @@ public sealed partial class WorkflowHost
             await _store.GetEventAsync(instanceId, eventId) is { } stored ? EventReceipt.Of(stored) : null;
 
         /// <summary>Open waits that match the query, across instances.</summary>
-        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) => _store.GetOpenWaitsAsync(query);
+        public async Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query)
+        {
+            var waits = await _store.GetOpenWaitsAsync(query);
+            return waits.Select(wait => wait.DefaultPayloadJson == null ? wait : wait with
+            {
+                DefaultPayloadJson = InspectionRedactionPolicy.Default.StoredValue(wait.DefaultPayloadJson, wait.EventType, services).GetRawText()
+            }).ToArray();
+        }
 
         /// <summary>
         /// Stores a reply addressed to one wait by its token's wait ID, with the token's subject,
@@ -666,11 +678,12 @@ public sealed partial class WorkflowHost
             return checkpoint.OperatorStop is { } stop ? Stopped(existing, stop) : ExistingResult(existing);
         }
 
-        private static WorkflowExecutionResult Rejected(string instanceId, string reason) => new()
+        private static WorkflowExecutionResult Rejected(string instanceId, string reason, WorkflowErrorKind kind = WorkflowErrorKind.InvalidState) => new()
         {
             InstanceId = instanceId,
             Status = WorkflowExecutionStatus.Faulted,
-            ErrorMessage = reason
+            ErrorMessage = reason,
+            ErrorKind = kind
         };
 
         private static WorkflowExecutionStatus StatusOf(WorkflowStatus status) => status switch
@@ -685,6 +698,12 @@ public sealed partial class WorkflowHost
             _ => WorkflowExecutionStatus.Running
         };
 
+        private static InspectionError? ResultDiagnostic(WorkflowInstance instance)
+        {
+            if (!HasStructuredCheckpoint(instance)) return null;
+            return ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson).ResultDiagnostic;
+        }
+
         private static WorkflowExecutionResult ExistingResult(WorkflowInstance instance) => new()
         {
             InstanceId = instance.InstanceId,
@@ -693,6 +712,7 @@ public sealed partial class WorkflowHost
                 ? JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
                 : null,
             TraceEntries = [],
+            Diagnostic = ResultDiagnostic(instance),
             ErrorMessage = instance.LastError,
             ErrorStackTrace = instance.LastErrorStackTrace
         };
@@ -760,6 +780,7 @@ public sealed partial class WorkflowHost
                     {
                         InstanceId = instance.InstanceId,
                         Status = WorkflowExecutionStatus.Running,
+                        ErrorKind = WorkflowErrorKind.InvalidState,
                         ErrorMessage = "Execution ownership was lost; the assigned incarnation is no longer available",
                         TraceEntries = receipt.Trace.ToList()
                     };
@@ -795,6 +816,7 @@ public sealed partial class WorkflowHost
         {
             InstanceId = instanceId,
             Status = WorkflowExecutionStatus.Running,
+            ErrorKind = WorkflowErrorKind.InvalidState,
             ErrorMessage = "The workflow instance is executing on another host"
         };
 
@@ -895,6 +917,7 @@ public sealed partial class WorkflowHost
             InstanceId = instance.InstanceId,
             Status = WorkflowExecutionStatus.NeedsResolution,
             TraceEntries = [],
+            Diagnostic = stop.Diagnostic,
             ErrorMessage = stop.Describe()
         };
 
@@ -912,6 +935,7 @@ public sealed partial class WorkflowHost
                 StoppedAtUtc = Now,
                 CrashCount = owner.CrashCount
             };
+            stop.Diagnostic = checkpoint.RecordDiagnostic("Quarantine", stop.Reason);
             checkpoint.OperatorStop = stop;
             instance.Status = WorkflowStatus.NeedsResolution;
             instance.LastError = stop.Reason;
@@ -936,16 +960,17 @@ public sealed partial class WorkflowHost
             // Release keeps saved data but applies recovery preparation and records the operator action.
             // Like recording the stop, clearing it must remain possible after the limit was lowered.
             if (sameData && previous.OperatorStop != null && proposed.OperatorStop == null) return;
-            if (sameData && commit.Instance.Status == WorkflowStatus.Terminated)
+            if (sameData && (commit.Stopped || previous.OperatorStop != null ||
+                             commit.Instance.Status == WorkflowStatus.Terminated))
             {
                 proposed.OperatorStop = null;
                 previous.OperatorStop = null;
-                if (JsonSerializer.Serialize(proposed) == JsonSerializer.Serialize(previous)) return;
-            }
-            if (sameData && (commit.Stopped || previous.OperatorStop != null))
-            {
-                proposed.OperatorStop = null;
-                previous.OperatorStop = null;
+                // Stops add a safe identity, and termination prunes identities for closed activities.
+                // Neither changes the saved execution positions or workflow data being compared.
+                proposed.Diagnostics = null;
+                previous.Diagnostics = null;
+                proposed.ResultDiagnostic = null;
+                previous.ResultDiagnostic = null;
                 if (JsonSerializer.Serialize(proposed) == JsonSerializer.Serialize(previous)) return;
             }
             if (sameData && commit.Instance.Status == WorkflowStatus.Failed && proposed.Continuations.Count == 0 &&

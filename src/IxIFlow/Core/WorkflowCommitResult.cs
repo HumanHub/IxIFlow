@@ -89,7 +89,8 @@ public sealed class CheckpointCommit
         long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
         IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
-        ParentNotice? parentNotice, IReadOnlyList<string> traceEntries)
+        ParentNotice? parentNotice, IReadOnlyList<string> traceEntries,
+        IReadOnlyList<WorkflowDiagnostic> diagnostics, IReadOnlyList<string>? retainedDiagnosticIds)
     {
         Instance = instance;
         InstanceId = instance.InstanceId;
@@ -114,6 +115,8 @@ public sealed class CheckpointCommit
         ChildCancellations = childCancellations;
         ParentNotice = parentNotice;
         TraceEntries = traceEntries;
+        Diagnostics = diagnostics;
+        RetainedDiagnosticIds = retainedDiagnosticIds;
         _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes(
             $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}{(stopped ? 1 : 0)}\n" +
             $"{inboxReadThrough?.ToString() ?? "-"}\n{wakeAfter?.Ticks.ToString() ?? "-"}\n" +
@@ -121,6 +124,7 @@ public sealed class CheckpointCommit
             $"{JsonSerializer.Serialize(armedWaits)}\n{JsonSerializer.Serialize(closedWaits)}\n" +
             $"{JsonSerializer.Serialize(childStarts)}\n{JsonSerializer.Serialize(childCancellations)}\n" +
             $"{JsonSerializer.Serialize(parentNotice)}\n{JsonSerializer.Serialize(traceEntries)}\n" +
+            $"{JsonSerializer.Serialize(diagnostics)}\n{JsonSerializer.Serialize(retainedDiagnosticIds)}\n" +
             $"{(replacesParts ? 1 : 0)}\n{JsonSerializer.Serialize(deletedParts)}\n{JsonSerializer.Serialize(parts)}\n" +
             payload));
     }
@@ -160,6 +164,15 @@ public sealed class CheckpointCommit
     /// in order.
     /// </summary>
     public IReadOnlyList<string> TraceEntries { get; }
+
+    /// <summary>New immutable raw records, inserted beside the trace in this commit's transaction.</summary>
+    public IReadOnlyList<WorkflowDiagnostic> Diagnostics { get; }
+
+    /// <summary>
+    /// Diagnostic IDs to keep; all other rows are removed atomically. Null preserves rows for a
+    /// store-level commit that does not manage runtime retention. An empty list removes them all.
+    /// </summary>
+    public IReadOnlyList<string>? RetainedDiagnosticIds { get; }
 
     /// <summary>The positive execution epoch granted with the owner's lease.</summary>
     public long Epoch { get; }
@@ -248,9 +261,11 @@ public sealed class CheckpointCommit
         IReadOnlyList<OpenedWait>? openedWaits = null, IReadOnlyList<ClosedWait>? closedWaits = null,
         IReadOnlyList<ArmedWait>? armedWaits = null, TimeSpan? wakeAfter = null, bool stopped = false,
         IReadOnlyList<ChildStart>? childStarts = null, IReadOnlyList<ChildCancellation>? childCancellations = null,
-        ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null)
+        ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null,
+        IReadOnlyList<WorkflowDiagnostic>? diagnostics = null, IReadOnlyList<string>? retainedDiagnosticIds = null)
         => CreateCore(instance, epoch, expectedRevision, commitId, clearsCrashCount, parks, settlements, inboxReadThrough,
-            openedWaits, closedWaits, armedWaits, wakeAfter, stopped, childStarts, childCancellations, parentNotice, traceEntries);
+            openedWaits, closedWaits, armedWaits, wakeAfter, stopped, childStarts, childCancellations, parentNotice, traceEntries,
+            diagnostics: diagnostics, retainedDiagnosticIds: retainedDiagnosticIds);
 
     /// <summary>A first checkpoint for atomic admission. No execution owner exists until a host claims it.</summary>
     public static CheckpointCommit CreateAdmission(WorkflowInstance instance) => CreateCore(instance, 0, 0, admission: true);
@@ -261,7 +276,8 @@ public sealed class CheckpointCommit
         IReadOnlyList<OpenedWait>? openedWaits = null, IReadOnlyList<ClosedWait>? closedWaits = null,
         IReadOnlyList<ArmedWait>? armedWaits = null, TimeSpan? wakeAfter = null, bool stopped = false,
         IReadOnlyList<ChildStart>? childStarts = null, IReadOnlyList<ChildCancellation>? childCancellations = null,
-        ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null, bool admission = false)
+        ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null, bool admission = false,
+        IReadOnlyList<WorkflowDiagnostic>? diagnostics = null, IReadOnlyList<string>? retainedDiagnosticIds = null)
     {
         ArgumentNullException.ThrowIfNull(instance);
         if (!admission) ArgumentOutOfRangeException.ThrowIfNegativeOrZero(epoch);
@@ -284,7 +300,7 @@ public sealed class CheckpointCommit
             expectedRevision, clearsCrashCount, parks, settlements ?? [], inboxReadThrough,
             openedWaits ?? [], armedWaits ?? [], closedWaits ?? [], wakeAfter, stopped,
             childStarts ?? [], childCancellations ?? [], parentNotice,
-            (traceEntries ?? []).Select(WorkflowStoreRules.SerializeTrace).ToArray());
+            (traceEntries ?? []).Select(WorkflowStoreRules.SerializeTrace).ToArray(), diagnostics ?? [], retainedDiagnosticIds);
     }
 
     /// <summary>
@@ -298,7 +314,8 @@ public sealed class CheckpointCommit
         long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
         IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
-        ParentNotice? parentNotice, IReadOnlyList<string> traceEntries)
+        ParentNotice? parentNotice, IReadOnlyList<string> traceEntries,
+        IReadOnlyList<WorkflowDiagnostic> diagnostics, IReadOnlyList<string>? retainedDiagnosticIds)
     {
         ArgumentNullException.ThrowIfNull(metadata);
         ArgumentNullException.ThrowIfNull(payload);
@@ -409,6 +426,19 @@ public sealed class CheckpointCommit
                 instance.ParentWaitId != parentNotice.ParentWaitId)
                 throw new ArgumentException("Only a child's terminal commit notifies its own parent", nameof(parentNotice));
         }
+        ArgumentNullException.ThrowIfNull(diagnostics);
+        var raw = diagnostics.ToArray();
+        foreach (var diagnostic in raw)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(diagnostic.DiagnosticId, nameof(diagnostics));
+            if (diagnostic.DiagnosticId.Length > 100)
+                throw new ArgumentException("Diagnostic IDs must be at most 100 characters", nameof(diagnostics));
+        }
+        if (raw.Select(item => item.DiagnosticId).Distinct(StringComparer.Ordinal).Count() != raw.Length)
+            throw new ArgumentException("A commit records each diagnostic once", nameof(diagnostics));
+        var retained = retainedDiagnosticIds?.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        if (retained != null && raw.Any(item => !retained.Contains(item.DiagnosticId, StringComparer.Ordinal)))
+            throw new ArgumentException("New diagnostics must be retained by their commit", nameof(diagnostics));
         ArgumentNullException.ThrowIfNull(parts);
         ArgumentNullException.ThrowIfNull(deletedParts);
         ArgumentNullException.ThrowIfNull(traceEntries);
@@ -431,7 +461,8 @@ public sealed class CheckpointCommit
             replacesParts, incarnation, epoch, commitId, expectedRevision, clearsCrashCount, parks,
             Array.AsReadOnly(settled), inboxReadThrough, Array.AsReadOnly(opened), Array.AsReadOnly(armed),
             Array.AsReadOnly(closed), wakeAfter, stopped, Array.AsReadOnly(started), Array.AsReadOnly(cancelled),
-            parentNotice, Array.AsReadOnly(traceEntries.ToArray()));
+            parentNotice, Array.AsReadOnly(traceEntries.ToArray()), Array.AsReadOnly(raw),
+            retained == null ? null : Array.AsReadOnly(retained));
     }
 
     private static void ValidateDuration(TimeSpan? duration, string parameter)

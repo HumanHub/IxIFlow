@@ -201,7 +201,14 @@ public sealed class ActivityRecoveryTests
         Assert.Equal("OperatorCompleted", decision.Metadata["Kind"].ToString());
         Assert.Equal("operator-1", Assert.IsType<ActivityResolutionTrace>(history.Single(entry =>
             entry.EntryType == TraceEntryType.ActivityResolved).Payload).DecidedBy);
-        Assert.Equal("Checked the provider receipt", decision.Metadata["DecisionNote"].ToString());
+        Assert.Equal("", decision.Metadata["DecisionNote"].ToString());
+        var diagnostic = history.Single(entry => entry.EntryType == TraceEntryType.ActivityResolved).Error!;
+        Assert.Equal("OperatorNote", diagnostic.ErrorType);
+        Assert.Matches("^[0-9a-f]{32}$", diagnostic.DiagnosticId);
+        var raw = Assert.Single(await services.GetRequiredService<IWorkflowDiagnostics>().ReadAsync(running.InstanceId),
+            item => item.DiagnosticId == diagnostic.DiagnosticId);
+        Assert.Equal(diagnostic.DiagnosticId, raw.DiagnosticId);
+        Assert.Equal("Checked the provider receipt", raw.Message);
     }
 
     [Fact]
@@ -693,6 +700,7 @@ public sealed class ActivityRecoveryTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        IxIFlow.Tests.Infrastructure.DiagnosticTestAccess.Allow(services);
         services.AddIxIFlow(options =>
         {
             if (maxCheckpointBytes is { } limit)
@@ -1010,6 +1018,10 @@ public sealed class ActivityRecoveryTests
 
         public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
             _inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId) =>
+            _inner.GetDiagnosticsAsync(instanceId);
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation) =>
+            _inner.GetDiagnosticsForIncarnationAsync(instanceId, incarnation);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             _inner.GetTraceAsync(instanceId, afterSequence, limit);

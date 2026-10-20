@@ -15,6 +15,8 @@ public sealed class WorkflowExecutor
     private readonly ActivityAttempts _attempts;
     private readonly EventIntake _intake;
     private readonly ILogger _logger;
+    private readonly ILogger<SensitiveDiagnostics>? _sensitiveDiagnostics;
+    private readonly InspectionRedactionPolicy _inspectionPolicy;
 
     private readonly IExecutionHost _host;
     private readonly IWorkflowDefinitionSource _definitions;
@@ -23,12 +25,14 @@ public sealed class WorkflowExecutor
     public WorkflowExecutor(IServiceProvider services, IExecutionHost host)
     {
         _host = host;
+        _inspectionPolicy = (InspectionRedactionPolicy)services.GetService(typeof(InspectionRedactionPolicy))!;
         _definitions = (IWorkflowDefinitionSource)services.GetService(typeof(IWorkflowDefinitionSource))!;
         _executorName = (services.GetService(typeof(HostSettings)) as HostSettings ?? HostSettings.Default).Name;
         var activityExecutor = (IActivityExecutor)services.GetService(typeof(IActivityExecutor))!;
         var time = (TimeProvider)services.GetService(typeof(TimeProvider))!;
         _time = time;
         _logger = LogScope.Logger(services);
+        _sensitiveDiagnostics = services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>;
         _transitions = new ContinuationTransitions(services, time);
         _attempts = new ActivityAttempts(services, activityExecutor, _transitions, time, _definitions);
         _intake = new EventIntake(services, time);
@@ -591,6 +595,8 @@ public sealed class WorkflowExecutor
                 checkpoint.Trace.DropFrames(continuation, 0, continuation.ItemUnwindCause ?? ItemEndCause.Failed);
                 continuation.Status = ContinuationStatus.Cancelled;
             }
+            checkpoint.RecordDiagnostic(ex);
+            _inspectionPolicy.LogSensitive(_sensitiveDiagnostics, ex);
             instance.LastError = ex.Message;
             instance.LastErrorStackTrace = ex.StackTrace;
             instance.CompletedAt = Now;
@@ -785,7 +791,8 @@ public sealed class WorkflowExecutor
         checkpoint.Signals = abandoned.Signals;
         checkpoint.OperatorStop = new OperatorStopState
         {
-            Kind = kind, Reason = reason, StoppedAtUtc = Now
+            Kind = kind, Reason = reason, StoppedAtUtc = Now,
+            Diagnostic = checkpoint.RecordDiagnostic(kind.ToString(), reason)
         };
         instance.Status = WorkflowStatus.NeedsResolution;
         instance.LastError = reason;
@@ -810,7 +817,8 @@ public sealed class WorkflowExecutor
     {
         checkpoint.OperatorStop = new OperatorStopState
         {
-            Kind = OperatorStopKind.ResourceLimit, Reason = reason, StoppedAtUtc = Now
+            Kind = OperatorStopKind.ResourceLimit, Reason = reason, StoppedAtUtc = Now,
+            Diagnostic = checkpoint.RecordDiagnostic("ResourceLimit", reason)
         };
         instance.Status = WorkflowStatus.NeedsResolution;
         instance.LastError = reason;
