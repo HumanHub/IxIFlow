@@ -139,7 +139,21 @@ IxIFlow/
    - Reference to any related issues
    - Screenshots if the change affects examples or documentation
 
-3. **Respond to feedback** from maintainers promptly
+3. **Sign off every commit** (see [License and Sign-off](#license-and-sign-off))
+
+4. **Respond to feedback** from maintainers promptly
+
+### License and Sign-off
+
+IxIFlow is licensed under the [Apache License 2.0](LICENSE). By contributing, you agree that your contribution is licensed under the same terms (section 5 of the license).
+
+Every commit must be signed off under the [Developer Certificate of Origin](https://developercertificate.org/) (DCO 1.1). The sign-off certifies that you wrote the change, or otherwise have the right to submit it under the project's license. Add it with `git commit -s`, which appends a line with your real name and email:
+
+```text
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+To sign off commits you already made on your branch, use `git rebase --signoff main` and force-push the branch. Pull requests with unsigned commits can't be merged.
 
 ## Examples and Testing
 
