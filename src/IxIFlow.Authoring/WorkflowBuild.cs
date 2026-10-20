@@ -58,7 +58,7 @@ internal static class WorkflowBuild
                 var entry = metadata.TypeDefinitions.Select(handle => metadata.GetTypeDefinition(handle))
                     .Single(type => metadata.GetString(type.Name) != "<Module>" &&
                         type.GetMethods().Any(handle => metadata.GetString(metadata.GetMethodDefinition(handle).Name) == "Build"));
-                return new WorkflowBuildResult(definition.Name, definition.Version, structureHash, definition.WorkflowDataType!.AssemblyQualifiedName!,
+                return new WorkflowBuildResult(definition.Name, definition.Version, structureHash, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(definition.WorkflowDataType!),
                     metadata.GetString(entry.Namespace) + "." + metadata.GetString(entry.Name),
                     WorkflowDefinitionValidator.GetCombinerSignature(definition), WorkflowDefinitionValidator.GetDependencies(definition).ToArray());
             });

@@ -552,7 +552,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
             command.Parameters.AddWithValue("$part", CheckpointParts.DataKey);
             Assert.Equal(1, await command.ExecuteNonQueryAsync());
         }
-        var refused = await store.AppendEventAsync(new WorkflowEvent(started.InstanceId, "wrong", typeof(Go).AssemblyQualifiedName!,
+        var refused = await store.AppendEventAsync(new WorkflowEvent(started.InstanceId, "wrong", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Go)),
             "{}", Key: "wrong"));
         Assert.Equal(EventAppendStatus.Rejected, refused.Status);
         var entry = Assert.Single((await store.GetTraceAsync(started.InstanceId)).Select(item => item.Entry),

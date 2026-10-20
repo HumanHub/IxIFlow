@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -40,7 +41,7 @@ public sealed class InspectionRedactionPolicy
     {
         try
         {
-            return note.Type == typeof(string).AssemblyQualifiedName
+            return note.Type == WorkflowTypeIdentity.SavedName(typeof(string))
                 ? JsonSerializer.Serialize(Note(JsonSerializer.Deserialize<string>(note.Json) ?? "", services))
                 : new RedactingJson(services).Serialize(note.Json, note.Type);
         }
@@ -87,7 +88,9 @@ public sealed class InspectionRedactionPolicy
         try
         {
             if (WorkflowTypeIdentity.Resolve(typeName) is not { } type) return null;
-            var schema = System.Text.Json.Schema.JsonSchemaExporter.GetJsonSchemaAsNode(JsonSerializerOptions.Default, type);
+            var options = WorkflowJson.Options(type: type);
+            options.MakeReadOnly(populateMissingResolver: true);
+            var schema = System.Text.Json.Schema.JsonSchemaExporter.GetJsonSchemaAsNode(options, type);
             StripAnnotations(schema);
             return schema.ToJsonString();
         }

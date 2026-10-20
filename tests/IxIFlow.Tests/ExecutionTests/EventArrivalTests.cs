@@ -65,7 +65,7 @@ public sealed class EventArrivalTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, parent.Status);
         var childId = await repository.WaitingInstanceAsync("ChildWithApproval", "approval");
         await repository.AppendEventAsync(new WorkflowEvent(childId, "approval-1",
-            typeof(Approval).AssemblyQualifiedName!, System.Text.Json.JsonSerializer.Serialize(new Approval { Approved = true }), "approval"));
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)), System.Text.Json.JsonSerializer.Serialize(new Approval { Approved = true }), "approval"));
         Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, "other-host", TimeSpan.FromMinutes(1), await StoreTestSupport.ClaimAsync(services)));
 
         // The event goes to the child (D-17); its owner has not decided it. The caller stores it, tries the

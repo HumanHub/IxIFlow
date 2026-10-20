@@ -14,7 +14,7 @@ public sealed class IncomingWebhookAdmissionTests
     private static WorkflowInstance Instance(string? id = null) => new()
     {
         InstanceId = id ?? Guid.NewGuid().ToString("N"), WorkflowName = "Admission", WorkflowVersion = 7,
-        Status = WorkflowStatus.Running, WorkflowDataType = typeof(object).AssemblyQualifiedName!,
+        Status = WorkflowStatus.Running, WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
         WorkflowDataJson = "{}", ExecutionStateJson = StoreTestSupport.CheckpointJson
     };
 

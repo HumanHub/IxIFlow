@@ -140,7 +140,7 @@ public sealed class WorkflowExecutorHostTests
             InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
-            WorkflowDataType = typeof(ExecutorData).AssemblyQualifiedName!,
+            WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(ExecutorData)),
             WorkflowDataJson = JsonSerializer.Serialize(data),
             Status = WorkflowStatus.Running,
             CreatedAt = now,

@@ -270,7 +270,7 @@ public static class WorkflowTriggerExtensions
             return Results.Problem(statusCode: 400, title: "CloudEvents type is not allowlisted");
         var data = map(parsed.Data);
         var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new[] { envelope.Source, envelope.Id }))));
-        var workflowEvent = new WorkflowEvent(instanceId, identity, data.GetType().AssemblyQualifiedName!,
+        var workflowEvent = new WorkflowEvent(instanceId, identity, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(data.GetType()),
             JsonSerializer.Serialize(data, data.GetType()), http.Request.RouteValues["key"]!.ToString(),
             DeliveryIdentity: http.Items.TryGetValue(WebhookIdKey, out var webhookId)
                 ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(

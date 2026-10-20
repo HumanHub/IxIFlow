@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core.Runtime;
@@ -267,7 +268,7 @@ internal sealed class ActivityAttempts(
             ContinuationId = continuation.Id,
             StepId = scopes.Id(waitFor),
             Key = step.RequestName!,
-            EventType = step.ReplyType!.AssemblyQualifiedName!,
+            EventType = WorkflowTypeIdentity.SavedName(step.ReplyType!),
             IsReply = true,
             InvocationId = pending.Id,
             ScopeActivationId = position.ActivationId,
@@ -313,8 +314,14 @@ internal sealed class ActivityAttempts(
         if (pending?.Resolution is { } decision)
         {
             Attempt(instance, checkpoint, continuation, step, pending, $"Operator{decision.Kind}");
+            using var childLease = pending.ChildBundleDigest == null ? null
+                : await definitions.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest);
+            using var childTypes = WorkflowTypeIdentity.Enter(childLease?.Definition.BundleContext);
+            var output = decision.InvocationResult?.Read(services);
+            if (output != null && step.InvokedDataType is { } target && !target.IsInstanceOfType(output))
+                output = JsonSerializer.Deserialize(JsonSerializer.Serialize(output), target);
             return Settles(decision.Kind == ActivityResolutionKind.Completed
-                ? ActivityRunResult.Returned(decision.InvocationResult?.Read(services))
+                ? ActivityRunResult.Returned(output)
                 : ActivityRunResult.Threw(decision.Failure?.ForPropagation()
                     ?? new InvalidOperationException(decision.Note)));
         }
@@ -323,11 +330,17 @@ internal sealed class ActivityAttempts(
             var completed = accepted.Event.Read(services) as ChildCompleted
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Child invocation step '{step.Name}' took an event that is not its child's completion");
+            using var childLease = pending.ChildBundleDigest == null ? null
+                : await definitions.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest);
+            using var childTypes = WorkflowTypeIdentity.Enter(childLease?.Definition.BundleContext);
             var dataType = WorkflowTypeIdentity.Resolve(pending.ChildDataType ?? "")
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Child data type '{pending.ChildDataType}' is unavailable");
             continuation.AcceptedWait = null;
-            return Settles(completed.Outcome(dataType));
+            var outcome = completed.Outcome(dataType);
+            if (outcome.Output != null && step.InvokedDataType is { } target && !target.IsInstanceOfType(outcome.Output))
+                outcome = outcome with { Output = JsonSerializer.Deserialize(completed.DataJson, target) };
+            return Settles(outcome);
         }
         if (pending != null)
         {
@@ -345,11 +358,12 @@ internal sealed class ActivityAttempts(
         pending = new ActivityInvocationState { StepId = scopes.Id(step), StartedAtUtc = Now };
         pending.ChildWorkflowId = pending.Id;
         using var startScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), pending.Id));
+        using var childDefinitionLease = step.WorkflowType == null
+            ? await definitions.ResolveWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value) : null;
         var childDefinition = step.WorkflowType != null
             ? step.Runtime.ChildDefinition!(services)
-            : await definitions.GetWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    $"Workflow definition not found: {step.WorkflowName} v{step.WorkflowVersion}");
+            : childDefinitionLease!.Definition;
+        using var childTypeScope = childDefinitionLease?.EnterTypes();
         if (childDefinition.Name != step.WorkflowName || childDefinition.Version != step.WorkflowVersion)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 step.WorkflowType != null
@@ -357,7 +371,8 @@ internal sealed class ActivityAttempts(
                       $"but the invocation requires '{step.WorkflowName}' v{step.WorkflowVersion}"
                     : "The child definition has a different declared identity");
         var childScopes = WorkflowDefinitionValidator.ForExecution(childDefinition);
-        pending.ChildDataType = childDefinition.WorkflowDataType!.AssemblyQualifiedName!;
+        pending.ChildDataType = WorkflowTypeIdentity.SavedName(childDefinition.WorkflowDataType!);
+        pending.ChildBundleDigest = childDefinition.BundleDigest;
         ChildStart start;
         try
         {

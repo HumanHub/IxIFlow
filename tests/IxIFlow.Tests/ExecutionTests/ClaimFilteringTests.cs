@@ -47,7 +47,7 @@ public sealed class ClaimFilteringTests
             var instance = new WorkflowInstance
             {
                 InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "ClaimContract", Status = status,
-                WorkflowDataJson = "{}", WorkflowDataType = typeof(object).AssemblyQualifiedName!,
+                WorkflowDataJson = "{}", WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
                 ExecutionStateJson = JsonSerializer.Serialize(new ExecutionCheckpoint
                 {
                     StructureHash = "claim-contract", Demands = demands.ToList(),

@@ -142,7 +142,23 @@ Choose one store through the builder returned by `AddIxIFlow()`. All provider ex
 
 Before 1.0, any store schema change requires a fresh database. Schema creation supplies whole tables and their indexes; it does not upgrade existing tables or repair their missing indexes. Recreate databases from an earlier schema build. SQL Server IDs use `Latin1_General_100_BIN2` to preserve case distinctions; see [stores](docs/stores.md) for the affected columns.
 
-Definition and version registries are currently in memory. Every host that may resume an instance must load the matching definitions and activity code. Workflow identity is the declared `(name, version)`; names are required. A compiler-free `StructureHash` checks checkpoint compatibility and refuses changed structure at registration, start, resume, recovery and child resolution. It includes ordered steps, types, waits, joins, combiners, loops, handlers, children and expression shapes; it ignores delegate bodies, captured values and presentation metadata. Change the version when changing behavior. See [identity and expressions](docs/fluent-api.md#identity-and-expressions). Checkpoint schema 4 is a one-time break: older saved instances are refused without migration; reset development state and restart hosts together.
+Workflow versions and draft definitions are stored in the selected repository. Code-defined executable definitions are registered locally on each host that may run them. Published versions are fetched by their immutable bundle digest when bundle hosting is enabled. Workflow identity is the declared `(name, version)`; names are required. A compiler-free `StructureHash` checks checkpoint compatibility and refuses changed structure at registration, start, resume, recovery and child resolution. It includes ordered steps, types, waits, joins, combiners, loops, handlers, children and expression shapes; it ignores delegate bodies, captured values and presentation metadata. Change the version when changing behavior. See [identity and expressions](docs/fluent-api.md#identity-and-expressions). Checkpoint schema 4 is a one-time break: older saved instances are refused without migration; reset development state and restart hosts together.
+
+Enable published workflows with a local cache directory:
+
+```csharp
+services.AddIxIFlow()
+    .UseSqlite(connectionString)
+    .UseWorkflowBundles(cacheDirectory, maxCachedBundles: 16);
+// Uses the repository's artifact table by default; UseFileSystemArtifacts can replace it.
+var id = await client.StartAsync("Approval", version: 1, workflowData: data);
+```
+
+A configured bundle host advertises `bundle-host` and the catalog's workflow/version structure hashes. A published start saves both demands and its `BundleDigest`; recovery and child instances use their own saved pins. Downloads and cached archives are verified before loading, and shared assembly identities/versions must match the manifest's compatibility profile. Private dependencies come only from verified archive entries. Activity-package imports remain unsupported.
+
+Each digest has its own collectible load context. `maxCachedBundles` bounds the loaded-context cache; active operations and activity tasks retain leases until they finish. Set it to zero to release a context after its last operation. Cache files contain whole verified archives and are written atomically, so hosts can share a directory; archive disk usage is managed separately from the loaded-context bound. A corrupt cache entry is rejected with `ArtifactMismatch` and removed; a later operation can fetch it again. Missing/download failures use `ArtifactUnavailable`. Both interrupt execution and keep the committed checkpoint.
+
+Unloading is cooperative: a static field, event handler, delegate, `Type`, or returned data object holding a bundle type keeps that context loaded. Runtime serializer caches can also delay collection briefly. Engine reflection caches use weak ownership and serializer profiles are scoped to their load context. Saved data/event/value type names now use the recursive `ixi-type:1:` format; recreate earlier development databases and republish earlier bundles rather than migrating their type names.
 
 All four stores implement inbox, trace, outbox and retention semantics; memory records last only for the process lifetime. See [stores](docs/stores.md) for deployment details.
 
@@ -195,7 +211,7 @@ The following work is planned for 1.0 and is **not yet available**, or has an im
 | Execution and isolation | Public executor message contract; local-first process slots, pipe transport, process liveness and resource limits, fenced process crash reports; commit resend backoff and host validation of message size/metadata |
 | Coordinator and placement | Cross-host scheduling through stateless coordinators, workflow demands, matching and affinity, visible unschedulable work, coordinator discovery, multiple coordinators, loss handling and secured links; batched host lease renewal and process-slot activity accounting. The store-backed member registry, heartbeats and automatic/configured host capabilities are implemented |
 | Events and integrations | Incoming webhook/HTTP trigger package and conformance; child placement demands. Durable inboxes, reply tokens, child instances, suggested wait payloads, retained results, public outbox publishers and outgoing signed webhooks are implemented |
-| Publishing and versioning | Immutable workflow bundles, artifact storage and verification, dependency resolution and pinning, isolated assemblies per version, host bundle fetching, bundle digests and compatibility/migration policy; draft/publish and version lifecycle APIs |
+| Publishing and versioning | Activity-package resolution/loading and HTTP publishing APIs. Immutable bundles, artifact stores, draft publishing, version lifecycle, verified host loading, per-version isolation, digest pins and shared compatibility checks are implemented |
 | Authoring and catalog | Broader catalog API, code-defined workflows in the catalog, published code activities, inline calls, explicit workflow input/output contracts, YAML code activities and planned local registration support beyond the current installed-assembly registry; Native AOT publish/run validation. Full YAML construct coverage is implemented |
 | Editor support | The JSON Schema for workflow YAML ships in the package. A visual editor and debugger integration remain planned |
 | Debugger and audit | Breakpoints, all-stop pause, stepping including loops, audited data edits, paused timer behavior, Debug Adapter Protocol and replay. Separate committed transition/event/operator traces, snapshots, scoped logs and OpenTelemetry already work; transitions that never commit do not enter saved history |

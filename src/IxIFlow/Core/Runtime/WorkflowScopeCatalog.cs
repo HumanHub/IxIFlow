@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Reflection;
 using IxIFlow.Builders;
 
@@ -197,7 +198,7 @@ internal sealed class WorkflowScopeCatalog
                 });
             })
         };
-        var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(manifest);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(manifest);
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
     }
 
@@ -208,7 +209,7 @@ internal sealed class WorkflowScopeCatalog
     private string Shape(System.Linq.Expressions.LambdaExpression? expression) =>
         expression == null ? "" : WorkflowExpressionSignature.Of(expression, _handles);
 
-    private string MappingSignature(PropertyMapping mapping) => System.Text.Json.JsonSerializer.Serialize(new
+    private string MappingSignature(PropertyMapping mapping) => JsonSerializer.Serialize(new
     {
         mapping.Direction, mapping.TargetProperty, mapping.TargetPath,
         Source = WorkflowTypeIdentity.StableName(mapping.SourceType),
@@ -221,7 +222,7 @@ internal sealed class WorkflowScopeCatalog
         branch.IsDefault,
         WorkflowTypeIdentity.StableName(branch.Value?.GetType()),
         branch.Value == null ? "null" :
-            System.Text.Json.JsonSerializer.Serialize(branch.Value, branch.Value.GetType()));
+            JsonSerializer.Serialize(branch.Value, branch.Value.GetType()));
 
     private static string ErrorPolicySignature(WorkflowStep step)
     {

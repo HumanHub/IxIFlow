@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -8,7 +8,8 @@ namespace IxIFlow.Core.Runtime;
 /// <summary>Copies selected exception properties into a checkpointable fault DTO.</summary>
 internal sealed class FaultProjection
 {
-    private static readonly ConcurrentDictionary<(Type Exception, Type Fault), FaultProjection> Cache = new();
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Type,
+        System.Runtime.CompilerServices.ConditionalWeakTable<Type, WeakReference<FaultProjection>>> Cache = new();
 
     private readonly Type _exceptionType;
     private readonly Type _faultType;
@@ -47,14 +48,25 @@ internal sealed class FaultProjection
         _constructor = SelectConstructor(faultType, targetProperties);
     }
 
-    public static FaultProjection For(Type exceptionType, Type faultType) =>
-        Cache.GetOrAdd((exceptionType, faultType), key => new FaultProjection(key.Exception, key.Fault));
+    public static FaultProjection For(Type exceptionType, Type faultType)
+    {
+        // Either type may be shared while the other is collectible. A strong value in the
+        // inner table could otherwise keep the outer key alive through the shared inner key.
+        var slot = Cache.GetValue(exceptionType, _ => new()).GetValue(faultType, _ => new(null!));
+        lock (slot)
+        {
+            if (slot.TryGetTarget(out var projection)) return projection;
+            projection = new FaultProjection(exceptionType, faultType);
+            slot.SetTarget(projection);
+            return projection;
+        }
+    }
 
     public IReadOnlyCollection<PropertyInfo> SourceProperties =>
         _properties.Select(pair => pair.Source).ToArray();
 
     public static string PropertyKey(PropertyInfo property) =>
-        $"{property.DeclaringType!.AssemblyQualifiedName}|{property.Name}";
+        $"{WorkflowTypeIdentity.SavedName(property.DeclaringType!)}|{property.Name}";
 
     private static PropertyInfo? FindSourceProperty(Type exceptionType, string name)
     {
@@ -81,8 +93,8 @@ internal sealed class FaultProjection
     {
         if (_faultType == typeof(EmptyFault))
             return new EmptyFault();
-        if (error.Fault is { } savedFault && savedFault.Type == _faultType.AssemblyQualifiedName &&
-            error.FaultCatchType == _exceptionType.AssemblyQualifiedName)
+        if (error.Fault is { } savedFault && savedFault.Type == WorkflowTypeIdentity.SavedName(_faultType) &&
+            error.FaultCatchType == WorkflowTypeIdentity.SavedName(_exceptionType))
             return JsonSerializer.Deserialize(savedFault.Json, _faultType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Saved fault '{_faultType.Name}' could not be restored");

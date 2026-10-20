@@ -172,7 +172,7 @@ public sealed class MergedInspectionRedactionTests
         saved.Status = WorkflowStatus.NeedsResolution;
         saved.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         await store.AppendEventAsync(new(saved.InstanceId, Guid.NewGuid().ToString("N"),
-            typeof(Notice).AssemblyQualifiedName!, "{}", Key: "gate"));
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Notice)), "{}", Key: "gate"));
         var lease = await StoreTestSupport.LeaseAsync(store, saved.InstanceId);
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved,
             lease.Epoch, saved.Revision, stopped: true, diagnostics: checkpoint.PendingDiagnostics,

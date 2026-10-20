@@ -92,14 +92,15 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             var manifest = new WorkflowBundleManifest(1, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
                 typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
                 tested.CombinerSignature, WorkflowCompilation.Settings,
-                references.Paths.Select(AssemblyName.GetAssemblyName).ToDictionary(name => name.FullName!, name => name.Version!.ToString(), StringComparer.Ordinal),
+                references.Paths.Select(AssemblyName.GetAssemblyName).Where(WorkflowSharedAssemblies.IsShared)
+                    .ToDictionary(name => name.FullName!, name => name.Version!.ToString(), StringComparer.Ordinal),
                 new Dictionary<string, ArtifactDigest>());
-            var archive = WorkflowBundleArchive.Create(manifest, new Dictionary<string, byte[]>
-            {
-                [WorkflowBundleArchive.AssemblyPath] = compilation.Assembly, [WorkflowBundleArchive.PdbPath] = compilation.Pdb,
-                [WorkflowBundleArchive.YamlPath] = Encoding.UTF8.GetBytes(WorkflowYamlSerializer.Write(document)),
-                [WorkflowBundleArchive.SourcePath] = Encoding.UTF8.GetBytes(source)
-            });
+            var entries = PrivateAssemblies(compilation.Assembly, references.Paths);
+            entries.Add(WorkflowBundleArchive.AssemblyPath, compilation.Assembly);
+            entries.Add(WorkflowBundleArchive.PdbPath, compilation.Pdb);
+            entries.Add(WorkflowBundleArchive.YamlPath, Encoding.UTF8.GetBytes(WorkflowYamlSerializer.Write(document)));
+            entries.Add(WorkflowBundleArchive.SourcePath, Encoding.UTF8.GetBytes(source));
+            var archive = WorkflowBundleArchive.Create(manifest, entries);
             // Use the verified manifest, including entry hashes, as the durable catalog copy.
             var digest = ArtifactDigest.Of(archive);
             var bundle = await WorkflowBundleArchive.ReadAsync(new MemoryStream(archive), digest, cancellationToken);
@@ -124,6 +125,32 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         }
         catch (Exception error) when (error is not (OperationCanceledException or OutOfMemoryException))
         { return Failure("PUB007", error.Message); }
+    }
+
+    private static Dictionary<string, byte[]> PrivateAssemblies(byte[] workflow, IEnumerable<string> referencePaths)
+    {
+        var paths = referencePaths.ToDictionary(path => AssemblyName.GetAssemblyName(path).Name!, StringComparer.OrdinalIgnoreCase);
+        var entries = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        var pending = new Queue<byte[]>();
+        pending.Enqueue(workflow);
+        while (pending.TryDequeue(out var bytes))
+        {
+            using var pe = new System.Reflection.PortableExecutable.PEReader(new MemoryStream(bytes));
+            var metadata = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(pe);
+            foreach (var handle in metadata.AssemblyReferences)
+            {
+                var reference = metadata.GetAssemblyReference(handle);
+                var name = metadata.GetString(reference.Name);
+                if (WorkflowSharedAssemblies.IsShared(new AssemblyName(name))) continue;
+                var key = "private/" + name + ".dll";
+                if (entries.ContainsKey(key)) continue;
+                if (!paths.TryGetValue(name, out var path)) throw new InvalidOperationException($"Private dependency '{name}' is outside the publishing reference closure");
+                var dependency = File.ReadAllBytes(path);
+                entries.Add(key, dependency);
+                pending.Enqueue(dependency);
+            }
+        }
+        return entries;
     }
 
     private static WorkflowSourceOptions ResolveTypes(WorkflowDocument document, WorkflowSourceOptions configured, WorkflowCompilation.ReferenceSet references)

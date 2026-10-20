@@ -12,7 +12,7 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
     InspectionRedactionPolicy? inspectionPolicy = null) : BackgroundService
 {
     internal static bool IsAutomaticCapability(string key) =>
-        key is "os" or "arch" or "runtime" or "host" || key.StartsWith("workflow:", StringComparison.Ordinal);
+        key is "os" or "arch" or "runtime" or "host" or "bundle-host" || key.StartsWith("workflow:", StringComparison.Ordinal);
 
     internal static async Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync(IWorkflowCatalog registry, HostSettings settings)
     {
@@ -27,6 +27,13 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
         foreach (var definition in await registry.GetWorkflowDefinitionsAsync())
             if (await registry.GetWorkflowStructureHashAsync(definition.Name, definition.Version) is { } hash)
                 capabilities.Add($"workflow:{definition.Name}@{definition.Version}", hash);
+        if (settings.BundleHostingEnabled)
+        {
+            capabilities.Add("bundle-host", "");
+            foreach (var row in await registry.GetWorkflowVersionsAsync())
+                if (row.ArtifactDigest != null)
+                    capabilities[$"workflow:{row.Name}@{row.Version}"] = row.StructureHash;
+        }
         return capabilities;
     }
 

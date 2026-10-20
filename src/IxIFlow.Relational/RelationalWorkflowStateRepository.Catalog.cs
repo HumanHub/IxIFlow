@@ -227,9 +227,11 @@ public abstract partial class RelationalWorkflowStateRepository
         {
             WorkflowCatalogRules.ValidateNameWhitespace(start.WorkflowName);
             // Low-level commits may store instances without a catalog registration. Engine starts register first.
-            if ((await connection.QuerySingleOrDefaultAsync<VersionRow>(RequiredSql(Statement.CatalogVersion),
-                new { Name = start.WorkflowName, Version = start.WorkflowVersion }, transaction))?.Value is { } row)
+            var row = (await connection.QuerySingleOrDefaultAsync<VersionRow>(RequiredSql(Statement.CatalogVersion),
+                new { Name = start.WorkflowName, Version = start.WorkflowVersion }, transaction))?.Value;
+            if (row != null)
                 WorkflowCatalogRules.CheckStartable(row, start.WorkflowName, start.WorkflowVersion);
+            WorkflowCatalogRules.CheckInstancePin(row, start);
         }
     }
 
@@ -289,7 +291,9 @@ public abstract partial class RelationalWorkflowStateRepository
         cancellationToken.ThrowIfCancellationRequested();
         return CatalogWriteAsync(async (connection, transaction) =>
         {
-            var references = WorkflowCatalogRules.ArtifactReferences(await ReadVersionsAsync(connection, transaction));
+            var references = WorkflowCatalogRules.ArtifactReferences(await ReadVersionsAsync(connection, transaction))
+                .Concat((await connection.QueryAsync<string>(RequiredSql(Statement.CatalogInstanceDigests), transaction: transaction))
+                    .Select(value => new ArtifactDigest(value))).ToHashSet();
             var cutoff = await OutboxNowAsync(connection, transaction) - retention;
             return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);
         });

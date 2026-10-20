@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Collections;
 using System.Reflection;
 using System.Text.Json;
@@ -102,7 +103,7 @@ internal static class BranchData
         var node = Node(baseline);
         foreach (var change in changes)
             Lay(node, change);
-        return node.Deserialize(baseline.GetType(), Options)!;
+        return JsonSerializer.Deserialize(node.ToJsonString(), baseline.GetType(), Options)!;
     }
 
     /// <summary>
@@ -179,7 +180,7 @@ internal static class BranchData
         object merged;
         try
         {
-            merged = node.Deserialize(type, Options)!;
+            merged = JsonSerializer.Deserialize(node.ToJsonString(), type, Options)!;
         }
         catch (Exception error) when (error is not (OutOfMemoryException or WorkflowEngineException))
         {
@@ -436,7 +437,7 @@ internal static class BranchData
             target[change.Path[^1]] = JsonNode.Parse(change.Value ?? "null");
     }
 
-    private static JsonTypeInfo Info(Type type) => Options.GetTypeInfo(type);
+    private static JsonTypeInfo Info(Type type) => WorkflowJson.Options(Options, type).GetTypeInfo(type);
 
     /// <summary>
     /// True when a value of this contract is compared and merged per member: a class whose properties are

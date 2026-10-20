@@ -19,7 +19,7 @@ public sealed class IncomingWebhookStoreScenarios
         {
             var cases = new TheoryData<string, string>();
             foreach (var profile in new[] { "sqlite", "sqlserver", "postgresql" })
-                foreach (var part in new[] { "admissions", "ownership", "deliveries", "owner-kind", "old-column", "outbox", "epoch" })
+                foreach (var part in new[] { "admissions", "ownership", "deliveries", "owner-kind", "old-column", "bundle-digest", "outbox", "epoch" })
                     cases.Add(profile, part);
             return cases;
         }
@@ -107,6 +107,7 @@ public sealed class IncomingWebhookStoreScenarios
         var sql = missing switch
         {
             "owner-kind" => $"ALTER TABLE {database.Table("ownership")} DROP COLUMN {(database.SqlServer ? "OwnerKind" : "owner_kind")}",
+            "bundle-digest" => $"ALTER TABLE {database.Table("instances")} DROP COLUMN {(database.SqlServer ? "BundleDigest" : "bundle_digest")}",
             "old-column" => $"ALTER TABLE {database.Table("instances")} DROP COLUMN {(database.SqlServer ? "StateJson" : "state_json")}",
             "outbox" => "DROP TABLE " + (database.SqlServer ? "dbo.IxIFlowOutboxDeliveries" : "ixiflow_outbox_deliveries"),
             "epoch" => profile == "sqlite" ? "DROP TABLE ixiflow_execution_epoch"
@@ -148,7 +149,7 @@ public sealed class IncomingWebhookStoreScenarios
             var instance = new WorkflowInstance
             {
                 InstanceId = "signed-owner", WorkflowName = "Receipt", WorkflowVersion = 1, Status = WorkflowStatus.Running,
-                WorkflowDataType = typeof(object).AssemblyQualifiedName!, WorkflowDataJson = "{}",
+                WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), WorkflowDataJson = "{}",
                 ExecutionStateJson = StoreTestSupport.CheckpointJson
             };
             var request = new WorkflowAdmission("vendor", "trigger", "delivery", new string('A', 64), "vendor",

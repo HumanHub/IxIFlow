@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 
@@ -70,16 +71,17 @@ public sealed class WorkflowExecutor
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     "Breakpoints are not supported until G-04");
             signals.ThrowIfOwnershipLost();
-            var definition = await _definitions.GetWorkflowDefinitionAsync(assign.Instance.WorkflowName,
-                assign.Instance.WorkflowVersion) ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    "The assigned workflow definition is unavailable");
+            using var definitionLease = await _definitions.AcquireWorkflowDefinitionAsync(assign.Instance.WorkflowName,
+                assign.Instance.WorkflowVersion, assign.Instance.BundleDigest);
+            using var types = definitionLease.EnterTypes();
+            var definition = definitionLease.Definition;
             _ = WorkflowDefinitionValidator.ForExecution(definition);
             if (definition.Name != assign.Instance.WorkflowName || definition.Version != assign.Instance.WorkflowVersion)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     "The definition source returned a different workflow identity");
             // Assignment input is saved state. Never execute against a host-owned instance or data object.
-            var instance = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
-                System.Text.Json.JsonSerializer.Serialize(assign.Instance))!;
+            var instance = JsonSerializer.Deserialize<WorkflowInstance>(
+                JsonSerializer.Serialize(assign.Instance))!;
             instance.Incarnation = assign.Incarnation;
             if (assign.Parts != null) instance.Saved(new Dictionary<string, string>(assign.Parts), instance.Revision);
             instance.ExecutionStateJson = StoredCheckpoint.WholeState(instance);
@@ -91,7 +93,7 @@ public sealed class WorkflowExecutor
             var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
-            var data = System.Text.Json.JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
+            var data = JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
             signals.Deliver(new Arrivals(assign.AssignmentId, assign.InboxSequence));
             if (checkpoint.StructureHash == WorkflowDefinitionValidator.ForExecution(definition).StructureHash &&
@@ -120,7 +122,7 @@ public sealed class WorkflowExecutor
                     await ExecutionCheckpointWriter.CommitAsync(session, instance, checkpoint, null, scopes, Now,
                         preserveSavedWorkflowData: true, enforceLimit: false);
             }
-            var outcome = await RunCoreAsync(definition, instance, checkpoint, data, session, signals);
+            var outcome = await RunCoreAsync(definitionLease, definition, instance, checkpoint, data, session, signals);
             return new(assign.AssignmentId, outcome, session.LastAcknowledgedCommit, ExecutorName: _executorName);
         }
         catch (ExecutionOwnershipLostException)
@@ -147,6 +149,7 @@ public sealed class WorkflowExecutor
             (error.InnerException as WorkflowEngineException)?.AttemptId);
 
     private async Task<AssignmentOutcome> RunCoreAsync(
+        WorkflowDefinitionLease definitionLease,
         WorkflowDefinition definition,
         WorkflowInstance instance,
         ExecutionCheckpoint checkpoint,
@@ -331,7 +334,14 @@ public sealed class WorkflowExecutor
                             throw;
                         }
                         if (running != null)
+                        {
+                            // A cancelled activity can outlive its assignment. Keep its context usable
+                            // until the actual task ends, including when the host's grace period expires.
+                            var activityLease = definitionLease.Retain();
+                            _ = running.Task.ContinueWith(_ => activityLease.Dispose(), CancellationToken.None,
+                                TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                             inFlight.Add(runnable.Id, running);
+                        }
                         else
                             activityCancellation.Dispose();
                     }
