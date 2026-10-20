@@ -9,6 +9,25 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
     private int _runCancelled;
     private int _ownershipLost;
     private int _recycle;
+    private readonly CancellationTokenSource _acquisitionStop = new();
+    private readonly object _stopGate = new();
+    private bool _closed;
+
+    internal CancellationToken AcquisitionToken => _acquisitionStop.Token;
+    internal void Close()
+    {
+        lock (_stopGate)
+        {
+            if (_closed) return;
+            _closed = true;
+            _acquisitionStop.Dispose();
+        }
+    }
+
+    private void StopAcquisition()
+    {
+        lock (_stopGate) { if (!_closed) _acquisitionStop.Cancel(); }
+    }
 
     public Guid AssignmentId { get; } = assignmentId;
     public void Dispose() => close(AssignmentId);
@@ -16,6 +35,7 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
     public CancellationReason? Cancellation => Volatile.Read(ref _cancellation);
     public long InboxSequence => Interlocked.Read(ref _sequence);
     public bool RunCancelled => Volatile.Read(ref _runCancelled) != 0;
+    internal bool OwnershipLost => Volatile.Read(ref _ownershipLost) != 0;
     public bool Recycle => Volatile.Read(ref _recycle) != 0;
 
     public void Deliver(Cancel message)
@@ -30,6 +50,7 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
             _ => false
         };
         if (changed) Pulse();
+        if (message.Kind is CancelKind.Run or CancelKind.Ownership) StopAcquisition();
     }
 
     public void Deliver(Arrivals message)
@@ -53,7 +74,7 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
 
     public void ThrowIfOwnershipLost()
     {
-        if (Volatile.Read(ref _ownershipLost) != 0)
+        if (OwnershipLost)
             throw new ExecutionOwnershipLostException(new InvalidOperationException("The execution lease was lost"));
     }
 

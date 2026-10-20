@@ -89,13 +89,12 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 return Failure("PUB005", $"Declared identity '{tested.Name}' v{tested.Version} does not match draft '{draft.Name}' v{draft.Version}");
             }
             stage = WorkflowPublishStage.Publish;
+            var (entries, shared) = BundleAssemblies(compilation.Assembly, references.Paths);
             var manifest = new WorkflowBundleManifest(1, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
                 typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
                 tested.CombinerSignature, WorkflowCompilation.Settings,
-                references.Paths.Select(AssemblyName.GetAssemblyName).Where(WorkflowSharedAssemblies.IsShared)
-                    .ToDictionary(name => name.FullName!, name => name.Version!.ToString(), StringComparer.Ordinal),
+                shared,
                 new Dictionary<string, ArtifactDigest>());
-            var entries = PrivateAssemblies(compilation.Assembly, references.Paths);
             entries.Add(WorkflowBundleArchive.AssemblyPath, compilation.Assembly);
             entries.Add(WorkflowBundleArchive.PdbPath, compilation.Pdb);
             entries.Add(WorkflowBundleArchive.YamlPath, Encoding.UTF8.GetBytes(WorkflowYamlSerializer.Write(document)));
@@ -127,10 +126,18 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         { return Failure("PUB007", error.Message); }
     }
 
-    private static Dictionary<string, byte[]> PrivateAssemblies(byte[] workflow, IEnumerable<string> referencePaths)
+    private static (Dictionary<string, byte[]> Entries, Dictionary<string, string> Shared) BundleAssemblies(byte[] workflow, IEnumerable<string> referencePaths)
     {
         var paths = referencePaths.ToDictionary(path => AssemblyName.GetAssemblyName(path).Name!, StringComparer.OrdinalIgnoreCase);
         var entries = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        var shared = new Dictionary<string, string>(StringComparer.Ordinal);
+        void Share(string path)
+        {
+            var identity = AssemblyName.GetAssemblyName(path);
+            shared.TryAdd(identity.FullName!, identity.Version!.ToString());
+        }
+        Share(typeof(object).Assembly.Location);
+        Share(paths["System.Runtime"]);
         var pending = new Queue<byte[]>();
         pending.Enqueue(workflow);
         while (pending.TryDequeue(out var bytes))
@@ -141,16 +148,21 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             {
                 var reference = metadata.GetAssemblyReference(handle);
                 var name = metadata.GetString(reference.Name);
-                if (WorkflowSharedAssemblies.IsShared(new AssemblyName(name))) continue;
+                if (!paths.TryGetValue(name, out var path)) throw new InvalidOperationException($"Dependency '{name}' is outside the publishing reference closure");
+                var identity = AssemblyName.GetAssemblyName(path);
+                if (WorkflowSharedAssemblies.IsShared(identity))
+                {
+                    Share(path);
+                    continue;
+                }
                 var key = "private/" + name + ".dll";
                 if (entries.ContainsKey(key)) continue;
-                if (!paths.TryGetValue(name, out var path)) throw new InvalidOperationException($"Private dependency '{name}' is outside the publishing reference closure");
                 var dependency = File.ReadAllBytes(path);
                 entries.Add(key, dependency);
                 pending.Enqueue(dependency);
             }
         }
-        return entries;
+        return (entries, shared);
     }
 
     private static WorkflowSourceOptions ResolveTypes(WorkflowDocument document, WorkflowSourceOptions configured, WorkflowCompilation.ReferenceSet references)

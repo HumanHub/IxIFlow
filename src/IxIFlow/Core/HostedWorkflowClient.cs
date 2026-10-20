@@ -57,15 +57,22 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
             : await catalog.GetLatestWorkflowVersionAsync(name);
         if (row == null)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Workflow version not found: {name}");
-        using var lease = await catalog.AcquireWorkflowDefinitionAsync(name, row.Version, row.ArtifactDigest);
+        using var lease = await catalog.AcquireWorkflowDefinitionAsync(name, row.Version, row.ArtifactDigest, cancellationToken);
         var definition = lease.Definition;
         using var types = lease.EnterTypes();
         object data = workflowData;
         if (!definition.WorkflowDataType!.IsInstanceOfType(data))
-            data = JsonSerializer.Deserialize(JsonSerializer.Serialize(data),
-                definition.WorkflowDataType, System.Text.Json.JsonSerializerOptions.Web)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow data is empty");
-        return await StartDefinitionAsync(definition, data, options, cancellationToken, versionOmitted);
+        {
+            try
+            {
+                data = JsonSerializer.Deserialize(JsonSerializer.Serialize(data),
+                    definition.WorkflowDataType, System.Text.Json.JsonSerializerOptions.Web)
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow data is empty");
+            }
+            catch (Exception error) when (error is System.Text.Json.JsonException or NotSupportedException)
+            { throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow data does not match the declared data contract", error); }
+        }
+        return await StartDefinitionAsync(definition, data, options, cancellationToken, versionOmitted, lease);
     }
 
     public Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
@@ -77,7 +84,8 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         where TWorkflowData : class => StartDefinitionAsync(definition, workflowData, options, cancellationToken, false);
 
     private async Task<string> StartDefinitionAsync<TWorkflowData>(WorkflowDefinition definition,
-        TWorkflowData workflowData, WorkflowOptions? options, CancellationToken cancellationToken, bool versionOmitted)
+        TWorkflowData workflowData, WorkflowOptions? options, CancellationToken cancellationToken, bool versionOmitted,
+        WorkflowDefinitionLease? definitionLease = null)
         where TWorkflowData : class
     {
         ArgumentNullException.ThrowIfNull(definition);
@@ -90,12 +98,19 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
             return (await inline).InstanceId;
         var accepted = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         // Once accepted the run belongs to the host; the caller's token only stops the wait.
-        var run = host.RunAsync(options.InstanceId, (client, control, token) =>
+        var queuedLease = definitionLease?.Retain();
+        Task<WorkflowExecutionResult> run;
+        try
         {
-            control.OnAccepted(instanceId => accepted.TrySetResult(instanceId));
-            return client.RunAsync(definition, workflowData, options, token, versionOmitted);
-        }, CancellationToken.None);
-        _ = run.ContinueWith(finished => _ = finished.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            run = host.RunAsync(options.InstanceId, (client, control, token) =>
+            {
+                control.OnAccepted(instanceId => accepted.TrySetResult(instanceId));
+                return client.RunAsync(definition, workflowData, options, token, versionOmitted);
+            }, CancellationToken.None);
+        }
+        catch { queuedLease?.Dispose(); throw; }
+        _ = run.ContinueWith(finished => { queuedLease?.Dispose(); _ = finished.Exception; },
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         if (await Task.WhenAny(accepted.Task, run).WaitAsync(cancellationToken) == accepted.Task)
             return await accepted.Task;
         // The run ended without saving a new start: a repeated start of an existing instance is
@@ -167,22 +182,8 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         var waits = await host.ReadAsync(client => client.GetOpenWaitsAsync(query with { Kind = WaitKind.Event }));
         var removed = query.InstanceId is { } instanceId &&
             await GetStatusAsync(instanceId) == WorkflowExecutionStatus.Removed;
-        var result = new List<OpenWait>();
-        if (!removed)
-            foreach (var wait in waits)
-            {
-                var instance = await repository.GetWorkflowInstanceSummaryAsync(wait.InstanceId);
-                using var lease = instance?.BundleDigest == null ? null
-                    : await catalog.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
-                using var types = lease?.EnterTypes();
-                result.Add(new OpenWait(wait.InstanceId, wait.WaitId, wait.Kind, wait.Key, wait.EventType,
-                    EventSchema(wait.EventType), wait.DeadlineUtc, wait.OpenedAtUtc,
-                    ReplyToken.Create(wait.InstanceId, wait.WaitId), wait.DefaultPayloadJson));
-            }
-        return new(result, removed);
+        return new(removed ? [] : waits, removed);
     }
-
-    private static string? EventSchema(string typeName) => InspectionRedactionPolicy.Default.EventSchema(typeName);
 
     private async Task<WorkflowExecutionResult> DecideAsync(string instanceId, string eventId,
         Func<WorkflowHost.SlotClient, Task<EventAppendResult>> deliver, CancellationToken cancellationToken)

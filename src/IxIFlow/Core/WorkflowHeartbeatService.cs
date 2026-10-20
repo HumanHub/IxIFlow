@@ -31,10 +31,20 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
         {
             capabilities.Add("bundle-host", "");
             foreach (var row in await registry.GetWorkflowVersionsAsync())
-                if (row.ArtifactDigest != null)
+                if (row.ArtifactDigest != null && Compatible(row.ManifestJson))
                     capabilities[$"workflow:{row.Name}@{row.Version}"] = row.StructureHash;
         }
         return capabilities;
+    }
+
+    private static bool Compatible(string? json)
+    {
+        try
+        {
+            return json != null && System.Text.Json.JsonSerializer.Deserialize<WorkflowBundleManifest>(json) is { } manifest &&
+                WorkflowSharedAssemblies.IsCompatible(manifest);
+        }
+        catch (System.Text.Json.JsonException) { return false; }
     }
 
     private Task RegisterAsync(IReadOnlyDictionary<string, string> capabilities, CancellationToken token) =>
