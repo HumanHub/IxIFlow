@@ -10,6 +10,8 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
     private readonly IWorkflowStateRepository _store;
     private readonly TimeProvider _time;
     private readonly ILogger<ExecutionLeaseRenewer> _logger;
+    private readonly ILogger<SensitiveDiagnostics>? _sensitiveDiagnostics;
+    private readonly InspectionRedactionPolicy _inspectionPolicy;
     private readonly object _lock = new();
     private readonly HashSet<Registration> _leases = [];
     private readonly HashSet<Task> _batches = [];
@@ -17,11 +19,14 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
     private bool _disposed;
 
     public ExecutionLeaseRenewer(IWorkflowStateRepository store, TimeProvider? time = null,
-        ILogger<ExecutionLeaseRenewer>? logger = null)
+        ILogger<ExecutionLeaseRenewer>? logger = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
+        InspectionRedactionPolicy? inspectionPolicy = null)
     {
         _store = GuardedStateRepository.Wrap(store);
         _time = time ?? TimeProvider.System;
         _logger = logger ?? NullLogger<ExecutionLeaseRenewer>.Instance;
+        _sensitiveDiagnostics = sensitiveDiagnostics;
+        _inspectionPolicy = inspectionPolicy ?? InspectionRedactionPolicy.Default;
         _timer = _time.CreateTimer(_ => Tick(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
@@ -43,9 +48,9 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
     {
         var due = _leases.Where(lease => !lease.InFlight).Select(lease => lease.DueAtUtc)
             .DefaultIfEmpty(DateTime.MaxValue).Min();
-        var delay = due == DateTime.MaxValue ? Timeout.InfiniteTimeSpan : due - _time.GetUtcNow().UtcDateTime;
-        _timer.Change(delay < TimeSpan.Zero && delay != Timeout.InfiniteTimeSpan ? TimeSpan.Zero : delay,
-            Timeout.InfiniteTimeSpan);
+        var delay = due - _time.GetUtcNow().UtcDateTime;
+        _timer.Change(due == DateTime.MaxValue ? Timeout.InfiniteTimeSpan :
+            delay < TimeSpan.Zero ? TimeSpan.Zero : delay, Timeout.InfiniteTimeSpan);
     }
 
     private void Tick()
@@ -61,7 +66,10 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
                 Arm();
                 return;
             }
-            batch = _leases.Where(lease => !lease.InFlight).ToArray();
+            // A stale registration and its replacement can briefly share an ID. Send the other
+            // token on the next pass; duplicate IDs would fail the store's entire batch.
+            batch = _leases.Where(lease => !lease.InFlight)
+                .DistinctBy(lease => lease.Request.InstanceId, StringComparer.Ordinal).ToArray();
             foreach (var lease in batch) lease.InFlight = true;
             _batches.Add(completed.Task);
             Arm();
@@ -84,6 +92,8 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
         }
         catch (Exception error)
         {
+            _inspectionPolicy.Log(_logger, _sensitiveDiagnostics, LogLevel.Warning, error,
+                "Could not renew execution leases for {Count} workflow instances", batch.Length);
             foreach (var lease in batch) lease.Reply.TrySetException(error);
         }
         finally

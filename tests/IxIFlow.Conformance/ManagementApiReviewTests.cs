@@ -31,11 +31,12 @@ public sealed class ManagementApiReviewTests
         var instance = await SeedAsync(inner, WorkflowStatus.Running);
         var store = ReviewRepository.Wrap(inner, out var probe);
         await using var services = Services(store);
+        await using var renewer = new ExecutionLeaseRenewer(inner);
         await using var watch = new CancellationWatch(inner);
         var owner = (await WorkflowExecutionLease.TryAcquireAsync(inner, instance,
-            new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), _ => { }, _ => { }, _ => { }))!;
+            new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, renewer, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), _ => { }, _ => { }, _ => { }))!;
         var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
-            store, services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+            store, services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), services.GetRequiredService<ExecutionLeaseRenewer>(),
             limits: new ExecutionLimits { MaxCheckpointBytes = 10_000 });
         var identity = Guid.NewGuid();
         using var assignment = operations.Admit(instance, owner, identity);

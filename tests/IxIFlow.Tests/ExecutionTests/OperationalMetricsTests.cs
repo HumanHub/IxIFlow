@@ -52,11 +52,12 @@ public sealed class OperationalMetricsTests
         using var capture = new Capture("ixiflow.lease.lost");
         var time = new FakeTimeProvider();
         var store = new InMemoryWorkflowStateRepository(time);
+        await using var renewer = new ExecutionLeaseRenewer(store, time);
         await using var watch = new CancellationWatch(store, time);
         var loss = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var owner = await WorkflowExecutionLease.TryAcquireAsync(store,
             new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "LeaseMetric" },
-            new ExecutionLeaseSettings(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(10)), watch, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), error => loss.TrySetResult(error), _ => { }, _ => { }, time);
+            new ExecutionLeaseSettings(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(10)), watch, renewer, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), error => loss.TrySetResult(error), _ => { }, _ => { }, time);
         Assert.NotNull(owner);
         time.Advance(TimeSpan.FromSeconds(31));
         await loss.Task.WaitAsync(TimeSpan.FromSeconds(5));
