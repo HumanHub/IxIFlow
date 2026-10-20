@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using System.Text.Json;
 using IxIFlow.Authoring;
+using IxIFlow.Builders;
 using IxIFlow.BundleFixtures;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
@@ -219,6 +220,124 @@ public sealed class BundleDebugPayloadMergeTests
         Assert.All(references, reference => Assert.False(reference.IsAlive));
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task ConditionsCompiledAfterUnloadDoNotKeepTheContextAlive(bool bundle, bool compiledBeforeUnload)
+    {
+        var store = new InMemoryWorkflowStateRepository();
+        if (bundle) await PublishAsync(store);
+        using var compiler = new BreakpointConditionCompiler();
+        var reference = CompileAfterUnload(store, compiler, bundle, compiledBeforeUnload);
+        await AssertCollectedAsync([reference]);
+        GC.KeepAlive(compiler);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference CompileAfterUnload(IWorkflowStateRepository store, BreakpointConditionCompiler compiler,
+        bool bundle, bool compiledBeforeUnload)
+    {
+        using var catalog = new WorkflowCatalog(store, artifacts: (IArtifactStore)store, bundles: new(Folder(), 0));
+        using var lease = bundle ? catalog.ResolveWorkflowDefinitionAsync("BundleDebugMerge", 1).GetAwaiter().GetResult() : null;
+        using var stream = File.OpenRead(typeof(DebugData).Assembly.Location);
+        var external = bundle ? null : new ReferenceFailureContext("none");
+        var type = lease?.Definition.WorkflowDataType ?? external!.LoadFromStream(stream).GetType(typeof(DebugData).FullName!)!;
+        var context = AssemblyLoadContext.GetLoadContext(type.Assembly)!;
+        if (compiledBeforeUnload) Assert.Empty(compiler.Compile(new("before-unload", "true", type)).Diagnostics);
+        context.Unloading += _ =>
+        {
+            var duringUnload = compiler.Compile(new("during-unload", "true", type));
+            Assert.Empty(duringUnload.Diagnostics);
+            Assert.NotNull(duringUnload.Evaluate);
+        };
+        if (lease != null) lease.Dispose();
+        else context.Unload();
+        Assert.NotEmpty(compiler.Compile(new("after-unload-invalid", "(", type)).Diagnostics);
+        var compilation = compiler.Compile(new("after-unload-valid", "context.WorkflowData.Value.Length == 0", type));
+        Assert.Empty(compilation.Diagnostics);
+        Assert.True(compilation.Evaluate!(Activator.CreateInstance(type)!, null, null, null, DateTimeOffset.UtcNow));
+        // Disposal must also work while the already-unloaded owner is still strongly held here.
+        using (var disposable = new BreakpointConditionCompiler())
+            Assert.Empty(disposable.Compile(new("dispose-after-unload", "true", type)).Diagnostics);
+        return new(context);
+    }
+
+    [Fact]
+    public async Task MixedCollectibleConditionInputsDoNotKeepAnUnloadedSecondaryContextAlive()
+    {
+        var store = new InMemoryWorkflowStateRepository();
+        await PublishAsync(store);
+        using var catalog = new WorkflowCatalog(store, artifacts: store, bundles: new(Folder(), 0));
+        using var lease = await catalog.ResolveWorkflowDefinitionAsync("BundleDebugMerge", 1);
+        using var compiler = new BreakpointConditionCompiler();
+        var reference = CompileWithUnloadedSecondary(compiler, lease.Definition.WorkflowDataType!);
+        await AssertCollectedAsync([reference]);
+        GC.KeepAlive(compiler);
+        GC.KeepAlive(lease);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference CompileWithUnloadedSecondary(BreakpointConditionCompiler compiler, Type primary)
+    {
+        var secondary = new ReferenceFailureContext("none");
+        using var stream = File.OpenRead(typeof(DebugData).Assembly.Location);
+        var type = secondary.LoadFromStream(stream).GetType(typeof(DebugData).FullName!)!;
+        var request = new BreakpointConditionRequest("mixed-contexts", "(", primary, type);
+        Assert.NotEmpty(compiler.Compile(request).Diagnostics);
+        secondary.Unload();
+        Assert.NotEmpty(compiler.Compile(request).Diagnostics);
+        return new(secondary);
+    }
+
+    [Fact]
+    public async Task ConditionsForAWithDefinitionResultDoNotKeepItsUnloadedContextAlive()
+    {
+        using var compiler = new BreakpointConditionCompiler();
+        var reference = CompileAfterWithDefinition(compiler);
+        await AssertCollectedAsync([reference]);
+        GC.KeepAlive(compiler);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference CompileAfterWithDefinition(BreakpointConditionCompiler compiler)
+    {
+        var emitted = WorkflowCompilation.Compile("""
+            public sealed class UnloadedData { public int Value { get; set; } }
+            public static class Entry
+            {
+                public static IxIFlow.Core.WorkflowDefinition Build() => new()
+                {
+                    Name = "UnloadedCondition", Version = 1, WorkflowDataType = typeof(UnloadedData)
+                };
+            }
+            """);
+        Assert.True(emitted.Success, string.Join("; ", emitted.Diagnostics));
+        var definition = WorkflowCompilation.WithDefinition(emitted.Assembly, emitted.Pdb, static definition => definition);
+        var type = definition.WorkflowDataType!;
+        var compilation = compiler.Compile(new("with-definition", "context.WorkflowData.Value == 0", type));
+        Assert.Empty(compilation.Diagnostics);
+        Assert.True(compilation.Evaluate!(Activator.CreateInstance(type)!, null, null, null, DateTimeOffset.UtcNow));
+        return new(AssemblyLoadContext.GetLoadContext(type.Assembly)!);
+    }
+
+    [Fact]
+    public async Task ClientStartWorksWhenTheCallerHasAlreadySuppressedExecutionContextFlow()
+    {
+        await using var services = Host(new InMemoryWorkflowStateRepository(), Folder(), false);
+        var client = services.GetRequiredService<IWorkflowClient>();
+        var definition = Workflow.Create<DebugData>("SuppressedStart").Step<Echo>().Build();
+        Task<string> start;
+        using (ExecutionContext.SuppressFlow())
+        {
+            start = client.StartAsync(definition, new DebugData { Value = "started" });
+            Assert.True(ExecutionContext.IsFlowSuppressed());
+        }
+        var result = await client.AwaitAsync(await start);
+        Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+    }
+
     [Fact]
     public async Task LazilyResolvedRenewerDoesNotCaptureTheBundleTypeScope()
     {
@@ -314,6 +433,32 @@ public sealed class BundleDebugPayloadMergeTests
         public System.Net.Sockets.NetworkStream Stream { get; set; } = null!;
         public System.Net.Sockets.Socket Socket { get; set; } = null!;
         public System.Diagnostics.Process Process { get; set; } = null!;
+    }
+
+    [Theory]
+    [InlineData("Math.Abs(-2) == 2")]
+    [InlineData("context.UtcNow.LocalDateTime.Hour == 0")]
+    public void UnavailableFrameworkIdentitiesReportAPositionedDiagnostic(string text)
+    {
+        using var compiler = new BreakpointConditionCompiler(new Dictionary<string, AssemblyName>());
+        var compilation = compiler.Compile(new("unavailable-framework", text, typeof(DebugData)));
+        Assert.Null(compilation.Evaluate);
+        var diagnostic = Assert.Single(compilation.Diagnostics);
+        AssertReferenceDiagnostic(diagnostic, text);
+        Assert.Contains("shared framework identities are unavailable on this host", diagnostic.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void AllowlistConstructionFailuresReportAPositionedDiagnostic()
+    {
+        using var compiler = new BreakpointConditionCompiler(true,
+            _ => throw new InvalidOperationException("Cannot classify condition input assembly"));
+        const string text = "true";
+        var compilation = compiler.Compile(new("allowlist-failure", text, typeof(DebugData)));
+        Assert.Null(compilation.Evaluate);
+        var diagnostic = Assert.Single(compilation.Diagnostics);
+        AssertReferenceDiagnostic(diagnostic, text);
+        Assert.Contains("Cannot classify condition input assembly", diagnostic.Message);
     }
 
     [Theory]

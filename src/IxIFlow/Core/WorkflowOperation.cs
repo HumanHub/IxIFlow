@@ -8,7 +8,7 @@ public sealed class WorkflowOperation
     internal WorkflowOperation(Task<WorkflowOperationResult> completion)
     {
         Completion = completion;
-        using (ExecutionContext.SuppressFlow())
+        using (ExecutionContextFlow.SuppressIfNeeded())
             _ = completion.ContinueWith(done => _ = done.Exception, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }

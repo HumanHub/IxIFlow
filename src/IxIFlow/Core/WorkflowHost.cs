@@ -98,7 +98,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         _inspectionPolicy = inspectionPolicy ?? InspectionRedactionPolicy.Default;
         // The timer must not carry the context of whoever first scheduled something: its callbacks
         // would then look like calls from inside that run.
-        using (ExecutionContext.SuppressFlow())
+        using (ExecutionContextFlow.SuppressIfNeeded())
             _timer = _time.CreateTimer(_ => ResumeDue(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
