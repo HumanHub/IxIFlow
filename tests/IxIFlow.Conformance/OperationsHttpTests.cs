@@ -149,7 +149,7 @@ public sealed class OperationsHttpTests
         {
             InstanceId = "resolution", WorkflowName = definition.Name, WorkflowVersion = definition.Version,
             CreatedAt = DateTime.UtcNow, StartedAt = DateTime.UtcNow, Status = WorkflowStatus.NeedsResolution,
-            WorkflowDataJson = JsonSerializer.Serialize(new Data()), WorkflowDataType = typeof(Data).AssemblyQualifiedName!,
+            WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data())), WorkflowDataType = typeof(Data).AssemblyQualifiedName!,
             ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
         });
         var activities = await http.GetFromJsonAsync<PendingActivityInfo[]>("/ops/instances/resolution/pending-activities");
@@ -165,7 +165,7 @@ public sealed class OperationsHttpTests
             Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
             Assert.Equal("/ops/instances/resolution", response.Headers.Location!.OriginalString);
             var saved = (await store.GetWorkflowInstanceAsync("resolution"))!;
-            Assert.Equal(42, JsonSerializer.Deserialize<Data>(saved.WorkflowDataJson)!.Number);
+            Assert.Equal(42, JsonSerializer.Deserialize<Data>(saved.WorkflowDataJson.InlineText)!.Number);
             Assert.Contains(await store.GetTraceAsync("resolution"), entry => entry.Entry.Payload is ActivityResolutionTrace { DecidedBy: "operator" });
         }
         finally { factory.ActivityProbe.Exit.TrySetResult(); }
@@ -416,7 +416,7 @@ public sealed class OperationsHttpTests
         {
             InstanceId = id, WorkflowName = definition.Name, WorkflowVersion = definition.Version,
             CreatedAt = DateTime.UtcNow, StartedAt = DateTime.UtcNow,
-            Status = WorkflowStatus.NeedsResolution, WorkflowDataJson = JsonSerializer.Serialize(new Data()),
+            Status = WorkflowStatus.NeedsResolution, WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data())),
             WorkflowDataType = typeof(Data).AssemblyQualifiedName!, ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
         });
     }

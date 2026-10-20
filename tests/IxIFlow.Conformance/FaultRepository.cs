@@ -8,6 +8,7 @@ namespace IxIFlow.Tests.Conformance;
 /// </summary>
 internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflowStateRepository
 {
+    public IPayloadStore PayloadStore => inner.PayloadStore;
     public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
         inner.GetDefinitionAsync(name, version);
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
@@ -123,8 +124,12 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
     public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         inner.GetCancellationRequestAsync(instanceId);
-    public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds) => inner.GetCancellationRequestsAsync(instanceIds);
+    public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
+        inner.GetControlRequestsAsync(instanceIds);
+    public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+        inner.RequestDebugCommandAsync(instanceId, command);
+    public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
+        inner.GetDebugStatesAsync(instanceIds);
     public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
         inner.GetRunnableInstancesAsync(query);
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,

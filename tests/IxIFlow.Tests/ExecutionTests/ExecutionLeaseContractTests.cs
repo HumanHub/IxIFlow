@@ -1094,7 +1094,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 InstanceId = instanceId,
                 WorkflowName = "LeaseFencing",
                 Status = WorkflowStatus.Running,
-                WorkflowDataJson = "{}"
+                WorkflowDataJson = StoredJson.Inline("{}")
             };
             var initial = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 0, "initial"));
@@ -1103,17 +1103,17 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             var secondEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.NotNull(secondEpoch);
-            oldOwner.WorkflowDataJson = "\"stale\"";
+            oldOwner.WorkflowDataJson = StoredJson.Inline("\"stale\"");
             var stale = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 1, "stale"));
             Assert.Equal(WorkflowCommitStatus.StaleEpoch, stale.Status);
             var newOwner = (await repository.GetWorkflowInstanceAsync(instanceId))!;
-            newOwner.WorkflowDataJson = "\"current\"";
+            newOwner.WorkflowDataJson = StoredJson.Inline("\"current\"");
             var current = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(newOwner, secondEpoch.Epoch, 1, "current"));
             Assert.Equal(WorkflowCommitStatus.Applied, current.Status);
             Assert.Equal("\"current\"",
-                (await repository.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson);
+                (await repository.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson.InlineText);
         }
         finally
         {
@@ -1156,7 +1156,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 InstanceId = instanceId,
                 WorkflowName = "ReceiptFencing",
                 Status = WorkflowStatus.Running,
-                WorkflowDataJson = "{}"
+                WorkflowDataJson = StoredJson.Inline("{}")
             };
             var start = CheckpointCommit.Create(formerOwner, formerEpoch.Epoch, 0, "start");
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(start)).Status);
@@ -1297,6 +1297,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
     private sealed class PausedReadRepository(InMemoryWorkflowStateRepository inner) : IWorkflowStateRepository
     {
+        public IPayloadStore PayloadStore => inner.PayloadStore;
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
             inner.GetDefinitionAsync(name, version);
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
@@ -1420,6 +1421,14 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         }
         public async Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
         {
+            await BeforeCancellationReadAsync(instanceId);
+            var reason = await inner.GetCancellationRequestAsync(instanceId);
+            ObserveCancellation(reason);
+            return reason;
+        }
+
+        private async Task BeforeCancellationReadAsync(string instanceId)
+        {
             if (FailAfterObservedCancellation && Volatile.Read(ref _cancellationObserved) != 0)
                 throw new IOException("Cancellation store unavailable after observation");
             if (FailAllCancellationReads)
@@ -1440,13 +1449,15 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                     await inner.RequestCancellationAsync(instanceId,
                         new CancellationReason { ReasonCode = "late" });
             }
-            var reason = await inner.GetCancellationRequestAsync(instanceId);
+        }
+
+        private void ObserveCancellation(CancellationReason? reason)
+        {
             if (reason != null && FailAfterObservedCancellation)
             {
                 Interlocked.Exchange(ref _cancellationObserved, 1);
                 CancellationObserved.TrySetResult();
             }
-            return reason;
         }
         public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
             inner.GetRunnableInstancesAsync(query);
@@ -1459,9 +1470,19 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
             inner.GetWorkflowInstanceSummaryAsync(instanceId);
-        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-            IReadOnlyCollection<string> instanceIds) =>
-            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
+        public async Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds)
+        {
+            foreach (var instanceId in instanceIds.Distinct(StringComparer.Ordinal))
+                await BeforeCancellationReadAsync(instanceId);
+            var controls = await inner.GetControlRequestsAsync(instanceIds);
+            foreach (var reason in controls.Cancellations.Values)
+                ObserveCancellation(reason);
+            return controls;
+        }
+        public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+            inner.RequestDebugCommandAsync(instanceId, command);
+        public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
+            inner.GetDebugStatesAsync(instanceIds);
 
         public async Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
         {

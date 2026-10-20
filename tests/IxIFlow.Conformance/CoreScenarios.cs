@@ -158,7 +158,7 @@ public sealed class CoreScenarios
             .WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
         var saved = await cluster.GetInstanceAsync(started.InstanceId);
-        Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<CounterData>(saved!.WorkflowDataJson)!.Count);
+        Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<CounterData>(saved!.WorkflowDataJson.InlineText)!.Count);
     }
 
     private static Task<ConformanceCluster> CreateClusterAsync(string profile,

@@ -7,6 +7,7 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
+    public IPayloadStore PayloadStore => _store.PayloadStore;
     public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
         CancellationToken cancellationToken = default) =>
         Guard(() => _store.GetUnschedulableAsync(limit, cursor, cancellationToken), "Reading unschedulable work");
@@ -75,6 +76,12 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
         Guard(() => _store.GetPublisherAsync(publisherName), "Accessing workflow outbox");
 
+    public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> ids) =>
+        Guard(() => _store.GetControlRequestsAsync(ids), "Reading execution controls");
+    public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+        Guard(() => _store.RequestDebugCommandAsync(instanceId, command), "Requesting debug command");
+    public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> ids) =>
+        Guard(() => _store.GetDebugStatesAsync(ids), "Reading debug commands");
     private readonly IWorkflowStateRepository _store;
 
     private GuardedStateRepository(IWorkflowStateRepository store) => _store = store;
@@ -97,11 +104,6 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         Guard(() => _store.GetCancellationRequestAsync(instanceId),
             $"Reading the cancellation request of workflow instance '{instanceId}'");
-
-    public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds) =>
-        Guard(() => _store.GetCancellationRequestsAsync(instanceIds),
-            $"Reading the cancellation requests of {instanceIds.Count} workflow instances");
 
     public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
         Guard(() => _store.GetRunnableInstancesAsync(query), "Listing runnable workflow instances");

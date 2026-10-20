@@ -32,7 +32,7 @@ public sealed class SerializedHostAdmissionTests
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         await store.SeedAsync(instance);
         instance = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
-        // The watch reads the unwrapped store, so its background reads cannot change the probe's count.
+        // Background control reads bypass the probe; every call by the host is still counted.
         await using var renewer = new ExecutionLeaseRenewer(store, time);
         await using var watch = new CancellationWatch(probe.Inner, time);
         await using var owner = (await WorkflowExecutionLease.TryAcquireAsync(store, instance,

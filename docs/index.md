@@ -25,9 +25,13 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [Operations over HTTP](operations-http.md) | Management endpoints, policies, query scope, actors and bounded waits |
 | [Stores](stores.md) | Memory, SQLite, SQL Server and PostgreSQL; persistent catalog and artifact retention |
 | [YAML publishing](yaml-authoring.md#publishing-and-boundaries) | Import-free drafts, verified immutable bundles and remaining deployment boundaries |
+| [Large payloads](large-payloads.md) | Checkpoint claim checks, byte limits and unavailable-payload recovery |
 | [Incoming webhooks](incoming-webhooks.md) | Authorized triggers, atomic idempotency, CloudEvents and public status |
 | [Outbox and publishers](outbox-and-publishers.md) | Completion delivery, custom publishers, outgoing webhooks and templates |
 | [Retention and tombstones](retention-and-tombstones.md) | Retained results, cleanup and removed instance IDs |
+| [Pausing, breakpoints, stepping and edits](debugging.md) | Authorized pauses, branch stepping and audited data edits |
+| [VS Code debugger](debug-adapter.md) | Secure local attach, YAML frames, variables and replay |
+| [Inspection and replay](inspection-and-replay.md) | Saved revisions, thread frames, paged traces and read-only replay |
 | [Tracing and observability](observability.md) | Committed history, snapshots, OpenTelemetry and logging |
 | [Marking and redaction](redaction.md) | Classified members, inspection erasure and optional HMAC pseudonyms |
 | [Architecture](architecture.md) | Runtime boundaries and packages |

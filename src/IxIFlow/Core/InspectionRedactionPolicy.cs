@@ -41,8 +41,8 @@ public sealed class InspectionRedactionPolicy
         try
         {
             return note.Type == typeof(string).AssemblyQualifiedName
-                ? JsonSerializer.Serialize(Note(JsonSerializer.Deserialize<string>(note.Json) ?? "", services))
-                : new RedactingJson(services).Serialize(note.Json, note.Type);
+                ? JsonSerializer.Serialize(Note(JsonSerializer.Deserialize<string>(note.Json.InlineText) ?? "", services))
+                : new RedactingJson(services).Serialize(note.Json.InlineText, note.Type);
         }
         catch { return "\"\""; }
     }
@@ -54,9 +54,8 @@ public sealed class InspectionRedactionPolicy
     public InspectionError? ResultError(WorkflowExecutionResult result) => result.Diagnostic;
 
     /// <summary>Only explicitly classified engine reasons may expose their original text.</summary>
-    public string ResultReason(WorkflowExecutionResult result) => result.ErrorKind != null
-        ? result.ErrorMessage ?? result.ErrorKind.ToString()!
-        : result.Diagnostic?.ToString() ?? result.Status.ToString();
+    public string ResultReason(WorkflowExecutionResult result) => result.Diagnostic?.ToString() ??
+        (result.ErrorKind != null ? result.ErrorMessage ?? result.ErrorKind.ToString()! : result.Status.ToString());
 
     /// <summary>Projects a delivery for an inspection listing. Store reads remain execution primitives.</summary>
     public OutboxDelivery Delivery(OutboxDelivery delivery) => delivery with

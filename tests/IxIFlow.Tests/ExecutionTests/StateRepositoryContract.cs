@@ -109,7 +109,7 @@ internal static class StateRepositoryContract
                 WorkflowVersion = 2,
                 Status = WorkflowStatus.Suspended,
                 CorrelationId = "correlation-1",
-                WorkflowDataJson = "{\"Value\":42}"
+                WorkflowDataJson = StoredJson.Inline("{\"Value\":42}")
             };
             await firstRepository.SeedAsync(instance, TimeSpan.Zero);
 
@@ -117,7 +117,7 @@ internal static class StateRepositoryContract
             var restored = await secondRepository.GetWorkflowInstanceAsync(instanceId);
             Assert.NotNull(restored);
             Assert.Equal(WorkflowStatus.Suspended, restored.Status);
-            Assert.Equal("{\"Value\":42}", restored.WorkflowDataJson);
+            Assert.Equal("{\"Value\":42}", restored.WorkflowDataJson.InlineText);
             Assert.Contains(await Task.WhenAll((await secondRepository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Suspended], Limit: int.MaxValue))).Items.Select(async row => (await secondRepository.GetWorkflowInstanceAsync(row.InstanceId))!)),
                 candidate => candidate.InstanceId == instanceId);
 

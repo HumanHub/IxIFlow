@@ -43,7 +43,7 @@ public sealed class HostMessageStoreTests : IClassFixture<SqliteTestDatabase<Hos
         var instance = new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "StoreReceipt",
-            WorkflowDataJson = "{}", ExecutionStateJson = StoreTestSupport.CheckpointJson,
+            WorkflowDataJson = StoredJson.Inline("{}"), ExecutionStateJson = StoreTestSupport.CheckpointJson,
             Status = WorkflowStatus.Suspended
         };
         var grant = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
@@ -80,7 +80,7 @@ public sealed class HostMessageStoreTests : IClassFixture<SqliteTestDatabase<Hos
         var instance = new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "LeaseCallbacks",
-            WorkflowDataJson = "{}", ExecutionStateJson = StoreTestSupport.CheckpointJson,
+            WorkflowDataJson = StoredJson.Inline("{}"), ExecutionStateJson = StoreTestSupport.CheckpointJson,
             Status = WorkflowStatus.Running
         };
         await store.SeedAsync(instance);

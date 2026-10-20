@@ -464,7 +464,7 @@ public sealed class ResourceLimitTests
             new WorkflowInstance
             { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId, WorkflowName = "PoolReservation", Status = WorkflowStatus.Running,
-                WorkflowDataJson = "{}"
+                WorkflowDataJson = StoredJson.Inline("{}")
             }, (await StoreTestSupport.LeaseAsync(store, instanceId)).Epoch, 0))).Status);
         Assert.True((await StoreTestSupport.ReleaseAsync(store, instanceId)).Released);
 
@@ -475,11 +475,11 @@ public sealed class ResourceLimitTests
 
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             Assert.True((await store.RenewExecutionLeasesAsync([new(instanceId, "owner", Patience)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
-            Assert.Empty(await store.GetCancellationRequestsAsync([instanceId]));
+            Assert.Empty((await store.GetControlRequestsAsync([instanceId])).Cancellations);
             Assert.True((await store.RequestCancellationAsync(instanceId,
                 new CancellationReason { ReasonCode = "operator" })).Accepted);
             Assert.Equal("operator", (await store.GetCancellationRequestAsync(instanceId))?.ReasonCode);
-            Assert.Single(await store.GetCancellationRequestsAsync([instanceId]));
+            Assert.Single((await store.GetControlRequestsAsync([instanceId])).Cancellations);
             Assert.True((await store.ReleaseExecutionLeaseAsync(instanceId, "owner")).Released);
         }
         await store.DeleteWorkflowInstanceAsync(instanceId);

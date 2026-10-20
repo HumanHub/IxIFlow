@@ -201,7 +201,7 @@ public sealed class ForEachTests
         Assert.Contains("limit of 2 items", result.ErrorMessage);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(result.InstanceId);
-        Assert.Contains("\"Expensive\":0", saved!.WorkflowDataJson);
+        Assert.Contains("\"Expensive\":0", saved!.WorkflowDataJson.InlineText);
     }
 
     [Fact]
@@ -272,7 +272,7 @@ public sealed class ForEachTests
                     .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log)))
             .Build();
         // The host dies when it saves the second line's total.
-        store.FailCommit = instance => instance.WorkflowDataJson.Contains("\"Total\":8");
+        store.FailCommit = instance => instance.WorkflowDataJson.InlineText.Contains("\"Total\":8");
         using (var first = Services(store: store))
             await Assert.ThrowsAnyAsync<Exception>(() => Engine(first).RunAsync(definition, Order(3, 5, 7),
                 new WorkflowOptions { InstanceId = instanceId }));
@@ -694,8 +694,8 @@ public sealed class ForEachTests
         var saved = await services.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Cancelled, saved!.Status);
-        Assert.Contains("\"Expensive\":1", saved.WorkflowDataJson);
-        Assert.Contains("\"Doubled\":[]", saved.WorkflowDataJson);
+        Assert.Contains("\"Expensive\":1", saved.WorkflowDataJson.InlineText);
+        Assert.Contains("\"Doubled\":[]", saved.WorkflowDataJson.InlineText);
     }
 
     [Fact]
@@ -850,7 +850,7 @@ public sealed class ForEachTests
         var saved = await services.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(["line-0"], services.GetRequiredService<Notes>().Recorded);
-        Assert.Contains("\"Log\":\"\"", saved!.WorkflowDataJson);
+        Assert.Contains("\"Log\":\"\"", saved!.WorkflowDataJson.InlineText);
     }
 
     [Fact]
@@ -969,7 +969,7 @@ public sealed class ForEachTests
                     .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Log)))
             .Build();
         MutableSource.Lines = Order(3, 5, 7).Lines;
-        store.FailCommit = instance => instance.WorkflowDataJson.Contains("\"Total\":8");
+        store.FailCommit = instance => instance.WorkflowDataJson.InlineText.Contains("\"Total\":8");
         using (var first = Services(store: store))
             await Assert.ThrowsAnyAsync<Exception>(() => Engine(first).RunAsync(definition, Order(),
                 new WorkflowOptions { InstanceId = instanceId }));
