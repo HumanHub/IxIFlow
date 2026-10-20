@@ -25,6 +25,7 @@ public sealed partial class SqlWorkflowStateRepository
             Id NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
             Version NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
             Digest VARCHAR(71) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            DependencyGroupsJson NVARCHAR(MAX) NOT NULL,
             MetadataJson NVARCHAR(MAX) NOT NULL,
             PRIMARY KEY (Id, Version)
         );
@@ -39,8 +40,10 @@ public sealed partial class SqlWorkflowStateRepository
 
     private static string? CatalogSql(Statement statement) => statement switch
     {
-        Statement.CatalogPackages => "SELECT Id, Version, Digest, MetadataJson FROM dbo.IxIFlowPackages WHERE Id=COALESCE(@Id,Id)",
-        Statement.CatalogPackageInsert => "INSERT INTO dbo.IxIFlowPackages (Id, Version, Digest, MetadataJson) VALUES (@Id, @Version, @Digest, @MetadataJson)",
+        Statement.CatalogPackages => "SELECT Id, Version, Digest, MetadataJson, DependencyGroupsJson FROM dbo.IxIFlowPackages WHERE Id=COALESCE(@Id,Id)",
+        Statement.CatalogPackage => "SELECT Id, Version, Digest, MetadataJson, DependencyGroupsJson FROM dbo.IxIFlowPackages WHERE Id=@Id AND Version=@Version",
+        Statement.CatalogPackagePage => "SELECT TOP (@Limit) Id, Version, Digest, MetadataJson, DependencyGroupsJson FROM dbo.IxIFlowPackages WHERE Id=@Id AND (@AfterVersion IS NULL OR Version>@AfterVersion) ORDER BY Version",
+        Statement.CatalogPackageInsert => "INSERT INTO dbo.IxIFlowPackages (Id, Version, Digest, MetadataJson, DependencyGroupsJson) VALUES (@Id, @Version, @Digest, @MetadataJson, @DependencyGroupsJson)",
         Statement.CatalogLock => """
             DECLARE @catalogLock INT; EXEC @catalogLock = sys.sp_getapplock @Resource=N'IxIFlow.Catalog', @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=30000; IF @catalogLock < 0 THROW 51000, 'Could not lock the workflow catalog', 1;
             """,

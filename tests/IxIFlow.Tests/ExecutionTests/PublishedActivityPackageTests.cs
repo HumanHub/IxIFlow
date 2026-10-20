@@ -282,16 +282,16 @@ public sealed class PublishedActivityPackageTests
         Assert.Equal("Packaged.Data", restored.Definition.WorkflowDataType!.FullName);
     }
 
-    [Fact]
+    [NativeFact]
     public async Task NativeAssetsAreSelectedAtPublishUsingRidFallbackAndPlacementUsesThePin()
     {
         var store = new InMemoryWorkflowStateRepository();
         var publisher = new WorkflowPublisher(store, store);
         var native = ActivityPackageFixture.Package("fixture.native", "1.0.0", new()
         {
-            ["runtimes/win/native/fixture.dll"] = ActivityPackageFixture.NativeLibraryBytes(),
-            ["runtimes/linux-x64/native/libfixture.so"] = ActivityPackageFixture.NativeLibraryBytes(),
-            ["runtimes/osx-arm64/native/libfixture.dylib"] = ActivityPackageFixture.NativeLibraryBytes()
+            ["runtimes/win/native/fixture.dll"] = ActivityPackageFixture.NativeLibraryBytes(rid: "win-x64"),
+            ["runtimes/linux-x64/native/libfixture.so"] = ActivityPackageFixture.NativeLibraryBytes(rid: "linux-x64"),
+            ["runtimes/osx-arm64/native/libfixture.dylib"] = ActivityPackageFixture.NativeLibraryBytes(rid: "osx-arm64")
         });
         await publisher.UploadPackageAsync(new MemoryStream(native));
         var version = await ActivityPackageFixture.PublishAsync(store, yaml: ActivityPackageFixture.Yaml(extraImport: "fixture.native@1.0.0"));
@@ -316,7 +316,7 @@ public sealed class PublishedActivityPackageTests
         Assert.Equal(ActivityPackageFixture.NativeLibraryBytes(), await File.ReadAllBytesAsync(nativeFiles[0]));
 
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.remote", "1.0.0", new()
-        { ["runtimes/test-other-platform/native/remote.bin"] = [4] })));
+        { ["runtimes/test-other-platform/native/remote.bin"] = ActivityPackageFixture.NativeLibraryBytes() })));
         await ActivityPackageFixture.PublishAsync(store, 2, yaml: ActivityPackageFixture.Yaml(2, "fixture.remote@1.0.0"));
         await using var host = PublishedBundleScenario.Host(store, Folder());
         var capabilities = await host.GetRequiredService<HostSettings>().GetCapabilitiesAsync(host.GetRequiredService<IWorkflowCatalog>());
@@ -324,7 +324,7 @@ public sealed class PublishedActivityPackageTests
         Assert.DoesNotContain("workflow:PackageLifecycle@2", capabilities.Keys);
     }
 
-    [Fact]
+    [NativeFact]
     public async Task PackageActivityCallsItsRidSelectedNativeLibrary()
     {
         var store = new InMemoryWorkflowStateRepository();

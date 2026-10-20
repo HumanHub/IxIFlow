@@ -15,7 +15,7 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT Name, Version, Kind, Source, Revision, State FROM dbo.IxIFlowDefinitions WHERE 1=0;
                 SELECT Name, Version, StructureHash, State, ArtifactDigest, MetadataJson FROM dbo.IxIFlowWorkflowVersions WHERE 1=0;
                 SELECT Digest, Kind, Content, CreatedAtUtc FROM dbo.IxIFlowArtifacts WHERE 1=0;
-                SELECT Id, Version, Digest, MetadataJson FROM dbo.IxIFlowPackages WHERE 1=0;
+                SELECT Id, Version, Digest, MetadataJson, DependencyGroupsJson FROM dbo.IxIFlowPackages WHERE 1=0;
                 SELECT [InstanceId], [WorkflowName], [WorkflowVersion], [BundleDigest], [CreatedAtUtc], [StopKind], [StopCrashCount], [Status], [CorrelationId], [RunnableAtUtc], [EndedAtUtc], [StateJson], [CancellationJson], [CancellationAcknowledged], [Revision], [InboxSequence], [InboxReadThrough], [Incarnation], [ParentInstanceId], [ParentWaitId], [LastHostId], [DemandSetId], [PinnedHost], [PinExpiresAtUtc], [PinInherit] FROM dbo.IxIFlowWorkflowInstances WHERE 1=0;
                 SELECT [InstanceId], [EventId], [Sequence], [EventType], [EventKey], [TargetWaitId], [Subject], [PayloadJson], [PayloadHash], [ReceivedAtUtc], [Outcome], [WaitId], [Rejection], [SettledAtUtc], [NoticeJson] FROM dbo.IxIFlowWorkflowEvents WHERE 1=0;
                 SELECT [InstanceId], [PartKey], [Json] FROM dbo.IxIFlowWorkflowParts WHERE 1=0;

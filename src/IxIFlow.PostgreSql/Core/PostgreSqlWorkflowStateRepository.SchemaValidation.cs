@@ -15,7 +15,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 SELECT name, version, kind, source, revision, state FROM ixiflow_definitions WHERE 1=0;
                 SELECT name, version, structure_hash, state, artifact_digest, metadata_json FROM ixiflow_workflow_versions WHERE 1=0;
                 SELECT digest, kind, content, created_at_utc FROM ixiflow_artifacts WHERE 1=0;
-                SELECT id, version, digest, metadata_json FROM ixiflow_packages WHERE 1=0;
+                SELECT id, version, digest, metadata_json, dependency_groups_json FROM ixiflow_packages WHERE 1=0;
                 SELECT instance_id, workflow_name, workflow_version, bundle_digest, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, runnable_at_utc, ended_at_utc, state_json, cancellation_json, cancellation_acknowledged, revision, inbox_sequence, inbox_read_through, incarnation, parent_instance_id, parent_wait_id, last_host_id, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit FROM ixiflow_workflow_instances WHERE 1=0;
                 SELECT instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, payload_json, payload_hash, received_at_utc, outcome, wait_id, rejection, settled_at_utc, notice_json FROM ixiflow_workflow_events WHERE 1=0;
                 SELECT instance_id, part_key, json FROM ixiflow_workflow_parts WHERE 1=0;

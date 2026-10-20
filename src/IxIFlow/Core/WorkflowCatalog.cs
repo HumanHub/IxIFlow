@@ -29,6 +29,8 @@ public interface IWorkflowCatalogStore
 {
     Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts);
     Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null);
+    Task<WorkflowPackage?> GetPackageAsync(string id, string version);
+    Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit);
     Task<WorkflowDraft?> GetDefinitionAsync(string name, int version);
     Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision);
     Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null);
@@ -158,6 +160,8 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
     public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _store.GetDefinitionAsync(name, version);
     public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => _store.RegisterPackageAsync(package, artifacts);
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _store.GetPackagesAsync(id);
+    public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _store.GetPackageAsync(id, version);
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _store.GetPackagePageAsync(id, afterVersion, limit);
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
         _store.SaveDefinitionAsync(definition, expectedRevision);
     public async Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null)

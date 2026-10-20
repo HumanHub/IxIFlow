@@ -18,7 +18,7 @@ public sealed class PublishedActivityPackageScenarios
         {
             var result = new TheoryData<string, string>();
             foreach (var profile in StoreProfiles.ProfileNames.Where(profile => profile != StoreProfiles.LocalMemory))
-                foreach (var part in new[] { "table", "id", "version", "digest", "metadata_json" }) result.Add(profile, part);
+                foreach (var part in new[] { "table", "id", "version", "digest", "metadata_json", "dependency_groups_json" }) result.Add(profile, part);
             return result;
         }
     }
@@ -34,7 +34,7 @@ public sealed class PublishedActivityPackageScenarios
         await using var connection = database.NewConnection();
         var ms = profile.StartsWith(StoreProfiles.DistributedSqlServer, StringComparison.Ordinal);
         var table = ms ? "dbo.IxIFlowPackages" : "ixiflow_packages";
-        var column = ms ? part switch { "metadata_json" => "MetadataJson", "id" => "Id", "version" => "Version", _ => "Digest" } : part;
+        var column = ms ? part switch { "metadata_json" => "MetadataJson", "dependency_groups_json" => "DependencyGroupsJson", "id" => "Id", "version" => "Version", _ => "Digest" } : part;
         await connection.ExecuteAsync(part == "table" ? $"DROP TABLE {table}"
             : ms ? $"EXEC sp_rename '{table}.{column}', 'OldPackageColumn', 'COLUMN'"
             : $"ALTER TABLE {table} RENAME COLUMN {column} TO old_package_column");
@@ -42,6 +42,39 @@ public sealed class PublishedActivityPackageScenarios
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.GetPackagesAsync());
         Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
         Assert.Contains("must be recreated", error.Message);
+    }
+
+    [Theory]
+    [MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
+    public async Task DependencyMetadataAndBoundedIdentityQueriesHaveStoreParity(string profile)
+    {
+        await using var database = await StoreProfiles.CreateAsync(profile);
+        var store = database.NewRepository();
+        var publisher = new WorkflowPublisher(store, store);
+        foreach (var version in new[] { "1.0.0", "2.0.0", "3.0.0" })
+            await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.metadata", version, new(),
+                "<dependency id=\"fixture.child\" version=\"[1.0.0,2.0.0)\"/>")));
+        if (store is IAsyncDisposable disposable) await disposable.DisposeAsync();
+        var reopened = database.NewRepository();
+        var exact = (await reopened.GetPackageAsync("FIXTURE.METADATA", "2.0.0"))!;
+        Assert.Equal("2.0.0", exact.Version);
+        var dependency = Assert.Single(Assert.Single(exact.DependencyGroups).Dependencies);
+        Assert.Equal("fixture.child", dependency.Id);
+        Assert.Equal("[1.0.0, 2.0.0)", dependency.VersionRange);
+        Assert.Null(await reopened.GetPackageAsync("fixture.metadata", "4.0.0"));
+        var first = Assert.Single(await reopened.GetPackagePageAsync("FIXTURE.METADATA", null, 1));
+        Assert.Equal("1.0.0", first.Version);
+        Assert.Equal(new[] { "2.0.0", "3.0.0" }, (await reopened.GetPackagePageAsync("fixture.metadata", first.Version, 2)).Select(row => row.Version));
+        Assert.Empty(await reopened.GetPackagePageAsync("fixture.metadata", "3.0.0", 1));
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.RegisterPackageAsync(exact with { DependencyGroups = [] }, reopened));
+        Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
+        foreach (var version in new[] { "1.0.0-01", "1.0.0-a.00", "1.0.0-BETA" })
+        {
+            error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.RegisterPackageAsync(exact with { Version = version }, reopened));
+            Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
+        }
+        error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.RegisterPackageAsync(exact with { DependencyGroups = null! }, reopened));
+        Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
     }
 
     [Theory]
