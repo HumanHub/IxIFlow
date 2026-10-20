@@ -17,7 +17,8 @@ namespace IxIFlow.Coordinator;
 // Hosting uses only the member registry methods; the matcher has no store reference.
 internal sealed class CoordinatorService(CoordinatorOptions options, CoordinatorIdentity identity,
     CoordinatorMatcher matcher, IWorkflowStateRepository store, TimeProvider time,
-    ILogger<CoordinatorService> logger) : BackgroundService
+    ILogger<CoordinatorService> logger, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
+    InspectionRedactionPolicy? inspectionPolicy = null) : BackgroundService
 {
     private WebApplication? _application;
     internal Uri? Endpoint { get; private set; }
@@ -104,7 +105,7 @@ internal sealed class CoordinatorService(CoordinatorOptions options, Coordinator
                         await RegisterAsync(stoppingToken);
                 }
                 catch (Exception error) when (error is not OperationCanceledException)
-                { logger.LogWarning(error, "Could not heartbeat coordinator {CoordinatorId}", identity.Id); }
+                { (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Could not heartbeat coordinator {CoordinatorId}", identity.Id); }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
     }

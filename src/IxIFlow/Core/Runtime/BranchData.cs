@@ -47,6 +47,18 @@ internal sealed record MergedData(object Data, IReadOnlyList<List<string>> Paths
 /// </summary>
 internal static class BranchData
 {
+    /// <summary>Collects classification using the same contract walk as branch validation.</summary>
+    internal static RedactingJson.ClassifiedPath[] ClassifiedPaths(Type type)
+    {
+        var paths = new List<RedactingJson.ClassifiedPath>();
+        Walk(Info(type), [], merged: true, new HashSet<(Type, bool)>(), (path, _, property, _) =>
+        {
+            if (RedactingJson.Classification(property.AttributeProvider) is { } classification)
+                paths.Add(new(string.Join('.', path), classification));
+        });
+        return paths.ToArray();
+    }
+
     private static readonly JsonSerializerOptions Options = new()
     {
         TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { WriteEveryProperty } }
@@ -643,6 +655,7 @@ internal static class BranchData
     /// </summary>
     public static void Validate(Type dataType, bool branches)
     {
+        _ = RedactingJson.ClassifiedPaths(dataType);
         if (branches && !PerMember(Info(dataType)))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"'{dataType.Name}' is serialized as one value, so parallel branches' changes to it cannot be " +

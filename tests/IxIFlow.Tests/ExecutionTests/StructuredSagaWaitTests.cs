@@ -500,6 +500,7 @@ public class StructuredSagaWaitTests
         services.AddSingleton<UnsafeOutputProbe>();
         services.AddTransient<UnsafeOutputActivity>();
         services.AddTransient<UnsafeOutputCompensation>();
+        IxIFlow.Tests.Infrastructure.DiagnosticTestAccess.Allow(services);
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<SagaData>("UnsafeSagaOutput")
@@ -512,9 +513,13 @@ public class StructuredSagaWaitTests
         var result = await engine.RunAsync(definition, new SagaData());
 
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
-        Assert.Contains("saga output could not be saved",
-            Assert.Single(await engine.GetPendingActivitiesAsync(result.InstanceId))
-                .Reason ?? string.Empty);
+        var pending = Assert.Single(await engine.GetPendingActivitiesAsync(result.InstanceId));
+        Assert.Matches(@"^System.NotSupportedException \([0-9a-f]{32}\)$", pending.Reason!);
+        var raw = Assert.Single(await provider.GetRequiredService<IWorkflowDiagnostics>().ReadAsync(result.InstanceId));
+        Assert.Equal(pending.Reason, new InspectionError(raw.ErrorType, raw.DiagnosticId).ToString());
+        Assert.Contains("saga output could not be saved", result.ErrorMessage);
+        Assert.False(string.IsNullOrEmpty(raw.Message));
+        Assert.NotNull(raw.StackTrace);
         Assert.Equal(1, provider.GetRequiredService<UnsafeOutputProbe>().Effects);
         Assert.Equal(0, provider.GetRequiredService<UnsafeOutputProbe>().Compensations);
     }
@@ -1900,6 +1905,10 @@ public class StructuredSagaWaitTests
 
         public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
             _inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId) =>
+            _inner.GetDiagnosticsAsync(instanceId);
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation) =>
+            _inner.GetDiagnosticsForIncarnationAsync(instanceId, incarnation);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             _inner.GetTraceAsync(instanceId, afterSequence, limit);

@@ -7,7 +7,8 @@ namespace IxIFlow.Core.Runtime;
 // One bounded queue and at most one outstanding notifier call per host. A notifier that ignores
 // cancellation may occupy that call forever; it cannot accumulate tasks or hold up store callers.
 internal sealed class RunnableNotifications(IRunnableNotifier notifier,
-    ILogger<RunnableNotifications>? logger = null, TimeProvider? timeProvider = null) : IDisposable
+    ILogger<RunnableNotifications>? logger = null, TimeProvider? timeProvider = null,
+    ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null, InspectionRedactionPolicy? inspectionPolicy = null) : IDisposable
 {
     private readonly ILogger _logger = logger ?? NullLogger<RunnableNotifications>.Instance;
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
@@ -54,7 +55,7 @@ internal sealed class RunnableNotifications(IRunnableNotifier notifier,
                 }
                 catch (TimeoutException error)
                 {
-                    _logger.LogError(error, "Runnable notifier timed out for {InstanceId}", notice.InstanceId);
+                    (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(_logger, sensitiveDiagnostics, LogLevel.Error, error, "Runnable notifier timed out for {InstanceId}", notice.InstanceId);
                     _ = deliveryStop.CancelAsync();
                     // Do not launch more calls while this one is stuck, even if it blocks synchronously.
                     try { await delivery.WaitAsync(_stop.Token); }
@@ -67,14 +68,14 @@ internal sealed class RunnableNotifications(IRunnableNotifier notifier,
                 catch (OperationCanceledException) when (_stop.IsCancellationRequested) { throw; }
                 catch (Exception error)
                 {
-                    _logger.LogError(error, "Runnable notifier failed for {InstanceId}", notice.InstanceId);
+                    (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(_logger, sensitiveDiagnostics, LogLevel.Error, error, "Runnable notifier failed for {InstanceId}", notice.InstanceId);
                 }
             }
         }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
         catch (Exception error)
         {
-            _logger.LogError(error, "Runnable notification delivery stopped");
+            (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(_logger, sensitiveDiagnostics, LogLevel.Error, error, "Runnable notification delivery stopped");
         }
     }
 
