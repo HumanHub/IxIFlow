@@ -50,7 +50,7 @@ public sealed class FaultScenarios
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Takeover", Status = WorkflowStatus.Running,
-            WorkflowDataJson = "{}"
+            WorkflowDataJson = StoredJson.Inline("{}")
         };
         var former = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "former", LeaseDuration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         var started = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, former.Epoch, 0));

@@ -37,5 +37,5 @@ public interface ITryBuilder<TWorkflowData, TPreviousStepData>
     /// </summary>
     /// <param name="configure">Configuration for the finally block</param>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Finally(
-        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure);
+        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 }

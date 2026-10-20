@@ -255,6 +255,7 @@ public static class WorkflowTriggerExtensions
         WorkflowExecutionStatus.Removed => "Removed",
         WorkflowExecutionStatus.Suspended => "Waiting",
         WorkflowExecutionStatus.NeedsResolution => "Stopped",
+        WorkflowExecutionStatus.Paused => "Paused",
         _ => "Running"
     };
 

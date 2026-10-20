@@ -167,7 +167,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = instanceId, WorkflowName = "Deleted", Status = WorkflowStatus.Suspended,
-            WorkflowDataJson = "{\"Value\":1}"
+            WorkflowDataJson = StoredJson.Inline("{\"Value\":1}")
         };
         var owner = await repository.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
         Assert.NotNull(owner);
@@ -202,12 +202,12 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         var parent = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Parent", Status = WorkflowStatus.Running,
-            WorkflowDataJson = "{}"
+            WorkflowDataJson = StoredJson.Inline("{}")
         };
         var child = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Child", Status = WorkflowStatus.Running,
-            WorkflowDataJson = "{}", ParentInstanceId = parent.InstanceId, ParentWaitId = "child"
+            WorkflowDataJson = StoredJson.Inline("{}"), ParentInstanceId = parent.InstanceId, ParentWaitId = "child"
         };
         Assert.Equal(WorkflowCommitStatus.Applied,
             (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, (await StoreTestSupport.LeaseAsync(repository, parent.InstanceId)).Epoch, 0))).Status);
@@ -252,7 +252,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
             var instance = new WorkflowInstance
             { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Notified", Status = status,
-                WorkflowDataJson = "{}", ParentInstanceId = parentId, ParentWaitId = parentWaitId
+                WorkflowDataJson = StoredJson.Inline("{}"), ParentInstanceId = parentId, ParentWaitId = parentWaitId
             };
             ids.Add(instance.InstanceId);
             return instance;
@@ -325,7 +325,7 @@ public class PostgreSqlWorkflowStateRepositoryTests : IClassFixture<SqliteTestDa
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "NewInstance", Status = WorkflowStatus.Running,
-            WorkflowDataJson = "{}"
+            WorkflowDataJson = StoredJson.Inline("{}")
         };
         // The schema is made first, so only the lock can hold the store up.
         await repository.GetWorkflowInstanceAsync(instance.InstanceId);

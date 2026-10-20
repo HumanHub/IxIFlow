@@ -242,7 +242,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
             var instance = new WorkflowInstance
             { ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId, WorkflowName = "InboxPark", Status = WorkflowStatus.Running,
-                WorkflowDataJson = "{}"
+                WorkflowDataJson = StoredJson.Inline("{}")
             };
             var started = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, grant.Epoch, 0,
                 openedWaits: [OpenApproval(instanceId)]));
@@ -845,7 +845,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
 
     private static WorkflowInstance Child(string childId, string parentId, string waitId) => new()
     { ExecutionStateJson = StoreTestSupport.CheckpointJson,
-        InstanceId = childId, WorkflowName = "Child", Status = WorkflowStatus.Running, WorkflowDataJson = "{}",
+        InstanceId = childId, WorkflowName = "Child", Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{}"),
         ParentInstanceId = parentId, ParentWaitId = waitId
     };
 
@@ -864,7 +864,7 @@ public sealed class InboxStoreTests : IClassFixture<SqliteTestDatabase<InboxStor
         var instance = new WorkflowInstance
         { ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Inbox", Status = status,
-            WorkflowDataJson = "{}"
+            WorkflowDataJson = StoredJson.Inline("{}")
         };
         if (status == WorkflowStatus.NeedsResolution)
         {

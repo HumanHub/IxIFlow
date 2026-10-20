@@ -25,9 +25,13 @@ internal static class OperatorTrace
         Cancellation(checkpoint, reason, now);
         instance.CancellationReason = reason;
         checkpoint.CancellationRequested = true;
+        checkpoint.Debug = checkpoint.Debug with { Evaluation = null, Stepping = null, Stop = null };
         checkpoint.UnhandledError = null;
         checkpoint.RuntimeUnhandledError = null;
+        var completedPause = instance.Status == WorkflowStatus.Paused &&
+            checkpoint.Continuations[0].Status == ContinuationStatus.Completed;
         ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
+        if (completedPause) checkpoint.Continuations[0].Status = ContinuationStatus.Cancelled;
     }
 
     public static void Cancellation(ExecutionCheckpoint checkpoint, CancellationReason reason, DateTime now)

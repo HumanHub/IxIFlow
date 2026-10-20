@@ -26,7 +26,7 @@ public sealed class HostBookkeepingRegressionTests
         CheckpointCommit? first = null;
         for (var index = 0; index < 512; index++)
         {
-            run.Instance.WorkflowDataJson = JsonSerializer.Serialize(new Data { Value = index.ToString() });
+            run.Instance.WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data { Value = index.ToString() }));
             var commit = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision);
             first ??= commit;
             var reply = await host.Endpoint.CheckpointAsync(new(run.Identity, commit));
@@ -59,7 +59,7 @@ public sealed class HostBookkeepingRegressionTests
         var commits = new List<CheckpointCommit>();
         for (var index = 0; index < 2; index++)
         {
-            run.Instance.WorkflowDataJson = JsonSerializer.Serialize(new Data { Value = index.ToString() });
+            run.Instance.WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data { Value = index.ToString() }));
             var commit = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision,
                 traceEntries: [new ExecutionTraceEntry { TraceId = index.ToString(),
                     Timestamp = host.Time.GetUtcNow().UtcDateTime, EntryType = TraceEntryType.LoopIteration }]);
@@ -161,7 +161,7 @@ public sealed class HostBookkeepingRegressionTests
         Assert.NotNull(await host.Store.TryAcquireExecutionLeaseAsync(run.Instance.InstanceId, "takeover", TimeSpan.FromHours(1), await StoreTestSupport.ClaimAsync(host.Services)));
         var calls = host.Store.Calls;
 
-        run.Instance.WorkflowDataJson = "{\"Value\":\"changed\"}";
+        run.Instance.WorkflowDataJson = StoredJson.Inline("{\"Value\":\"changed\"}");
         var changed = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, commit.ExpectedRevision, commit.CommitId);
         var fresh = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, commit.ExpectedRevision);
         foreach (var request in new[] { new Checkpoint(run.Identity, changed), new(run.Identity, fresh),
@@ -206,7 +206,7 @@ public sealed class HostBookkeepingRegressionTests
             control.OnUnscheduled(scheduler.Unschedule);
             _watch = new CancellationWatch(Store, Time);
             Operations = new(Services, Services.GetRequiredService<IActivityExecutor>(), Store,
-                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), Services.GetRequiredService<ExecutionLeaseRenewer>(),
                 timeProvider: Time, watch: _watch, control: control,
                 limits: new ExecutionLimits { MaxTraceEntriesPerInstance = 0 });
         }
@@ -225,7 +225,7 @@ public sealed class HostBookkeepingRegressionTests
         {
             var instance = await SeedAsync(Workflow.Create<Data>("Bookkeeping").Step<Noop>().Build());
             var owner = (await WorkflowExecutionLease.TryAcquireAsync(Store, instance,
-                ExecutionLeaseSettings.Default, _watch, await StoreTestSupport.ClaimAsync(Services), _ => { }, _ => { }, _ => { }, Time))!;
+                ExecutionLeaseSettings.Default, _watch, Services.GetRequiredService<ExecutionLeaseRenewer>(), await StoreTestSupport.ClaimAsync(Services), _ => { }, _ => { }, _ => { }, Time))!;
             var identity = Guid.NewGuid();
             return new(instance, owner, identity, Operations.Admit(instance, owner, identity));
         }
@@ -290,10 +290,10 @@ public sealed class HostBookkeepingRegressionTests
             ? new(WorkflowCommitStatus.Retry, 0)
             : throw new IOException("The commit reply was lost");
 
-        public override async Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
+        public override async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
         {
-            var renewed = await base.RenewExecutionLeaseAsync(id, token, duration);
-            if (!renewed) Interlocked.Increment(ref RejectedRenewals);
+            var renewed = await base.RenewExecutionLeasesAsync(leases);
+            Interlocked.Add(ref RejectedRenewals, renewed.Count(result => result.Status != ExecutionLeaseRenewalStatus.Renewed));
             return renewed;
         }
     }

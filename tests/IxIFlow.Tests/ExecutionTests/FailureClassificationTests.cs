@@ -40,13 +40,20 @@ public sealed class FailureClassificationTests
         var started = await Engine(services).RunAsync(parent, new ParentData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var parentId = started.InstanceId;
+        // The child runs on its own; it waits for its approval before the clock moves. A jump during its first
+        // activity would expire its lease, and an activity whose outcome nobody saved waits for an operator.
+        var childId = Assert.Single((await repository.QueryInstancesAsync(
+            new InstanceQuery(WorkflowName: "ClassifiedTimedChild", Limit: int.MaxValue))).Items).InstanceId;
+        using (var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            Assert.Equal(WorkflowExecutionStatus.Suspended,
+                (await Engine(services).AwaitAsync(childId, cancellationToken: patience.Token)).Status);
 
-        // The child's terminal commit, which also tells its parent, fails: neither is lost.
-        repository.FailCommit = instance => instance.WorkflowName == "ClassifiedTimedChild";
+        // The child's terminal commit, which also tells its parent, fails on every attempt: neither is lost.
+        repository.FailCommit = instance => instance.InstanceId == childId && instance.Status == WorkflowStatus.Completed;
         time.Advance(TimeSpan.FromMinutes(11));
         // The child's own timer, or the scan, runs it into the failing commit.
         using (var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
-            while (repository.FailedCommits == 0)
+            while (repository.FailedCommits < 3)
             {
                 await RecoverOnceAsync(services, repository, time);
                 await Task.Delay(20, patience.Token);
@@ -68,7 +75,7 @@ public sealed class FailureClassificationTests
                 await Task.Delay(50);
         }
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-        Assert.Contains("\"ChildTimedOut\":true", saved.WorkflowDataJson);
+        Assert.Contains("\"ChildTimedOut\":true", saved.WorkflowDataJson.InlineText);
     }
 
     [Fact]
@@ -100,7 +107,7 @@ public sealed class FailureClassificationTests
             while (repository.FailedCommits < 3)
                 await Task.Delay(10, patience.Token);
         var interrupted = await repository.GetWorkflowInstanceAsync(parentId);
-        Assert.DoesNotContain("\"Caught\":true", interrupted!.WorkflowDataJson);
+        Assert.DoesNotContain("\"Caught\":true", interrupted!.WorkflowDataJson.InlineText);
         Assert.Equal(WorkflowStatus.Suspended, interrupted.Status);
 
         repository.FailCommit = _ => false;
@@ -114,7 +121,7 @@ public sealed class FailureClassificationTests
                 await Task.Delay(50);
         }
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-        Assert.DoesNotContain("\"Caught\":true", saved.WorkflowDataJson);
+        Assert.DoesNotContain("\"Caught\":true", saved.WorkflowDataJson.InlineText);
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository repository, TimeProvider time)

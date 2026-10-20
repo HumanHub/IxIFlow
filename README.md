@@ -31,11 +31,13 @@ These are the package projects in `src/`. All runtime packages target .NET 10.
 | --- | --- |
 | `IxIFlow` | Engine, fluent builders, client, host, memory store; bundles the YAML generator, analyzers and code fixes |
 | `IxIFlow.Abstractions` | Activity interfaces, recovery contracts, contract/metadata attributes and combiners |
-| `IxIFlow.Authoring` | Document serialization and validation, translation support and installed activity package catalog |
+| `IxIFlow.Authoring` | Document serialization and validation, YAML translation and publishing, and installed activity package catalog |
 | `IxIFlow.Sqlite` | SQLite file store for one host with in-process execution |
 | `IxIFlow.SqlServer` | SQL Server instance state, inbox, waits, traces, leases and completion outbox |
 | `IxIFlow.PostgreSql` | PostgreSQL instance state and `LISTEN`/`NOTIFY` wake-ups |
 | `IxIFlow.Relational` | Shared internal storage implementation; installed as a provider dependency, with no public extension API |
+| `IxIFlow.Coordinator` | Stateless matching, host discovery and authenticated coordinator links |
+| `IxIFlow.AspNetCore` | Authorized incoming HTTP triggers, CloudEvents and management endpoints |
 | `IxIFlow.Webhooks` | Outgoing signed webhook delivery of outbox events |
 | `IxIFlow.Templates` | Versioned template store, publisher, renderer and message activities |
 | `IxIFlow.Templates.Liquid` | Liquid engine using Fluid |
@@ -173,9 +175,9 @@ All four stores implement inbox, trace, outbox and retention semantics; memory r
 
 A terminal checkpoint atomically writes an immutable `OutboxEvent.WorkflowCompleted` envelope. Register singleton `IOutboxPublisher` implementations with `AddOutboxPublisher`; each stable publisher name has its own leased, at-least-once delivery state. New names receive future events unless `ReplayRetainedOutboxEvents(name)` is requested. Explicitly retire durable subscriptions with `UnregisterOutboxPublisher(name)`. Consumers deduplicate by event ID.
 
-`IxIFlow.Webhooks` adds outgoing HTTP delivery through `AddWebhook(WebhookEndpoint)`, with structured CloudEvents JSON and Standard Webhooks v1 HMAC signatures. It retries independently per endpoint; HTTP 410 disables an endpoint durably. The completion summary excludes workflow data and exception text. Incoming HTTP triggers remain planned. See [outbox and publishers](docs/outbox-and-publishers.md).
+`IxIFlow.Webhooks` adds outgoing HTTP delivery through `AddWebhook(WebhookEndpoint)`, with structured CloudEvents JSON and Standard Webhooks v1 HMAC signatures. It retries independently per endpoint; HTTP 410 disables an endpoint durably. The completion summary excludes workflow data and exception text. `IxIFlow.AspNetCore` supplies [incoming HTTP triggers](docs/incoming-webhooks.md) with authorized, atomic idempotent admission. See [outbox and publishers](docs/outbox-and-publishers.md).
 
-Terminal results remain readable for `FinishedInstanceRetention` (30 days by default). Hosted cleanup runs bounded passes every hour by default, skipping pending outbox deliveries and nonterminal children. Removal deletes operational history and reserves the ID for `TombstoneRetention` (90 days from removal by default). During that period client reads distinguish `Removed`, and writes reject the reserved ID. See [retention and tombstones](docs/retention-and-tombstones.md).
+Terminal results remain readable for `FinishedInstanceRetention` (30 days by default). Hosted cleanup runs bounded passes every hour by default, skipping pending outbox deliveries and instances with any remaining child row, so subtrees are removed from leaves to parents. Removal deletes operational history and reserves the ID for `TombstoneRetention` (90 days from removal by default). During that period client reads distinguish `Removed`, and writes reject the reserved ID. See [retention and tombstones](docs/retention-and-tombstones.md).
 
 ## Hosting
 
@@ -205,32 +207,32 @@ finally
 }
 ```
 
-This host lifecycle is compiled in [DocumentationExamples.cs](samples/IxIFlow.Samples/DocumentationExamples.cs) and exercised by [DocumentationTests.cs](tests/IxIFlow.Samples.Tests/DocumentationTests.cs). `Slots` limits host work slots; nested calls can run inline in their parent's slot. Due work is recovered through local timers and store polling. Long retry backoffs park the instance and release the slot. Shutdown drains work before its configured timeout. This is the current in-process host; process executors and the coordinator are future work.
+This host lifecycle is compiled in [DocumentationExamples.cs](samples/IxIFlow.Samples/DocumentationExamples.cs) and exercised by [DocumentationTests.cs](tests/IxIFlow.Samples.Tests/DocumentationTests.cs). `Slots` limits host work slots; nested calls can run inline in their parent's slot. Due work is recovered through local timers and store polling, with optional [coordinators](docs/coordinators.md) for prompt cross-host wakes. Long retry backoffs park the instance and release the slot. Shutdown drains work before its configured timeout. Workflows run in the host process in 1.0; process isolation is after 1.0.
 
 For time-dependent mappings and conditions, use `ctx.UtcNow`. Tests can register a `FakeTimeProvider`, as in [the sample tests](tests/IxIFlow.Samples.Tests/SampleTests.cs). Attach OpenTelemetry to source/meter `IxIFlow`, or use the standard .NET listeners shown in [Observability.cs](samples/IxIFlow.Samples/Observability.cs).
 
 ## Status and roadmap
 
+Available foundations include the public executor/host message contract, [demands, pins, affinity and unschedulable-work inspection](docs/coordinator-and-hosts.md), coordinator discovery and secured links, incoming webhooks, and [redaction](docs/redaction.md). The persistent catalog, digest-addressed artifacts, verified immutable YAML bundles, draft publishing, version lifecycle and unreferenced artifact retention are implemented. Hosts configured with `UseWorkflowBundles` fetch, verify and load published bundles by digest. See the [roadmap](docs/roadmap.md) for the available subset and [residency](docs/coordinator-and-hosts.md#placement-and-data-residency) for regional deployment.
+
+Breakpoints, all-stop pause, stepping, audited data edits, Debug Adapter Protocol and inspection/replay tooling are implemented. Timers keep running while paused; edits record actor, time, revision and paths. Opt-in payload claim checks keep bodies, transactional references and collection in the state store. HTTP management, redacted inspection, reply capabilities, retention, outbox administration and telemetry are available.
+
 The following work is planned for 1.0 and is **not yet available**, or has an implemented subset with the remaining work stated here:
 
 | Area | Remaining 1.0 work |
 | --- | --- |
-| Execution and isolation | Public executor message contract; local-first process slots, pipe transport, process liveness and resource limits, fenced process crash reports; commit resend backoff and host validation of message size/metadata |
-| Coordinator and placement | Cross-host scheduling through stateless coordinators, workflow demands, matching and affinity, visible unschedulable work, coordinator discovery, multiple coordinators, loss handling and secured links; batched host lease renewal and process-slot activity accounting. The store-backed member registry, heartbeats and automatic/configured host capabilities are implemented |
-| Events and integrations | Incoming webhook/HTTP trigger package and conformance; child placement demands. Durable inboxes, reply tokens, child instances, suggested wait payloads, retained results, public outbox publishers and outgoing signed webhooks are implemented |
-| Publishing and versioning | HTTP publishing/catalog APIs and YAML code activities. Immutable bundles, artifact stores, draft publishing, uploaded/feed activity packages, dependency resolution, RID assets, version lifecycle, verified host loading, per-version isolation, digest pins and shared compatibility checks are implemented |
-| Authoring and catalog | Broader catalog API, code-defined workflows in the catalog, published code activities, inline calls, explicit workflow input/output contracts, YAML code activities and planned local registration support beyond the current installed-assembly registry; Native AOT publish/run validation. Full YAML construct coverage is implemented |
-| Editor support | The JSON Schema for workflow YAML ships in the package. A visual editor and debugger integration remain planned |
-| Debugger and audit | Breakpoints, all-stop pause, stepping including loops, audited data edits, paused timer behavior, Debug Adapter Protocol and replay. Separate committed transition/event/operator traces, snapshots, scoped logs and OpenTelemetry already work; transitions that never commit do not enter saved history |
-| Management and operations | Unused bundle retention, large-payload storage, residency policies and redaction. [HTTP management endpoints](docs/operations-http.md), [instance search, wait inspection, trace paging, hard termination and outbox administration](docs/operations.md), reply capabilities, instance retention, tombstones and outbox age/delivery telemetry are implemented |
-| Verification | Complete cross-configuration conformance and fault injection for the coordinator, process executors and nested joins as those paths land |
+| Execution and scheduling | Commit resend backoff and completion of demand-aware local-first start/resume admission; execution-claim skip-locked policy remains open. Batched lease renewal and termination escalation are implemented |
+| Publishing and versioning | Template dependencies; draft, upload and publishing HTTP APIs. Uploaded/feed activity packages, dependency resolution, RID assets, immutable digest pins, verified host loading and shared compatibility checks are implemented |
+| Authoring and catalog | Unified workflow/activity catalog API with input/output metadata, remaining placement and inspection parity for code-defined workflows, published code activities and YAML code activities, inline workflow calls, explicit workflow input/output contracts and local activity registration. Full YAML construct coverage is implemented |
+| Editor support | A visual editor remains planned. The YAML JSON Schema and Debug Adapter Protocol integration are available |
+| Verification | Identity-test traceability and conformance, fault-injection and commit-budget coverage for the remaining publishing and authoring paths. Coordinator races, nested joins, crash quarantine, debugger and payload paths have conformance coverage |
 
-After 1.0: broker publisher/consumer samples for RabbitMQ or Azure Service Bus, and a distributed map that pages external input, runs bounded child work and stores results outside the parent checkpoint. These are outside the 1.0 scope. SQLite single-host durability has moved into 1.0 and is implemented.
+After 1.0: process isolation (process slots, executor programs, pipe transport, liveness, hard timeouts and process resource accounting), Native AOT for compiled-in workflows, broker publisher/consumer samples for RabbitMQ or Azure Service Bus, and a distributed map that pages external input, runs bounded child work and stores results outside the parent checkpoint. Process memory limits belong to the deployment. SQLite single-host durability is implemented.
 
 ## Documentation
 
 Start with [getting started](docs/getting-started.md) or [samples and their feature map](samples/README.md). The [docs index](docs/index.md) links every guide, including the [fluent API](docs/fluent-api.md), [YAML](docs/yaml-authoring.md), [execution model](docs/execution-model.md), [activity SDK](docs/activity-sdk.md), [hosting](docs/coordinator-and-hosts.md), [publishers](docs/outbox-and-publishers.md) and [roadmap](docs/roadmap.md).
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and the [MIT license](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md). IxIFlow is licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE).
 
 Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in `IxIFlow.Core`. `RegisterWorkflow<TWorkflow,TData>()` and `Invoke<TWorkflow,TData>(setup)` read it from the type without constructing the class to discover identity; missing attributes are refused. Typed YAML children need only `workflowType`, with no duplicate name/version field.

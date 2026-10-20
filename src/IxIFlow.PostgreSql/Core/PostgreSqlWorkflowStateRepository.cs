@@ -13,6 +13,8 @@ namespace IxIFlow.Core;
 /// </summary>
 public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkflowStateRepository, IRunnableWakeSource
 {
+    internal override PayloadDialect PayloadSqlDialect => PayloadDialect.PostgreSql;
+
     private readonly string _connectionString;
     private readonly string _ownershipConnectionString;
     private readonly string _listenerConnectionString;
@@ -29,7 +31,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     /// delivers cancellation. With pooling turned off the reservation has no effect.
     /// </summary>
     public PostgreSqlWorkflowStateRepository(string connectionString,
-        int ownershipPoolSize = DefaultOwnershipPoolSize, OutboxSettings? outboxSettings = null) : base(outboxSettings)
+        int ownershipPoolSize = DefaultOwnershipPoolSize, OutboxSettings? outboxSettings = null, PayloadStoreSettings? payloadSettings = null) : base(outboxSettings, payloadSettings)
     {
         _connectionString = string.IsNullOrWhiteSpace(connectionString)
             ? throw new ArgumentException("A PostgreSQL connection string is required", nameof(connectionString))
@@ -101,7 +103,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         if (operation is not (Operation.Catalog or Operation.Registry or Operation.RunnableRead or Operation.RetentionRead
             or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim
             or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete
-            or Operation.CancellationRequest or Operation.LeaseRelease or Operation.Termination)) return null;
+            or Operation.CancellationRequest or Operation.LeaseRelease or Operation.LeaseRenew or Operation.Termination)) return null;
         var transaction = await connection.BeginTransactionAsync();
         try
         {
@@ -144,7 +146,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                         THEN false ELSE cancellation_acknowledged END,
                     runnable_at_utc = CASE WHEN cancellation_json IS NULL OR NOT cancellation_acknowledged
                         THEN {now} ELSE runnable_at_utc END
-                WHERE instance_id = @InstanceId AND (CAST(@ExpectedIncarnation AS uuid) IS NULL OR incarnation = @ExpectedIncarnation) AND status IN ('Running', 'Suspended', 'NeedsResolution')
+                WHERE instance_id = @InstanceId AND (CAST(@ExpectedIncarnation AS uuid) IS NULL OR incarnation = @ExpectedIncarnation) AND status IN ('Ready', 'Running', 'Suspended', 'NeedsResolution', 'Paused')
                 RETURNING cancellation_acknowledged
             )
             SELECT CASE
@@ -177,7 +179,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             Kinds = waits.Select(wait => (short)wait.Kind).ToArray(),
             Keys = waits.Select(wait => wait.Key).ToArray(),
             EventTypes = waits.Select(wait => wait.EventType).ToArray(),
-            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson).ToArray(),
+            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson is { } payload ? JsonSerializer.Serialize(payload) : null).ToArray(),
             Deadlines = waits.Select(wait => Timestamp(now + wait.Timeout)).ToArray()
         }, transaction);
     }
@@ -197,7 +199,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             InstanceId = instanceId,
             WaitIds = waits.Select(wait => wait.WaitId).ToArray(),
             Deadlines = waits.Select(wait => Timestamp(now + wait.Timeout)).ToArray(),
-            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson).ToArray()
+            DefaultPayloads = waits.Select(wait => wait.DefaultPayloadJson is { } payload ? JsonSerializer.Serialize(payload) : null).ToArray()
         }, transaction);
     }
 
@@ -229,21 +231,25 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         {
             InstanceId = instanceId,
             Keys = parts.Select(part => part.Key).ToArray(),
-            Jsons = parts.Select(part => part.Json).ToArray()
+            Jsons = parts.Select(part => JsonSerializer.Serialize(part.Json)).ToArray()
         }, transaction);
     }
 
     internal override async Task AppendTraceAsync(DbConnection connection, DbTransaction transaction,
-        string instanceId, IReadOnlyList<string> entries)
+        string instanceId, IReadOnlyList<string> entries, long revision, WorkflowStatus? commitStatus)
     {
         await connection.ExecuteAsync("""
-            INSERT INTO ixiflow_workflow_traces (instance_id, sequence, entry_json)
+            INSERT INTO ixiflow_workflow_traces (instance_id, sequence, entry_json, revision, commit_end_sequence, commit_status)
             SELECT @InstanceId,
                 (SELECT COALESCE(max(sequence), 0) FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId)
                     + entry.position,
-                entry.entry_json
+                entry.entry_json, @Revision,
+                CASE WHEN @CommitStatus::integer IS NULL THEN NULL ELSE
+                    (SELECT COALESCE(max(sequence), 0) FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId)
+                        + @Count END, @CommitStatus
             FROM unnest(@Entries::text[]) WITH ORDINALITY AS entry (entry_json, position)
-            """, new { InstanceId = instanceId, Entries = entries.ToArray() }, transaction);
+            """, new { InstanceId = instanceId, Entries = entries.ToArray(), Revision = revision,
+                Count = entries.Count, CommitStatus = (int?)commitStatus }, transaction);
     }
 
     internal override async Task<int> SettleAsync(DbConnection connection, DbTransaction transaction,
@@ -479,12 +485,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             WHERE lease.expires_at_utc <= clock_timestamp()
             RETURNING epoch AS Epoch, crash_count AS CrashCount
             """,
-        Statement.RenewLease => """
-            UPDATE ixiflow_workflow_leases
-            SET expires_at_utc = clock_timestamp() + @Milliseconds * INTERVAL '1 millisecond'
-            WHERE instance_id = @InstanceId AND token = @Token
-                AND expires_at_utc > clock_timestamp()
-            """,
         Statement.ReleaseLease => """
             WITH released AS (
                 UPDATE ixiflow_workflow_leases SET expires_at_utc = '-infinity'
@@ -498,7 +498,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // Locks an instance row as appends and commits lock it, then reads the store's time: a statement that
         // waits for a lock would otherwise carry a time from before it was granted (D-35).
         Statement.LockInbox or Statement.DeleteParentInbox => """
-            SELECT status AS Status, inbox_sequence AS InboxSequence,
+            SELECT status AS Status, inbox_sequence AS InboxSequence, revision AS Revision,
                 COALESCE((state_json::jsonb ->> 'TracingEnabled')::boolean, true) AS TracingEnabled,
                 COALESCE(jsonb_typeof(state_json::jsonb -> 'ExecutionStateJson' -> 'OperatorStop') = 'object', false) AS Stopped
             FROM ixiflow_workflow_instances
@@ -516,7 +516,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // Identity serialization protects a missing instance; the row lock also orders appends.
         // Read clock_timestamp() in the next statement so commit time follows the lock wait (D-35).
         Statement.CommitState => """
-            SELECT bundle_digest AS BundleDigest, revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
+            SELECT bundle_digest AS BundleDigest, state_json AS StateJson, revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
                 cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence, runnable_at_utc AS RunnableAtUtc
             FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
@@ -566,7 +566,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
                 """,
         Statement.InsertEvent => """
             INSERT INTO ixiflow_workflow_events
-                (instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, payload_json,
+                (instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, stored_payload_json,
                  payload_hash, received_at_utc, outcome, rejection, settled_at_utc)
             VALUES (@InstanceId, @EventId, @Sequence, @EventType, @Key, @TargetWaitId, @Subject, @PayloadJson,
                 @Hash, @Now, CASE WHEN @Rejection::smallint IS NULL THEN 0 ELSE 2 END, @Rejection,
@@ -649,6 +649,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             DELETE FROM ixiflow_workflow_leases WHERE instance_id = @InstanceId
             """,
         Statement.DeleteRows => """
+                DELETE FROM ixiflow_workflow_debug_commands WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_outbox_deliveries WHERE event_id IN (SELECT e.event_id FROM ixiflow_outbox_events e WHERE e.instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=e.event_id AND pending.status=0));
                 DELETE FROM ixiflow_outbox_events WHERE instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=ixiflow_outbox_events.event_id);
                 DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
@@ -664,7 +665,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         Statement.InsertDiagnostic => "INSERT INTO ixiflow_workflow_diagnostics (instance_id, diagnostic_id, diagnostic_json) VALUES (@InstanceId, @DiagnosticId, @DiagnosticJson)",
         Statement.DeleteDiagnostics => "DELETE FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId AND diagnostic_id = ANY(@Ids)",
         Statement.Trace => """
-            SELECT sequence, entry_json FROM ixiflow_workflow_traces
+            SELECT sequence, entry_json, revision, commit_end_sequence, commit_status FROM ixiflow_workflow_traces
             WHERE instance_id = @InstanceId AND sequence > @AfterSequence
             ORDER BY sequence
             LIMIT @Limit
@@ -699,6 +700,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     // Identifiers compare as the engine compares them, ordinally.
     await connection.ExecuteAsync(DemandsSchema, transaction: transaction);
     await connection.ExecuteAsync("""
+        CREATE TABLE IF NOT EXISTS ixiflow_workflow_debug_commands (
+            instance_id TEXT NOT NULL, command_id TEXT NOT NULL, command_order BIGINT NOT NULL,
+            command_json TEXT NOT NULL, PRIMARY KEY (instance_id, command_id), UNIQUE (instance_id, command_order));
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id varchar(100) COLLATE "C" NOT NULL PRIMARY KEY,
             workflow_name varchar(200) COLLATE "C" NOT NULL,
@@ -769,7 +773,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             event_key varchar(400) COLLATE "C" NULL,
             target_wait_id varchar(100) COLLATE "C" NULL,
             subject varchar(100) COLLATE "C" NULL,
-            payload_json text NOT NULL,
+            stored_payload_json text NOT NULL,
             payload_hash bytea NOT NULL,
             received_at_utc timestamptz NOT NULL,
             outcome smallint NOT NULL,
@@ -797,6 +801,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             instance_id varchar(100) COLLATE "C" NOT NULL,
             sequence bigint NOT NULL,
             entry_json text NOT NULL,
+            revision bigint NOT NULL,
+            commit_end_sequence bigint NULL,
+            commit_status integer NULL,
             PRIMARY KEY (instance_id, sequence)
         );
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_waits (
@@ -844,6 +851,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(PayloadSchema, transaction: transaction);
     await connection.ExecuteAsync(CatalogSchema, transaction: transaction);
     await transaction.CommitAsync();
     }

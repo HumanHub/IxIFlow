@@ -135,7 +135,7 @@ public sealed class PublishedActivityPackageScenarios
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = version.Name, WorkflowVersion = 1,
             BundleDigest = version.ArtifactDigest, Status = WorkflowStatus.Completed,
-            WorkflowDataJson = "{}", ExecutionStateJson = StoreTestSupport.CheckpointJson
+            WorkflowDataJson = StoredJson.Inline("{}"), ExecutionStateJson = StoreTestSupport.CheckpointJson
         });
         // Disaster fixture: retained instances must protect the closure even if catalog metadata is lost.
         if (store is InMemoryWorkflowStateRepository memory)
@@ -196,7 +196,7 @@ public sealed class PublishedActivityPackageScenarios
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "LostCatalog", WorkflowVersion = 1,
             BundleDigest = null, Status = WorkflowStatus.Completed,
-            WorkflowDataJson = "{}", ExecutionStateJson = StoreTestSupport.CheckpointJson
+            WorkflowDataJson = StoredJson.Inline("{}"), ExecutionStateJson = StoreTestSupport.CheckpointJson
         });
         // Seed's normal catalog guard refuses an unregistered bundle. Model catalog loss
         // with the same persisted pin fixture used by the existing retention scenarios.

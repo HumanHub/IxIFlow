@@ -169,6 +169,6 @@ public sealed class CatalogArtifactThirdRoundTests
     {
         InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = name, WorkflowVersion = version,
         Status = WorkflowStatus.Suspended, ExecutionStateJson = StoreTestSupport.CheckpointJson,
-        WorkflowDataJson = "{}", WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object))
+        WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object))
     };
 }

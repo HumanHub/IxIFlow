@@ -13,16 +13,11 @@
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<RepositoryUrl>https://github.com/HumanHub/IxIFlow</RepositoryUrl>
 		<Title>IxIFlow - Workflow Engine</Title>
-		<Copyright>2025 - HumanHub.io</Copyright>
+		<Copyright>2025-2026 HumanHub.io</Copyright>
 		<PackageProjectUrl>https://github.com/HumanHub/IxIFlow</PackageProjectUrl>
-		<PackageLicenseFile>LICENSE</PackageLicenseFile>
 	</PropertyGroup>
 
 	<ItemGroup>
-	  <None Include="..\..\LICENSE">
-	    <Pack>True</Pack>
-	    <PackagePath>\</PackagePath>
-	  </None>
 	  <None Include="..\..\README.md">
 	    <Pack>True</Pack>
 	    <PackagePath>\</PackagePath>

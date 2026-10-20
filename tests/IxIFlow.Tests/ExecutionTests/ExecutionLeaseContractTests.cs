@@ -1051,8 +1051,8 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             await PassAsync(time, TimeSpan.FromMilliseconds(300));
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
-            Assert.False(await repository.RenewExecutionLeaseAsync(instanceId, "first",
-                TimeSpan.FromSeconds(5)));
+            Assert.False((await repository.RenewExecutionLeasesAsync([new(instanceId, "first",
+                TimeSpan.FromSeconds(5))]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
         }
         finally
         {
@@ -1070,7 +1070,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         {
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
             await PassAsync(time, renewAfter);
-            Assert.True(await repository.RenewExecutionLeaseAsync(instanceId, "first", lease));
+            Assert.True((await repository.RenewExecutionLeasesAsync([new(instanceId, "first", lease)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
             await PassAsync(time, checkAfter);
             Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         }
@@ -1094,7 +1094,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 InstanceId = instanceId,
                 WorkflowName = "LeaseFencing",
                 Status = WorkflowStatus.Running,
-                WorkflowDataJson = "{}"
+                WorkflowDataJson = StoredJson.Inline("{}")
             };
             var initial = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 0, "initial"));
@@ -1103,17 +1103,17 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             var secondEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             Assert.NotNull(secondEpoch);
-            oldOwner.WorkflowDataJson = "\"stale\"";
+            oldOwner.WorkflowDataJson = StoredJson.Inline("\"stale\"");
             var stale = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 1, "stale"));
             Assert.Equal(WorkflowCommitStatus.StaleEpoch, stale.Status);
             var newOwner = (await repository.GetWorkflowInstanceAsync(instanceId))!;
-            newOwner.WorkflowDataJson = "\"current\"";
+            newOwner.WorkflowDataJson = StoredJson.Inline("\"current\"");
             var current = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(newOwner, secondEpoch.Epoch, 1, "current"));
             Assert.Equal(WorkflowCommitStatus.Applied, current.Status);
             Assert.Equal("\"current\"",
-                (await repository.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson);
+                (await repository.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson.InlineText);
         }
         finally
         {
@@ -1156,7 +1156,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 InstanceId = instanceId,
                 WorkflowName = "ReceiptFencing",
                 Status = WorkflowStatus.Running,
-                WorkflowDataJson = "{}"
+                WorkflowDataJson = StoredJson.Inline("{}")
             };
             var start = CheckpointCommit.Create(formerOwner, formerEpoch.Epoch, 0, "start");
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(start)).Status);
@@ -1301,6 +1301,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => inner.GetPackagesAsync(id);
         public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => inner.GetPackageAsync(id, version);
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => inner.GetPackagePageAsync(id, afterVersion, limit);
+        public IPayloadStore PayloadStore => inner.PayloadStore;
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
             inner.GetDefinitionAsync(name, version);
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
@@ -1424,6 +1425,14 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         }
         public async Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
         {
+            await BeforeCancellationReadAsync(instanceId);
+            var reason = await inner.GetCancellationRequestAsync(instanceId);
+            ObserveCancellation(reason);
+            return reason;
+        }
+
+        private async Task BeforeCancellationReadAsync(string instanceId)
+        {
             if (FailAfterObservedCancellation && Volatile.Read(ref _cancellationObserved) != 0)
                 throw new IOException("Cancellation store unavailable after observation");
             if (FailAllCancellationReads)
@@ -1444,13 +1453,15 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                     await inner.RequestCancellationAsync(instanceId,
                         new CancellationReason { ReasonCode = "late" });
             }
-            var reason = await inner.GetCancellationRequestAsync(instanceId);
+        }
+
+        private void ObserveCancellation(CancellationReason? reason)
+        {
             if (reason != null && FailAfterObservedCancellation)
             {
                 Interlocked.Exchange(ref _cancellationObserved, 1);
                 CancellationObserved.TrySetResult();
             }
-            return reason;
         }
         public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
             inner.GetRunnableInstancesAsync(query);
@@ -1463,9 +1474,19 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
             inner.GetWorkflowInstanceSummaryAsync(instanceId);
-        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-            IReadOnlyCollection<string> instanceIds) =>
-            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
+        public async Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds)
+        {
+            foreach (var instanceId in instanceIds.Distinct(StringComparer.Ordinal))
+                await BeforeCancellationReadAsync(instanceId);
+            var controls = await inner.GetControlRequestsAsync(instanceIds);
+            foreach (var reason in controls.Cancellations.Values)
+                ObserveCancellation(reason);
+            return controls;
+        }
+        public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+            inner.RequestDebugCommandAsync(instanceId, command);
+        public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
+            inner.GetDebugStatesAsync(instanceIds);
 
         public async Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
         {
@@ -1480,19 +1501,19 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
         public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string id, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
             inner.TryAcquireExecutionLeaseAsync(id, token, duration, query, kind);
-        public Task<bool> RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
+        public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
         {
             if (Interlocked.Exchange(ref LoseNextRenewal, 0) > 0)
             {
                 LeaseLost.TrySetResult();
-                return Task.FromResult(false);
+                return Task.FromResult<IReadOnlyList<ExecutionLeaseRenewalResult>>(leases.Select(_ => new ExecutionLeaseRenewalResult(ExecutionLeaseRenewalStatus.Refused)).ToArray());
             }
             if (Interlocked.Exchange(ref FailNextRenewals, 0) > 0)
             {
                 RenewalFailed.TrySetResult();
                 throw new IOException("Lease renewal unavailable");
             }
-            return inner.RenewExecutionLeaseAsync(id, token, duration);
+            return inner.RenewExecutionLeasesAsync(leases);
         }
         public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string id, string token) =>
             FailRelease ? throw new IOException("Release acknowledgment unavailable") :

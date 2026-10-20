@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/IxIFlow/IxIFlow.csproj" />
+    <ProjectReference Include="../../src/IxIFlow.Debugging/IxIFlow.Debugging.csproj" />
     <ProjectReference Include="../../src/IxIFlow.Coordinator/IxIFlow.Coordinator.csproj" />
     <ProjectReference Include="../../src/IxIFlow.Authoring/IxIFlow.Authoring.csproj" />
     <ProjectReference Include="../../src/IxIFlow.Generators/IxIFlow.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
