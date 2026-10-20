@@ -68,7 +68,7 @@ public sealed class NestedJoinRecoveryScenarios
         Assert.Equal(new[] { "after-inner", "after-outer", "inner-a", "inner-b", "outer-sibling" }, effects.Counts.Keys.Order());
         Assert.All(effects.Counts.Values, count => Assert.Equal(1, count));
         var saved = (await secondStore.GetWorkflowInstanceAsync(id))!;
-        Assert.Equal(22, JsonSerializer.Deserialize<Data>(saved.WorkflowDataJson)!.Total);
+        Assert.Equal(22, JsonSerializer.Deserialize<Data>(saved.WorkflowDataJson.InlineText)!.Total);
         Assert.Empty(ExecutionCheckpoint.Read(saved.ExecutionStateJson).Joins);
         var joins = (await secondStore.GetTraceAsync(id)).Select(e => e.Entry.Payload).OfType<JoinTrace>().ToArray();
         Assert.Single(joins, join => join.StepId == InnerStep && join.Path == JoinPath.Merged);

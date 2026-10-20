@@ -565,8 +565,8 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
             return Hang ? Reply.Task : base.RenewExecutionLeasesAsync(leases);
         }
         // Keep cancellation delivery independent so the renewal response is the only termination signal.
-        public override Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
-            Task.FromResult<IReadOnlyDictionary<string, CancellationReason>>(new Dictionary<string, CancellationReason>());
+        public override Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
+            Task.FromResult(new WorkflowControlRequests(new Dictionary<string, CancellationReason>(), new Dictionary<string, WorkflowDebugState>()));
     }
 
     private sealed class RenewalLogger : ILogger<ExecutionLeaseRenewer>

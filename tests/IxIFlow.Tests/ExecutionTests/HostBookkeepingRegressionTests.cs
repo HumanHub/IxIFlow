@@ -26,7 +26,7 @@ public sealed class HostBookkeepingRegressionTests
         CheckpointCommit? first = null;
         for (var index = 0; index < 512; index++)
         {
-            run.Instance.WorkflowDataJson = JsonSerializer.Serialize(new Data { Value = index.ToString() });
+            run.Instance.WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data { Value = index.ToString() }));
             var commit = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision);
             first ??= commit;
             var reply = await host.Endpoint.CheckpointAsync(new(run.Identity, commit));
@@ -59,7 +59,7 @@ public sealed class HostBookkeepingRegressionTests
         var commits = new List<CheckpointCommit>();
         for (var index = 0; index < 2; index++)
         {
-            run.Instance.WorkflowDataJson = JsonSerializer.Serialize(new Data { Value = index.ToString() });
+            run.Instance.WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data { Value = index.ToString() }));
             var commit = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision,
                 traceEntries: [new ExecutionTraceEntry { TraceId = index.ToString(),
                     Timestamp = host.Time.GetUtcNow().UtcDateTime, EntryType = TraceEntryType.LoopIteration }]);
@@ -161,7 +161,7 @@ public sealed class HostBookkeepingRegressionTests
         Assert.NotNull(await host.Store.TryAcquireExecutionLeaseAsync(run.Instance.InstanceId, "takeover", TimeSpan.FromHours(1), await StoreTestSupport.ClaimAsync(host.Services)));
         var calls = host.Store.Calls;
 
-        run.Instance.WorkflowDataJson = "{\"Value\":\"changed\"}";
+        run.Instance.WorkflowDataJson = StoredJson.Inline("{\"Value\":\"changed\"}");
         var changed = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, commit.ExpectedRevision, commit.CommitId);
         var fresh = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, commit.ExpectedRevision);
         foreach (var request in new[] { new Checkpoint(run.Identity, changed), new(run.Identity, fresh),

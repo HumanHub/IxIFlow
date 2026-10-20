@@ -169,7 +169,7 @@ public sealed class AssignmentResultRegressionTests
         {
             InstanceId = instance.InstanceId, Incarnation = Guid.NewGuid(),
             WorkflowName = "Replacement", WorkflowDataType = typeof(Data).AssemblyQualifiedName!,
-            WorkflowDataJson = "not valid JSON", Status = WorkflowStatus.Completed,
+            WorkflowDataJson = StoredJson.Inline("not valid JSON"), Status = WorkflowStatus.Completed,
             LastError = "replacement error", LastErrorStackTrace = "replacement stack"
         };
         store.LoseOnCommit = true;
@@ -308,6 +308,7 @@ public sealed class AssignmentResultRegressionTests
         public Task<StartChildReply> StartChildAsync(StartChild request) => inner.StartChildAsync(request);
         public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => inner.ReadInboxAsync(request);
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => inner.ReadWaitAsync(request);
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) => inner.ReadPayloadAsync(request);
     }
 
     private sealed class RefusingHost : IExecutionHost
@@ -321,6 +322,7 @@ public sealed class AssignmentResultRegressionTests
         public Task<StartChildReply> StartChildAsync(StartChild request) => throw new NotSupportedException();
         public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => throw new NotSupportedException();
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => throw new NotSupportedException();
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) => throw new NotSupportedException();
     }
 
     public sealed class Data

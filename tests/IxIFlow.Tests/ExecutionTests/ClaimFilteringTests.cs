@@ -47,7 +47,7 @@ public sealed class ClaimFilteringTests : IClassFixture<SqliteTestDatabase<Claim
             var instance = new WorkflowInstance
             {
                 InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "ClaimContract", Status = status,
-                WorkflowDataJson = "{}", WorkflowDataType = typeof(object).AssemblyQualifiedName!,
+                WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = typeof(object).AssemblyQualifiedName!,
                 ExecutionStateJson = JsonSerializer.Serialize(new ExecutionCheckpoint
                 {
                     StructureHash = "claim-contract", Demands = demands.ToList(),
@@ -203,4 +203,3 @@ public sealed class ClaimFilteringTests : IClassFixture<SqliteTestDatabase<Claim
         Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "due", TimeSpan.FromMinutes(1), second));
     }
 }
-

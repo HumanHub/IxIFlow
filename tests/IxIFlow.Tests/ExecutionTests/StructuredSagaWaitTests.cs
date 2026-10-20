@@ -1776,6 +1776,7 @@ public class StructuredSagaWaitTests
 
     public sealed class HandlerStartCrashStore : IWorkflowStateRepository
     {
+        public IPayloadStore PayloadStore => _inner.PayloadStore;
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
             _inner.GetDefinitionAsync(name, version);
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
@@ -1884,8 +1885,8 @@ public class StructuredSagaWaitTests
         public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
         {
             var instance = commit.ReadTrunk();
-            var handlerStarted = commit.ReadTraceEntries().LastOrDefault() is
-            { EntryType: TraceEntryType.ActivityStarted, ActivityName: nameof(RecoverableHandlerActivity) };
+            var handlerStarted = commit.ReadTraceEntries().Any(entry => entry is
+                { EntryType: TraceEntryType.ActivityStarted, ActivityName: nameof(RecoverableHandlerActivity) });
             var result = await _inner.CommitWorkflowInstanceAsync(commit);
             if (handlerStarted && _lostAcknowledgments-- > 0)
                 throw new IOException("Handler start acknowledgment lost");
@@ -1894,9 +1895,12 @@ public class StructuredSagaWaitTests
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
             _inner.GetWorkflowInstanceSummaryAsync(instanceId);
-        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-            IReadOnlyCollection<string> instanceIds) =>
-            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
+        public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
+            _inner.GetControlRequestsAsync(instanceIds);
+        public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+            _inner.RequestDebugCommandAsync(instanceId, command);
+        public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
+            _inner.GetDebugStatesAsync(instanceIds);
 
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);

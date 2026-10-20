@@ -19,7 +19,7 @@ public static class CheckpointInspection
 
     public static long StateBytes(this CheckpointCommit commit) =>
         Encoding.UTF8.GetByteCount(commit.Payload) +
-        commit.Parts.Sum(part => (long)Encoding.UTF8.GetByteCount(part.Json));
+        commit.Parts.Sum(part => (long)part.Json.Bytes);
 
     public static long CheckpointBytes(WorkflowInstance instance) => StoredCheckpoint.Of(instance).Bytes;
 

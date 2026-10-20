@@ -107,7 +107,7 @@ public sealed class HostMessageTests
         Assert.Equal(WorkflowStatus.Running, run.Host.Commits.Last().ReadTrunk().Status);
         Assert.Equal(0, run.Probe.Cleanups);
         var saved = run.Host.Saved!;
-        Assert.Equal("finished", JsonSerializer.Deserialize<Data>(saved.WorkflowDataJson)!.Value);
+        Assert.Equal("finished", JsonSerializer.Deserialize<Data>(saved.WorkflowDataJson.InlineText)!.Value);
     }
 
     [Fact]
@@ -284,6 +284,8 @@ public sealed class HostMessageTests
 
     private sealed class MessageHost : IExecutionHost
     {
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
         public ConcurrentQueue<CheckpointCommit> Commits { get; } = new();
         public WorkflowInstance? Saved { get; private set; }
         public Action<CheckpointCommit>? OnCommit { get; set; }

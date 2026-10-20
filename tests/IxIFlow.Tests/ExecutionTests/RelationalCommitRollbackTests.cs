@@ -38,7 +38,7 @@ public sealed class RelationalCommitRollbackTests : IClassFixture<SqliteTestData
             Status = WorkflowStatus.Suspended };
         var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "LateRollback",
             Status = WorkflowStatus.Suspended, ParentInstanceId = parent.InstanceId, ParentWaitId = "notice",
-            WorkflowDataJson = "{\"before\":true}" };
+            WorkflowDataJson = StoredJson.Inline("{\"before\":true}") };
         var child = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "RollbackChild",
             Status = WorkflowStatus.Running, ParentInstanceId = instance.InstanceId, ParentWaitId = "child" };
         var publisher = "rollback-" + instance.InstanceId;
@@ -54,7 +54,7 @@ public sealed class RelationalCommitRollbackTests : IClassFixture<SqliteTestData
         var originalWait = await store.GetWaitAsync(instance.InstanceId, "original");
         instance = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
         instance.Status = WorkflowStatus.Completed;
-        instance.WorkflowDataJson = "{\"after\":true}";
+        instance.WorkflowDataJson = StoredJson.Inline("{\"after\":true}");
         var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, before.Revision,
             settlements: [new EventSettlement("pending", EventOutcome.Consumed, "original")],
             openedWaits: [new OpenedWait("child", WaitKind.Child, "child", "child-result", null)],

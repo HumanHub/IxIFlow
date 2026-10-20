@@ -22,7 +22,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     private WorkflowExecutionLease(IWorkflowStateRepository repository, string instanceId,
         string token, ExecutionLeaseGrant grant, DateTime requestedAtUtc, ExecutionLeaseSettings settings,
         TimeProvider time, CancellationWatch watch, ExecutionLeaseRenewer renewer, Action<Exception> lost,
-        Action<CancellationReason> cancellation, Action<long> arrivals)
+        Action<CancellationReason> cancellation, Action<long> arrivals, Action<WorkflowDebugState>? debug)
     {
         _lost = lost;
         _cancelled = cancellation;
@@ -40,6 +40,9 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
             Lose, settings.Duration, settings.RenewalInterval, sequence =>
             {
                 if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested) arrivals(sequence);
+            }, debug == null ? null : state =>
+            {
+                if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested) debug?.Invoke(state);
             });
         _renewal = RenewUntilStoppedAsync(settings, requestedAtUtc, renewer);
     }
@@ -75,7 +78,8 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         ExecutionLeaseSettings settings, CancellationWatch watch, ExecutionLeaseRenewer renewer,
         ClaimQuery query, Action<Exception> lost,
         Action<CancellationReason> cancellation, Action<long> arrivals, TimeProvider? time = null,
-        ExecutionClaimKind kind = ExecutionClaimKind.Runnable, Action<ExecutionLeaseReleaseResult>? released = null)
+        ExecutionClaimKind kind = ExecutionClaimKind.Runnable, Action<ExecutionLeaseReleaseResult>? released = null,
+        Action<WorkflowDebugState>? debug = null)
     {
         if (settings.Duration <= TimeSpan.Zero || settings.RenewalInterval <= TimeSpan.Zero ||
             settings.RenewalInterval >= settings.Duration)
@@ -90,7 +94,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
                 settings.Duration, query, kind) is not { } grant)
             return null;
         return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, requestedAtUtc, settings,
-            time, watch, renewer, lost, cancellation, arrivals) { _released = released };
+            time, watch, renewer, lost, cancellation, arrivals, debug) { _released = released };
     }
 
     /// <summary>Records a cancellation request learned outside the watch, such as from a commit.</summary>

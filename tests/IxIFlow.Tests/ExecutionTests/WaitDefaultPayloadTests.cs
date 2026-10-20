@@ -27,7 +27,7 @@ public sealed class WaitDefaultPayloadTests : IClassFixture<SqliteTestDatabase<W
         Assert.True(JsonSerializer.Deserialize<Approval>(wait.DefaultPayloadJson!)!.Approved);
         Assert.Contains("\"Approved\"", wait.EventSchema);
         Assert.Equal(wait.DefaultPayloadJson, (await ((IWorkflowInbox)services.GetRequiredService<IWorkflowStateRepository>())
-            .GetWaitAsync(started.InstanceId, wait.WaitId))!.DefaultPayloadJson);
+            .GetWaitAsync(started.InstanceId, wait.WaitId))!.DefaultPayloadJson.InlineText);
     }
 
     [Theory]

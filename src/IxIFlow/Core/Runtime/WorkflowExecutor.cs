@@ -21,10 +21,12 @@ public sealed class WorkflowExecutor
     private readonly IExecutionHost _host;
     private readonly IWorkflowDefinitionSource _definitions;
     private readonly string _executorName;
+    private readonly IServiceProvider _services;
 
     public WorkflowExecutor(IServiceProvider services, IExecutionHost host)
     {
         _host = host;
+        _services = services;
         _inspectionPolicy = (InspectionRedactionPolicy)services.GetService(typeof(InspectionRedactionPolicy))!;
         _definitions = (IWorkflowDefinitionSource)services.GetService(typeof(IWorkflowDefinitionSource))!;
         _executorName = (services.GetService(typeof(HostSettings)) as HostSettings ?? HostSettings.Default).Name;
@@ -52,6 +54,10 @@ public sealed class WorkflowExecutor
     {
         if (_runs.TryGetValue(message.AssignmentId, out var signals)) signals.Deliver(message);
     }
+    public void Deliver(DebugCommands message)
+    {
+        if (_runs.TryGetValue(message.AssignmentId, out var signals)) signals.Deliver(message);
+    }
     public void Deliver(Recycle message)
     {
         if (_runs.TryGetValue(message.AssignmentId, out var signals)) signals.Deliver(message);
@@ -66,10 +72,8 @@ public sealed class WorkflowExecutor
         using var stopping = stop.Register(() => Deliver(new Cancel(assign.AssignmentId, CancelKind.Run)));
         try
         {
-            if (assign.Breakpoints.Count != 0)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                    "Breakpoints are not supported until G-04");
             signals.ThrowIfOwnershipLost();
+            if (assign.DebugState != null) signals.Deliver(new DebugCommands(assign.AssignmentId, assign.DebugState));
             var definition = await _definitions.GetWorkflowDefinitionAsync(assign.Instance.WorkflowName,
                 assign.Instance.WorkflowVersion) ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     "The assigned workflow definition is unavailable");
@@ -78,22 +82,46 @@ public sealed class WorkflowExecutor
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     "The definition source returned a different workflow identity");
             // Assignment input is saved state. Never execute against a host-owned instance or data object.
-            var instance = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
-                System.Text.Json.JsonSerializer.Serialize(assign.Instance))!;
+            var instance = assign.Instance.CopyForAssignment();
             instance.Incarnation = assign.Incarnation;
-            if (assign.Parts != null) instance.Saved(new Dictionary<string, string>(assign.Parts), instance.Revision);
-            instance.ExecutionStateJson = StoredCheckpoint.WholeState(instance);
+            if (assign.Parts != null) instance.Saved(new Dictionary<string, StoredJson>(assign.Parts), instance.Revision);
+            session.SavedInstance = instance.CopyForAssignment();
+            session.SavedInstance.Incarnation = instance.Incarnation;
+            if (instance.SavedParts != null) session.SavedInstance.Saved(instance.SavedParts, instance.Revision);
+            instance.ExecutionStateJson = await StoredCheckpoint.WholeStateAsync(instance, session.Reader);
+            session.NeedsHydration = instance.ExecutionStateJson.Contains("\"reference\"", StringComparison.Ordinal);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+            if (assign.Limits.PayloadThresholdBytes != 0)
+                session.Payloads.Known(CheckpointPayloads.References(instance.ExecutionStateJson, instance.SavedParts ?? new Dictionary<string, StoredJson>()));
+            checkpoint.Debug = checkpoint.Debug with { Breakpoints = assign.Breakpoints.ToArray() };
             checkpoint.Signals = signals;
             if (checkpoint.StructureHash != assign.StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "The assignment structure hash differs from its checkpoint");
+            var pendingResume = signals.Debug?.Commands.Any(c => c.Order > checkpoint.Debug.AppliedOrder &&
+                c.AcknowledgedRevision == null && c.Kind is DebugCommandKind.Continue or DebugCommandKind.Step) == true;
+            var storedConditions = checkpoint.Debug.Breakpoints.Any(b => b.Condition != null) ||
+                signals.Debug?.Commands.Any(c => c.AcknowledgedRevision == null &&
+                    c.Breakpoints?.Any(b => b.Condition != null) == true) == true;
+            if (!checkpoint.CancellationRequested && signals.Cancellation == null && assign.Recovery?.PendingCancellation == null &&
+                (checkpoint.Debug.Stepping != null || pendingResume) &&
+                (!assign.DebuggingEnabled || storedConditions && _services.GetService(typeof(IBreakpointConditionCompiler)) == null))
+                return new(assign.AssignmentId, new(AssignmentOutcomeKind.Idle), session.LastAcknowledgedCommit,
+                    ExecutorName: _executorName);
             var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
-            var data = System.Text.Json.JsonSerializer.Deserialize(instance.WorkflowDataJson, dataType)
+            var data = System.Text.Json.JsonSerializer.Deserialize(await session.Reader.ReadAsync(instance.WorkflowDataJson), dataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
+            checkpoint.RootDataChanged = false;
+            checkpoint.RootDataUnchanged = BranchData.Observe(data);
             signals.Deliver(new Arrivals(assign.AssignmentId, assign.InboxSequence));
+            IReadOnlyList<string> reactivated = assign.Recovery is { } recovery
+                ? checkpoint.Continuations.Where(item => recovery.ReactivatedContinuations.Contains(item.Id) ||
+                    item.PendingActivity is { ChildWorkflowId: null } &&
+                    (item.Status == ContinuationStatus.Cancelling ||
+                     item.Status == ContinuationStatus.WaitingResolution && recovery.ReactivateWaitingActivities))
+                    .Select(item => item.Id).ToArray() : [];
             if (checkpoint.StructureHash == WorkflowDefinitionValidator.ForExecution(definition).StructureHash &&
                 assign.Recovery is { } preparation)
             {
@@ -107,20 +135,22 @@ public sealed class WorkflowExecutor
                     if (preparation.Released) OperatorTrace.Released(checkpoint, preparation.Actor, Now);
                 }
                 foreach (var continuation in checkpoint.Continuations.Where(item =>
-                             preparation.ReactivatedContinuations.Contains(item.Id)))
+                             !pendingResume && reactivated.Contains(item.Id) && SteppingPolicy.Allows(checkpoint, item.Id)))
                 {
                     checkpoint.Touch(continuation);
                     continuation.Status = ContinuationStatus.Active;
                 }
-                instance.Status = WorkflowStatus.Running;
                 if (preparation.PendingCancellation is { } reason && !checkpoint.CancellationRequested &&
-                    checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
+                    (instance.Status == WorkflowStatus.Paused || checkpoint.Continuations[0].Status != ContinuationStatus.Completed))
                     OperatorTrace.ApplyCancellation(instance, checkpoint, reason, Now);
+                if (instance.Status != WorkflowStatus.Paused || preparation.PendingCancellation != null)
+                    instance.Status = WorkflowStatus.Running;
                 if (preparation.ClearOperatorStop)
                     await ExecutionCheckpointWriter.CommitAsync(session, instance, checkpoint, null, scopes, Now,
                         preserveSavedWorkflowData: true, enforceLimit: false);
             }
-            var outcome = await RunCoreAsync(definition, instance, checkpoint, data, session, signals);
+            var outcome = await RunCoreAsync(definition, instance, checkpoint, data, session, signals, assign.DebuggingEnabled,
+                reactivated);
             return new(assign.AssignmentId, outcome, session.LastAcknowledgedCommit, ExecutorName: _executorName);
         }
         catch (ExecutionOwnershipLostException)
@@ -132,11 +162,46 @@ public sealed class WorkflowExecutor
         {
             return new(assign.AssignmentId, Interrupted(error), session.LastAcknowledgedCommit, ExecutorName: _executorName);
         }
+        catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error) && error.Kind == WorkflowErrorKind.PayloadUnavailable)
+        {
+            return await StopUnreadableAsync(error.Message, OperatorStopKind.PayloadUnavailable);
+        }
+        catch (PayloadHydrationLimitException error)
+        {
+            return await StopUnreadableAsync(error.Message, OperatorStopKind.ResourceLimit);
+        }
         finally
         {
             CloseRun(assign.AssignmentId);
         }
+
+        async Task<Ready> StopUnreadableAsync(string reason, OperatorStopKind kind)
+        {
+            var saved = session.SavedInstance ?? assign.Instance;
+            var commit = CheckpointCommit.PayloadStop(saved, assign.Epoch, reason, Now, kind);
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var reply = await session.CheckpointAsync(commit);
+                if (reply.Kind == CheckpointReplyKind.Ack)
+                    return new(assign.AssignmentId, new(AssignmentOutcomeKind.Idle, reason,
+                        kind == OperatorStopKind.PayloadUnavailable ? nameof(WorkflowErrorKind.PayloadUnavailable) : nameof(WorkflowErrorKind.ResourceExhausted)),
+                        session.LastAcknowledgedCommit, ExecutorName: _executorName);
+                if (reply.Kind == CheckpointReplyKind.Conflict)
+                    return new(assign.AssignmentId, new(AssignmentOutcomeKind.OwnershipLost), session.LastAcknowledgedCommit);
+            }
+            return new(assign.AssignmentId, new(AssignmentOutcomeKind.Interrupted, reason), session.LastAcknowledgedCommit);
+        }
     }
+
+    private static bool PausePending(ExecutionCheckpoint checkpoint, ExecutionSignals signals) =>
+        !checkpoint.CancellationRequested && signals.Cancellation == null &&
+        (checkpoint.Debug.Stop != null || signals.Debug?.Commands.Any(c => c.AcknowledgedRevision == null &&
+            c.Order > checkpoint.Debug.AppliedOrder && c.Kind == DebugCommandKind.Pause) == true);
+
+    private static bool BreakpointChangePending(ExecutionCheckpoint checkpoint, ExecutionSignals signals) =>
+        checkpoint.Debug.Evaluation == null && !checkpoint.CancellationRequested && signals.Cancellation == null &&
+        signals.Debug?.Commands.FirstOrDefault(c => c.AcknowledgedRevision == null &&
+            c.Order > checkpoint.Debug.AppliedOrder)?.Kind == DebugCommandKind.SetBreakpoints;
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
@@ -152,7 +217,7 @@ public sealed class WorkflowExecutor
         ExecutionCheckpoint checkpoint,
         object workflowData,
         ExecutionSession host,
-        ExecutionSignals signals)
+        ExecutionSignals signals, bool debuggingEnabled, IReadOnlyList<string> reactivatedContinuations)
     {
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
         if (checkpoint.StructureHash != scopes.StructureHash)
@@ -189,26 +254,131 @@ public sealed class WorkflowExecutor
                 signals.ThrowIfOwnershipLost();
                 var messageWake = signals.Changed;
                 var progressed = false;
+                // A pause holds every transition path, including inbox intake, joins and ForEach admission.
+                // Activities already admitted finish and have their own commits before the pause commit.
+                var command = signals.Debug?.Commands.FirstOrDefault(c => c.AcknowledgedRevision == null &&
+                    c.Order > checkpoint.Debug.AppliedOrder);
+                if (!checkpoint.CancellationRequested && signals.Cancellation == null &&
+                    checkpoint.Debug.Evaluation == null && command is { Kind: DebugCommandKind.SetBreakpoints } &&
+                    command.PauseGeneration <= checkpoint.Debug.PauseGeneration)
+                {
+                    var replacements = command.Breakpoints ?? throw new WorkflowEngineException(
+                        WorkflowErrorKind.InvalidRequest, "Missing breakpoint set");
+                    if (replacements.Any(b => b.StructureHash != checkpoint.StructureHash))
+                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Breakpoint structure differs");
+                    checkpoint.Debug = checkpoint.Debug with { AppliedOrder = command.Order,
+                        Breakpoints = replacements.Select(b => b with { HitCount = checkpoint.Debug.Breakpoints
+                            .FirstOrDefault(old => old.Id == b.Id && old.StepId == b.StepId)?.HitCount ?? 0 }).ToArray() };
+                    checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.BreakpointsChanged,
+                        Payload = new DebugCommandTrace(command.Actor, command.Id, checkpoint.Debug.PauseGeneration) });
+                    // A paused commit releases the lease. Apply an already-delivered command prefix together
+                    // so a following Continue runs under this fresh lease, or return after committing the hold.
+                    if (instance.Status == WorkflowStatus.Paused && signals.Debug!.Commands.Any(c =>
+                        c.AcknowledgedRevision == null && c.Order > checkpoint.Debug.AppliedOrder)) continue;
+                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+                    if (instance.Status == WorkflowStatus.Paused) return new(AssignmentOutcomeKind.Idle);
+                    continue;
+                }
+                if (instance.Status == WorkflowStatus.Paused && checkpoint.Debug.Stop != null &&
+                    command is { Kind: DebugCommandKind.Pause } && command.PauseGeneration == checkpoint.Debug.PauseGeneration - 1 &&
+                    !checkpoint.CancellationRequested && signals.Cancellation == null)
+                {
+                    checkpoint.Debug = checkpoint.Debug with { AppliedOrder = command.Order };
+                    checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.Paused,
+                        Payload = new DebugCommandTrace(command.Actor, command.Id, checkpoint.Debug.PauseGeneration) });
+                    if (signals.Debug!.Commands.Any(c => c.AcknowledgedRevision == null && c.Order > command.Order)) continue;
+                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+                    return new(AssignmentOutcomeKind.Idle);
+                }
+                var breakpointPause = instance.Status != WorkflowStatus.Paused && checkpoint.Debug.Stop != null;
+                if (!checkpoint.CancellationRequested && signals.Cancellation == null &&
+                    (command != null && command.PauseGeneration == checkpoint.Debug.PauseGeneration || breakpointPause))
+                {
+                    if (command?.Kind == DebugCommandKind.Pause || breakpointPause)
+                    {
+                        if (inFlight.Count == 0)
+                        {
+                            signals.ThrowIfOwnershipLost();
+                            var pauseCommand = command?.Kind == DebugCommandKind.Pause ? command : null;
+                            checkpoint.Debug = checkpoint.Debug with { PauseGeneration = checkpoint.Debug.PauseGeneration + 1,
+                                AppliedOrder = pauseCommand?.Order ?? checkpoint.Debug.AppliedOrder };
+                            instance.Status = WorkflowStatus.Paused;
+                            if (checkpoint.Debug.Stop is { BreakpointId.Length: > 0 } hit)
+                                checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.BreakpointHit,
+                                    StepId = hit.StepId, Payload = new BreakpointHitTrace(hit.BranchId, hit.StepId,
+                                        hit.BreakpointId, hit.HitCount, checkpoint.Debug.PauseGeneration)
+                                        { Reason = hit.Reason, Diagnostics = hit.Diagnostics } });
+                            if (checkpoint.Debug.Stop is { BreakpointId.Length: 0 } && checkpoint.Debug.Stepping is { } stepping)
+                                checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.Paused,
+                                    Payload = new DebugCommandTrace(stepping.Actor, stepping.CommandId, checkpoint.Debug.PauseGeneration) });
+                            if (pauseCommand != null)
+                                checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.Paused,
+                                    Payload = new DebugCommandTrace(pauseCommand.Actor, pauseCommand.Id, checkpoint.Debug.PauseGeneration) });
+                            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+                            return new(AssignmentOutcomeKind.Idle);
+                        }
+                        var finishedDuringPause = await Task.WhenAny(inFlight.Values.Select(a => (Task)a.Task).Append(messageWake));
+                        signals.ThrowIfStopped();
+                        if (finishedDuringPause == messageWake) continue;
+                        var completedDuringPause = inFlight.Values.First(a => a.Task == finishedDuringPause);
+                        try
+                        {
+                            await _attempts.SettleAsync(scopes, checkpoint, completedDuringPause, inFlight, instance, host);
+                        }
+                        catch (Exception error)
+                        {
+                            AttachStep(error, instance, scopes.Id(completedDuringPause.Step), completedDuringPause.Continuation.PendingActivity);
+                            if (!_transitions.CaptureFailure(scopes, checkpoint, completedDuringPause.Continuation,
+                                    error, !completedDuringPause.ActivityReturned)) throw;
+                        }
+                        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+                        continue;
+                    }
+                    if (command?.Kind is DebugCommandKind.Continue or DebugCommandKind.Step && instance.Status == WorkflowStatus.Paused && debuggingEnabled)
+                    {
+                        checkpoint.Debug = checkpoint.Debug with { AppliedOrder = command.Order,
+                            Stepping = command.Kind == DebugCommandKind.Step ? SteppingPolicy.Start(checkpoint, command) : null,
+                            SkipOnce = checkpoint.Debug.Stop is { } stopped
+                                ? checkpoint.Debug.SkipOnce.Append(stopped).ToArray() : checkpoint.Debug.SkipOnce, Stop = null };
+                        // Recovery preparation follows the newly selected policy. Continue reactivates
+                        // all interrupted attempts; a new Step reactivates only its selected branch.
+                        foreach (var recovering in checkpoint.Continuations.Where(c =>
+                            reactivatedContinuations.Contains(c.Id) && SteppingPolicy.Allows(checkpoint, c.Id)))
+                        {
+                            checkpoint.Touch(recovering);
+                            recovering.Status = ContinuationStatus.Active;
+                        }
+                        instance.Status = WorkflowStatus.Running;
+                        checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.Continued,
+                            Payload = new DebugCommandTrace(command.Actor, command.Id, checkpoint.Debug.PauseGeneration) });
+                        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+                        continue;
+                    }
+                }
+                if (instance.Status == WorkflowStatus.Paused && !checkpoint.CancellationRequested && signals.Cancellation == null)
+                    return new(AssignmentOutcomeKind.Idle);
                 // The store says which deadlines are due when the run reads its inbox, and that read
                 // covers every event received before them, so events are taken before deadlines and one
                 // received in time beats its deadline (D-33, D-35). A cancellation request the run has
                 // not applied yet goes first: its unwind closes the waits, and the events are then
                 // refused as cancelled. The execution deadline ends the run before any event is taken.
-                if (signals.InboxSequence > arrivalsSeen || _transitions.MayBeDue(checkpoint))
+                // A prepared condition must see the inputs saved with its count and time, before
+                // recovery takes new events, deadlines, joins or queued ForEach items.
+                if (checkpoint.Debug.Evaluation == null && (signals.InboxSequence > arrivalsSeen || _transitions.MayBeDue(checkpoint)))
                 {
                     arrivalsSeen = signals.InboxSequence;
                     checkpoint.Inbox.ExpectArrivals();
                 }
-                if (!CancellationPending(checkpoint))
+                if (checkpoint.Debug.Evaluation == null && !CancellationPending(checkpoint))
                     progressed |= await _intake.TakeAsync(scopes, checkpoint, host, instance);
                 // A request the host learned of while the run read its inbox also goes first.
-                if (!CancellationPending(checkpoint) &&
+                if (checkpoint.Debug.Evaluation == null && !CancellationPending(checkpoint) &&
                     _transitions.ProcessExecutionDeadline(instance, checkpoint))
                 {
                     progressed = true;
                     await _intake.TakeAsync(scopes, checkpoint, host, instance);
                 }
-                if (!CancellationPending(checkpoint))
+                if (checkpoint.Debug.Evaluation == null && !CancellationPending(checkpoint))
                     progressed |= _transitions.ProcessDueWaits(checkpoint, scopes);
                 if (progressed)
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
@@ -222,7 +392,7 @@ public sealed class WorkflowExecutor
                     scopes);
 
                 var unwinding = checkpoint.Continuations.FirstOrDefault(item =>
-                    item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id));
+                    item.Status == ContinuationStatus.Cancelling && SteppingPolicy.Allows(checkpoint, item.Id) && !inFlight.ContainsKey(item.Id));
                 if (unwinding != null)
                 {
                     checkpoint.Touch(unwinding);
@@ -239,8 +409,33 @@ public sealed class WorkflowExecutor
                     continue;
                 }
 
+                if (checkpoint.Debug.Evaluation == null)
+                    uncommitted.NoteIf(_transitions.ProcessDeferredFailures(scopes, checkpoint), instance);
                 var conflicts = new List<(ContinuationState Parent, JoinConflictException Conflict)>();
-                uncommitted.NoteIf(ContinuationTransitions.FinishCompletingJoins(scopes, checkpoint, conflicts), instance);
+                foreach (var join in checkpoint.Joins.Where(j => host.NeedsHydration && j.Mode == ParallelJoinMode.WaitConditionally &&
+                             checkpoint.BranchesOf(j).Any(c => c.PendingJoinFrame != null)))
+                {
+                    foreach (var child in checkpoint.BranchesOf(join).Where(c => c.Status == ContinuationStatus.Completed))
+                    {
+                        await host.PrepareDataReadAsync(checkpoint, child);
+                        await host.Reader.HydrateAsync(child.PendingJoinFrame?.ForEachResult);
+                    }
+                    var parent = checkpoint.ContinuationById(join.ParentContinuationId)!;
+                    await host.PrepareDataReadAsync(checkpoint, parent);
+                    foreach (var frame in parent.Stack) await host.Reader.HydrateAsync(frame.ForEach?.Results);
+                }
+                if (checkpoint.Debug.Evaluation == null)
+                    uncommitted.NoteIf(ContinuationTransitions.NotifyCompletedBranches(scopes, checkpoint), instance);
+                if (checkpoint.Joins.Any(j => j.IsCompleting && checkpoint.ContinuationById(j.ParentContinuationId)?.ParentJoinId == null))
+                    checkpoint.RootDataChanged = true;
+                foreach (var join in checkpoint.Joins.Where(j => host.NeedsHydration && j.IsCompleting))
+                {
+                    await host.PrepareDataReadAsync(checkpoint, checkpoint.ContinuationById(join.ParentContinuationId)!);
+                    foreach (var child in checkpoint.BranchesOf(join).Where(c => c.Status == ContinuationStatus.Completed))
+                        await host.PrepareDataReadAsync(checkpoint, child);
+                }
+                if (checkpoint.Debug.Evaluation == null)
+                    uncommitted.NoteIf(ContinuationTransitions.FinishCompletingJoins(scopes, checkpoint, conflicts), instance);
                 // A join whose branches conflict fails at its parallel step, where a Catch can handle it.
                 foreach (var (parent, conflict) in conflicts)
                 {
@@ -255,11 +450,12 @@ public sealed class WorkflowExecutor
                 // This lets a sibling start even when another activity is awaiting it.
                 while (true)
                 {
+                    checkpoint.Trace.CapturePositions();
                     signals.ThrowIfStopped();
                     signals.ThrowIfOwnershipLost();
                     // A draining host starts no new steps (B-12), nor does a run stopping at a limit.
-                    if (_transitions.MayBeDue(checkpoint) || signals.Recycle ||
-                        limitStop != null)
+                    if (checkpoint.Debug.Evaluation == null && _transitions.MayBeDue(checkpoint) || signals.Recycle ||
+                        limitStop != null || PausePending(checkpoint, signals) || BreakpointChangePending(checkpoint, signals))
                         break;
                     await ApplyCancellationRequestAsync(instance, checkpoint, checkpoint.RootData,
                         scopes, host, signals.Cancellation);
@@ -271,7 +467,20 @@ public sealed class WorkflowExecutor
                     var admission = EffectBoundary.Of(checkpoint);
                     try
                     {
-                        ForEachTransitions.Admit(scopes, checkpoint, host.Limits.MaxActiveBranches);
+                        if (checkpoint.Debug.Evaluation == null)
+                        {
+                            foreach (var join in checkpoint.Joins.Where(j => host.NeedsHydration && !j.IsCompleting &&
+                                         SteppingPolicy.AllowsJoin(checkpoint, j) && scopes.Step(j.StepId).StepType == WorkflowStepType.ForEach))
+                            {
+                                var itemStep = scopes.Step(join.StepId);
+                                var state = ForEachTransitions.StateOf(checkpoint, join, itemStep);
+                                if (state.Next < state.Items.Count && checkpoint.BranchesOf(join).Count(c =>
+                                        c.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled)) <
+                                    (itemStep.ForEachMaxConcurrency ?? state.Items.Count))
+                                    await host.PrepareDataReadAsync(checkpoint, checkpoint.ContinuationById(join.ParentContinuationId)!);
+                            }
+                            ForEachTransitions.Admit(scopes, checkpoint, host.Limits.MaxActiveBranches);
+                        }
                     }
                     catch (BranchLimitExceededException limit)
                     {
@@ -285,13 +494,13 @@ public sealed class WorkflowExecutor
                     var activitiesFull = inFlight.Values.Count(item =>
                         item.Step.StepType == WorkflowStepType.Activity) >= host.Limits.MaxActivitiesPerRun;
                     var ready = checkpoint.Continuations.Where(item =>
-                        item.Status == ContinuationStatus.Active &&
+                        item.Status == ContinuationStatus.Active && SteppingPolicy.Allows(checkpoint, item.Id) &&
                         !inFlight.ContainsKey(item.Id) &&
                         (item.RetryAfterUtc == null || item.RetryAfterUtc <= checkpoint.Clock.ToStore(Now))).ToList();
-                    var runnable = activitiesFull
+                    var runnable = ready.FirstOrDefault(item => item.Id == checkpoint.Debug.Evaluation?.BranchId) ?? (activitiesFull
                         ? ready.FirstOrDefault(item => NextStep(scopes, item)?.StepType != WorkflowStepType.Activity)
                         : ready.Where(item => waitingForActivity.ContainsKey(item.Id))
-                              .MinBy(item => waitingForActivity[item.Id]) ?? ready.FirstOrDefault();
+                              .MinBy(item => waitingForActivity[item.Id]) ?? ready.FirstOrDefault());
                     if (activitiesFull)
                         foreach (var waiting in ready.Where(item =>
                                      NextStep(scopes, item)?.StepType == WorkflowStepType.Activity))
@@ -300,11 +509,19 @@ public sealed class WorkflowExecutor
                         waitingForActivity.Remove(runnable.Id);
                     if (runnable == null)
                         break;
+                    await host.PrepareReadAsync(checkpoint, runnable, scopes);
                     checkpoint.Touch(runnable);
                     runnable.RetryAfterUtc = null;
 
                     var position = runnable.Stack[^1];
                     var next = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
+                    if (next != null && SteppingPolicy.StopAtPick(checkpoint, runnable, scopes.Id(next), Now))
+                        break;
+                    if ((debuggingEnabled || checkpoint.Debug.Evaluation != null) && !checkpoint.CancellationRequested && runnable.PendingActivity == null && next != null &&
+                        await BreakpointDispatch.HitAsync(checkpoint, runnable, definition, scopes.Id(next), Now, _services,
+                            () => ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now)))
+                        break;
+                    SteppingPolicy.Dispatched(checkpoint);
                     if (next?.StepType is WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation)
                     {
                                 var activityCancellation = new CancellationTokenSource();
@@ -340,6 +557,8 @@ public sealed class WorkflowExecutor
                         var boundary = EffectBoundary.Of(checkpoint);
                         try
                         {
+                            if (runnable.ParentJoinId == null)
+                                checkpoint.RootDataChanged = true;
                             _transitions.Advance(scopes, checkpoint, runnable,
                                 host.Limits.MaxActiveBranches, host.Limits.MaxForEachItems);
                         }
@@ -364,22 +583,33 @@ public sealed class WorkflowExecutor
                     }
                 }
 
+                if (PausePending(checkpoint, signals) || BreakpointChangePending(checkpoint, signals))
+                    continue;
                 if (!checkpoint.CancellationRequested && signals.Cancellation != null &&
                     checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                     continue;
                 if (checkpoint.Continuations.Any(item =>
-                        item.Status == ContinuationStatus.Cancelling && !inFlight.ContainsKey(item.Id)) ||
-                    checkpoint.Joins.Any(item => item.IsCompleting &&
+                        item.Status == ContinuationStatus.Cancelling && SteppingPolicy.Allows(checkpoint, item.Id) && !inFlight.ContainsKey(item.Id)) ||
+                    checkpoint.Joins.Any(item => item.IsCompleting && SteppingPolicy.AllowsJoin(checkpoint, item) &&
                         checkpoint.BranchesOf(item)
                             .All(child => child.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)))
                     continue;
                 if (_transitions.MayBeDue(checkpoint))
                     continue;
+                if (inFlight.Count == 0 && checkpoint.Debug.Stepping is { } step &&
+                    !checkpoint.CancellationRequested && !ContinuationTransitions.RootFinished(checkpoint) &&
+                    !signals.Recycle && limitStop == null)
+                {
+                    var selected = checkpoint.Continuations.Single(c => c.Id == step.ContinuationId);
+                    SteppingPolicy.Pause(checkpoint, selected, selected.Stack.Count > 0 && NextStep(scopes, selected) is { } blocked
+                        ? scopes.Id(blocked) : "", "Blocked", Now);
+                    continue;
+                }
                 // Retry times are the store's, as the run last read its clock, so a host whose clock
                 // differs retries when the one that scheduled the retry would have (D-35). A retry that
                 // fell due since the branches were advanced wakes the run at once.
                 var nextRetry = checkpoint.Continuations
-                    .Where(item => item.Status == ContinuationStatus.Active && item.RetryAfterUtc != null)
+                    .Where(item => item.Status == ContinuationStatus.Active && SteppingPolicy.Allows(checkpoint, item.Id) && item.RetryAfterUtc != null)
                     .Min(item => item.RetryAfterUtc) is { } retryTime
                     ? checkpoint.Clock.ToLocal(retryTime) : (DateTime?)null;
                 if (inFlight.Count == 0 &&
@@ -563,7 +793,13 @@ public sealed class WorkflowExecutor
             return await StopForOperatorAsync(definition, instance, checkpoint, checkpoint.RootData, host,
                 OperatorStopKind.Verification, unverified.Message);
         }
-        catch (WorkflowEngineException ex) when (WorkflowEngineException.IsEngineFailure(ex) && ex.IsInterruption)
+        catch (PayloadHydrationLimitException)
+        {
+            await AbandonInFlightAsync(inFlight);
+            throw;
+        }
+        catch (WorkflowEngineException ex) when (WorkflowEngineException.IsEngineFailure(ex) &&
+                                                (ex.Kind == WorkflowErrorKind.PayloadUnavailable || ex.IsInterruption))
         {
             // The last committed checkpoint stays recoverable; nothing is written here.
             ex.At(instance.InstanceId);

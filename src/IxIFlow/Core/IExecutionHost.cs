@@ -1,15 +1,23 @@
 namespace IxIFlow.Core;
 
-/// <summary>The four requests an assigned executor can make. Every request and reply names its assignment.</summary>
+/// <summary>The requests an assigned executor can make. Every request and reply names its assignment.</summary>
 public interface IExecutionHost
 {
     Task<CheckpointReply> CheckpointAsync(Checkpoint request);
     Task<StartChildReply> StartChildAsync(StartChild request);
     Task<ReadInboxReply> ReadInboxAsync(ReadInbox request);
     Task<ReadWaitReply> ReadWaitAsync(ReadWait request);
+    Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request);
 }
 
-public sealed record Checkpoint(Guid AssignmentId, CheckpointCommit Commit);
+public sealed record Checkpoint(Guid AssignmentId, CheckpointCommit Commit,
+    IReadOnlyList<PayloadBody>? Payloads = null);
+/// <summary>A complete new payload, carried with its referencing checkpoint.</summary>
+public sealed record PayloadBody(PayloadReference Reference, byte[] Body,
+    IReadOnlyList<PayloadReference> Dependencies);
+public sealed record ReadPayload(Guid AssignmentId, string InstanceId, PayloadReference Reference);
+public sealed record ReadPayloadReply(Guid AssignmentId, byte[]? Body = null,
+    WorkflowErrorKind? Refusal = null, ConflictReason? Conflict = null);
 public sealed record StartChild(Guid AssignmentId, string InstanceId, long Epoch, string StepId,
     ChildStart Start, string StructureHash);
 public sealed record ReadInbox(Guid AssignmentId, string InstanceId, long AfterSequence, int Limit);

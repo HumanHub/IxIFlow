@@ -53,6 +53,9 @@ public enum WorkflowExecutionStatus
     /// <summary>Retention removed the result; the instance ID is still reserved.</summary>
     Removed,
 
+    /// <summary>Held until an authorized continue or cancellation.</summary>
+    Paused,
+
     /// <summary>A hard stop or an unhandled saga termination ended the instance.</summary>
     Terminated
 }

@@ -270,11 +270,11 @@ public sealed class TerminationRenewalRefusalTests
         private int _renewalCalls;
         public int RenewalCalls => Volatile.Read(ref _renewalCalls);
 
-        public override Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        public override async Task<WorkflowControlRequests> GetControlRequestsAsync(
             IReadOnlyCollection<string> instanceIds)
         {
             WatchStarted.TrySetResult();
-            return WatchReply.Task;
+            return new(await WatchReply.Task, new Dictionary<string, WorkflowDebugState>());
         }
 
         public override Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)

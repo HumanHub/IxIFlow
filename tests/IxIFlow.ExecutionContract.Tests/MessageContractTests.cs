@@ -11,14 +11,19 @@ namespace IxIFlow.ContractTests;
 
 [Trait("Feature", "host")]
 [Trait("Spec", "A-02")]
+[Trait("Spec", "G-11")]
 public sealed class MessageContractTests
 {
     internal static readonly Type[] MessageTypeList =
     [
-        typeof(Assign), typeof(Ready), typeof(Cancel), typeof(Arrivals), typeof(Recycle),
+        typeof(InstanceInspection), typeof(InspectionSummary), typeof(InspectionDebugState), typeof(InspectionThread), typeof(InspectionFrame), typeof(InspectionAttempt), typeof(InspectionWait), typeof(InspectionData), typeof(ReplayOriginTrace), typeof(ThreadPositionTrace), typeof(ReplayPosition),
+            typeof(Assign), typeof(Ready), typeof(Cancel), typeof(Arrivals), typeof(Recycle),
         typeof(Checkpoint), typeof(CheckpointReply), typeof(StartChild), typeof(StartChildReply),
         typeof(ReadInbox), typeof(ReadInboxReply), typeof(ReadWait), typeof(ReadWaitReply),
-        typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome)
+        typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome),
+        typeof(BreakpointSource), typeof(BreakpointStop), typeof(BreakpointHitTrace),
+        typeof(DataEditTarget), typeof(DataPatch), typeof(DataEditRequest), typeof(DataEditResult), typeof(DataEditedTrace),
+            typeof(DebugStepPosition), typeof(DebugStepping), typeof(BreakpointEvaluation), typeof(BreakpointConditionDiagnostic)
     ];
     public static TheoryData<Type> MessageTypes => new(MessageTypeList);
 
@@ -37,7 +42,8 @@ public sealed class MessageContractTests
         assign = assign with
         {
             Recovery = new(["root"], reason, true, true, "operator"),
-            Breakpoints = [new("root/0", "value == 1", 3)]
+            Breakpoints = [new("stop", "root/0", new("flow.yaml", 4), ">= 3")
+                { StructureHash = assign.StructureHash, VerifiedSource = new("flow.yaml", 7), Condition = "context.WorkflowData.Value > 0" }]
         };
         var now = DateTime.UtcNow;
         var commit = CheckpointCommit.Create(assign.Instance, assign.Epoch, assign.Instance.Revision,
@@ -45,13 +51,14 @@ public sealed class MessageContractTests
         var child = new ChildStart("child", JsonSerializer.Serialize(new WorkflowInstance
         {
             InstanceId = "child", ParentInstanceId = assign.Instance.InstanceId, ParentWaitId = "child-wait",
-            ExecutionStateJson = assign.Instance.ExecutionStateJson, WorkflowDataJson = "{\"Value\":42}"
+            ExecutionStateJson = assign.Instance.ExecutionStateJson, WorkflowDataJson = StoredJson.Inline("{\"Value\":42}")
         }), "child-wait");
         var page = new InboxPage([new(assign.Instance.InstanceId, "event", 7, "event-type", "go", null,
-            "{\"Answer\":42}", now, EventOutcome.Pending)], 7, new Dictionary<string, long> { ["wait"] = 3 },
+            StoredJson.Inline("{\"Answer\":42}"), now, EventOutcome.Pending)], 7, new Dictionary<string, long> { ["wait"] = 3 },
             new Dictionary<string, DateTime> { ["wait"] = now.AddMinutes(1) }, now);
         object[] messages =
         [
+            .. InspectionMessageExamples.Create(now),
             assign, new Ready(assign.AssignmentId, new(AssignmentOutcomeKind.Interrupted, "error", "type", "stack"),
                 new("commit", 5), ExecutorName: "executor", Capabilities: new Dictionary<string, string> { ["host"] = "local" }),
             new Cancel(assign.AssignmentId, CancelKind.Workflow, reason), new Arrivals(assign.AssignmentId, 7),
@@ -63,8 +70,22 @@ public sealed class MessageContractTests
             new ReadInbox(assign.AssignmentId, assign.Instance.InstanceId, 3, 20), new ReadInboxReply(assign.AssignmentId, page),
             new ReadWait(assign.AssignmentId, assign.Instance.InstanceId, "wait"),
             new ReadWaitReply(assign.AssignmentId, new(assign.Instance.InstanceId, "wait", WaitKind.Event,
-                "go", "event-type", now.AddMinutes(1), 3, now, DefaultPayloadJson: "{\"Default\":true}")),
+                "go", "event-type", now.AddMinutes(1), 3, now, DefaultPayloadJson: StoredJson.Inline("{\"Default\":true}"))),
             assign.Breakpoints[0], assign.Recovery!, new AcknowledgedCommit("commit", 5),
+            new BreakpointSource("flow.yaml", 4), new BreakpointStop("root", "root/0", "stop", "activation", 2, 3, now)
+                { Reason = "ConditionCompilationFailed", Diagnostics = [new("BPC001", "Refused", 0, 3, 1, 1)] },
+            new BreakpointHitTrace("root", "root/0", "stop", 3, 1)
+                { Reason = "ConditionCompilerUnavailable" },
+            new DataEditTarget(3, "branch"),
+            new DataPatch(["Number"], JsonSerializer.SerializeToElement(true)),
+            new DataEditRequest(5, new(3), [new(["Number"], JsonSerializer.SerializeToElement(7))]),
+            new DataEditResult("instance", "edit", 6, new(3)),
+            new DataEditedTrace("editor", "edit", new(3), 6, [["Number"]]),
+            new DebugStepPosition("activation", 2, 3, 4, true),
+            new DebugStepping("root", DebugStepKind.Over, new("activation", 2, 3, 4, true),
+                ["outer", "activation"], ["root", "forked"], "step", "actor", true),
+            new BreakpointEvaluation("root", "root/0", "activation", 2, now),
+            new BreakpointConditionDiagnostic("BPC001", "Refused member", 4, 3, 1, 5),
             new AssignmentOutcome(AssignmentOutcomeKind.Interrupted, "error", "type", "stack", "root/0", "attempt")
         ];
         var message = Assert.Single(messages, value => value.GetType() == type);
@@ -119,7 +140,7 @@ public sealed class MessageContractTests
         {
             InstanceId = "child", ParentInstanceId = assign.Instance.InstanceId, ParentWaitId = "child-wait",
             Status = WorkflowStatus.Running, ExecutionStateJson = assign.Instance.ExecutionStateJson,
-            WorkflowDataJson = "{\"Value\":\"child-input\"}"
+            WorkflowDataJson = StoredJson.Inline("{\"Value\":\"child-input\"}")
         };
         assign.Instance.Status = WorkflowStatus.Completed;
         assign.Instance.ParentInstanceId = "grandparent";
@@ -127,7 +148,7 @@ public sealed class MessageContractTests
         var commit = CheckpointCommit.Create(assign.Instance, assign.Epoch, assign.Instance.Revision,
             clearsCrashCount: false, stopped: true, inboxReadThrough: 19,
             openedWaits: [new("child-wait", WaitKind.Child, "child", "child-completed", null)],
-            armedWaits: [new("reply-wait", TimeSpan.FromSeconds(11), "{\"Default\":42}")],
+            armedWaits: [new("reply-wait", TimeSpan.FromSeconds(11), StoredJson.Inline("{\"Default\":42}"))],
             closedWaits: [new("old-wait", WaitCloseReason.Replaced)],
             childStarts: [new("child", JsonSerializer.Serialize(child), "child-wait")],
             childCancellations: [new("former-child", new() { ReasonCode = "parent-ended" }, "former-wait")],

@@ -65,7 +65,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 WHERE instance.instance_id = @InstanceId
                   AND instance.status NOT IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
                   AND (instance.runnable_at_utc <= @Now OR (@Operator
-                      AND (instance.status = 'NeedsResolution' OR jsonb_typeof(instance.state_json::jsonb -> 'ExecutionStateJson' -> 'OperatorStop') = 'object')))
+                      AND (instance.status IN ('NeedsResolution', 'Paused') OR jsonb_typeof(instance.state_json::jsonb -> 'ExecutionStateJson' -> 'OperatorStop') = 'object')))
                   AND {PinMatches}
                   AND NOT EXISTS (SELECT 1 FROM ixiflow_demand_set_rows AS demand
                       LEFT JOIN capabilities AS capability ON capability.key = demand.demand_key
