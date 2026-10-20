@@ -44,7 +44,10 @@ public sealed class WorkflowExecutor
     internal ExecutionSignals PrepareAssignment(Guid identity) =>
         _runs.GetOrAdd(identity, id => new ExecutionSignals(id, CloseRun));
 
-    private void CloseRun(Guid runId) => _runs.TryRemove(runId, out _);
+    private void CloseRun(Guid runId)
+    {
+        if (_runs.TryRemove(runId, out var signals)) signals.Close();
+    }
     public void Deliver(Cancel message)
     {
         if (_runs.TryGetValue(message.AssignmentId, out var signals)) signals.Deliver(message);
@@ -72,7 +75,7 @@ public sealed class WorkflowExecutor
                     "Breakpoints are not supported until G-04");
             signals.ThrowIfOwnershipLost();
             using var definitionLease = await _definitions.AcquireWorkflowDefinitionAsync(assign.Instance.WorkflowName,
-                assign.Instance.WorkflowVersion, assign.Instance.BundleDigest);
+                assign.Instance.WorkflowVersion, assign.Instance.BundleDigest, signals.AcquisitionToken);
             using var types = definitionLease.EnterTypes();
             var definition = definitionLease.Definition;
             _ = WorkflowDefinitionValidator.ForExecution(definition);
@@ -128,6 +131,11 @@ public sealed class WorkflowExecutor
         catch (ExecutionOwnershipLostException)
         {
             return new(assign.AssignmentId, new(AssignmentOutcomeKind.OwnershipLost), session.LastAcknowledgedCommit,
+                ExecutorName: _executorName);
+        }
+        catch (OperationCanceledException) when (signals.AcquisitionToken.IsCancellationRequested)
+        {
+            return new(assign.AssignmentId, new(signals.OwnershipLost ? AssignmentOutcomeKind.OwnershipLost : AssignmentOutcomeKind.RunCancelled), session.LastAcknowledgedCommit,
                 ExecutorName: _executorName);
         }
         catch (CheckpointInterruptedException error)
@@ -580,6 +588,12 @@ public sealed class WorkflowExecutor
             // Activity outcomes are ignored after the checkpoint write failed.
             await AbandonInFlightAsync(inFlight);
 
+            throw;
+        }
+        catch (OperationCanceledException error) when (error.CancellationToken.IsCancellationRequested)
+        {
+            await AbandonInFlightAsync(inFlight);
+            signals.ThrowIfOwnershipLost();
             throw;
         }
         catch (Exception ex)

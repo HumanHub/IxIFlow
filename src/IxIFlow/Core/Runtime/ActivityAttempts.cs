@@ -306,6 +306,8 @@ internal sealed class ActivityAttempts(
         CancellationTokenSource cancellation)
     {
         using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), continuation.PendingActivity?.Id));
+        using var acquisition = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token,
+            checkpoint.Signals?.AcquisitionToken ?? default);
         checkpoint.Touch(continuation);
         var stepNumber = continuation.Stack[^1].NextStepIndex;
         RunningActivity Settles(ActivityRunResult outcome) =>
@@ -315,9 +317,10 @@ internal sealed class ActivityAttempts(
         {
             Attempt(instance, checkpoint, continuation, step, pending, $"Operator{decision.Kind}");
             using var childLease = pending.ChildBundleDigest == null ? null
-                : await definitions.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest);
-            using var childTypes = WorkflowTypeIdentity.Enter(childLease?.Definition.BundleContext);
-            var output = decision.InvocationResult?.Read(services);
+                : await definitions.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest, acquisition.Token);
+            object? output;
+            using (WorkflowTypeIdentity.Enter(childLease?.Definition.BundleContext))
+                output = decision.InvocationResult?.Read(services);
             if (output != null && step.InvokedDataType is { } target && !target.IsInstanceOfType(output))
                 output = JsonSerializer.Deserialize(JsonSerializer.Serialize(output), target);
             return Settles(decision.Kind == ActivityResolutionKind.Completed
@@ -331,15 +334,16 @@ internal sealed class ActivityAttempts(
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Child invocation step '{step.Name}' took an event that is not its child's completion");
             using var childLease = pending.ChildBundleDigest == null ? null
-                : await definitions.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest);
-            using var childTypes = WorkflowTypeIdentity.Enter(childLease?.Definition.BundleContext);
-            var dataType = WorkflowTypeIdentity.Resolve(pending.ChildDataType ?? "")
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    $"Child data type '{pending.ChildDataType}' is unavailable");
+                : await definitions.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest, acquisition.Token);
+            Type dataType;
+            using (WorkflowTypeIdentity.Enter(childLease?.Definition.BundleContext))
+                dataType = WorkflowTypeIdentity.Resolve(pending.ChildDataType ?? "")
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                        $"Child data type '{pending.ChildDataType}' is unavailable");
             continuation.AcceptedWait = null;
-            var outcome = completed.Outcome(dataType);
-            if (outcome.Output != null && step.InvokedDataType is { } target && !target.IsInstanceOfType(outcome.Output))
-                outcome = outcome with { Output = JsonSerializer.Deserialize(completed.DataJson, target) };
+            // Failures belong to the parent's catch contract, just as outputs belong to its
+            // declared child-data contract. Restore saved types under the parent scope.
+            var outcome = completed.Outcome(step.InvokedDataType ?? dataType);
             return Settles(outcome);
         }
         if (pending != null)
@@ -359,11 +363,10 @@ internal sealed class ActivityAttempts(
         pending.ChildWorkflowId = pending.Id;
         using var startScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), pending.Id));
         using var childDefinitionLease = step.WorkflowType == null
-            ? await definitions.ResolveWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value) : null;
+            ? await definitions.ResolveWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, acquisition.Token) : null;
         var childDefinition = step.WorkflowType != null
             ? step.Runtime.ChildDefinition!(services)
             : childDefinitionLease!.Definition;
-        using var childTypeScope = childDefinitionLease?.EnterTypes();
         if (childDefinition.Name != step.WorkflowName || childDefinition.Version != step.WorkflowVersion)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 step.WorkflowType != null
@@ -379,6 +382,7 @@ internal sealed class ActivityAttempts(
             var context = WorkflowValueBinding.EvaluationContext(step, checkpoint.DataOf(continuation),
                 continuation.GetPrevious(services),
                 ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+            using var childTypeScope = childDefinitionLease?.EnterTypes();
             var data = ChildInputs.NewData(childDefinition, step, context);
             var prepared = WorkflowInstances.Start(childDefinition, data, instance, pending.Id,
                 Guid.NewGuid().ToString("N"), Now);
@@ -407,6 +411,7 @@ internal sealed class ActivityAttempts(
             return Settles(ActivityRunResult.Unresolved($"The child workflow could not start: {error.Message}"));
         }
         catch (Exception error) when (error is not ExecutionOwnershipLostException &&
+                                      error is not OperationCanceledException &&
                                       !WorkflowEngineException.IsEngineFailure(error))
         {
             return Settles(ActivityRunResult.Threw(error));

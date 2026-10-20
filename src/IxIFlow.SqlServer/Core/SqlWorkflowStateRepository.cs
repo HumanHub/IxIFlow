@@ -738,6 +738,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             CREATE INDEX IX_IxIFlowWorkflowInstances_workflow_creation ON dbo.IxIFlowWorkflowInstances (WorkflowName, CreatedAtUtc DESC, InstanceId ASC);
             CREATE INDEX IX_IxIFlowWorkflowInstances_workflow_status_creation ON dbo.IxIFlowWorkflowInstances (WorkflowName, Status, CreatedAtUtc DESC, InstanceId ASC);
             CREATE INDEX IX_IxIFlowWorkflowInstances_version_creation ON dbo.IxIFlowWorkflowInstances (WorkflowVersion, CreatedAtUtc DESC, InstanceId ASC);
+            CREATE INDEX IX_IxIFlowWorkflowInstances_BundleDigest ON dbo.IxIFlowWorkflowInstances (BundleDigest) WHERE BundleDigest IS NOT NULL;
             CREATE INDEX IX_IxIFlowWorkflowInstances_workflow_version_creation ON dbo.IxIFlowWorkflowInstances (WorkflowName, WorkflowVersion, CreatedAtUtc DESC, InstanceId ASC);
             CREATE INDEX IX_IxIFlowWorkflowInstances_stop_creation ON dbo.IxIFlowWorkflowInstances (StopKind, CreatedAtUtc DESC, InstanceId ASC) WHERE StopKind IS NOT NULL;
             CREATE INDEX IX_IxIFlowWorkflowInstances_correlation_creation ON dbo.IxIFlowWorkflowInstances (CorrelationId, CreatedAtUtc DESC, InstanceId ASC);

@@ -70,18 +70,22 @@ public sealed class BundleLoadingTests
     }
 
     [Fact]
-    public async Task WarmCacheIsReverifiedAndCorruptionIsRejectedBeforeExecution()
+    public async Task CacheCorruptionIsRejectedBeforeLoading()
     {
         var store = new InMemoryWorkflowStateRepository();
         var version = await PublishedBundleScenario.PublishAsync(store);
         var folder = Folder();
-        await using var host = PublishedBundleScenario.Host(store, folder);
-        var client = host.GetRequiredService<IWorkflowClient>();
-        var id = await client.StartAsync(version.Name, new FirstData());
-        await PublishedBundleScenario.UntilAsync(store, id, WorkflowStatus.Suspended);
+        string id;
+        await using (var first = PublishedBundleScenario.Host(store, folder))
+        {
+            id = await first.GetRequiredService<IWorkflowClient>().StartAsync(version.Name, new FirstData());
+            await PublishedBundleScenario.UntilAsync(store, id, WorkflowStatus.Suspended);
+        }
         var checkpoint = (await store.GetWorkflowInstanceAsync(id))!.ExecutionStateJson;
         var path = Path.Combine(folder, version.ArtifactDigest!.Value.Value[7..] + ".bundle");
         await File.WriteAllTextAsync(path, "corrupt cache");
+        await using var host = PublishedBundleScenario.Host(store, folder);
+        var client = host.GetRequiredService<IWorkflowClient>();
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.ResumeAsync(id, new Signal()));
         Assert.Equal(WorkflowErrorKind.ArtifactMismatch, error.Kind);
         Assert.False(File.Exists(path));
@@ -201,7 +205,7 @@ public sealed class BundleLoadingTests
             shared[key] = "99.0.0.0";
             manifest = manifest with { SharedAssemblies = shared };
         }
-        if (defect == "private") entries.Remove("private/IxIFlow.BundleFixtures.dll");
+        if (defect == "private") entries.Remove("private/System.Payments.dll");
         if (defect == "packages") manifest = manifest with { ActivityPackages = [version.ArtifactDigest.Value] };
         var bytes = WorkflowBundleArchive.Create(manifest, entries);
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(bytes));

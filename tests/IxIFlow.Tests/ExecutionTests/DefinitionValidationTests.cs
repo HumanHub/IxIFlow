@@ -175,9 +175,9 @@ public sealed class DefinitionValidationTests
     // Models a custom registry that returns definitions without invoking the engine validator.
     private sealed class UncheckedRegistry(params WorkflowDefinition[] definitions) : IWorkflowCatalog
     {
-        public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest) =>
+        public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest, CancellationToken cancellationToken = default) =>
             new((await GetWorkflowDefinitionAsync(name, version))!);
-        public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version) =>
+        public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version, CancellationToken cancellationToken = default) =>
             AcquireWorkflowDefinitionAsync(name, version, null);
 
         public long DefinitionRevision => 0; // This registry's definition set is immutable.
