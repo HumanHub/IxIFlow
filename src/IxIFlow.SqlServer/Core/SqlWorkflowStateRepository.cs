@@ -61,8 +61,10 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     // sp_getapplock reports a deadlock through its return code, translated to 51001 by interning.
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 or 51001 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.Catalog or Operation.Termination or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease
-            ? await connection.BeginTransactionAsync() : null;
+        operation is Operation.Catalog or Operation.Termination or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.RunnableRead or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease
+            // READPAST with ROWLOCK also works when READ_COMMITTED_SNAPSHOT is enabled.
+            ? await connection.BeginTransactionAsync(operation is Operation.LeaseClaim or Operation.RunnableRead
+                ? IsolationLevel.RepeatableRead : IsolationLevel.ReadCommitted) : null;
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
     {
@@ -443,13 +445,27 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 SELECT InstanceId, CancellationJson FROM dbo.IxIFlowWorkflowInstances
                 WHERE InstanceId IN @InstanceIds AND CancellationJson IS NOT NULL
                 """,
-        // The instance row is locked before the lease row, in the same order as a commit. No range
-        // lock: a missing row is not a running instance, and a range lock would block other claims.
-        // Lock terminal rows too, so a claim reads any tombstone after concurrent deletion finishes.
+        // Lock every status before the lease, as commits do. If READPAST returns no row, a NOWAIT
+        // probe distinguishes a skipped row from an absent key and protects first-claim admission.
+        // Only absent/skipped keys need the range probe; ordinary row claims take no range lock.
         Statement.Running => """
-            SELECT COUNT(CASE WHEN Status = 'Running' THEN 1 END)
-            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
-            WHERE InstanceId = @InstanceId
+            DECLARE @Running INT;
+            BEGIN TRY
+                SELECT @Running = CASE WHEN Status = 'Running' THEN 1 ELSE 0 END
+                FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, READPAST, ROWLOCK, NOWAIT)
+                WHERE InstanceId = @InstanceId;
+                IF @Running IS NULL
+                BEGIN
+                    SELECT @Running = CASE WHEN Status = 'Running' THEN 1 ELSE 0 END
+                    FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK, ROWLOCK, NOWAIT)
+                    WHERE InstanceId = @InstanceId;
+                END;
+            END TRY
+            BEGIN CATCH
+                IF ERROR_NUMBER() <> 1222 THROW;
+                SET @Running = -1;
+            END CATCH;
+            SELECT COALESCE(@Running, 0);
             """,
         Statement.ClaimLease => """
             -- Lock the lease before allocating so a waiting claim cannot install an older epoch.

@@ -42,7 +42,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         EnablePublisher, RetryDisabledDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
         TerminationState, TerminationRequest, TerminationChildren, Cancellation, Cancellations, Runnable, Running, ClaimLease, RenewLease, ReleaseLease, Notice,
-        LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, UpdateReceiptNotices, Lease, TakenChild,
+        LockIdentity, TryLockClaimIdentity, LockInbox, ParentInbox, CommitState, Receipt, UpdateReceiptNotices, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, UpdateEventNotice, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
         ReadInstance,
@@ -98,7 +98,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         ownership["Application Name"] = (name.Length > limit ? name[..limit] : name) + suffix;
         ownership[maxPoolSizeKey] = ownershipPoolSize;
         ownership[minPoolSizeKey] = Math.Min((int)ownership[minPoolSizeKey], ownershipPoolSize);
-        // Claims and cancellation requests can wait on commit locks; together they use at most half
+        // Claims and cancellation requests together use at most half
         // the reserved pool, so renewals and the cancellation watch always find a connection.
         _admissions = new SemaphoreSlim(Math.Max(1, ownershipPoolSize / 2));
         return ownership.ConnectionString;
@@ -448,9 +448,16 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             await using var connection = await OpenConnectionAsync(ownership: true);
             await using var transaction = (await BeginTransactionAsync(connection, Operation.LeaseClaim))!;
-            await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { InstanceId = instanceId });
-            var running = await connection.ExecuteScalarAsync<int>(RequiredSql(Statement.Running),
-                new { InstanceId = instanceId }, transaction) > 0;
+            if (Sql(Statement.TryLockClaimIdentity) is { } identitySql &&
+                !await connection.ExecuteScalarAsync<bool>(CheckSql(nameof(Statement.TryLockClaimIdentity), identitySql),
+                    new { InstanceId = instanceId }, transaction))
+                return null;
+            // Running returns -1 for contention, 0 for an absent/non-running row, and 1 for Running.
+            // A skipped row must never follow the absent-instance admission path.
+            var claimState = await connection.ExecuteScalarAsync<int>(RequiredSql(Statement.Running),
+                new { InstanceId = instanceId }, transaction);
+            if (claimState < 0) return null;
+            var running = claimState > 0;
             var now = await OutboxNowAsync(connection, transaction);
             var eligibility = PlacementParameters(query, now, query.Limit);
             eligibility.Add("InstanceId", instanceId);
