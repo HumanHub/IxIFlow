@@ -12,13 +12,16 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         try
         {
             using var schema = await connection.QueryMultipleAsync("""
+                SELECT instance_id, command_id, command_order, command_json FROM ixiflow_workflow_debug_commands WHERE 1=0;
+                SELECT digest, bytes, body, metadata_json FROM ixiflow_workflow_payloads WHERE 1=0;
+                SELECT digest, owner_kind, owner_id FROM ixiflow_workflow_payload_refs WHERE 1=0;
                 SELECT name, version, kind, source, revision, state FROM ixiflow_definitions WHERE 1=0;
                 SELECT name, version, structure_hash, state, artifact_digest, metadata_json FROM ixiflow_workflow_versions WHERE 1=0;
                 SELECT digest, kind, content, created_at_utc FROM ixiflow_artifacts WHERE 1=0;
                 SELECT instance_id, workflow_name, workflow_version, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, runnable_at_utc, ended_at_utc, state_json, cancellation_json, cancellation_acknowledged, revision, inbox_sequence, inbox_read_through, incarnation, parent_instance_id, parent_wait_id, last_host_id, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit FROM ixiflow_workflow_instances WHERE 1=0;
-                SELECT instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, payload_json, payload_hash, received_at_utc, outcome, wait_id, rejection, settled_at_utc, notice_json FROM ixiflow_workflow_events WHERE 1=0;
+                SELECT instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, stored_payload_json, payload_hash, received_at_utc, outcome, wait_id, rejection, settled_at_utc, notice_json FROM ixiflow_workflow_events WHERE 1=0;
                 SELECT instance_id, part_key, json FROM ixiflow_workflow_parts WHERE 1=0;
-                SELECT instance_id, sequence, entry_json FROM ixiflow_workflow_traces WHERE 1=0;
+                SELECT instance_id, sequence, entry_json, revision, commit_end_sequence, commit_status FROM ixiflow_workflow_traces WHERE 1=0;
                 SELECT instance_id, diagnostic_id, diagnostic_json FROM ixiflow_workflow_diagnostics WHERE 1=0;
                 SELECT instance_id, wait_id, wait_ref, kind, wait_key, event_type, default_payload_json, deadline_utc, opened_sequence, opened_at_utc, close_reason, closed_at_utc FROM ixiflow_workflow_waits WHERE 1=0;
                 SELECT instance_id, commit_id, expected_revision, revision, payload_hash, notice_json, made_runnable_json FROM ixiflow_workflow_commits WHERE 1=0;
@@ -36,6 +39,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 SELECT member_id, capability_key, capability_value FROM ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
+            if (await connection.ExecuteScalarAsync<int>("SELECT CASE WHEN to_regclass('ixiflow_payload_refs_owner') IS NOT NULL THEN 1 ELSE 0 END", transaction: transaction) != 1)
+                throw EarlierBuild();
             // Check coverage, ordering and the disjoint pin predicates, including the dedicated
             // null-expiry index. Names alone would retain the old broad pin access path.
             if (await connection.ExecuteScalarAsync<int>("""

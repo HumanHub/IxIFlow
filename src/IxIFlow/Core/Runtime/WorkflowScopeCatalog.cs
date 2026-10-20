@@ -16,11 +16,13 @@ internal sealed class WorkflowScopeCatalog
     {
         AddScope("root", definition.Steps);
         StructureHash = ComputeStructureHash(definition);
+        StepTable = new(this);
     }
 
     internal IEnumerable<KeyValuePair<string, WorkflowStep>> AllSteps => _steps;
 
     public string StructureHash { get; }
+    public StepTable StepTable { get; }
 
     public IReadOnlyCollection<PropertyInfo> FaultProperties(Type exceptionType) => _steps.Values
         .Where(step => step.StepType == WorkflowStepType.CatchBlock &&
@@ -106,7 +108,7 @@ internal sealed class WorkflowScopeCatalog
             var steps = activities?.Select((activity, index) => new WorkflowStep
             {
                 Runtime = activity.Runtime,
-                SourceLocation = source.SourceLocation,
+                SourceLocation = activity.SourceLocation ?? source.SourceLocation,
                 Id = $"{source.Id}/compensation/{index}",
                 Name = activity.ActivityType.Name,
                 StepType = WorkflowStepType.Activity,

@@ -38,7 +38,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             // A cancellation request the host learned of meanwhile goes first; the events stay unread.
             if (ContinuationTransitions.CancellationPending(checkpoint))
                 return decided;
-            if (checkpoint.ExecutionTimerOpen && page.IsDue(checkpoint.ExecutionTimerId!))
+            if (checkpoint.Debug.Stepping == null && checkpoint.ExecutionTimerOpen && page.IsDue(checkpoint.ExecutionTimerId!))
             {
                 inbox.Due([checkpoint.ExecutionTimerId!]);
                 return decided;
@@ -47,6 +47,17 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             {
                 if (inbox.IsDecided(stored.EventId))
                     continue;
+                if (checkpoint.Debug.Stepping != null)
+                {
+                    // Defer the entire event if it addresses any held branch. Do not run its
+                    // predicate, reject it, or turn an ambiguous delivery into a single match.
+                    var addressed = checkpoint.Waits.Where(w => stored.TargetWaitId != null
+                        ? w.Id == stored.TargetWaitId
+                        : w.TableKind == WaitKind.Event && (stored.Key == null || w.Key == stored.Key) &&
+                          page.OpenWaits.TryGetValue(w.Id, out var opened) && opened < stored.Sequence).ToArray();
+                    if (addressed.Length == 0 || addressed.Any(w => !SteppingPolicy.Allows(checkpoint, w.ContinuationId)))
+                        continue;
+                }
                 await DecideAsync(scopes, checkpoint, host, stored, page, instance);
                 decided = true;
             }
@@ -64,6 +75,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     private async Task DecideAsync(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ExecutionSession host, StoredWorkflowEvent stored, InboxPage page, WorkflowInstance instance)
     {
+        await host.Reader.ReadAsync(stored.PayloadJson);
         var payload = Read(stored);
         if (payload == null)
         {
@@ -92,6 +104,8 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         var aboutIt = typed.Where(wait => wait.Subject == null ||
                                           string.Equals(wait.Subject, stored.Subject, StringComparison.Ordinal))
             .ToList();
+        foreach (var wait in aboutIt)
+            await host.PrepareReadAsync(checkpoint, checkpoint.ContinuationById(wait.ContinuationId)!, scopes, restoreInputs: false);
         var matching = aboutIt.Where(wait => Accepts(scopes, checkpoint, wait, payload)).ToList();
         if (matching.Count == 1)
         {
@@ -121,7 +135,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             return null;
         try
         {
-            return JsonSerializer.Deserialize(stored.PayloadJson, type);
+            return JsonSerializer.Deserialize(stored.PayloadJson.InlineText, type);
         }
         catch (JsonException)
         {
@@ -142,7 +156,8 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             return WorkflowValueBinding.Matches(scopes.Step(wait.StepId), payload, checkpoint.DataOf(continuation),
                 continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
         }
-        catch (Exception error) when (error is not OutOfMemoryException)
+        catch (Exception error) when (error is not OutOfMemoryException &&
+                                      error is not WorkflowEngineException { Kind: WorkflowErrorKind.PayloadUnavailable })
         {
             return false;
         }

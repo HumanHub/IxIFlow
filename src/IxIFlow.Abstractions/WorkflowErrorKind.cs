@@ -30,6 +30,9 @@ public enum WorkflowErrorKind
     /// <summary>Retention removed the instance; its ID is still reserved by a tombstone.</summary>
     InstanceRemoved,
 
+    /// <summary>A referenced payload is missing or corrupt. Restore it and release the operator stop.</summary>
+    PayloadUnavailable,
+
     /// <summary>No live host advertises all demands at start admission.</summary>
     Unschedulable
 }

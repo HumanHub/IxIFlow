@@ -29,12 +29,13 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     }
 
     public ISagaActivityBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
+        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity
     {
         var stepId = Guid.NewGuid().ToString();
         var workflowStep = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = stepId,
             Name = typeof(TActivity).Name,
@@ -80,22 +81,22 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     public ISagaActivityBuilder<TWorkflowData, TActivity> Request<TActivity>(
         string name,
         Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
-        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null)
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity
     {
-        var result = Request<TActivity>(name, configure, subjectExpression?.Compile());
+        var result = Request<TActivity>(name, configure, subjectExpression?.Compile(), sourcePath: sourcePath, sourceLine: sourceLine);
         _steps[^1].RequestSubjectExpression = subjectExpression;
         return result;
     }
 
     public ISagaActivityBuilder<TWorkflowData, TActivity> Request<TActivity>(string name,
         Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
-        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null)
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         var replyType = RequestPairing.ReplyTypeOf(typeof(TActivity));
-        var next = Step(configure);
+        var next = Step(configure, sourcePath: sourcePath, sourceLine: sourceLine);
         var step = _steps[^1];
         step.RequestName = name;
         step.ReplyType = replyType;
@@ -109,10 +110,10 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     public ISagaActivityBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>>? resumeExpression = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class
     {
-        var result = Suspend<TResumeEvent>(suspendReason, resumeExpression?.Compile(), configure);
+        var result = Suspend<TResumeEvent>(suspendReason, resumeExpression?.Compile(), configure, sourcePath: sourcePath, sourceLine: sourceLine);
         _steps[^1].ConditionExpression = resumeExpression;
         return result;
     }
@@ -120,11 +121,12 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     public ISagaActivityBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? resumeCondition = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class
     {
         var suspendStep = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Wait<TWorkflowData, TResumeEvent, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Suspend",
@@ -192,10 +194,10 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     public ISagaActivityBuilder<TWorkflowData, TResumeEvent> WaitFor<TResumeEvent>(
         string key,
         Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>>? matchesExpression = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class
     {
-        var result = WaitFor<TResumeEvent>(key, matchesExpression?.Compile(), configure);
+        var result = WaitFor<TResumeEvent>(key, matchesExpression?.Compile(), configure, sourcePath: sourcePath, sourceLine: sourceLine);
         _steps[^1].ConditionExpression = matchesExpression;
         return result;
     }
@@ -203,11 +205,11 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     public ISagaActivityBuilder<TWorkflowData, TResumeEvent> WaitFor<TResumeEvent>(
         string key,
         Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? matches = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        var next = Suspend(key, matches, configure);
+        var next = Suspend(key, matches, configure, sourcePath: sourcePath, sourceLine: sourceLine);
         var waitStep = _steps[^1];
         waitStep.Name = "WaitFor";
         waitStep.StepMetadata["WaitKey"] = key;
@@ -216,10 +218,11 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
 
     public ISagaActivityBuilder<TWorkflowData, TPreviousStepData> OutcomeOn<TProperty>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TProperty>> propertySelector,
-        Action<ISagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty>> configure)
+        Action<ISagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         var outcomeStep = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "SagaOutcome",
@@ -311,12 +314,13 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
-        CompensateWith<TCompensationActivity>()
+        CompensateWith<TCompensationActivity>([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TCompensationActivity : IAsyncActivity
     {
         // Create simple compensation without configuration
         var compensationInfo = new CompensationActivityInfo
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TActivity>(),
             ActivityType = typeof(TCompensationActivity),
             InputMappings = [],
@@ -332,12 +336,13 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity>(
-        Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity>> configure)
+        Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TCompensationActivity : IAsyncActivity
     {
         // Create compensation with configuration
         var compensationInfo = new CompensationActivityInfo
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TActivity>(),
             ActivityType = typeof(TCompensationActivity),
             InputMappings = [],
@@ -363,13 +368,14 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
         TPreviousChainActivity>(
         Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
-            TPreviousChainActivity>> configure)
+            TPreviousChainActivity>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TCompensationActivity : IAsyncActivity
         where TPreviousChainActivity : class, IAsyncActivity
     {
         // Create compensation with access to previous chain activity
         var compensationInfo = new CompensationActivityInfo
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TActivity>(),
             ActivityType = typeof(TCompensationActivity),
             InputMappings = [],
@@ -393,12 +399,13 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
-        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure)
+        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TCompensationActivity : IAsyncActivity
         where TReply : class
     {
         var compensationInfo = new CompensationActivityInfo
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TActivity>(),
             ActivityType = typeof(TCompensationActivity),
             InputMappings = [],
@@ -484,16 +491,16 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
-        CompensateWith<TCompensationActivity>() where TCompensationActivity : IAsyncActivity
+        CompensateWith<TCompensationActivity>([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TCompensationActivity : IAsyncActivity
     {
-        return _setupBuilder.CompensateWith<TCompensationActivity>();
+        return _setupBuilder.CompensateWith<TCompensationActivity>(sourcePath, sourceLine);
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity>(
-        Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity>> configure)
+        Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TCompensationActivity : IAsyncActivity
     {
-        return _setupBuilder.CompensateWith(configure);
+        return _setupBuilder.CompensateWith(configure, sourcePath: sourcePath, sourceLine: sourceLine);
     }
 
     // Preferred over the answer overload when a lambda fits both, as on the interface.
@@ -501,17 +508,17 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
         CompensateWith<TCompensationActivity, TPreviousChainActivity>(
             Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
-                TPreviousChainActivity>> configure) where TCompensationActivity : IAsyncActivity
+                TPreviousChainActivity>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TCompensationActivity : IAsyncActivity
         where TPreviousChainActivity : class, IAsyncActivity
     {
-        return _setupBuilder.CompensateWith(configure);
+        return _setupBuilder.CompensateWith(configure, sourcePath, sourceLine);
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
-        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure)
+        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TCompensationActivity : IAsyncActivity
         where TReply : class =>
-        _setupBuilder.CompensateWith<TCompensationActivity, TReply>(configure);
+        _setupBuilder.CompensateWith<TCompensationActivity, TReply>(configure, sourcePath, sourceLine);
 
     private string GetPropertyName<T, TProp>(Expression<Func<T, TProp>> expression)
     {
@@ -604,16 +611,16 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
-        CompensateWith<TCompensationActivity>() where TCompensationActivity : IAsyncActivity
+        CompensateWith<TCompensationActivity>([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TCompensationActivity : IAsyncActivity
     {
-        return _setupBuilder.CompensateWith<TCompensationActivity>();
+        return _setupBuilder.CompensateWith<TCompensationActivity>(sourcePath, sourceLine);
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity>(
-        Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity>> configure)
+        Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TCompensationActivity : IAsyncActivity
     {
-        return _setupBuilder.CompensateWith(configure);
+        return _setupBuilder.CompensateWith(configure, sourcePath: sourcePath, sourceLine: sourceLine);
     }
 
     // Preferred over the answer overload when a lambda fits both, as on the interface.
@@ -621,17 +628,17 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
         CompensateWith<TCompensationActivity, TPreviousChainActivity>(
             Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
-                TPreviousChainActivity>> configure) where TCompensationActivity : IAsyncActivity
+                TPreviousChainActivity>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TCompensationActivity : IAsyncActivity
         where TPreviousChainActivity : class, IAsyncActivity
     {
-        return _setupBuilder.CompensateWith(configure);
+        return _setupBuilder.CompensateWith(configure, sourcePath, sourceLine);
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
-        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure)
+        TReply>(Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TCompensationActivity : IAsyncActivity
         where TReply : class =>
-        _setupBuilder.CompensateWith<TCompensationActivity, TReply>(configure);
+        _setupBuilder.CompensateWith<TCompensationActivity, TReply>(configure, sourcePath, sourceLine);
 
     private string GetPropertyName<T, TProp>(Expression<Func<T, TProp>> expression)
     {
