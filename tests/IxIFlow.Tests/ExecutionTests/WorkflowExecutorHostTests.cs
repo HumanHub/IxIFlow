@@ -151,8 +151,8 @@ public sealed class WorkflowExecutorHostTests
             StructureHash = new WorkflowScopeCatalog(definition).StructureHash,
             Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
         };
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ExecutorData>("ExecutorChildTarget").Step<FirstActivity>().Build());
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         var executor = new WorkflowExecutor(services, host);

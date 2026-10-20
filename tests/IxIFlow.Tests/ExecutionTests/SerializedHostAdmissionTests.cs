@@ -26,7 +26,7 @@ public sealed class SerializedHostAdmissionTests
         probe.Inner = new InMemoryWorkflowStateRepository(time);
         using var services = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var definition = Workflow.Create<Data>("admission").Step<Noop>().Build();
-        var registry = services.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = services.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(definition);
         var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition, new Data(), new(), time.GetUtcNow().UtcDateTime);
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);

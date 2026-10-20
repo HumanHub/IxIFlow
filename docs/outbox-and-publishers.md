@@ -53,11 +53,23 @@ The source compiles in the samples project; [DocumentationTests.cs](../tests/IxI
 
 Names are unique per host and identify durable subscriptions across restarts/hosts. A new name receives future events by default. `ReplayRetainedOutboxEvents(name)` explicitly includes retained matching events. Registration does not reset deliveries or re-enable a disabled subscription.
 
-Removing a publisher from DI does not retire its durable subscription. Use `UnregisterOutboxPublisher(name)` at startup, or the store's `IWorkflowOutbox.UnregisterPublisherAsync`, to remove it and give up pending deliveries. An absent worker can otherwise leave pending deliveries that block retention.
+Removing a publisher from DI does not retire its durable subscription. Use `UnregisterOutboxPublisher(name)` at startup, or `IWorkflowOperations.UnregisterPublisherAsync(name, actor)`, to durably unregister it and give up pending deliveries. The publisher row remains with the unregistering actor and store time. Automatic registration on any host preserves that state, including after restart and when retained replay is requested. An unregistered name cannot be enabled; configure a new name for a new subscription. Startup retirement records `host` as its actor. An absent worker can otherwise leave pending deliveries that block retention.
 
 Workers claim deliveries with renewable leases. Attempt counts include claims lost with their host. Default outbox concurrency is eight, independent of workflow slots; default lease duration is 30 seconds. A 30-day retry horizon runs from the first claim. Retention maintenance gives up never-claimed deliveries whose event age reaches that horizon, up to the retention batch size per pass, including publishers missing from every host. A previously claimed delivery requires a worker to enforce its first-claim horizon; removing that worker can leave it pending until the publisher returns or is unregistered.
 
 There is no in-process publisher: the host that commits an instance's end completes the awaits on that host itself, without a delivery record. Awaits on other hosts poll the store. The store also exposes publisher/delivery inspection. There is no management HTTP API yet.
+
+## Administer retained deliveries
+
+Use `IWorkflowOperations` for privileged administration, with an actor on every call. `ListDeliveriesAsync(new DeliveryQuery(...), actor)` combines `PublisherName`, `Status`, `InstanceId` and `NeverAttempted`. A page contains at most 1,000 deliveries, ordered by event ID then publisher name using ordinal comparison; pass `NextCursor` as `After` with the same filters. Paging is a live view, so concurrent status changes and retention can change later pages. The public `DeliverySummary` contains no lease tokens or lease fields. Pending deliveries with `NeverAttempted: true` identify subscriptions that can pin finished instances.
+
+Given-up deliveries are the outbox's dead letters. `GivenUpReason` distinguishes `Exhausted` (the publisher stopped retrying), `Horizon` (the retry age elapsed, including unattempted expiry), `Disabled`, `Unregistered` and `Operator`. Custom publishers can explicitly return an operator give-up reason. A disable records `Disabled` on the triggering delivery, every pending delivery it affects and deliveries created or replayed while disabled. Existing delivered or given-up deliveries keep their state and reason.
+
+`RetryDeliveryAsync(eventId, publisherName, actor)` returns true only for a retained given-up delivery with an enabled, registered publisher. It preserves the event ID/body, clears lease/error/reason state, resets attempts and the first-attempt time, and makes it due at the store's current time. Retry records `RetriedBy` and `RetriedAtUtc`. The first claim starts a fresh retry horizon; until that claim, maintenance ages the delivery from its retry time. Retry and purge serialize through the publisher lock. Once retention removes the delivery, retry returns false.
+
+`ListPublishersAsync(actor)` includes disabled and unregistered publishers and their administrative actor/time fields. `EnablePublisherAsync(publisherName, actor)` clears a disabled publisher's state and atomically retries exactly its retained `Disabled` give-ups, recording the enabling actor/time on the publisher and retry actor/time on those deliveries. It returns false for absent, already enabled or unregistered publishers. Other give-up reasons remain unchanged. Unregister gives up pending deliveries as `Unregistered`, fences their leases and records its actor/time even for an absent name, preventing stale hosts from introducing it later.
+
+These columns and the delivery listing indexes are declared at database creation. Recreate databases from earlier schema builds.
 
 ## Outgoing webhooks
 

@@ -7,8 +7,12 @@ namespace IxIFlow.Core;
 public class SagaTerminatedException : Exception
 {
     public SagaTerminatedException(string reason, Exception originalException)
+        : this(reason, originalException, false) { }
+
+    public SagaTerminatedException(string reason, Exception originalException, bool isPolicyTermination)
         : base($"Saga terminated: {reason}. Original error: {originalException.Message}", originalException)
     {
+        IsPolicyTermination = isPolicyTermination;
         OriginalException = originalException;
         Reason = reason;
     }
@@ -22,6 +26,9 @@ public class SagaTerminatedException : Exception
     ///     The original exception that caused the saga to terminate
     /// </summary>
     public Exception OriginalException { get; }
+
+    /// <summary>True for an explicit ThenTerminate; failed compensation and exhausted retries are failures.</summary>
+    public bool IsPolicyTermination { get; }
 
     /// <summary>
     ///     The reason for saga termination

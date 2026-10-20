@@ -27,7 +27,7 @@ internal sealed class ConformanceCluster : IAsyncDisposable
         _time = time;
     }
 
-    public IWorkflowVersionRegistry Registry { get; } = new WorkflowVersionRegistry();
+    public IWorkflowCatalog Registry { get; } = new WorkflowCatalog();
 
     public string Profile => _store.Profile;
 

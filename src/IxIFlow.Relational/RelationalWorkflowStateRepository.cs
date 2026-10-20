@@ -24,26 +24,29 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>The connection, transaction and admission policy for a store operation.</summary>
     internal enum Operation
     {
-        Schema, Read, Query, OutboxRead, OutboxClaim, OutboxMark, Purge, Registry,
-        CancellationRequest, CancellationRead, LeaseClaim, LeaseRenew, LeaseRelease,
+        Schema, Catalog, Artifact, Read, Query, OutboxRead, OutboxClaim, OutboxMark, Purge, Registry,
+        CancellationRequest, CancellationRead, Termination, LeaseClaim, LeaseRenew, LeaseRelease,
         Append, InboxPage, Commit, Delete
     }
 
     /// <summary>SQL steps in the shared protocol. Optional steps return null.</summary>
     internal enum Statement
     {
+        CatalogLock, CatalogSharedLock, CatalogVersions, CatalogNamedVersions, CatalogVersion, CatalogUnfinishedCallers, CatalogVersionInsert, CatalogVersionState,
+        CatalogDefinition, CatalogDefinitionInsert, CatalogDefinitionUpdate, CatalogDefinitionDelete, ArtifactPut, ArtifactRead, ArtifactExists, ArtifactDelete, ArtifactDeleteOld, ArtifactCandidates,
         WebhookDeliveryRead, WebhookDeliveryDelete, WebhookDeliveryInsert, WebhookDeliveryExpire,
         AdmissionLock, AdmissionRead, AdmissionDelete, AdmissionInsert, OwnershipRead, OwnershipInsert, OwnershipDelete, AdmissionExpire, OwnershipExpire,
         RegistryLock, RegisterMember, MemberHeartbeat, UnregisterMember, PruneMembers,
         Members, MemberCapabilities, DeleteCapabilities, InsertCapability,
         RetentionLock, RetentionCandidates, RetentionBlockedPublishers, RetentionEligible, StampEnd, Tombstone, WriteTombstone, ExpireTombstones,
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
+        EnablePublisher, RetryDisabledDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
-        Cancellation, Runnable, Running, ClaimLease, RenewLease, ReleaseLease,
+        TerminationState, TerminationRequest, TerminationChildren, Cancellation, Runnable, Running, ClaimLease, RenewLease, ReleaseLease,
         LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
-        ReadInstance, ReadParts, Query, ByName, ByStatus, ByCorrelation, ByParent,
+        ReadInstance,
         LockAndReadPage, DeleteLease,
         DeleteState, DeleteParentInbox, DeleteRows, Trace
     }
@@ -110,7 +113,13 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>Reads a trunk and selected parts, with stamp rechecks where snapshots do not join them.</summary>
     internal abstract string ReadInstanceSql(string filter, bool wholly);
     /// <summary>Builds a provider query from an internal predicate; caller values remain parameters.</summary>
-    internal abstract string QuerySql(string filter);
+    internal abstract string InstanceTable { get; }
+    internal abstract string DeliveryTable { get; }
+    internal abstract string OutboxEventTable { get; }
+    internal abstract string SearchColumn(string name);
+    internal abstract string SearchValues(DynamicParameters parameters, string name, string[] values);
+    internal abstract string SearchLimitPrefix { get; }
+    internal abstract string SearchLimitSuffix { get; }
 
     private string RequiredSql(Statement statement) => RequireSql(statement, Sql(statement));
 
@@ -161,7 +170,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>Applies admission around the whole operation; SQLite instead serializes writes.</summary>
     internal virtual async Task<T> ExecuteOperationAsync<T>(Operation operation, Func<Task<T>> call)
     {
-        if (_admissions == null || operation is not (Operation.LeaseClaim or Operation.CancellationRequest or Operation.CancellationRead))
+        if (_admissions == null || operation is not (Operation.LeaseClaim or Operation.CancellationRequest or Operation.CancellationRead or Operation.Termination))
             return await call();
         await _admissions.WaitAsync();
         try
@@ -176,7 +185,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>Publishes a transactional wake-up when this provider supports runnable notifications.</summary>
     internal virtual Task NotifyRunnableAsync(DbConnection connection, DbTransaction? transaction) => Task.CompletedTask;
     internal abstract Task<CancellationOutcome> RequestCancellationAsync(DbConnection connection,
-        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? now);
+        DbTransaction? transaction, string instanceId, string reasonJson, DateTime? now, Guid? expectedIncarnation = null);
     internal abstract Task<int> SettleAsync(DbConnection connection, DbTransaction transaction,
         string instanceId, IReadOnlyList<EventSettlement> settlements, DateTime now);
     internal abstract Task InsertWaitsAsync(DbConnection connection, DbTransaction transaction,
@@ -247,7 +256,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         return (row, now);
     }
 
-    public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
+    public async Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
@@ -257,7 +266,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             await using var connection = await OpenConnectionAsync(ownership: true);
             await using var transaction = await BeginTransactionAsync(connection, Operation.CancellationRequest);
             var outcome = await RequestCancellationAsync(connection, transaction, instanceId,
-                JsonSerializer.Serialize(reason), UsesLocalClock ? LocalNow() : null);
+                JsonSerializer.Serialize(reason), UsesLocalClock ? LocalNow() : null, expectedIncarnation);
             if (outcome == CancellationOutcome.MadeRunnable)
                 await NotifyRunnableAsync(connection, transaction);
             await CompleteAsync(transaction);
@@ -319,6 +328,9 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             await using var connection = await OpenConnectionAsync(ownership: true);
             await using var transaction = await BeginTransactionAsync(connection, Operation.LeaseRenew);
+            if (ReadReason(await connection.ExecuteScalarAsync<string?>(RequiredSql(Statement.Cancellation),
+                    new { InstanceId = instanceId }, transaction))?.Mode == WorkflowControlMode.Terminate)
+                return false;
             var changed = await connection.ExecuteAsync(RequiredSql(Statement.RenewLease),
                 ClaimParameters(instanceId, token, TimeSpan.FromMilliseconds(milliseconds)), transaction);
             await CompleteAsync(transaction);
@@ -525,14 +537,23 @@ public abstract partial class RelationalWorkflowStateRepository :
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(query.Limit);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
-        var rows = await connection.QueryAsync<WaitRow>(RequiredSql(Statement.OpenWaits), WithIntegers(new
+        var parameters = WithIntegers(new
         {
             query.Limit,
             query.InstanceId,
             query.Key,
             query.EventType,
-            query.AfterWaitId
-        }, ("Kind", (short?)query.Kind), ("Delay", (short)WaitKind.Delay), ("Execution", (short)WaitKind.Execution)));
+            query.AfterWaitRef
+        }, ("Kind", (short?)query.Kind), ("Delay", (short)WaitKind.Delay), ("Execution", (short)WaitKind.Execution));
+        var sql = RequiredSql(Statement.OpenWaits);
+        if (query.InstanceIds is { } ids)
+        {
+            if (ids.Count > 1000) throw new ArgumentException("At most 1000 instance IDs", nameof(query));
+            var predicate = SearchColumn("instance_id") + " " + SearchValues(parameters, "Ids", ids.Distinct(StringComparer.Ordinal).ToArray());
+            sql = sql.Replace("WHERE close_reason IS NULL", "WHERE close_reason IS NULL AND " + predicate)
+                .Replace("WHERE CloseReason IS NULL", "WHERE CloseReason IS NULL AND " + predicate);
+        }
+        var rows = await connection.QueryAsync<WaitRow>(sql, parameters);
         return rows.Select(row => row.Read(ReadTime)).ToArray();
     }
 
@@ -546,9 +567,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         }
         catch (Exception error) when (IsRetryableCommit(error) || error is PayloadLockUnavailableException)
         {
-            await using var connection = await OpenConnectionAsync();
-            return new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0,
-                StoreTimeUtc: await OutboxNowAsync(connection, null));
+            return new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0);
         }
     }
 
@@ -560,6 +579,8 @@ public abstract partial class RelationalWorkflowStateRepository :
         var revision = checked(commit.ExpectedRevision + 1);
         await using var connection = await OpenConnectionAsync();
         await using var transaction = (await BeginTransactionAsync(connection, Operation.Commit))!;
+        if (commit.ExpectedRevision == 0 || commit.ChildStarts.Count > 0)
+            await ExecuteOptionalAsync(connection, transaction, Statement.CatalogSharedLock, null);
         var payloadPins = PayloadStore.Enlist(transaction);
         if (!commit.PreservesPayloadPins)
         {
@@ -647,6 +668,14 @@ public abstract partial class RelationalWorkflowStateRepository :
             return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, currentRevision,
                 RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
         }
+        var command = ReadReason(current?.CancellationJson);
+        if (command?.Mode == WorkflowControlMode.Terminate &&
+            (snapshot.Status != WorkflowStatus.Terminated || snapshot.CommandVersion != command.CommandVersion))
+        {
+            await transaction.CommitAsync();
+            return new WorkflowCommitResult(WorkflowCommitStatus.TerminationRequested, currentRevision, command,
+                RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
+        }
         if (currentRevision != commit.ExpectedRevision ||
             (current?.CancellationJson != null && !snapshot.AcknowledgesCancellation &&
              snapshot.Status is WorkflowStatus.Cancelled or WorkflowStatus.Terminated or WorkflowStatus.TimedOut))
@@ -656,6 +685,8 @@ public abstract partial class RelationalWorkflowStateRepository :
                 RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
         }
         // A child's ID is new; a commit that names an existing instance changes nothing.
+        await CheckCatalogStartsAsync(connection, transaction, commit, current == null);
+
         if (commit.ChildStarts.Count > 0 && await connection.ExecuteScalarAsync<string?>(RequiredSql(Statement.TakenChild), new { Ids = commit.ChildStarts.Select(child => child.ChildInstanceId).ToArray() }, transaction)
             is { } taken)
             throw new InvalidOperationException(
@@ -705,10 +736,14 @@ public abstract partial class RelationalWorkflowStateRepository :
             earliestDeadline is { } deadline && NormalizeRunnableTime ? Utc(deadline) : earliestDeadline);
         var values = WithTimes(new
         {
+            StopKind = snapshot.StopKind?.ToString(),
+            snapshot.StopCrashCount,
             snapshot.InstanceId,
             snapshot.WorkflowName,
+            snapshot.WorkflowVersion,
             snapshot.CorrelationId,
             snapshot.ParentInstanceId,
+            snapshot.ParentWaitId,
             commit.Incarnation,
             Status = snapshot.Status.ToString(),
             commit.InboxReadThrough,
@@ -718,7 +753,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             commit.CommitId,
             PayloadHash = commit.ContentHash,
             snapshot.AcknowledgesCancellation
-        }, ("RunnableAtUtc", runnableAt));
+        }, ("RunnableAtUtc", runnableAt), ("CreatedAtUtc", snapshot.CreatedAt));
         // A missing row is inserted, so a commit racing to create the same instance violates its key and
         // is retried, rather than overwriting it.
         await connection.ExecuteAsync(current == null
@@ -757,6 +792,11 @@ public abstract partial class RelationalWorkflowStateRepository :
         var woken = false;
         foreach (var cancellation in commit.ChildCancellations)
         {
+            if (cancellation.Reason.Mode == WorkflowControlMode.Terminate)
+            {
+                await RequestTerminationAsync(connection, transaction, cancellation.ChildInstanceId, cancellation.Reason, madeRunnable);
+                continue;
+            }
             var outcome = await RequestCancellationAsync(connection, transaction, cancellation.ChildInstanceId,
                 JsonSerializer.Serialize(cancellation.Reason), now);
             if (outcome == CancellationOutcome.MadeRunnable)
@@ -765,7 +805,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             else if (outcome == CancellationOutcome.Gone)
             {
                 var gone = ToEvent(WorkflowStoreRules.ChildGone(cancellation.ChildInstanceId, commit.InstanceId,
-                    cancellation.ParentWaitId));
+                    cancellation.ParentWaitId!));
                 var appended = await AppendAsync(connection, transaction, gone, gone.ContentHash(), inbox, now);
                 if (appended.Status == EventAppendStatus.Stored)
                     inbox.InboxSequence = appended.Sequence;
@@ -878,54 +918,6 @@ public abstract partial class RelationalWorkflowStateRepository :
                 throw new InvalidOperationException($"Workflow instance '{instanceId}' changed in each of {MaxReadAttempts} reads");
             await Task.Delay(Random.Shared.Next(1, 5 * attempt));
         }
-    }
-
-    private async Task<WorkflowInstance[]> AssembleAsync(DbConnection connection, IReadOnlyList<StoredRow> rows,
-        DbTransaction? transaction, string filter, object? filterValues)
-    {
-        var instances = new List<WorkflowInstance>();
-        foreach (var batch in rows.Chunk(StatementBatchSize))
-        {
-            ILookup<string, StoredPart> parts;
-            Dictionary<string, StoredStamp>? stamps = null;
-            using (var read = await connection.QueryMultipleAsync(RequiredSql(Statement.ReadParts),
-                new { Ids = batch.Select(row => row.InstanceId).ToArray() }, transaction))
-            {
-                parts = (await read.ReadAsync<StoredPart>()).ToLookup(part => part.InstanceId, StringComparer.Ordinal);
-                if (ReadsUseStamps)
-                    stamps = (await read.ReadAsync<StoredStamp>()).ToDictionary(stored => stored.InstanceId, StringComparer.Ordinal);
-            }
-            foreach (var row in batch)
-                if (!ReadsUseStamps || stamps!.TryGetValue(row.InstanceId, out var stamp) && row.Same(stamp))
-                    instances.Add(row.Read(parts[row.InstanceId], NormalizeRunnableTime));
-                else if (await ReadAtOneRevisionAsync(connection, transaction, row.InstanceId, true, filter, filterValues) is { } moved)
-                    instances.Add(moved);
-        }
-        return instances.ToArray();
-    }
-
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
-        QueryAsync(RequiredSql(Statement.ByName), workflowName);
-
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
-        QueryAsync(RequiredSql(Statement.ByStatus), status.ToString());
-
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
-        QueryAsync(RequiredSql(Statement.ByCorrelation), correlationId);
-
-    public async Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(parentInstanceId);
-        return await QueryAsync(RequiredSql(Statement.ByParent), parentInstanceId);
-    }
-
-    private async Task<IEnumerable<WorkflowInstance>> QueryAsync(string predicate, string value)
-    {
-        await EnsureSchemaAsync();
-        await using var connection = await OpenConnectionAsync();
-        await using var transaction = await BeginTransactionAsync(connection, Operation.Query);
-        var rows = await connection.QueryAsync<StoredRow>(RequireSql(Statement.Query, QuerySql(predicate)), new { Value = value }, transaction);
-        return await AssembleAsync(connection, rows.ToArray(), transaction, $"AND {predicate}", new { Value = value });
     }
 
     public async Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)

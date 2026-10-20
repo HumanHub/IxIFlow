@@ -24,7 +24,6 @@ public static class ServiceCollectionExtensions
     public static IIxIFlowBuilder AddIxIFlow(this IServiceCollection services)
     {
         // Core workflow services
-        services.TryAddSingleton<IWorkflowOperations>(provider => (IWorkflowOperations)provider.GetRequiredService<IWorkflowClient>());
         services.TryAddSingleton<HostSettings>(_ => HostSettings.Default);
         services.TryAddSingleton(RetentionSettings.Default);
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
@@ -33,6 +32,7 @@ public static class ServiceCollectionExtensions
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
         services.AddSingleton<IWorkflowClient, HostedWorkflowClient>();
+        services.AddSingleton<IWorkflowOperations, HostedWorkflowOperations>();
         services.AddSingleton<IWorkflowIngressClient, WorkflowIngressClient>();
         services.AddScoped<WorkflowHost.SlotClient>();
         services.AddScoped<RunControl>();
@@ -55,10 +55,13 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton(ExecutionLimits.Default);
         services.TryAddSingleton(new ClientActor(null));
-        
+
         // Workflow state and persistence
-        services.AddSingleton<IWorkflowVersionRegistry, WorkflowVersionRegistry>();
-        services.AddSingleton<IWorkflowDefinitionSource>(provider => provider.GetRequiredService<IWorkflowVersionRegistry>());
+        services.AddSingleton<IWorkflowCatalog>(provider => new WorkflowCatalog(
+            provider.GetRequiredService<IWorkflowStateRepository>(), provider.GetServices<WorkflowDefinition>(),
+            provider.GetRequiredService<IArtifactStore>()));
+        services.TryAddSingleton<IArtifactStore>(provider => new RepositoryArtifactStore(provider.GetRequiredService<IWorkflowStateRepository>()));
+        services.AddSingleton<IWorkflowDefinitionSource>(provider => provider.GetRequiredService<IWorkflowCatalog>());
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
         return new IxIFlowBuilder(services);
     }
@@ -134,8 +137,9 @@ public static class ServiceCollectionExtensions
         RetentionSettings.Validate(options.FinishedInstanceRetention, options.TombstoneRetention, options.RetentionBatchSize);
         if (options.RetentionScanInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(options.RetentionScanInterval), "The retention scan interval must be positive");
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ArtifactRetention, TimeSpan.Zero);
         services.Replace(ServiceDescriptor.Singleton(new RetentionSettings(options.FinishedInstanceRetention,
-            options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize)));
+            options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize) { ArtifactRetention = options.ArtifactRetention }));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -162,20 +166,20 @@ public static class ServiceCollectionExtensions
         var workflowInterface = typeof(TWorkflow)
             .GetInterfaces()
             .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IWorkflow<>));
-        
+
         if (workflowInterface == null)
             throw new ArgumentException($"{typeof(TWorkflow).Name} must implement IWorkflow<T>");
-        
+
         var workflowDataType = workflowInterface.GetGenericArguments()[0];
-        
+
         // Register the workflow class
         services.AddTransient<TWorkflow>();
-        
+
         // Use reflection to call the generic BuildWorkflowDefinition method
         var buildMethod = typeof(ServiceCollectionExtensions)
             .GetMethod(nameof(BuildWorkflowDefinition), BindingFlags.Public | BindingFlags.Static)!
             .MakeGenericMethod(typeof(TWorkflow), workflowDataType);
-        
+
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
@@ -204,7 +208,7 @@ public static class ServiceCollectionExtensions
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
         // Register the workflow class
         services.AddTransient<TWorkflow>();
-        
+
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
@@ -252,13 +256,16 @@ internal sealed record RegisteredWorkflowDefinition<TWorkflow>(WorkflowDefinitio
 /// </summary>
 public class IxIFlowOptions
 {
-    /// <summary>Whole-value UTF-8 claim-check threshold, default 256 KiB. Zero disables it.</summary>
+    /// <summary>Whole-value UTF-8 claim-check threshold, disabled by default (zero). Set 256 KiB to enable it.</summary>
     public long PayloadThresholdBytes { get; set; } = PayloadStoreSettings.DefaultPayloadThresholdBytes;
     /// <summary>Aggregate hydrated and in-flight payload bytes per run, default 128 MiB.</summary>
     public long MaxHydratedPayloadBytes { get; set; } = 128L * 1024 * 1024;
 
     /// <summary>Maximum bytes in one put, default 64 MiB.</summary>
     public long MaxPayloadBytes { get; set; } = PayloadStoreSettings.DefaultMaxPayloadBytes;
+
+    /// <summary>How long unreferenced artifacts are retained; defaults to 90 days.</summary>
+    public TimeSpan ArtifactRetention { get; set; } = TimeSpan.FromDays(90);
 
     /// <summary>How long terminal rows and their results remain, measured from the first terminal store write. At least one minute.</summary>
     public TimeSpan FinishedInstanceRetention { get; set; } = RetentionSettings.Default.FinishedRetention;

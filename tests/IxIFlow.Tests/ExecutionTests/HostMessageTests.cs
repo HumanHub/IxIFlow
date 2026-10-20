@@ -273,7 +273,7 @@ public sealed class HostMessageTests
             var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition, data,
                 new WorkflowOptions(), DateTime.UtcNow);
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-            await _services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+            await _services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
             var ready = await Executor.ExecuteAsync(new(Signals.AssignmentId, instance, null,
                 checkpoint.StructureHash, 1, 0, ExecutionLimits.Default, false, []), CancellationToken.None);
             return ready.Outcome;

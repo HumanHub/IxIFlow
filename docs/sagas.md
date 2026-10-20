@@ -31,7 +31,7 @@ If the selected activity never completed, the up-to policy undoes all completed 
 | --- | --- |
 | `ThenContinue()` | Continue after the saga once compensation succeeds |
 | `ThenContinue(ignoreCompensationErrors: true)` | Continue even when compensation reported errors |
-| `ThenTerminate()` | Raise `SagaTerminatedException`, which an enclosing catch may handle |
+| `ThenTerminate()` | Raise `SagaTerminatedException`, which an enclosing catch may handle; an unhandled policy termination ends the instance as `Terminated` |
 | `ThenRetry(count)` or `ThenRetry(policy)` | `Compensate()` restarts the saga from its first step, re-evaluating `OutcomeOn`; `CompensateUpTo<TActivity>()` restarts at that activity if it completed, otherwise at the saga's first step; `CompensateNone()` restarts at the failed step |
 | No continuation | Rethrow the original error after the selected undo |
 

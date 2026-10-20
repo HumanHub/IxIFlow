@@ -322,14 +322,14 @@ public sealed class BreakpointTests
     {
         var services = new ServiceCollection().AddLogging(); services.AddIxIFlow(o => o.Debugging = true);
         services.AddSingleton<IWorkflowStateRepository>(store); services.AddSingleton(probe);
-        services.AddSingleton<IWorkflowVersionRegistry>(probe.Registry);
+        services.AddSingleton<IWorkflowCatalog>(probe.Registry);
         return services.BuildServiceProvider();
     }
     public sealed class Data { public int Value { get; set; } public List<int> Items { get; set; } = [1, 2, 3]; }
     public sealed class Go;
     public sealed class Probe
     {
-        public WorkflowVersionRegistry Registry { get; } = new();
+        public WorkflowCatalog Registry { get; } = new();
         public int Count;
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Finish { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

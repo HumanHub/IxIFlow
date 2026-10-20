@@ -143,7 +143,7 @@ public static class WorkflowStoreRules
 /// Stores workflow instances. First commits carry a fresh incarnation; child starts allocate
 /// one in the store on insertion. Every instance read round-trips it separately from serialized state.
 /// </summary>
-public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore, IWorkflowDebugStore
+public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStore, IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore, IWorkflowDebugStore
 {
     /// <summary>Bodies and pins stored transactionally with this repository's referencing rows.</summary>
     IPayloadStore PayloadStore { get; }
@@ -178,7 +178,10 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWo
     /// caller never overwrites the running owner's state. The first request wins.
     /// Returns false when the instance is absent or terminal.
     /// </summary>
-    Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason);
+    Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null);
+
+    /// <summary>Durably upgrades cancellation to termination; repeated termination returns the same command version.</summary>
+    Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null);
 
     /// <summary>Reads a durable cancellation request for an instance.</summary>
     Task<CancellationReason?> GetCancellationRequestAsync(string instanceId);
@@ -214,7 +217,7 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWo
     Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration);
 
-    /// <summary>Extends a lease held by the same execution token.</summary>
+    /// <summary>Extends a lease held by the same execution token. Pending termination refuses renewal so recovery can claim at expiry.</summary>
     Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration);
 
@@ -234,29 +237,14 @@ public interface IWorkflowStateRepository : IWorkflowInbox, IWorkflowOutbox, IWo
     /// </summary>
     Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId);
 
-    /// <summary>
-    ///     Get workflow instances by workflow name
-    /// </summary>
-    Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName);
-
-    /// <summary>
-    ///     Get workflow instances by status
-    /// </summary>
-    Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status);
-
-    /// <summary>
-    ///     Get workflow instances by correlation ID
-    /// </summary>
-    Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId);
+    /// <summary>Searches persisted instance rows without reading checkpoints or parts.</summary>
+    Task<InstancePage> QueryInstancesAsync(InstanceQuery query);
 
     /// <summary>
     /// The instance's trace entries after <paramref name="afterSequence"/>, in order, at most
     /// <paramref name="limit"/>. Commits append them; deleting the instance deletes them.
     /// </summary>
     Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000);
-
-    /// <summary>The child workflows a parent started, for operators.</summary>
-    Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId);
 
     /// <summary>
     /// Deletes an instance and its inbox, waits and receipts. A child whose parent still waits for it ends
@@ -291,6 +279,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
 
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new();
+    private readonly Dictionary<string, InstanceSummary> _summaries = new(StringComparer.Ordinal);
     private readonly object _claimLock = new();
     private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] ContentHash, long Revision)> _commits = new();
     private long _executionEpoch;
@@ -309,25 +298,31 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly Dictionary<string, List<(string Json, long Revision, long? CommitEndSequence, WorkflowStatus? CommitStatus)>> _traces = new(StringComparer.Ordinal);
     private readonly HashSet<string> _acknowledgedCancellations = new();
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason)
+    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         lock (_claimLock)
-            return Task.FromResult(RequestCancellation(instanceId, reason, Now));
+            return Task.FromResult((expectedIncarnation == null ||
+                _instances.GetValueOrDefault(instanceId)?.Incarnation == expectedIncarnation) &&
+                RequestCancellation(instanceId, reason, Now));
     }
 
     // Caller holds _claimLock.
     private bool RequestCancellation(string instanceId, CancellationReason reason, DateTime now)
     {
         if (!_instances.TryGetValue(instanceId, out var instance) ||
-            instance.Status is not (WorkflowStatus.Ready or WorkflowStatus.Running or WorkflowStatus.Suspended or
-                WorkflowStatus.NeedsResolution or WorkflowStatus.Paused))
+            (reason.Mode == WorkflowControlMode.Terminate ? WorkflowStoreRules.IsTerminal(instance.Status)
+                : instance.Status is not (WorkflowStatus.Ready or WorkflowStatus.Running or WorkflowStatus.Suspended or
+                    WorkflowStatus.NeedsResolution or WorkflowStatus.Paused)))
             return false;
-        if (!_cancellations.ContainsKey(instanceId))
+        if (!_cancellations.ContainsKey(instanceId) ||
+            reason.Mode == WorkflowControlMode.Terminate && _cancellations[instanceId].Mode != WorkflowControlMode.Terminate)
         {
-            _cancellations.Add(instanceId,
-                JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!);
+            var command = JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))!;
+            command.CommandVersion = command.Mode == WorkflowControlMode.Terminate
+                ? (_cancellations.GetValueOrDefault(instanceId)?.CommandVersion ?? 0) + 1 : 0;
+            _cancellations[instanceId] = command;
             _acknowledgedCancellations.Remove(instanceId);
         }
         // A request still to be taken up makes the instance runnable now, in the same step (C-01);
@@ -395,7 +390,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         {
             var now = Now;
             if (!_leases.TryGetValue(instanceId, out var lease) ||
-                lease.Token != token || lease.ExpiresAtUtc <= now)
+                lease.Token != token || lease.ExpiresAtUtc <= now ||
+                _cancellations.GetValueOrDefault(instanceId)?.Mode == WorkflowControlMode.Terminate)
                 return Task.FromResult(false);
             _leases[instanceId] = lease with { ExpiresAtUtc = now.Add(duration) };
             return Task.FromResult(true);
@@ -450,7 +446,16 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     private sealed class PayloadCommitNotAppliedException : Exception;
 
-    private Task<WorkflowCommitResult> CommitCore(CheckpointCommit commit, WorkflowAdmission? admission)
+    private async Task<WorkflowCommitResult> CommitCore(CheckpointCommit commit, WorkflowAdmission? admission)
+    {
+        ArgumentNullException.ThrowIfNull(commit);
+        var catalogStart = commit.ExpectedRevision == 0 || commit.ChildStarts.Count > 0;
+        if (catalogStart) await _catalogLock.WaitAsync();
+        try { return await CommitUnderClaimLock(commit, admission); }
+        finally { if (catalogStart) _catalogLock.Release(); }
+    }
+
+    private Task<WorkflowCommitResult> CommitUnderClaimLock(CheckpointCommit commit, WorkflowAdmission? admission)
     {
         ArgumentNullException.ThrowIfNull(commit);
         var snapshot = commit.ReadTrunk();
@@ -496,6 +501,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
             if (!owns)
                 return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
+            if (_cancellations.TryGetValue(commit.InstanceId, out var command) &&
+                command.Mode == WorkflowControlMode.Terminate &&
+                (snapshot.Status != WorkflowStatus.Terminated || snapshot.CancellationReason?.CommandVersion != command.CommandVersion))
+                return Task.FromResult(Result(WorkflowCommitStatus.TerminationRequested, revision, PendingCancellation(commit.InstanceId)));
             // An event this commit settles must still be pending.
             if (commit.Settlements.Any(settlement =>
                     !_events.TryGetValue((commit.InstanceId, settlement.EventId), out var pending) ||
@@ -507,6 +516,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(Result(WorkflowCommitStatus.Conflict, revision));
+            if (stored == null) CheckCatalogStart(snapshot);
+            foreach (var child in commit.ChildStarts) CheckCatalogStart(JsonSerializer.Deserialize<WorkflowInstance>(child.Payload)!);
             foreach (var child in commit.ChildStarts)
                 RefuseRemoved(child.ChildInstanceId, Now);
             // A child's ID is new; a commit that names an existing instance changes nothing.
@@ -574,6 +585,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
             _instances[commit.InstanceId] = snapshot;
             if (debugCommands.Count > 0) _debugCommands[commit.InstanceId] = debugCommands.ToList();
+            _summaries[commit.InstanceId] = InstanceSummary.Of(snapshot) with
+            { EndedAtUtc = WorkflowStoreRules.IsTerminal(snapshot.Status) ? _endedAt.GetValueOrDefault(commit.InstanceId, now) : null };
             RecordCompletion(snapshot, now);
             _commits.Add(key, (commit.ExpectedRevision, commit.ContentHash, snapshot.Revision));
             if (commit.TraceEntries.Count > 0)
@@ -601,18 +614,24 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 child.Revision = 1;
                 child.RunnableAtUtc = now;
                 _instances[child.InstanceId] = child;
+                _summaries[child.InstanceId] = InstanceSummary.Of(child);
                 _parts.Remove(child.InstanceId);
                 madeRunnable.Add(child.InstanceId);
             }
             foreach (var cancellation in commit.ChildCancellations)
             {
+                if (cancellation.Reason.Mode == WorkflowControlMode.Terminate)
+                {
+                    TerminateDescendant(cancellation.ChildInstanceId, cancellation.Reason, now, madeRunnable, new HashSet<string>(StringComparer.Ordinal));
+                    continue;
+                }
                 if (RequestCancellation(cancellation.ChildInstanceId, cancellation.Reason, now) &&
                     !_acknowledgedCancellations.Contains(cancellation.ChildInstanceId))
                     madeRunnable.Add(cancellation.ChildInstanceId);
                 // A child that is gone will never answer; its parent's wait ends as its termination.
-                else if (!_instances.ContainsKey(cancellation.ChildInstanceId))
+                else if (cancellation.Reason.Mode != WorkflowControlMode.Terminate && !_instances.ContainsKey(cancellation.ChildInstanceId))
                     Append(ToEvent(WorkflowStoreRules.ChildGone(cancellation.ChildInstanceId, commit.InstanceId,
-                        cancellation.ParentWaitId)), now);
+                        cancellation.ParentWaitId!)), now);
             }
             // The child's completion goes to its parent's inbox; whatever the parent's state, the child's
             // commit stands.
@@ -788,20 +807,24 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(query.Limit);
+        if (query.InstanceIds?.Count > 1000) throw new ArgumentException("At most 1000 instance IDs", nameof(query));
         lock (_claimLock)
-            return Task.FromResult<IReadOnlyList<StoredWait>>((query.InstanceId == null
-                    ? _waits.Values.SelectMany(waits => waits.Values)
-                    : OpenWaits(query.InstanceId))
+            return Task.FromResult<IReadOnlyList<StoredWait>>((query.InstanceId != null
+                    ? OpenWaits(query.InstanceId)
+                    : query.InstanceIds != null
+                        ? query.InstanceIds.Distinct(StringComparer.Ordinal).SelectMany(OpenWaits)
+                        : _waits.Values.SelectMany(waits => waits.Values))
                 .Where(wait => wait.IsOpen &&
                                (query.InstanceId == null || wait.InstanceId == query.InstanceId) &&
+                               (query.InstanceIds == null || query.InstanceIds.Contains(wait.InstanceId)) &&
                                (query.Key == null || wait.Key == query.Key) &&
                                (query.EventType == null || wait.EventType == query.EventType) &&
                                (query.Kind == null
                                    ? wait.Kind is not (WaitKind.Delay or WaitKind.Execution)
                                    : wait.Kind == query.Kind) &&
-                               (query.AfterWaitId == null ||
-                                string.CompareOrdinal(wait.WaitId, query.AfterWaitId) > 0))
-                .OrderBy(wait => wait.WaitId, StringComparer.Ordinal)
+                               (query.AfterWaitRef == null ||
+                                string.CompareOrdinal(WaitReference.Of(wait.InstanceId, wait.WaitId), query.AfterWaitRef) > 0))
+                .OrderBy(wait => WaitReference.Of(wait.InstanceId, wait.WaitId), StringComparer.Ordinal)
                 .Take(query.Limit)
                 .ToArray());
     }
@@ -837,27 +860,6 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         }
     }
 
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName)
-    {
-        lock (_claimLock)
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(_instances.Values
-                .Where(i => i.WorkflowName == workflowName).Select(SnapshotStructured).ToList());
-    }
-
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status)
-    {
-        lock (_claimLock)
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(_instances.Values
-                .Where(i => i.Status == status).Select(SnapshotStructured).ToList());
-    }
-
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId)
-    {
-        lock (_claimLock)
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(_instances.Values
-                .Where(i => i.CorrelationId == correlationId).Select(SnapshotStructured).ToList());
-    }
-
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
         int limit = 1000)
     {
@@ -870,13 +872,6 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                         JsonSerializer.Deserialize<ExecutionTraceEntry>(stored.Json)!)
                         { Revision = stored.Revision, CommitEndSequence = stored.CommitEndSequence, CommitStatus = stored.CommitStatus }).ToArray()
                 : []);
-    }
-
-    public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId)
-    {
-        lock (_claimLock)
-            return Task.FromResult<IEnumerable<WorkflowInstance>>(_instances.Values
-                .Where(instance => instance.ParentInstanceId == parentInstanceId).Select(SnapshotStructured).ToArray());
     }
 
     public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)
@@ -905,6 +900,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             deleted is { ParentInstanceId: { } parent, ParentWaitId: { } wait })
             Append(ToEvent(WorkflowStoreRules.ChildGone(instanceId, parent, wait)), Now);
         _instances.TryRemove(instanceId, out _);
+        _summaries.Remove(instanceId);
         _leases.Remove(instanceId);
         _endedAt.Remove(instanceId);
         _cancellations.Remove(instanceId);
@@ -938,114 +934,5 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         if (duration <= TimeSpan.Zero || duration.TotalMilliseconds > int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(duration));
-    }
-}
-
-/// <summary>
-///     Workflow version registry interface
-/// </summary>
-public interface IWorkflowVersionRegistry : IWorkflowDefinitionSource
-{
-    /// <summary>A snapshot of all registered definitions the host can load.</summary>
-    Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync();
-
-    /// <summary>
-    ///     Register a workflow version
-    /// </summary>
-    Task RegisterWorkflowAsync(WorkflowDefinition definition);
-
-    /// <summary>
-    ///     The structure hash recorded when the version was registered, or null if it is not registered.
-    ///     Typed child resolution compares a DI-built definition against it.
-    /// </summary>
-    Task<string?> GetWorkflowStructureHashAsync(string name, int version);
-
-    /// <summary>
-    ///     Deactivate a workflow version
-    /// </summary>
-    Task DeactivateWorkflowVersionAsync(string name, int version);
-}
-
-/// <summary>
-///     Concrete implementation of workflow version registry
-/// </summary>
-public class WorkflowVersionRegistry : IWorkflowVersionRegistry
-{
-    private sealed record Registration(WorkflowDefinition Definition, string StructureHash);
-    private readonly ConcurrentDictionary<(string Name, int Version), Registration> _workflows = new();
-
-    public WorkflowVersionRegistry() { }
-
-    public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
-        Task.FromResult<IReadOnlyList<WorkflowDefinition>>(_workflows.Values.Select(registration => registration.Definition).ToArray());
-
-    public WorkflowVersionRegistry(IEnumerable<WorkflowDefinition> definitions)
-    {
-        foreach (var definition in definitions)
-            RegisterWorkflow(definition);
-    }
-
-    public Task RegisterWorkflowAsync(WorkflowDefinition definition)
-    {
-        RegisterWorkflow(definition);
-        return Task.CompletedTask;
-    }
-
-    private void RegisterWorkflow(WorkflowDefinition definition)
-    {
-        WorkflowDefinitionValidator.Validate(definition);
-        var key = (definition.Name, definition.Version);
-        var loadedHash = new WorkflowScopeCatalog(definition).StructureHash;
-        var published = _workflows.GetOrAdd(key, new Registration(definition, loadedHash));
-        var registeredHash = published.StructureHash;
-        if (registeredHash != loadedHash)
-        {
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
-                $"Workflow {definition.Name} v{definition.Version} is already registered with structure hash " +
-                $"'{registeredHash}'; loaded structure hash '{loadedHash}' differs");
-        }
-    }
-
-    public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version)
-    {
-        var key = (name, version);
-        _workflows.TryGetValue(key, out var registration);
-        return Task.FromResult(registration?.Definition);
-    }
-
-    public Task<string?> GetWorkflowStructureHashAsync(string name, int version)
-    {
-        _workflows.TryGetValue((name, version), out var registration);
-        return Task.FromResult(registration?.StructureHash);
-    }
-
-    public Task DeactivateWorkflowVersionAsync(string name, int version)
-    {
-        var key = (name, version);
-        if (_workflows.TryGetValue(key, out var registration))
-        {
-            var definition = registration.Definition;
-            // Create a copy with IsActive = false
-            var updatedDefinition = new WorkflowDefinition
-            {
-                Id = definition.Id,
-                Name = definition.Name,
-                Version = definition.Version,
-                Description = definition.Description,
-                WorkflowDataType = definition.WorkflowDataType,
-                CreatedAt = definition.CreatedAt,
-                CreatedBy = definition.CreatedBy,
-                Tags = definition.Tags,
-                Steps = definition.Steps,
-                Metadata = new Dictionary<string, object>(definition.Metadata)
-                {
-                    ["IsActive"] = false
-                }
-            };
-            WorkflowDefinitionValidator.Validate(updatedDefinition);
-            _workflows.TryUpdate(key, new Registration(updatedDefinition, registration.StructureHash), registration);
-        }
-
-        return Task.CompletedTask;
     }
 }

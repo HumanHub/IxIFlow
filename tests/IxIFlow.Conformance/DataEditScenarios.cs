@@ -14,7 +14,7 @@ public sealed class DataEditScenarios
     public async Task EditDataAuditAndReceiptSurviveRepositoryAndHostRecreation(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var definition = Workflow.Create<Data>("ConformanceEdit").Step<Noop>().WaitFor<Go>("go").Step<Noop>().Build();
         var repository = store.NewRepository(); var first = Services(repository, registry);
         string id; long revision; DataEditTarget target; DataEditResult receipt;
@@ -54,11 +54,11 @@ public sealed class DataEditScenarios
         Assert.Equal(receipt, await operations2.EditDataAsync(id, "edit", revision, target, patches, "editor"));
     }
 
-    private static ServiceProvider Services(IWorkflowStateRepository repository, WorkflowVersionRegistry registry)
+    private static ServiceProvider Services(IWorkflowStateRepository repository, WorkflowCatalog registry)
     {
         var services = new ServiceCollection().AddLogging();
         services.AddIxIFlow(o => o.Debugging = true);
-        services.AddSingleton(repository); services.AddSingleton<IWorkflowVersionRegistry>(registry);
+        services.AddSingleton(repository); services.AddSingleton<IWorkflowCatalog>(registry);
         return services.BuildServiceProvider();
     }
     public sealed class Data { public int Number { get; set; } }

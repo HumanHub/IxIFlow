@@ -1122,7 +1122,7 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
     {
         public async Task<List<WorkflowInstance>> GetWorkflowInstancesAsync(string workflowName, int? version = null)
         {
-            var instances = await GetWorkflowInstancesByNameAsync(workflowName);
+            var instances = await Task.WhenAll((await QueryInstancesAsync(new InstanceQuery(WorkflowName: workflowName, Limit: int.MaxValue))).Items.Select(async row => (await GetWorkflowInstanceAsync(row.InstanceId))!));
             return instances.Where(instance => !version.HasValue || instance.WorkflowVersion == version.Value).ToList();
         }
     }

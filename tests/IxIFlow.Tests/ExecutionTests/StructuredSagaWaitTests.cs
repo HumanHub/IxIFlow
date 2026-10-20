@@ -74,7 +74,7 @@ public class StructuredSagaWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(ForwardWorkflow());
         var result = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "approval", new Approval());
@@ -99,7 +99,7 @@ public class StructuredSagaWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(ForwardWorkflow());
         var result = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "approval", new Approval());
@@ -123,7 +123,7 @@ public class StructuredSagaWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(FailingWorkflow());
         var result = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "approval", new Approval());
@@ -300,7 +300,7 @@ public class StructuredSagaWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(definition);
         var result = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "approval", new Approval());
@@ -566,7 +566,7 @@ public class StructuredSagaWaitTests
         var engine = services.GetRequiredService<IWorkflowClient>();
 
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new SagaData()));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
 
         var recovered = await engine.RecoverAsync(saved.InstanceId);
 
@@ -592,7 +592,7 @@ public class StructuredSagaWaitTests
         var engine = services.GetRequiredService<IWorkflowClient>();
 
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new SagaData()));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
 
         var recovered = await engine.RecoverAsync(saved.InstanceId);
 
@@ -622,7 +622,7 @@ public class StructuredSagaWaitTests
         var engine = services.GetRequiredService<IWorkflowClient>();
 
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new SagaData()));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
 
         var recovered = await engine.RecoverAsync(saved.InstanceId);
 
@@ -666,7 +666,7 @@ public class StructuredSagaWaitTests
         var engine = services.GetRequiredService<IWorkflowClient>();
 
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new SagaData()));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
 
         var recovered = await engine.RecoverAsync(saved.InstanceId);
 
@@ -693,7 +693,7 @@ public class StructuredSagaWaitTests
         var engine = services.GetRequiredService<IWorkflowClient>();
 
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new SagaData()));
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByStatusAsync(WorkflowStatus.Running));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
 
         var recovered = await engine.RecoverAsync(saved.InstanceId);
 
@@ -785,7 +785,7 @@ public class StructuredSagaWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(PredicateWorkflow());
         var engine = secondProvider.GetRequiredService<IWorkflowClient>();
         var rejected = await engine.ResumeAsync(instanceId, "approval", new Approval { Expected = 0 });
@@ -1374,7 +1374,7 @@ public class StructuredSagaWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(SagaErrorWaitWorkflow());
         var resumed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "review", new Approval());
@@ -1440,7 +1440,7 @@ public class StructuredSagaWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(SagaRetryAfterWaitWorkflow());
         var resumed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "retry", new Approval());
@@ -1464,12 +1464,12 @@ public class StructuredSagaWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
-        await secondProvider.GetRequiredService<IWorkflowVersionRegistry>()
+        await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(SagaTerminateAfterWaitWorkflow());
         var resumed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "terminate", new Approval());
 
-        Assert.Equal(WorkflowExecutionStatus.Faulted, resumed.Status);
+        Assert.Equal(WorkflowExecutionStatus.Terminated, resumed.Status);
         Assert.Contains("Error policy requested termination", resumed.ErrorMessage);
     }
 
@@ -1772,6 +1772,33 @@ public class StructuredSagaWaitTests
     public sealed class HandlerStartCrashStore : IWorkflowStateRepository
     {
         public IPayloadStore PayloadStore => _inner.PayloadStore;
+        public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
+            _inner.GetDefinitionAsync(name, version);
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
+            _inner.SaveDefinitionAsync(definition, expectedRevision);
+        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
+            _inner.RegisterWorkflowVersionAsync(version, artifacts);
+        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
+            _inner.GetWorkflowVersionAsync(name, version);
+        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
+            _inner.GetWorkflowVersionsAsync(name);
+        public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>
+            _inner.SetWorkflowVersionStateAsync(name, version, state, artifacts);
+        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) =>
+            _inner.PublishDefinitionAsync(draftId, version, artifacts);
+        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+            _inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
+        public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
+            _inner.PutAsync(kind, content, cancellationToken);
+        public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            _inner.OpenAsync(digest, cancellationToken);
+        public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            _inner.ExistsAsync(digest, cancellationToken);
+        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) =>
+            _inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
+        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            _inner.DeleteAsync(digest, cancellationToken);
+
         public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
             _inner.RegisterMemberAsync(member, cancellationToken);
         public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
@@ -1796,7 +1823,11 @@ public class StructuredSagaWaitTests
 
         public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
             _inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
-        public Task UnregisterPublisherAsync(string name) => _inner.UnregisterPublisherAsync(name);
+        public Task UnregisterPublisherAsync(string name, string actor = "host") => _inner.UnregisterPublisherAsync(name, actor);
+        public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) => _inner.ListDeliveriesAsync(query);
+        public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => _inner.RetryDeliveryAsync(eventId, publisherName, actor);
+        public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() => _inner.ListPublishersAsync();
+        public Task<bool> EnablePublisherAsync(string publisherName, string actor) => _inner.EnablePublisherAsync(publisherName, actor);
         public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
             _inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
         public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
@@ -1823,8 +1854,8 @@ public class StructuredSagaWaitTests
             _inner.GetOpenWaitsAsync(query);
 
         private readonly InMemoryWorkflowStateRepository _inner = new();
-        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
-            _inner.RequestCancellationAsync(instanceId, reason);
+        public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+            _inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
         public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
             _inner.GetCancellationRequestAsync(instanceId);
         public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(int limit) =>
@@ -1850,8 +1881,6 @@ public class StructuredSagaWaitTests
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
             _inner.GetWorkflowInstanceSummaryAsync(instanceId);
-        public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
-            _inner.GetChildInstancesAsync(parentInstanceId);
         public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
             _inner.GetControlRequestsAsync(instanceIds);
         public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
@@ -1861,12 +1890,11 @@ public class StructuredSagaWaitTests
 
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
-            _inner.GetWorkflowInstancesByNameAsync(workflowName);
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
-            _inner.GetWorkflowInstancesByStatusAsync(status);
-        public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
-            _inner.GetWorkflowInstancesByCorrelationIdAsync(correlationId);
+        public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
+            _inner.QueryInstancesAsync(query);
+
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+            _inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
             int limit = 1000) =>
             _inner.GetTraceAsync(instanceId, afterSequence, limit);

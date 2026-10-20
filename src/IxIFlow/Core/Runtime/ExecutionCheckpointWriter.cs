@@ -48,7 +48,15 @@ internal static class ExecutionCheckpointWriter
             throw new CheckpointLimitExceededException(size, host.Limits.MaxCheckpointBytes);
         }
 
-        return await CommitPreparedAsync(host, instance, checkpoint, stored, now, clearsCrashCount, parkFor);
+        try
+        {
+            return await CommitPreparedAsync(host, instance, checkpoint, stored, now, clearsCrashCount, parkFor);
+        }
+        catch (CheckpointLimitExceededException)
+        {
+            lastCommitted.RestoreTo(instance);
+            throw;
+        }
     }
 
     /// <summary>Sends an already validated, prepared checkpoint without serializing its data again.</summary>
@@ -75,10 +83,22 @@ internal static class ExecutionCheckpointWriter
         using var span = Telemetry.Source.StartActivity("commit");
         Telemetry.Tag(span, instance);
         var startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        checkpoint.Signals?.ThrowIfOwnershipLost();
+        // Resends resolve the same immutable commit even if its first attempt released the lease.
         for (var attempt = 1; ; attempt++)
         {
-            checkpoint.Signals?.ThrowIfOwnershipLost();
-            var reply = await host.CheckpointAsync(commit);
+            CheckpointReply reply;
+            try
+            {
+                reply = await host.CheckpointAsync(commit);
+            }
+            catch (CheckpointLimitExceededException)
+            {
+                SavedForm.Of(host.SavedInstance ?? instance).RestoreTo(instance);
+                checkpoint.RestoreMarks(stored.Marks);
+                checkpoint.Trace.DiscardPending();
+                throw;
+            }
             switch (reply.Kind)
             {
                 case CheckpointReplyKind.Ack:

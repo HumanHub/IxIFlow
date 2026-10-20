@@ -91,10 +91,10 @@ public sealed class PausedTimerTests
     {
         await using var h = new Harness(sqlite);
         var child = Workflow.Create<Data>("TimedChild").Step<Noop>().Delay(Ten).Build();
-        await h.Services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+        await h.Services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var parent = new WorkflowBuilder<Data, object>([], "PausedParent").Invoke<Data>(child.Name, 1).Step<Count>().Build();
         var id = (await h.Client.RunAsync(parent, new Data())).InstanceId;
-        var childId = Assert.Single(await h.Store.GetChildInstancesAsync(id)).InstanceId;
+        var childId = Assert.Single((await h.Store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: id, Limit: int.MaxValue))).Items).InstanceId;
         try { await Until(async () => (await h.Store.GetWorkflowInstanceAsync(childId))!.Status == WorkflowStatus.Suspended); }
         catch (OperationCanceledException)
         {

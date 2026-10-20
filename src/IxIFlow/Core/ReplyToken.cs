@@ -10,7 +10,7 @@ namespace IxIFlow.Core;
 /// </summary>
 public static class ReplyToken
 {
-    private const string Version = "1";
+    private const string Version = "3";
 
     public static string Create(string instanceId, string waitId, string? subject = null)
     {
@@ -27,7 +27,7 @@ public static class ReplyToken
         return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(subject)));
     }
 
-    /// <summary>Reads a token, or returns false when the text is not one.</summary>
+    /// <summary>Reads a supported, well-formed token. The store checks that its wait was issued.</summary>
     public static bool TryRead(string? token, out string instanceId, out string waitId, out string? subject)
     {
         instanceId = waitId = "";
@@ -36,9 +36,14 @@ public static class ReplyToken
             return false;
         try
         {
+            if (token.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('-' or '_')))
+                return false;
             var base64 = token.Replace('-', '+').Replace('_', '/');
             base64 = base64.PadRight(base64.Length + (4 - base64.Length % 4) % 4, '=');
-            var parts = JsonSerializer.Deserialize<string?[]>(Encoding.UTF8.GetString(Convert.FromBase64String(base64)));
+            var bytes = Convert.FromBase64String(base64);
+            if (Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_') != token)
+                return false;
+            var parts = JsonSerializer.Deserialize<string?[]>(bytes);
             if (parts is not [Version, { Length: > 0 } instance, { Length: > 0 } wait, var digest])
                 return false;
             (instanceId, waitId, subject) = (instance, wait, digest);

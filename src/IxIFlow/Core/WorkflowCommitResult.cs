@@ -25,7 +25,10 @@ public enum WorkflowCommitStatus
     /// An inbox event the commit settles is no longer pending. Nothing was written; the owner still
     /// owns the instance and reads its inbox again.
     /// </summary>
-    EventsChanged
+    EventsChanged,
+
+    /// <summary>A termination command committed first. The owner must commit the hard stop instead.</summary>
+    TerminationRequested
 }
 
 /// <summary>
@@ -145,7 +148,7 @@ public sealed class CheckpointCommit
     public IReadOnlyList<CheckpointPart> Parts { get; }
     /// <summary>The complete checkpoint owner's references, including references nested in inline parts.</summary>
     public IReadOnlyList<PayloadReference> PayloadReferences { get; }
-    /// <summary>A fenced metadata-only stop retains existing parts and pins, even if their bodies are unreadable.</summary>
+    /// <summary>A fenced metadata-only stop or termination retains existing parts and pins, even if bodies are unreadable.</summary>
     public bool PreservesPayloadPins { get; }
     /// <summary>New bodies written atomically with this checkpoint and its pins.</summary>
     public IReadOnlyList<PayloadBody> PayloadBodies { get; }
@@ -241,7 +244,7 @@ public sealed class CheckpointCommit
     /// </summary>
     public IReadOnlyList<ChildStart> ChildStarts { get; }
 
-    /// <summary>Cancellation requests this commit writes for its children; the first request for a child wins.</summary>
+    /// <summary>Control requests for descendants. Graceful cancellation is first wins; termination upgrades it and needs no parent wait.</summary>
     public IReadOnlyList<ChildCancellation> ChildCancellations { get; }
 
     /// <summary>
@@ -408,8 +411,9 @@ public sealed class CheckpointCommit
         var cancelled = (childCancellations ?? []).Select(child =>
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(child.ChildInstanceId, nameof(childCancellations));
-            ArgumentException.ThrowIfNullOrWhiteSpace(child.ParentWaitId, nameof(childCancellations));
             ArgumentNullException.ThrowIfNull(child.Reason, nameof(childCancellations));
+            if (child.Reason.Mode != WorkflowControlMode.Terminate)
+                ArgumentException.ThrowIfNullOrWhiteSpace(child.ParentWaitId, nameof(childCancellations));
             return child with
             {
                 Reason = JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(child.Reason))!
@@ -430,10 +434,11 @@ public sealed class CheckpointCommit
         ArgumentNullException.ThrowIfNull(deletedParts);
         ArgumentNullException.ThrowIfNull(traceEntries);
         if (preservesPayloadPins && (expectedRevision == 0 || parts.Count != 0 || deletedParts.Count != 0 || replacesParts ||
-            !stopped || metadata.Status != WorkflowStatus.NeedsResolution || settled.Length != 0 || opened.Length != 0 ||
-            armed.Length != 0 || closed.Length != 0 || started.Length != 0 || cancelled.Length != 0 || parentNotice != null ||
-            traceEntries.Count != 0 || parks || wakeAfter != null))
-            throw new ArgumentException("A metadata-only stop keeps all parts and performs no workflow effects");
+            !stopped || metadata.Status is not (WorkflowStatus.NeedsResolution or WorkflowStatus.Terminated) ||
+            settled.Length != 0 || opened.Length != 0 || armed.Length != 0 || closed.Length != 0 || started.Length != 0 ||
+            payloadBodies is { Count: > 0 } || parks || wakeAfter != null ||
+            metadata.Status == WorkflowStatus.NeedsResolution && (cancelled.Length != 0 || parentNotice != null || traceEntries.Count != 0)))
+            throw new ArgumentException("A metadata-only transition keeps all parts and performs only stop or termination effects");
         var written = parts.ToArray();
         var deleted = deletedParts.ToArray();
         foreach (var part in written)
@@ -461,6 +466,14 @@ public sealed class CheckpointCommit
                 return new PayloadBody(body.Reference, body.Body.ToArray(), Array.AsReadOnly(body.Dependencies.ToArray()));
             }).ToArray()));
     }
+
+    // Hard termination needs only readable metadata, even when saved branch or data bodies are unavailable.
+    internal static CheckpointCommit Terminate(WorkflowInstance saved, WorkflowInstance terminated, long epoch,
+        IReadOnlyList<ChildCancellation> children, ParentNotice? parentNotice, ExecutionTraceEntry trace) =>
+        FromFields(CommittedInstance.Of(terminated), JsonSerializer.Serialize(terminated), [], [], false,
+            saved.Incarnation, epoch, Guid.NewGuid().ToString("N"), saved.Revision, true, false, [], null,
+            [], [], [], null, true, [], children, parentNotice, [WorkflowStoreRules.SerializeTrace(trace)],
+            preservesPayloadPins: true);
 
     internal static CheckpointCommit PayloadStop(WorkflowInstance saved, long epoch, string reason, DateTime now,
         Runtime.OperatorStopKind kind = Runtime.OperatorStopKind.PayloadUnavailable)
@@ -538,9 +551,23 @@ public sealed class CheckpointCommit
 public sealed record CommittedInstance(string InstanceId, string WorkflowName, string CorrelationId,
     WorkflowStatus Status, bool AcknowledgesCancellation)
 {
+    public int WorkflowVersion { get; init; }
     public string? ParentInstanceId { get; init; }
+    public string? ParentWaitId { get; init; }
+    public DateTime CreatedAt { get; init; }
+    public long CommandVersion { get; init; }
+    public WorkflowStopKind? StopKind { get; init; }
+    public int? StopCrashCount { get; init; }
 
-    public static CommittedInstance Of(WorkflowInstance instance) => new(instance.InstanceId, instance.WorkflowName,
-        instance.CorrelationId, instance.Status, instance.CancellationReason != null)
-        { ParentInstanceId = instance.ParentInstanceId };
+    public static CommittedInstance Of(WorkflowInstance instance)
+    {
+        var projection = InstanceSummary.Of(instance);
+        return new(instance.InstanceId, instance.WorkflowName, instance.CorrelationId, instance.Status,
+            instance.CancellationReason != null)
+        {
+            ParentInstanceId = instance.ParentInstanceId, ParentWaitId = instance.ParentWaitId, WorkflowVersion = instance.WorkflowVersion,
+            CreatedAt = instance.CreatedAt, CommandVersion = instance.CancellationReason?.CommandVersion ?? 0,
+            StopKind = projection.StopKind, StopCrashCount = projection.CrashCount
+        };
+    }
 }

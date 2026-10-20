@@ -217,7 +217,7 @@ public sealed class TraceReviewTests
             id = (await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data())).InstanceId;
         using var recovered = Services(time, options =>
             { options.MaxTraceEntriesPerInstance = keepBudget ? 2 : null; options.MaxTraceEntriesPerCommit = commitLimit; }, store);
-        await recovered.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await recovered.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var client = recovered.GetRequiredService<IWorkflowClient>();
         Assert.Equal(WorkflowExecutionStatus.Success, (await client.ResumeAsync(id, "go", new Go())).Status);
         var trace = await client.GetTraceAsync(id);
@@ -250,16 +250,18 @@ public sealed class TraceReviewTests
             .AddIxIFlow().Services.BuildServiceProvider();
         await using var watch = new CancellationWatch(store, time);
         var host = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
-            store, services.GetRequiredService<IWorkflowVersionRegistry>(), new InProcessInstanceGate(),
+            store, services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
             timeProvider: time, watch: watch);
         var running = host.StartAsync(Workflow.Create<Data>("ReceiptTrace").Step<HeldTrace>().Build(),
             new Data(), new WorkflowOptions(), CancellationToken.None);
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         // Inspect the receipt where this internal ownership assertion moved; do not expose production APIs for it.
-        var receipts = Assert.IsAssignableFrom<System.Collections.IDictionary>(typeof(WorkflowHost.InstanceOperations)
-            .GetField("_receipts", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+        var assignments = Assert.IsAssignableFrom<System.Collections.IDictionary>(typeof(WorkflowHost.InstanceOperations)
+            .GetField("_assignments", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
             .GetValue(host));
-        var receipt = Assert.Single(receipts.Values.Cast<object>());
+        IEnumerable<object> Receipts() => assignments.Values.Cast<object>().Select(run => run.GetType()
+            .GetField("Receipt", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(run)!);
+        var receipt = Assert.Single(Receipts());
         var acknowledged = Assert.IsType<List<ExecutionTraceEntry>>(receipt.GetType().GetField("Trace")!.GetValue(receipt));
         var acknowledgedFirst = acknowledged[0];
         gate.Release.TrySetResult();
@@ -269,7 +271,7 @@ public sealed class TraceReviewTests
         Assert.Equal(acknowledged, result.TraceEntries);
         Assert.All(acknowledged.Zip(result.TraceEntries), pair => Assert.Same(pair.First, pair.Second));
         Assert.DoesNotContain(result.TraceEntries, entry => entry.EntryType == discarded.EntryType);
-        Assert.Empty(receipts);
+        Assert.Empty(Receipts());
     }
 
     [Fact]
@@ -306,8 +308,6 @@ public sealed class TraceReviewTests
     [Fact]
     public async Task AVerificationStopDiscardsTheAbandonedPassAndRetainsTheSavedCheckpoint()
     {
-        var time = new FakeTimeProvider(Start);
-        using var services = Services(time);
         var definition = Workflow.Create<Data>("VerificationTrace").Step<Noop>().Parallel(parallel => parallel
             .Do(body => body.WaitFor<Go>("go"))).Build();
         var scopes = new WorkflowScopeCatalog(definition);
@@ -348,6 +348,7 @@ public sealed class TraceReviewTests
 
         // Assign cannot inject an unmarked live branch. Check the writer directly, then exercise the
         // existing stop handler to retain coverage of the verification marker and its saved checkpoint.
+        using var services = Services(new FakeTimeProvider(Start));
         var executor = new WorkflowExecutor(services, host);
         var stop = typeof(WorkflowExecutor).GetMethod("StopForOperatorAsync",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;

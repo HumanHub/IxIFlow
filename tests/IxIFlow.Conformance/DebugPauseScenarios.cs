@@ -12,7 +12,7 @@ public sealed class DebugPauseScenarios
     public async Task ContinueTakesAFreshLeaseOnAnotherHost(string profile)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var definition = Workflow.Create<Data>("ConformancePause").Step<Noop>().WaitFor<Go>("go").Build();
         var firstRepository = store.NewRepository();
         var first = Services(firstRepository, registry, "first");
@@ -50,12 +50,12 @@ public sealed class DebugPauseScenarios
         Assert.Equal("second operator", Assert.IsType<DebugCommandTrace>(trace.Single(e => e.Entry.EntryType == TraceEntryType.Continued).Entry.Payload).Actor);
     }
 
-    private static ServiceProvider Services(IWorkflowStateRepository repository, WorkflowVersionRegistry registry, string hostName)
+    private static ServiceProvider Services(IWorkflowStateRepository repository, WorkflowCatalog registry, string hostName)
     {
         var services = new ServiceCollection().AddLogging();
         services.AddIxIFlow(options => { options.Debugging = true; options.HostName = hostName; });
         services.AddSingleton(repository);
-        services.AddSingleton<IWorkflowVersionRegistry>(registry);
+        services.AddSingleton<IWorkflowCatalog>(registry);
         return services.BuildServiceProvider();
     }
     public sealed class Data;

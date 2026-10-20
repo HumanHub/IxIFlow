@@ -342,7 +342,7 @@ public sealed class CheckpointClaimCheckTests
         try
         {
             var registrations = new ServiceCollection().AddLogging();
-            registrations.AddIxIFlow().UseSqlite("Data Source=" + Path.Combine(folder, "claim.db"));
+            registrations.AddIxIFlow(options => options.PayloadThresholdBytes = 256 * 1024).UseSqlite("Data Source=" + Path.Combine(folder, "claim.db"));
             await using var services = registrations.BuildServiceProvider();
             var client = services.GetRequiredService<IWorkflowClient>();
             var result = await client.RunAsync(Workflow.Create<Data>("sqlite-claim").Step<Noop>().Build(), new Data { Text = Large });
@@ -401,7 +401,7 @@ public sealed class CheckpointClaimCheckTests
     [Fact]
     public void ImmutableValuesReuseTheirEncodedBytesDigestAndDependencyMetadata()
     {
-        var payloads = new CheckpointPayloads(ExecutionLimits.Default, new(10_000_000));
+        var payloads = new CheckpointPayloads(ExecutionLimits.Default with { PayloadThresholdBytes = 256 * 1024 }, new(10_000_000));
         var value = StoredJson.Inline(JsonSerializer.Serialize(Large));
         var first = payloads.Store(value);
         var encoded = value.Encoded;
@@ -476,7 +476,11 @@ public sealed class CheckpointClaimCheckTests
     {
         var services = new ServiceCollection().AddLogging();
         repository.Probe = payloads;
-        services.AddIxIFlow(configure ?? (_ => { }));
+        services.AddIxIFlow(options =>
+        {
+            options.PayloadThresholdBytes = 256 * 1024;
+            configure?.Invoke(options);
+        });
         services.AddSingleton<IWorkflowStateRepository>(repository);
         services.AddTransient<Noop>(); services.AddTransient<Echo>();
         services.AddSingleton<TokenBox>();

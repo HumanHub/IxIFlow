@@ -13,6 +13,8 @@ public sealed record RetentionResult(int InstancesRemoved, int TombstonesRemoved
 internal sealed record RetentionSettings(TimeSpan FinishedRetention, TimeSpan TombstoneRetention,
     TimeSpan ScanInterval, int BatchSize)
 {
+    public TimeSpan ArtifactRetention { get; init; } = TimeSpan.FromDays(90);
+
     public static RetentionSettings Default { get; } = new(TimeSpan.FromDays(30), TimeSpan.FromDays(90),
         TimeSpan.FromHours(1), 100);
 

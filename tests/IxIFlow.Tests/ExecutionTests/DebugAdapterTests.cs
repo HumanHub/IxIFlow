@@ -171,7 +171,7 @@ public sealed class DebugAdapterTests
     {
         var store = new InMemoryWorkflowStateRepository(); await using var services = Services(store);
         var definition = Workflow.Create<Data>("LaunchDap").Step<Noop>().WithId("entry").Step<Noop>().Build();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var authorizedIds = new List<string>();
         await using var dap = new Client(services.GetRequiredService<IWorkflowOperations>(), Options(g => { authorizedIds.Add(g.InstanceId); return true; }));
         await dap.Ok("initialize");
@@ -195,7 +195,7 @@ public sealed class DebugAdapterTests
         var store = new InMemoryWorkflowStateRepository(); await using var owner = Services(store); await using var reader = Services(store);
         var definition = new WorkflowBuilder<Data, object>([], "RemoteDap").WaitFor<Go>("go").Build();
         var result = await owner.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
-        await reader.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await reader.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var ops = reader.GetRequiredService<IWorkflowOperations>();
         await using var first = new Client(ops, Options()); await first.Attach(result.InstanceId);
         await owner.GetRequiredService<IWorkflowOperations>().PauseAsync(result.InstanceId, "remote");
@@ -288,7 +288,7 @@ public sealed class DebugAdapterTests
         var store = new InMemoryWorkflowStateRepository(); await using var services = Services(store);
         var ops = services.GetRequiredService<IWorkflowOperations>();
         var definition = Workflow.Create<Data>("DetachedDap").Step<Block>().Build();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var id = Guid.NewGuid().ToString("N");
         await ops.LaunchAsync(id, definition.Name, definition.Version, JsonSerializer.SerializeToElement(new Data()), true, "setup");
         await using var dap = new Client(ops, Options());

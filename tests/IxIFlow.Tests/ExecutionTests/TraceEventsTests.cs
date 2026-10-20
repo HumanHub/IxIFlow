@@ -271,7 +271,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         var definition = Workflow.Create<Data>("ResolutionTrace").Step<Noop>().Build();
         await EngineAssert.StoreFailureAsync(() => client.RunAsync(definition, new Data()));
         store.FailCompletions = false;
-        var saved = Assert.Single(await store.GetWorkflowInstancesByNameAsync(definition.Name));
+        var saved = Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: definition.Name, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)));
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, (await client.RecoverAsync(saved.InstanceId)).Status);
         var pending = Assert.Single(await client.GetPendingActivitiesAsync(saved.InstanceId));
         time.Advance(TimeSpan.FromMinutes(2));
@@ -329,12 +329,12 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         var store = new InMemoryWorkflowStateRepository(time);
         using var services = Services(store, time);
         var client = services.GetRequiredService<IWorkflowClient>();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<Data>("TraceChild").Step<Noop>().WaitFor<Go>("go").Build());
         var definition = Workflow.Create<Data>("TraceParent").Step<Noop>()
             .Invoke<Data>("TraceChild", 1, step => step.CancelWithParent(cancelWithParent)).Build();
         var started = await client.RunAsync(definition, new Data());
-        var child = Assert.Single(await store.GetWorkflowInstancesByNameAsync("TraceChild"));
+        var child = Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "TraceChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)));
         var parentWaitId = child.ParentWaitId!;
         await client.AwaitAsync(child.InstanceId, WorkflowAwaitCondition.Idle).WaitAsync(TimeSpan.FromSeconds(10));
         var requestedAt = time.GetUtcNow().UtcDateTime;
@@ -436,7 +436,7 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         var definition = Workflow.Create<Data>("LostControlTrace").Step<Noop>()
             .If(ctx => true, then => then.Step<Noop>()).Build();
         await EngineAssert.StoreFailureAsync(() => client.RunAsync(definition, new Data()));
-        var saved = Assert.Single(await store.GetWorkflowInstancesByNameAsync(definition.Name));
+        var saved = Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: definition.Name, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)));
         Assert.Equal([TraceEntryType.ReplayOrigin, TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition,
             TraceEntryType.ActivityCompleted],
             (await client.GetTraceAsync(saved.InstanceId)).Select(entry => entry.EntryType));

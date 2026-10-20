@@ -67,7 +67,7 @@ public sealed class AttemptContextTests
         }
         store.FailCommit = _ => false;
         using var second = Services(store, probe, "node-2");
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
 
         var result = await second.GetRequiredService<IWorkflowClient>().RecoverAsync(instanceId);
 
