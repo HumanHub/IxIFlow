@@ -40,7 +40,7 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
             Lose, settings.Duration, settings.RenewalInterval, sequence =>
             {
                 if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested) arrivals(sequence);
-            }, state =>
+            }, debug == null ? null : state =>
             {
                 if (Volatile.Read(ref _loss) == null && !_stop.IsCancellationRequested) debug?.Invoke(state);
             });

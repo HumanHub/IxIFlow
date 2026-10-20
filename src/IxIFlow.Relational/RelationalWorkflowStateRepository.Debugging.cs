@@ -57,6 +57,14 @@ public abstract partial class RelationalWorkflowStateRepository
         ReadControlRequestsAsync(instanceIds, includeGeneration: false);
 
     private async Task<WorkflowControlRequests> ReadControlRequestsAsync(IReadOnlyCollection<string> instanceIds, bool includeGeneration)
+        => await ReadControlRequestsAsync(instanceIds, includeGeneration, includeDebug: true);
+
+    public async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
+        IReadOnlyCollection<string> instanceIds) =>
+        (await ReadControlRequestsAsync(instanceIds, includeGeneration: false, includeDebug: false)).Cancellations;
+
+    private async Task<WorkflowControlRequests> ReadControlRequestsAsync(IReadOnlyCollection<string> instanceIds,
+        bool includeGeneration, bool includeDebug)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
         var states = new Dictionary<string, WorkflowDebugState>(StringComparer.Ordinal);
@@ -84,9 +92,10 @@ public abstract partial class RelationalWorkflowStateRepository
             ILookup<string, string> commands;
             try
             {
-                using var rows = await connection.QueryMultipleAsync($"SELECT {DebugColumn("InstanceId")} AS InstanceId, {stateColumn} AS StateJson, {DebugColumn("CancellationJson")} AS CancellationJson FROM {DebugInstanceTable} WHERE {DebugColumn("InstanceId")} {filter}; SELECT {DebugColumn("InstanceId")} AS InstanceId, {DebugColumn("CommandJson")} AS CommandJson FROM {DebugTable} WHERE {DebugColumn("InstanceId")} {filter} ORDER BY {DebugColumn("CommandOrder")}", new { Ids = batch });
+                var debugQuery = includeDebug ? $"; SELECT {DebugColumn("InstanceId")} AS InstanceId, {DebugColumn("CommandJson")} AS CommandJson FROM {DebugTable} WHERE {DebugColumn("InstanceId")} {filter} ORDER BY {DebugColumn("CommandOrder")}" : "";
+                using var rows = await connection.QueryMultipleAsync($"SELECT {DebugColumn("InstanceId")} AS InstanceId, {stateColumn} AS StateJson, {DebugColumn("CancellationJson")} AS CancellationJson FROM {DebugInstanceTable} WHERE {DebugColumn("InstanceId")} {filter}{debugQuery}", new { Ids = batch });
                 instances = (await rows.ReadAsync<(string InstanceId, string StateJson, string? CancellationJson)>()).ToArray();
-                commands = (await rows.ReadAsync<(string InstanceId, string CommandJson)>()).ToLookup(r => r.InstanceId, r => r.CommandJson);
+                commands = (includeDebug ? await rows.ReadAsync<(string InstanceId, string CommandJson)>() : []).ToLookup(r => r.InstanceId, r => r.CommandJson);
             }
             catch (Exception error)
             {
@@ -101,7 +110,7 @@ public abstract partial class RelationalWorkflowStateRepository
                     var generation = includeGeneration ? WorkflowDebugRules.Checkpoint(JsonSerializer.Deserialize<WorkflowInstance>(row.StateJson)!).PauseGeneration : 0;
                     var cancellation = row.CancellationJson is { } reason ? JsonSerializer.Deserialize<CancellationReason>(reason) : null;
                     var items = commands[row.InstanceId].Select(json => JsonSerializer.Deserialize<DebugCommand>(json)!).ToArray();
-                    states[row.InstanceId] = new(WorkflowDebugRules.Version(items), generation, items);
+                    if (includeDebug) states[row.InstanceId] = new(WorkflowDebugRules.Version(items), generation, items);
                     if (cancellation != null) cancellations[row.InstanceId] = cancellation;
                 }
                 catch (Exception error)

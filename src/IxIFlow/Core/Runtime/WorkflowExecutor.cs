@@ -78,18 +78,17 @@ public sealed class WorkflowExecutor
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     "The definition source returned a different workflow identity");
             // Assignment input is saved state. Never execute against a host-owned instance or data object.
-            var instance = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
-                System.Text.Json.JsonSerializer.Serialize(assign.Instance))!;
+            var instance = assign.Instance.CopyForAssignment();
             instance.Incarnation = assign.Incarnation;
             if (assign.Parts != null) instance.Saved(new Dictionary<string, StoredJson>(assign.Parts), instance.Revision);
-            session.SavedInstance = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
-                System.Text.Json.JsonSerializer.Serialize(instance))!;
+            session.SavedInstance = instance.CopyForAssignment();
             session.SavedInstance.Incarnation = instance.Incarnation;
             if (instance.SavedParts != null) session.SavedInstance.Saved(instance.SavedParts, instance.Revision);
             instance.ExecutionStateJson = await StoredCheckpoint.WholeStateAsync(instance, session.Reader);
             session.NeedsHydration = instance.ExecutionStateJson.Contains("\"reference\"", StringComparison.Ordinal);
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
-            session.Payloads.Known(CheckpointPayloads.References(instance.ExecutionStateJson, instance.SavedParts ?? new Dictionary<string, StoredJson>()));
+            if (assign.Limits.PayloadThresholdBytes != 0)
+                session.Payloads.Known(CheckpointPayloads.References(instance.ExecutionStateJson, instance.SavedParts ?? new Dictionary<string, StoredJson>()));
             checkpoint.Debug = checkpoint.Debug with { Breakpoints = assign.Breakpoints.ToArray() };
             checkpoint.Signals = signals;
             if (checkpoint.StructureHash != assign.StructureHash)

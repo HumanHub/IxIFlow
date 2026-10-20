@@ -70,6 +70,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
 
     public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> ids) =>
         Guard(() => _store.GetControlRequestsAsync(ids), "Reading execution controls");
+    public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(IReadOnlyCollection<string> ids) =>
+        Guard(() => _store.GetCancellationRequestsAsync(ids), "Reading cancellation requests");
     public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
         Guard(() => _store.RequestDebugCommandAsync(instanceId, command), "Requesting debug command");
     public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> ids) =>

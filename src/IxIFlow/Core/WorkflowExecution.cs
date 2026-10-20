@@ -270,6 +270,22 @@ public class WorkflowInstance
     [System.Text.Json.Serialization.JsonIgnore]
     internal Runtime.StoredCheckpoint? Stored { get; set; }
 
+    // Detach mutable metadata at the local message boundary without encoding and reparsing the
+    // entire checkpoint. Saved JSON values are immutable; the executor deserializes its own data.
+    internal WorkflowInstance CopyForAssignment()
+    {
+        var copy = (WorkflowInstance)MemberwiseClone();
+        copy.Properties = Properties.ToDictionary(pair => pair.Key, pair => pair.Value.Clone());
+        copy.CancellationReason = CancellationReason == null ? null :
+            System.Text.Json.JsonSerializer.Deserialize<CancellationReason>(
+                System.Text.Json.JsonSerializer.Serialize(CancellationReason));
+        copy.Stored = null;
+        copy.SavedParts = null;
+        copy._savedPartsInstanceId = null;
+        copy._savedPartsRevision = 0;
+        return copy;
+    }
+
     /// <summary>The instance's fields with <paramref name="trunk"/> as its state and no data, to store as a trunk.</summary>
     internal WorkflowInstance AsTrunk(string trunk)
     {

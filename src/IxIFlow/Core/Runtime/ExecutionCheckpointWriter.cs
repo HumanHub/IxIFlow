@@ -69,8 +69,11 @@ internal static class ExecutionCheckpointWriter
         // The commit carries the run's inbox decisions and the waits it opened, armed and closed (D-33).
         // It says how long, not until when: the store stamps deadlines and the runnable time (D-35).
         var (opened, armed, closed) = checkpoint.Inbox.WaitChanges(checkpoint);
-        opened = opened.Select(wait => wait with { DefaultPayloadJson = wait.DefaultPayloadJson is { } value ? host.Payloads.Store(value) : null }).ToArray();
-        armed = armed.Select(wait => wait with { DefaultPayloadJson = wait.DefaultPayloadJson is { } value ? host.Payloads.Store(value) : null }).ToArray();
+        if (host.Limits.PayloadThresholdBytes != 0)
+        {
+            opened = opened.Select(wait => wait with { DefaultPayloadJson = wait.DefaultPayloadJson is { } value ? host.Payloads.Store(value) : null }).ToArray();
+            armed = armed.Select(wait => wait with { DefaultPayloadJson = wait.DefaultPayloadJson is { } value ? host.Payloads.Store(value) : null }).ToArray();
+        }
         // Children start, and are asked to cancel, in the commit that records the parent's waits for
         // them; a child's terminal commit tells its parent (D-17).
         var commit = CheckpointCommit.Create(instance, host.Epoch, instance.Revision,

@@ -1,4 +1,3 @@
-using System.Text.Json;
 using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Core;
@@ -38,12 +37,13 @@ internal sealed partial class TraceBuffer
                 _positions = initial.ToDictionary(t => t.ContinuationId, StringComparer.Ordinal);
             }
             if (_detail != TraceDetail.Full || _checkpoint.TraceBudgetExhausted || _truncated != null) return;
+            if (InspectionProjection.Unchanged(_positions, _checkpoint, _scopes)) return;
             var current = InspectionProjection.Threads(_instance, _checkpoint, _scopes, now)
                 .ToDictionary(t => t.ContinuationId, StringComparer.Ordinal);
             foreach (var id in _positions.Keys.Union(current.Keys).ToArray())
             {
                 _positions.TryGetValue(id, out var before); current.TryGetValue(id, out var after);
-                if (JsonSerializer.Serialize(before) == JsonSerializer.Serialize(after)) continue;
+                if (SamePosition(before, after)) continue;
                 Add(new() { Timestamp = now, EntryType = TraceEntryType.ThreadPosition, ContinuationId = id,
                     FrameActivationId = after?.FrameId ?? before?.FrameId, StepId = after?.StepId ?? before?.StepId,
                     Payload = new ThreadPositionTrace(id, after) });
@@ -52,5 +52,14 @@ internal sealed partial class TraceBuffer
         }
         finally { _capturing = false; }
     }
+
+    private static bool SamePosition(InspectionThread? before, InspectionThread? after) =>
+        ReferenceEquals(before, after) || before != null && after != null &&
+        before.ContinuationId == after.ContinuationId && before.Name == after.Name &&
+        before.ParentContinuationId == after.ParentContinuationId && before.ParentJoinId == after.ParentJoinId &&
+        before.Sequence == after.Sequence && before.ForkActivationId == after.ForkActivationId &&
+        before.StepId == after.StepId && before.AuthorStepId == after.AuthorStepId &&
+        before.StepIndex == after.StepIndex && before.Status == after.Status && before.FrameId == after.FrameId &&
+        before.Frames.SequenceEqual(after.Frames);
 
 }

@@ -21,7 +21,7 @@ internal abstract class CatalogPayloadStore(PayloadStoreSettings settings) : IPa
         Execute((catalog, token) => catalog.Get(reference, token), ct);
     public ValueTask<bool> CollectAsync(PayloadReference reference, TimeSpan grace, CancellationToken ct = default) =>
         Execute((catalog, token) => catalog.Collect(reference, grace, token), ct);
-    public ValueTask<IReadOnlyList<PayloadReference>> FindCollectionCandidatesAsync(int limit, TimeSpan grace, CancellationToken ct = default) =>
+    public virtual ValueTask<IReadOnlyList<PayloadReference>> FindCollectionCandidatesAsync(int limit, TimeSpan grace, CancellationToken ct = default) =>
         Execute((catalog, token) => catalog.Candidates(limit, grace, token), ct);
     public async ValueTask InTransactionAsync(Func<IPayloadTransaction, CancellationToken, ValueTask> action, CancellationToken ct = default) =>
         _ = await Execute(async (catalog, token) => { await action(catalog, token); return true; }, ct);
