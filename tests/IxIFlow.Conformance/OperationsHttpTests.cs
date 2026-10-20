@@ -149,7 +149,7 @@ public sealed class OperationsHttpTests
         {
             InstanceId = "resolution", WorkflowName = definition.Name, WorkflowVersion = definition.Version,
             CreatedAt = DateTime.UtcNow, StartedAt = DateTime.UtcNow, Status = WorkflowStatus.NeedsResolution,
-            WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data())), WorkflowDataType = typeof(Data).AssemblyQualifiedName!,
+            WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data())), WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
             ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
         });
         var activities = await http.GetFromJsonAsync<PendingActivityInfo[]>("/ops/instances/resolution/pending-activities");
@@ -417,7 +417,7 @@ public sealed class OperationsHttpTests
             InstanceId = id, WorkflowName = definition.Name, WorkflowVersion = definition.Version,
             CreatedAt = DateTime.UtcNow, StartedAt = DateTime.UtcNow,
             Status = WorkflowStatus.NeedsResolution, WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data())),
-            WorkflowDataType = typeof(Data).AssemblyQualifiedName!, ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
+            WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)), ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
         });
     }
 }

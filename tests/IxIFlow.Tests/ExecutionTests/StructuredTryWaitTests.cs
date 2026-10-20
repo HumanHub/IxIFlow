@@ -1504,7 +1504,7 @@ public class StructuredTryWaitTests
 
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
-        await repository.AppendEventAsync(new WorkflowEvent(instanceId, "accepted", typeof(Approval).AssemblyQualifiedName!,
+        await repository.AppendEventAsync(new WorkflowEvent(instanceId, "accepted", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)),
             System.Text.Json.JsonSerializer.Serialize(new Approval { Value = 1 }), "approval"));
         var saved = (await repository.GetWorkflowInstanceAsync(instanceId))!;
         var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);

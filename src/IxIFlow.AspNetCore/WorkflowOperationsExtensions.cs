@@ -63,7 +63,7 @@ public static class WorkflowOperationsExtensions
         });
         MapInstance("GET", "/pending-activities", options.ReadPolicy!, async (http, summary) =>
         {
-            var result = await Client(http).GetPendingActivitiesAsync(summary.InstanceId);
+            var result = await Client(http).GetPendingActivitiesAsync(summary.InstanceId, http.RequestAborted);
             return result.IsRemoved ? Removed() : Results.Ok(result.ToArray());
         });
         MapInstance("GET", "/trace", options.InspectPolicy!, async (http, summary) =>
@@ -81,7 +81,7 @@ public static class WorkflowOperationsExtensions
         }, inspect: true);
         MapInstance("GET", "/snapshot", options.InspectPolicy!, async (http, summary) =>
         {
-            var snapshot = await Client(http).GetSnapshotAsync(summary.InstanceId);
+            var snapshot = await Client(http).GetSnapshotAsync(summary.InstanceId, http.RequestAborted);
             if (snapshot?.IsRemoved == true) return Removed();
             if (snapshot == null) return Unknown();
             return Results.Ok(new WorkflowSnapshotResponse(snapshot.InstanceId, snapshot.WorkflowName, snapshot.WorkflowVersion,
@@ -208,7 +208,7 @@ public static class WorkflowOperationsExtensions
                 http.Items[typeof(InstanceSummary)] = summary;
             }
             return await next(invocation);
-        });
+        }, inspectionRead: HttpMethods.IsGet(invocation.HttpContext.Request.Method));
     }
 
     private static async Task<IResult> MutateAsync(HttpContext http, string id, WorkflowOperationsOptions options,
@@ -232,7 +232,7 @@ public static class WorkflowOperationsExtensions
     {
         var limit = scoped.Limit;
         if (limit is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(scoped.Limit));
-        var waits = await Client(http).GetOpenWaitsAsync(scoped with { Limit = limit + 1 });
+        var waits = await Client(http).GetOpenWaitsAsync(scoped with { Limit = limit + 1 }, http.RequestAborted);
         if (waits.IsRemoved) return Removed();
         return Results.Ok(new WorkflowWaitPage(waits.Take(limit).Select(w => new WorkflowOpenWaitResponse(w.InstanceId,
             WaitReference.Of(w.InstanceId, w.WaitId), w.Kind, w.Key, w.EventType, w.EventSchema, w.DeadlineUtc,

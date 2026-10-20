@@ -619,7 +619,7 @@ public sealed class ActivityRecoveryTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         await repository.AppendEventAsync(new WorkflowEvent(started.InstanceId, "winning",
-            typeof(RecoveryReply).AssemblyQualifiedName!, "{}", "b"));
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(RecoveryReply)), "{}", "b"));
         var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);
         var losingWait = checkpoint.Waits.Single(wait => wait.Key == "a");

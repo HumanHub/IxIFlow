@@ -24,7 +24,8 @@ internal static class WorkflowBuild
             catch (Exception) { completion.TrySetResult(new(Error: "Build() failed while inspecting its result")); }
         })
         { IsBackground = true, Name = "IxIFlow publish Build" };
-        thread.Start();
+        using (ExecutionContextFlow.SuppressIfNeeded())
+            thread.Start();
         try
         {
             var result = await completion.Task.WaitAsync(timeout, cancellationToken);
@@ -58,7 +59,7 @@ internal static class WorkflowBuild
                 var entry = metadata.TypeDefinitions.Select(handle => metadata.GetTypeDefinition(handle))
                     .Single(type => metadata.GetString(type.Name) != "<Module>" &&
                         type.GetMethods().Any(handle => metadata.GetString(metadata.GetMethodDefinition(handle).Name) == "Build"));
-                return new WorkflowBuildResult(definition.Name, definition.Version, structureHash, definition.WorkflowDataType!.AssemblyQualifiedName!,
+                return new WorkflowBuildResult(definition.Name, definition.Version, structureHash, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(definition.WorkflowDataType!),
                     metadata.GetString(entry.Namespace) + "." + metadata.GetString(entry.Name),
                     WorkflowDefinitionValidator.GetCombinerSignature(definition), WorkflowDefinitionValidator.GetDependencies(definition).ToArray());
             });

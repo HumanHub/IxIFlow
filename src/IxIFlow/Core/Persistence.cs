@@ -688,6 +688,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                  _cancellations.ContainsKey(commit.InstanceId) &&
                  snapshot.CancellationReason == null))
                 return Task.FromResult(Result(WorkflowCommitStatus.Conflict, revision));
+            if (stored != null && stored.BundleDigest != snapshot.BundleDigest)
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "An instance's bundle pin is immutable");
             if (stored == null) CheckCatalogStart(snapshot);
             foreach (var child in commit.ChildStarts) CheckCatalogStart(JsonSerializer.Deserialize<WorkflowInstance>(child.Payload)!);
             foreach (var child in commit.ChildStarts)

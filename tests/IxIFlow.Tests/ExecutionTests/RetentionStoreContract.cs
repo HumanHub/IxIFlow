@@ -42,7 +42,7 @@ internal sealed class RetentionStoreContract(IWorkflowStateRepository store,
         var id = Guid.NewGuid().ToString("N");
         _ids.Add(id);
         return new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = id, WorkflowName = "Retention", WorkflowVersion = 1,
-            Status = status, ParentInstanceId = parent, WorkflowDataType = typeof(ResultData).AssemblyQualifiedName!,
+            Status = status, ParentInstanceId = parent, WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(ResultData)),
             WorkflowDataJson = StoredJson.Inline("""{"Value":42}"""), CompletedAt = DateTime.MinValue };
     }
     private async Task<CheckpointCommit> Commit(WorkflowInstance instance, ParentNotice? notice = null)

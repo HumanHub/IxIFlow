@@ -319,7 +319,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                         ForEachTransitions.ItemsOf(scopes, checkpoint, continuation)),
                     Timeout = step.WaitTimeout,
                     DeadlineUtc = StoreNow(checkpoint) + step.WaitTimeout,
-                    EventType = step.ResumeEventType?.AssemblyQualifiedName
+                    EventType = (step.ResumeEventType == null ? null : WorkflowTypeIdentity.SavedName(step.ResumeEventType))
                         ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                             $"Wait step '{step.Id}' has no event type")
                 });

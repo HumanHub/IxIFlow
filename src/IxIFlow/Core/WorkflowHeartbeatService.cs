@@ -1,5 +1,8 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using IxIFlow.Core.Runtime;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -12,7 +15,7 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
     InspectionRedactionPolicy? inspectionPolicy = null) : BackgroundService
 {
     internal static bool IsAutomaticCapability(string key) =>
-        key is "os" or "arch" or "runtime" or "host" || key.StartsWith("workflow:", StringComparison.Ordinal);
+        key is "os" or "arch" or "runtime" or "host" or "bundle-host" || key.StartsWith("workflow:", StringComparison.Ordinal);
 
     internal static async Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync(IWorkflowCatalog registry, HostSettings settings)
     {
@@ -27,7 +30,60 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
         foreach (var definition in await registry.GetWorkflowDefinitionsAsync())
             if (await registry.GetWorkflowStructureHashAsync(definition.Name, definition.Version) is { } hash)
                 capabilities.Add($"workflow:{definition.Name}@{definition.Version}", hash);
+        if (settings.BundleHostingEnabled && !WorkflowSharedAssemblies.IsUsable)
+            settings.Compatibility.WarnUnusableProfile(settings.CapabilityLogger);
+        else if (settings.BundleHostingEnabled)
+        {
+            capabilities.Add("bundle-host", "");
+            var rows = await registry.GetWorkflowVersionsAsync();
+            var retained = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var row in rows)
+                if (row.ArtifactDigest != null && settings.Compatibility.Compatible(row.ManifestJson, retained, settings.CapabilityLogger))
+                    capabilities[$"workflow:{row.Name}@{row.Version}"] = row.StructureHash;
+            settings.Compatibility.Retain(retained);
+        }
         return capabilities;
+    }
+
+    internal sealed class CompatibilityMemo
+    {
+        private readonly ConcurrentDictionary<string, Lazy<bool>> _entries = new(StringComparer.Ordinal);
+        private int _unusableProfileWarned;
+
+        // Without a profile this host can load no bundle, so it must not claim published work.
+        internal void WarnUnusableProfile(ILogger? logger)
+        {
+            if (Interlocked.Exchange(ref _unusableProfileWarned, 1) == 0)
+                logger?.LogWarning("Bundle hosting is configured but this process has no usable shared compatibility profile " +
+                    "(a self-contained single-file process, or unreadable runtime metadata); it does not advertise bundle-host");
+        }
+
+        internal bool Compatible(string? json, ISet<string> retained, ILogger? logger)
+        {
+            if (json == null) return false;
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
+            retained.Add(hash);
+            return _entries.GetOrAdd(hash, _ => new Lazy<bool>(() =>
+            {
+                try
+                {
+                    return System.Text.Json.JsonSerializer.Deserialize<WorkflowBundleManifest>(json) is { } manifest &&
+                        WorkflowSharedAssemblies.IsCompatible(manifest);
+                }
+                catch (Exception error) when (error is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
+                {
+                    // Do not log untrusted manifest content or exception details.
+                    logger?.LogWarning("Could not validate bundle manifest {ManifestHash}; treating it as incompatible", hash);
+                    return false;
+                }
+            })).Value;
+        }
+
+        internal void Retain(IReadOnlySet<string> hashes)
+        {
+            foreach (var hash in _entries.Keys)
+                if (!hashes.Contains(hash)) _entries.TryRemove(hash, out _);
+        }
     }
 
     private Task RegisterAsync(IReadOnlyDictionary<string, string> capabilities, CancellationToken token) =>

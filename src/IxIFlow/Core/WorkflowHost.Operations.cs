@@ -57,7 +57,7 @@ public sealed partial class WorkflowHost
             using var recycle = _control.Register(signals.AssignmentId, Executor.Deliver);
             await using var owner = await AcquireAsync(prepared.Saved, signals, ExecutionClaimKind.Termination);
             if (owner == null) return false;
-            using var assignment = Admit(prepared.Saved, owner, signals.AssignmentId);
+            using var assignment = Admit(prepared.Saved, owner, signals.AssignmentId, signals.AcquisitionToken);
             var commit = prepared.Commit(owner.Epoch);
             for (var attempt = 1; ; attempt++)
             {

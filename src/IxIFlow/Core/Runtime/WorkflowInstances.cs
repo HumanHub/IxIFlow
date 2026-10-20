@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Text.Json;
 
 namespace IxIFlow.Core.Runtime;
@@ -18,7 +19,8 @@ internal static class WorkflowInstances
             InstanceId = options.InstanceId ?? Guid.NewGuid().ToString("N"),
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
-            WorkflowDataType = workflowData.GetType().AssemblyQualifiedName!,
+            BundleDigest = definition.BundleDigest,
+            WorkflowDataType = WorkflowTypeIdentity.SavedName(workflowData.GetType()),
             WorkflowDataJson = StoredJson.Inline(BranchData.Snapshot(workflowData)),
             Status = WorkflowStatus.Running,
             CorrelationId = options.CorrelationId ?? Guid.NewGuid().ToString("N"),

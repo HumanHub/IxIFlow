@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Reflection;
 using System.Text.Json;
 
@@ -29,7 +30,7 @@ internal sealed class SerializedException
         var fault = projection.Capture(error);
         var saved = From(error, faultProperties);
         saved.Fault = SerializedValue.From(fault);
-        saved.FaultCatchType = catchType.AssemblyQualifiedName;
+        saved.FaultCatchType = WorkflowTypeIdentity.SavedName(catchType);
         return saved;
     }
 
@@ -55,7 +56,7 @@ internal sealed class SerializedException
             var saved = new SerializedException
             {
                 IsPolicyTermination = error is SagaTerminatedException { IsPolicyTermination: true },
-                Type = error.GetType().AssemblyQualifiedName!,
+                Type = WorkflowTypeIdentity.SavedName(error.GetType()),
                 Message = error.Message,
                 Arguments = arguments
             };
@@ -74,7 +75,7 @@ internal sealed class SerializedException
         return new SerializedException
         {
             IsPolicyTermination = error is SagaTerminatedException { IsPolicyTermination: true },
-            Type = error.GetType().AssemblyQualifiedName!,
+            Type = WorkflowTypeIdentity.SavedName(error.GetType()),
             Message = error.Message,
             IsRestorable = false,
             RestorationFailureReason = roundTripFailureReason ?? failureReason,
@@ -100,7 +101,7 @@ internal sealed class SerializedException
         Arguments = Arguments,
         Properties = Properties,
         Fault = SerializedValue.From(fault),
-        FaultCatchType = catchType.AssemblyQualifiedName
+        FaultCatchType = WorkflowTypeIdentity.SavedName(catchType)
     };
 
     private static Dictionary<string, SavedExceptionProperty> CaptureFaultProperties(
@@ -177,7 +178,7 @@ internal sealed class SerializedException
                 var value = property.GetValue(error);
                 arguments.Add(new ExceptionArgument
                 {
-                    Type = parameter.ParameterType.AssemblyQualifiedName!,
+                    Type = WorkflowTypeIdentity.SavedName(parameter.ParameterType),
                     Json = value is Exception ? "null" : JsonSerializer.Serialize(value, parameter.ParameterType),
                     InnerException = value is Exception nested ? From(nested) : null
                 });

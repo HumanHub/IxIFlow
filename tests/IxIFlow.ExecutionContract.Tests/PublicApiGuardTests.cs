@@ -40,7 +40,8 @@ public sealed class PublicApiGuardTests
             .GetConstructors()[0].GetParameters().Select(parameter => parameter.ParameterType));
         Assert.Equal(["CheckpointAsync", "ReadInboxAsync", "ReadPayloadAsync", "ReadWaitAsync", "StartChildAsync"],
             typeof(IExecutionHost).GetMethods().Select(method => method.Name).Order());
-        Assert.Equal(["GetWorkflowDefinitionAsync"], typeof(IWorkflowDefinitionSource).GetMethods().Select(method => method.Name));
+        Assert.Equal(["AcquireWorkflowDefinitionAsync", "ResolveWorkflowDefinitionAsync"],
+            typeof(IWorkflowDefinitionSource).GetMethods().Select(method => method.Name));
         Assert.Empty(typeof(WorkflowExecutor).GetProperties(BindingFlags.Public | BindingFlags.Instance));
         string[] internals = ["ExecutionSignals", "ExecutionSession", "CheckpointCommitFields", "CheckpointCommitContext",
             "CheckpointCommitJsonConverter", "ExecutionCheckpoint", "ExecutionCheckpointWriter", "ActivityAttempts",

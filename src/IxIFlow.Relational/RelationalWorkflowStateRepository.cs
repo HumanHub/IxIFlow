@@ -32,7 +32,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>SQL steps in the shared protocol. Optional steps return null.</summary>
     internal enum Statement
     {
-        CatalogLock, CatalogSharedLock, CatalogVersions, CatalogNamedVersions, CatalogVersion, CatalogUnfinishedCallers, CatalogVersionInsert, CatalogVersionState,
+        CatalogLock, CatalogSharedLock, CatalogInstanceDigests, CatalogVersions, CatalogNamedVersions, CatalogVersion, CatalogUnfinishedCallers, CatalogVersionInsert, CatalogVersionState,
         CatalogDefinition, CatalogDefinitionInsert, CatalogDefinitionUpdate, CatalogDefinitionDelete, ArtifactPut, ArtifactRead, ArtifactExists, ArtifactDelete, ArtifactDeleteOld, ArtifactCandidates,
         WebhookDeliveryRead, WebhookDeliveryDelete, WebhookDeliveryInsert, WebhookDeliveryExpire,
         AdmissionLock, AdmissionRead, AdmissionDelete, AdmissionInsert, OwnershipRead, OwnershipInsert, OwnershipDelete, AdmissionExpire, OwnershipExpire,
@@ -271,7 +271,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             var values = WithTimes(new
             {
                 child.Instance!.InstanceId, child.Incarnation, child.Instance.WorkflowName,
-                child.Instance.WorkflowVersion, StopKind = child.Instance.StopKind?.ToString(), child.Instance.StopCrashCount,
+                child.Instance.WorkflowVersion, BundleDigest = child.Instance.BundleDigest?.Value, StopKind = child.Instance.StopKind?.ToString(), child.Instance.StopCrashCount,
                 child.ParentWaitId,
                 Status = child.Instance.Status.ToString(), child.Instance.CorrelationId,
                 Payload = DemandSet.StripPayload(payload), ParentInstanceId = parentInstanceId
@@ -871,6 +871,8 @@ public abstract partial class RelationalWorkflowStateRepository :
             return new WorkflowCommitResult(WorkflowCommitStatus.Conflict, currentRevision,
                 RunnableAtUtc: CurrentRunnable(), StoreTimeUtc: now);
         }
+        if (current != null && current.BundleDigest != snapshot.BundleDigest?.Value)
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "An instance's bundle pin is immutable");
         // A child's ID is new; a commit that names an existing instance changes nothing.
         await CheckCatalogStartsAsync(connection, transaction, commit, current == null);
 
@@ -933,6 +935,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             snapshot.InstanceId,
             snapshot.WorkflowName,
             snapshot.WorkflowVersion,
+            BundleDigest = snapshot.BundleDigest?.Value,
             snapshot.CorrelationId,
             snapshot.ParentInstanceId,
             snapshot.ParentWaitId,
@@ -1149,7 +1152,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         "deadline_utc AS DeadlineUtc, opened_sequence AS OpenedSequence, opened_at_utc AS OpenedAtUtc, " +
         "close_reason AS CloseReason, closed_at_utc AS ClosedAtUtc, default_payload_json AS DefaultPayloadJson";
     internal const string RowColumns =
-        "instance_id AS InstanceId, state_json AS StateJson, runnable_at_utc AS RunnableAtUtc, revision AS Revision, last_host_id AS LastHostId, demand_set_id AS DemandSetId, pinned_host AS PinnedHost, pin_expires_at_utc AS PinExpiresAtUtc, pin_inherit AS PinInherit";
+        "instance_id AS InstanceId, state_json AS StateJson, runnable_at_utc AS RunnableAtUtc, revision AS Revision, last_host_id AS LastHostId, bundle_digest AS BundleDigest, demand_set_id AS DemandSetId, pinned_host AS PinnedHost, pin_expires_at_utc AS PinExpiresAtUtc, pin_inherit AS PinInherit";
 
     internal const string StampedRowColumns = RowColumns + ", incarnation AS Incarnation";
 
@@ -1369,6 +1372,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     internal sealed class CommitState
     {
+        public string? BundleDigest { get; set; }
         public string? StateJson { get; set; }
         public DateTime? RunnableAtUtc { get; set; }
         public Guid Incarnation { get; set; }
@@ -1395,6 +1399,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     {
         public string InstanceId { get; set; } = "";
         public string StateJson { get; set; } = "";
+        public string? BundleDigest { get; set; }
         public DateTime? RunnableAtUtc { get; set; }
         public long Revision { get; set; }
         public Guid Incarnation { get; set; }
@@ -1413,6 +1418,8 @@ public abstract partial class RelationalWorkflowStateRepository :
 
         private WorkflowInstance Runnable(WorkflowInstance instance, bool normalize)
         {
+            if (instance.BundleDigest?.Value != BundleDigest)
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Stored bundle digest differs from instance payload");
             instance.Incarnation = Incarnation;
             instance.LastHostId = LastHostId;
             instance.RunnableAtUtc = normalize && RunnableAtUtc is { } runnableAt ? Utc(runnableAt) : RunnableAtUtc;

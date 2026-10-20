@@ -1,3 +1,4 @@
+using JsonSerializer = IxIFlow.Core.Runtime.WorkflowJson;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 
@@ -45,7 +46,10 @@ public sealed class WorkflowExecutor
     internal ExecutionSignals PrepareAssignment(Guid identity) =>
         _runs.GetOrAdd(identity, id => new ExecutionSignals(id, CloseRun));
 
-    private void CloseRun(Guid runId) => _runs.TryRemove(runId, out _);
+    private void CloseRun(Guid runId)
+    {
+        if (_runs.TryRemove(runId, out var signals)) signals.Close();
+    }
     public void Deliver(Cancel message)
     {
         if (_runs.TryGetValue(message.AssignmentId, out var signals)) signals.Deliver(message);
@@ -69,14 +73,15 @@ public sealed class WorkflowExecutor
         var signals = PrepareAssignment(assign.AssignmentId);
         var session = new ExecutionSession(_host, assign.AssignmentId, assign.Instance.InstanceId,
             assign.Epoch, assign.Limits, assign.CanPark);
-        using var stopping = stop.Register(() => Deliver(new Cancel(assign.AssignmentId, CancelKind.Run)));
+        using var stopping = stop.UnsafeRegister(_ => Deliver(new Cancel(assign.AssignmentId, CancelKind.Run)), null);
         try
         {
             signals.ThrowIfOwnershipLost();
             if (assign.DebugState != null) signals.Deliver(new DebugCommands(assign.AssignmentId, assign.DebugState));
-            var definition = await _definitions.GetWorkflowDefinitionAsync(assign.Instance.WorkflowName,
-                assign.Instance.WorkflowVersion) ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    "The assigned workflow definition is unavailable");
+            using var definitionLease = await _definitions.AcquireWorkflowDefinitionAsync(assign.Instance.WorkflowName,
+                assign.Instance.WorkflowVersion, assign.Instance.BundleDigest, signals.AcquisitionToken);
+            using var types = definitionLease.EnterTypes();
+            var definition = definitionLease.Definition;
             _ = WorkflowDefinitionValidator.ForExecution(definition);
             if (definition.Name != assign.Instance.WorkflowName || definition.Version != assign.Instance.WorkflowVersion)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
@@ -111,7 +116,7 @@ public sealed class WorkflowExecutor
             var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
-            var data = System.Text.Json.JsonSerializer.Deserialize(await session.Reader.ReadAsync(instance.WorkflowDataJson), dataType)
+            var data = JsonSerializer.Deserialize(await session.Reader.ReadAsync(instance.WorkflowDataJson), dataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved workflow data cannot be read");
             checkpoint.RootDataChanged = false;
             checkpoint.RootDataUnchanged = BranchData.Observe(data);
@@ -149,13 +154,18 @@ public sealed class WorkflowExecutor
                     await ExecutionCheckpointWriter.CommitAsync(session, instance, checkpoint, null, scopes, Now,
                         preserveSavedWorkflowData: true, enforceLimit: false);
             }
-            var outcome = await RunCoreAsync(definition, instance, checkpoint, data, session, signals, assign.DebuggingEnabled,
+            var outcome = await RunCoreAsync(definitionLease, definition, instance, checkpoint, data, session, signals, assign.DebuggingEnabled,
                 reactivated);
             return new(assign.AssignmentId, outcome, session.LastAcknowledgedCommit, ExecutorName: _executorName);
         }
         catch (ExecutionOwnershipLostException)
         {
             return new(assign.AssignmentId, new(AssignmentOutcomeKind.OwnershipLost), session.LastAcknowledgedCommit,
+                ExecutorName: _executorName);
+        }
+        catch (OperationCanceledException) when (signals.AcquisitionToken.IsCancellationRequested)
+        {
+            return new(assign.AssignmentId, new(signals.OwnershipLost ? AssignmentOutcomeKind.OwnershipLost : AssignmentOutcomeKind.RunCancelled), session.LastAcknowledgedCommit,
                 ExecutorName: _executorName);
         }
         catch (CheckpointInterruptedException error)
@@ -212,6 +222,7 @@ public sealed class WorkflowExecutor
             (error.InnerException as WorkflowEngineException)?.AttemptId);
 
     private async Task<AssignmentOutcome> RunCoreAsync(
+        WorkflowDefinitionLease definitionLease,
         WorkflowDefinition definition,
         WorkflowInstance instance,
         ExecutionCheckpoint checkpoint,
@@ -548,7 +559,15 @@ public sealed class WorkflowExecutor
                             throw;
                         }
                         if (running != null)
+                        {
+                            // A cancelled activity can outlive its assignment. Keep its context usable
+                            // until the actual task ends, including when the host's grace period expires.
+                            var activityLease = definitionLease.Retain();
+                            using (ExecutionContextFlow.SuppressIfNeeded())
+                                _ = running.Task.ContinueWith(_ => activityLease.Dispose(), CancellationToken.None,
+                                    TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                             inFlight.Add(runnable.Id, running);
+                        }
                         else
                             activityCancellation.Dispose();
                     }
@@ -806,6 +825,12 @@ public sealed class WorkflowExecutor
             // Activity outcomes are ignored after the checkpoint write failed.
             await AbandonInFlightAsync(inFlight);
 
+            throw;
+        }
+        catch (OperationCanceledException error) when (error.CancellationToken.IsCancellationRequested)
+        {
+            await AbandonInFlightAsync(inFlight);
+            signals.ThrowIfOwnershipLost();
             throw;
         }
         catch (Exception ex)

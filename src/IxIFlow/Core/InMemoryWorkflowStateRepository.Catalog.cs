@@ -154,6 +154,7 @@ public partial class InMemoryWorkflowStateRepository
         WorkflowCatalogRules.ValidateNameWhitespace(instance.WorkflowName);
         if (_versions.TryGetValue((instance.WorkflowName, instance.WorkflowVersion), out var row))
             WorkflowCatalogRules.CheckStartable(row, instance.WorkflowName, instance.WorkflowVersion);
+        WorkflowCatalogRules.CheckInstancePin(row, instance);
     }
 
     public async ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default)
@@ -207,7 +208,9 @@ public partial class InMemoryWorkflowStateRepository
             DateTime cutoff;
             lock (_claimLock)
             {
-                references = WorkflowCatalogRules.ArtifactReferences(_versions.Values);
+                references = WorkflowCatalogRules.ArtifactReferences(_versions.Values)
+                    .Concat(_instances.Values.Where(instance => instance.BundleDigest != null)
+                        .Select(instance => instance.BundleDigest!.Value)).ToHashSet();
                 cutoff = Now - retention;
             }
             return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);

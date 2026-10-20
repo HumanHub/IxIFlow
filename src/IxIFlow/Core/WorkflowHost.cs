@@ -98,7 +98,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         _inspectionPolicy = inspectionPolicy ?? InspectionRedactionPolicy.Default;
         // The timer must not carry the context of whoever first scheduled something: its callbacks
         // would then look like calls from inside that run.
-        using (ExecutionContext.SuppressFlow())
+        using (ExecutionContextFlow.SuppressIfNeeded())
             _timer = _time.CreateTimer(_ => ResumeDue(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
@@ -354,7 +354,13 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     }
 
     // Runs the item on the thread pool, so no caller thread or lock holder executes instance code.
-    private void Dispatch(WorkItem item) => _ = Task.Run(() => ExecuteAsync(item));
+    private void Dispatch(WorkItem item)
+    {
+        // Workflow code inherits the caller's other AsyncLocals. Each assignment enters its
+        // own pinned type scope, so only the caller's bundle/reflection scope is cleared here.
+        using (WorkflowTypeIdentity.Enter(null))
+            _ = Task.Run(() => ExecuteAsync(item));
+    }
 
     private async Task ExecuteAsync(WorkItem item)
     {
@@ -375,7 +381,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             try
             {
                 var control = scope.ServiceProvider.GetRequiredService<RunControl>();
-                recycleRegistration = _draining.Token.Register(control.Recycle);
+                recycleRegistration = _draining.Token.UnsafeRegister(_ => control.Recycle(), null);
                 control.OnInstanceKnown(instanceId => Register(item, instanceId));
                 control.OnScheduled(Schedule);
                 control.OnUnscheduled(Unschedule);
@@ -654,7 +660,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         public void WatchCaller()
         {
             if (CallerToken.CanBeCanceled)
-                _callerRegistration = CallerToken.Register(static state => ((WorkItem)state!).CancelWaiting(), this);
+                _callerRegistration = CallerToken.UnsafeRegister(static state => ((WorkItem)state!).CancelWaiting(), this);
         }
 
         private void CancelWaiting()

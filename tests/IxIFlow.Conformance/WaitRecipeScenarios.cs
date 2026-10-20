@@ -303,7 +303,7 @@ public sealed class WaitRecipeScenarios
         // at the deadline, as when the owner is gone or slow: the callback still wins.
         var inbox = cluster.NewRepository();
         var stored = await inbox.AppendEventAsync(new WorkflowEvent(instanceId, "callback-1",
-            typeof(PaymentReceived).AssemblyQualifiedName!,
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(PaymentReceived)),
             System.Text.Json.JsonSerializer.Serialize(new PaymentReceived { Status = "paid" }),
             TargetWaitId: waitId, Subject: subject));
         Assert.Equal(EventAppendStatus.Stored, stored.Status);

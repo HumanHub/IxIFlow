@@ -192,8 +192,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
             return await call();
         }
         catch (Exception error) when (error is not OperationCanceledException &&
-            error is not WorkflowEngineException { Kind: WorkflowErrorKind.InstanceRemoved } &&
-            !(preserveArtifactUnavailable && error is WorkflowEngineException { Kind: WorkflowErrorKind.ArtifactUnavailable }))
+            error is not WorkflowEngineException { Kind: WorkflowErrorKind.InstanceRemoved or WorkflowErrorKind.ArtifactMismatch } &&
+            !(preserveArtifactUnavailable && error is WorkflowEngineException { Kind: WorkflowErrorKind.ArtifactUnavailable or WorkflowErrorKind.ArtifactMismatch }))
         {
             throw Failure(operation, error);
         }

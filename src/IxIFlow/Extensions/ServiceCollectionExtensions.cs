@@ -27,7 +27,9 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(InspectionRedactionPolicy.Default);
         services.AddScoped<IWorkflowDiagnostics, WorkflowDiagnostics>();
         // Core workflow services
-        services.TryAddSingleton<HostSettings>(_ => HostSettings.Default);
+        services.TryAddSingleton<HostSettings>(provider => HostSettings.Default with
+        { BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
+            CapabilityLogger = provider.GetService<ILogger<WorkflowHeartbeatService>>() });
         services.TryAddSingleton(RetentionSettings.Default);
         services.TryAddSingleton<IRunnableNotifier, NullRunnableNotifier>();
         services.TryAddSingleton<CoordinationState>();
@@ -67,7 +69,7 @@ public static class ServiceCollectionExtensions
         // Workflow state and persistence
         services.AddSingleton<IWorkflowCatalog>(provider => new WorkflowCatalog(
             provider.GetRequiredService<IWorkflowStateRepository>(), provider.GetServices<WorkflowDefinition>(),
-            provider.GetRequiredService<IArtifactStore>()));
+            provider.GetRequiredService<IArtifactStore>(), provider.GetService<WorkflowBundleOptions>()));
         services.TryAddSingleton<IArtifactStore>(provider => new RepositoryArtifactStore(provider.GetRequiredService<IWorkflowStateRepository>()));
         services.AddSingleton<IWorkflowDefinitionSource>(provider => provider.GetRequiredService<IWorkflowCatalog>());
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
@@ -142,9 +144,11 @@ public static class ServiceCollectionExtensions
         if (string.IsNullOrWhiteSpace(options.HostName))
             throw new ArgumentOutOfRangeException(nameof(configure), "The host name cannot be empty");
         var hostSettings = (options.Slots, options.DrainTimeout, options.PollInterval, options.HostName, options.HeartbeatInterval);
-        services.Replace(ServiceDescriptor.Singleton<HostSettings>(_ =>
+        services.Replace(ServiceDescriptor.Singleton<HostSettings>(provider =>
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
             { Debugging = options.Debugging, HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes,
+                BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
+                CapabilityLogger = provider.GetService<ILogger<WorkflowHeartbeatService>>(),
                 UnschedulableScanInterval = options.UnschedulableScanInterval }));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));

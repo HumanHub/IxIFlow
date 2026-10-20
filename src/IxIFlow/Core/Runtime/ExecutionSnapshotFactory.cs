@@ -13,6 +13,7 @@ internal static class ExecutionSnapshotFactory
             InstanceId = instance.InstanceId,
             WorkflowName = instance.WorkflowName,
             WorkflowVersion = instance.WorkflowVersion,
+            BundleDigest = instance.BundleDigest,
             Status = instance.Status,
             Errors = checkpoint.Diagnostics?.ToArray() ?? []
         };

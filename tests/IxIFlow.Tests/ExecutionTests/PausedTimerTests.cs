@@ -141,7 +141,7 @@ public sealed class PausedTimerTests
     private static WorkflowDefinition Waiting() => Workflow.Create<Data>("PausedWait").Step<Noop>()
         .WaitFor<Go>("go", configure: w => w.TimeoutAfter(Ten).OnTimeout(b => b.Step<TimeoutMark>(a => a.Output(v => v.TimedOut).To(c => c.WorkflowData.TimedOut))))
         .Step<Noop>().Build();
-    private static WorkflowEvent Event(string id, string eventId, string? target = null) => new(id, eventId, typeof(Go).AssemblyQualifiedName!, "{}", "go", target);
+    private static WorkflowEvent Event(string id, string eventId, string? target = null) => new(id, eventId, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Go)), "{}", "go", target);
     private static async Task Until(Func<Task<bool>> condition)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
