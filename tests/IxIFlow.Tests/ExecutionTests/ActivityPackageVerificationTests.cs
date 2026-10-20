@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using IxIFlow.Core;
 using IxIFlow.Tests.Infrastructure;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -99,6 +100,8 @@ public sealed class ActivityPackageVerificationTests : IDisposable
             using (var copies = NativeImageDirectory.Create(_root))
             {
                 root = copies.Root;
+                Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(root));
+                Assert.Empty(Directory.GetFileSystemEntries(root));
                 var path = Path.Combine(root, "fixture_native.so");
                 File.WriteAllBytes(path, ActivityPackageFixture.NativeLibraryBytes());
                 handle = System.Runtime.InteropServices.NativeLibrary.Load(path);
@@ -116,43 +119,30 @@ public sealed class ActivityPackageVerificationTests : IDisposable
 
     [PosixNativeFact]
     [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
-    public void PrivateRecoveryRemovesOnlyIdleOwnedMarkedDirectoriesAndNeverTraversesLinks()
+    public void PrivateCleanupIgnoresMissingEntriesAndLogsOtherFailuresWithoutThrowing()
     {
         Directory.CreateDirectory(_root);
-        using var active = NativeImageDirectory.Create(_root);
-        File.WriteAllText(Path.Combine(active.Root, "active.so"), "active");
-        var stale = Candidate("stale", marked: true);
-        var legacy = Candidate("legacy", marked: false);
-        var linked = Path.Combine(_root, "IxIFlow.Native.link");
-        Directory.CreateSymbolicLink(linked, legacy);
-        var planted = Candidate("planted", marked: true);
-        File.CreateSymbolicLink(Path.Combine(planted, "image.so"), Path.Combine(legacy, "image.so"));
-        var shared = Candidate("shared", marked: true);
-        File.SetUnixFileMode(shared, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.GroupWrite);
-        Assert.True(NativeImageDirectory.IsOwnedDirectory(stale));
-        Assert.False(NativeImageDirectory.IsOwnedDirectory(linked));
-        try
-        {
-            NativeImageDirectory.Recover(_root);
-            Assert.False(Directory.Exists(stale));
-            Assert.True(File.Exists(Path.Combine(active.Root, "active.so")));
-            Assert.True(Directory.Exists(legacy));
-            Assert.True(Directory.Exists(linked));
-            Assert.True(Directory.Exists(planted));
-            Assert.True(Directory.Exists(shared));
-            Assert.Equal("legacy", File.ReadAllText(Path.Combine(legacy, "image.so")));
-        }
-        finally { File.Delete(Path.Combine(planted, "image.so")); Directory.Delete(linked); }
-    }
+        var logger = new CleanupLogger();
+        using var missing = NativeImageDirectory.Create(_root, logger);
+        var path = Path.Combine(missing.Root, "image.so");
+        File.WriteAllText(path, "removed");
+        File.Delete(path);
+        missing.Dispose();
+        Assert.False(Directory.Exists(missing.Root));
+        missing.Dispose();
+        Assert.Empty(logger.Messages);
 
-    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
-    private string Candidate(string name, bool marked)
-    {
-        var path = Path.Combine(_root, "IxIFlow.Native." + name);
-        Directory.CreateDirectory(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        if (marked) File.WriteAllText(Path.Combine(path, ".owner"), "");
-        if (name != "planted") File.WriteAllText(Path.Combine(path, "image.so"), name);
-        return path;
+        using var blocked = NativeImageDirectory.Create(_root, logger);
+        var child = Directory.CreateDirectory(Path.Combine(blocked.Root, "unexpected"));
+        blocked.Dispose();
+        Assert.True(child.Exists);
+        Assert.NotEmpty(logger.Messages);
+        Assert.All(logger.Messages, message => Assert.Contains("private native", message));
+        logger.Throw = true;
+        blocked.Dispose();
+        Directory.Delete(child.FullName);
+        blocked.Dispose();
+        Assert.False(Directory.Exists(blocked.Root));
     }
 
     [LinuxNativeFact]
@@ -187,9 +177,32 @@ public sealed class ActivityPackageVerificationTests : IDisposable
         {
             using var process = System.Diagnostics.Process.GetCurrentProcess();
             Assert.Equal(expected, process.Modules.Cast<System.Diagnostics.ProcessModule>()
-                .Any(module => module.FileName.StartsWith(cache + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)));
+                .Any(module =>
+                {
+                    try
+                    {
+                        var directory = IxIFlow.TestSupport.ExistingPath.Canonicalize(Path.GetDirectoryName(module.FileName)!);
+                        return directory.Equals(cache, StringComparison.OrdinalIgnoreCase) ||
+                            directory.StartsWith(cache + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+                    }
+                    // An unrelated module may outlive its directory.
+                    catch (System.ComponentModel.Win32Exception) { return false; }
+                }));
         }
         if (OperatingSystem.IsLinux()) Assert.Equal(expected, File.ReadAllText("/proc/self/maps").Contains(cache, StringComparison.Ordinal));
+    }
+
+    private sealed class CleanupLogger : ILogger
+    {
+        internal readonly List<string> Messages = [];
+        internal bool Throw;
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> format)
+        {
+            Messages.Add(format(state, error));
+            if (Throw) throw new InvalidOperationException("cleanup logger failed");
+        }
     }
 
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }

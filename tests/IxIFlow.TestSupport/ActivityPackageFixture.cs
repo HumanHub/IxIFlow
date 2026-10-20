@@ -134,7 +134,7 @@ public static class ActivityPackageFixture
     {
         rid ??= System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier;
         if (rid is not ("win-x64" or "linux-x64" or "osx-arm64"))
-            throw Xunit.Sdk.SkipException.ForSkip($"Prebuilt native activity fixtures are available only for win-x64 and linux-x64; current RID is {rid}");
+            throw Xunit.Sdk.SkipException.ForSkip($"Prebuilt native activity fixtures are available only for win-x64, linux-x64 and osx-arm64; current RID is {rid}");
         using var stream = typeof(ActivityPackageFixture).Assembly.GetManifestResourceStream(
             "IxIFlow.TestSupport.NativeFixtures." + rid + "." + name + (rid == "win-x64" ? ".dll" : rid == "osx-arm64" ? ".dylib" : ".so"))!;
         using var bytes = new MemoryStream(); stream.CopyTo(bytes); return bytes.ToArray();

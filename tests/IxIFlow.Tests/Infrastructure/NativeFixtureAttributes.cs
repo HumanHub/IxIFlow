@@ -34,6 +34,6 @@ public sealed class PosixNativeFactAttribute : FactAttribute
     public PosixNativeFactAttribute()
     {
         if (RuntimeInformation.RuntimeIdentifier is not ("linux-x64" or "osx-arm64"))
-            Skip = "Private-copy unlink and Unix ownership tests require the linux-x64 or osx-arm64 fixture; Windows uses no private copies";
+            Skip = "Private-copy unlink and cleanup tests require the linux-x64 or osx-arm64 fixture; Windows uses no private copies";
     }
 }
