@@ -325,6 +325,10 @@ public sealed class SkipLockedClaimTests
     }
 
     [Fact]
+    public void DiscoveryExclusionsRejectNullIds() =>
+        Assert.Throws<ArgumentNullException>(() => Query.Excluding(["valid", null!], 1));
+
+    [Fact]
     public async Task HostAndClientRejectOverlengthIdsAsArguments()
     {
         var services = new ServiceCollection().AddLogging();
@@ -1234,13 +1238,14 @@ public sealed class SkipLockedClaimTests
         internal string? HeldId;
         internal bool RefuseAll;
         internal int Attempts;
+        internal Func<Task<ExecutionLeaseGrant?>>? Refusal;
         protected override object? Invoke(MethodInfo? method, object?[]? args)
         {
             if (method!.Name == nameof(IWorkflowStateRepository.TryAcquireExecutionLeaseAsync) &&
                 (RefuseAll || (string?)args![0] == HeldId))
             {
                 Interlocked.Increment(ref Attempts);
-                return Task.FromResult<ExecutionLeaseGrant?>(null);
+                return Refusal?.Invoke() ?? Task.FromResult<ExecutionLeaseGrant?>(null);
             }
             try { return method.Invoke(_inner, args); }
             catch (TargetInvocationException error) { ExceptionDispatchInfo.Capture(error.InnerException!).Throw(); throw; }
@@ -1370,7 +1375,22 @@ public sealed class SkipLockedClaimTests
         using var links = new CoordinatorLinks(new() { AllowInsecure = true }, store, host, settings, catalog,
             coordination, time, NullLogger<CoordinatorLinks>.Instance);
         await links.StartAsync(default); // Installs the real host/coordinator capacity event handler.
-        coordination.AddLink();
+        void ConnectionChanged(CoordinatorLink current, bool connected) => typeof(CoordinatorLinks)
+            .GetMethod("ConnectionChanged", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(links, [current, connected]);
+        using var link = new CoordinatorLink(new("http://localhost:1"), new(), host, settings, catalog, time,
+            ConnectionChanged, NullLogger.Instance);
+        using var session = new CancellationTokenSource();
+        var queue = new SendQueue<HostMessage>(256);
+        foreach (var (field, value) in new (string, object)[] { ("_queue", queue), ("_session", session), ("_ready", true) })
+            typeof(CoordinatorLink).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(link, value);
+        using var disconnected = session.Token.Register(() => ConnectionChanged(link, false));
+        ConnectionChanged(link, true); // Activate the actual link used by ReportCapacity.
+        var sender = new BlockedCapacitySender();
+        Assert.True(queue.TrySend(new(HostMessageKind.Heartbeat)));
+        var writing = link.WriteAsync(queue, sender, session.Token);
+        await sender.Entered.Task.WaitAsync(ClaimBound);
+        var capacityWakes = 0;
+        coordination.Wake += () => Interlocked.Increment(ref capacityWakes);
         var capacityReports = 0;
         var executionReturns = 0;
         host.FreeSlotsChanged += available =>
@@ -1395,19 +1415,129 @@ public sealed class SkipLockedClaimTests
             Assert.Equal(0, Volatile.Read(ref executionReturns));
             Assert.Equal(5, Volatile.Read(ref passes));
             Assert.Equal(1, host.FreeSlots);
-            // Inspect the pass channel after all five passes complete. No timer has advanced,
-            // and no immediate wake remains to restart the full-cache eviction cycle.
-            Assert.False(PassWakes(scanner).Reader.TryPeek(out _));
+            Assert.Equal(0, Volatile.Read(ref capacityWakes));
+            Assert.False(session.IsCancellationRequested);
+            Assert.True(link.Connected);
+            Assert.Equal(1, links.ConnectedCount);
+            Assert.True(coordination.Connected);
+            sender.Release.TrySetResult();
+            await sender.CapacitySent.Task.WaitAsync(ClaimBound);
+            var ready = Assert.Single(sender.Sent, message => message.Kind == HostMessageKind.Ready);
+            Assert.Equal(host.FreeSlots, ready.FreeSlots); // The latest report survives the blocked sender.
+            Assert.Equal(time.Start, time.GetUtcNow());
             await scanner.StopAsync(default).WaitAsync(DrainBound);
             proxy.RefuseAll = false;
             Assert.Equal(WorkflowExecutionStatus.Success,
                 (await provider.GetRequiredService<IWorkflowClient>().RecoverAsync("0000").WaitAsync(ClaimBound)).Status);
             Assert.Equal(1, Volatile.Read(ref executionReturns)); // Real execution capacity still wakes recovery.
+            Assert.Equal(1, Volatile.Read(ref capacityWakes));
         }
         finally
         {
             await scanner.StopAsync(default).WaitAsync(DrainBound);
+            await session.CancelAsync();
+            try { await writing.WaitAsync(DrainBound); } catch (OperationCanceledException) { }
             await links.StopAsync(default).WaitAsync(DrainBound);
+        }
+    }
+
+    private sealed class BlockedCapacitySender : Grpc.Core.IClientStreamWriter<HostMessage>
+    {
+        internal readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly TaskCompletionSource CapacitySent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal readonly ConcurrentQueue<HostMessage> Sent = new();
+        public Grpc.Core.WriteOptions? WriteOptions { get; set; }
+        public Task CompleteAsync() => Task.CompletedTask;
+        public Task WriteAsync(HostMessage message) => WriteAsync(message, default);
+        public async Task WriteAsync(HostMessage message, CancellationToken cancellationToken)
+        {
+            Entered.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+            Sent.Enqueue(message);
+            if (message.Kind == HostMessageKind.Ready) CapacitySent.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task WakeDroppedWithNoFreeSlotsRunsOnceAfterANoGrantProbeReturns()
+    {
+        var time = new FakeTimeProvider();
+        var store = DispatchProxy.Create<IWorkflowStateRepository, ContendedStore>();
+        var proxy = (ContendedStore)(object)store;
+        var services = new ServiceCollection().AddLogging();
+        services.AddSingleton<TimeProvider>(time);
+        services.AddIxIFlow(options => options.Slots = 2);
+        services.Replace(ServiceDescriptor.Singleton(store));
+        await using var provider = services.BuildServiceProvider();
+        var definition = Workflow.Create<RecoveryData>("DroppedCapacityWake").Step<RecoveryNoop>().Build();
+        await provider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+        var query = await StoreTestSupport.ClaimAsync(provider, 2);
+        foreach (var id in new[] { "probe-0", "probe-1", "free" })
+        {
+            var (instance, _, _) = WorkflowInstances.NewInstance(definition, new RecoveryData(),
+                new() { InstanceId = id }, time.GetUtcNow().UtcDateTime);
+            await store.SeedAsync(instance, query: query);
+        }
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<ExecutionLeaseGrant?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        proxy.RefuseAll = true;
+        proxy.Refusal = () =>
+        {
+            if (Volatile.Read(ref proxy.Attempts) == 2) entered.TrySetResult();
+            return release.Task;
+        };
+        var host = provider.GetRequiredService<WorkflowHost>();
+        var resume = typeof(WorkflowHost).GetMethod("ResumeAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var probes = Task.WhenAll((Task)resume.Invoke(host, ["probe-0"])!, (Task)resume.Invoke(host, ["probe-1"])!);
+        var coordination = new CoordinationState();
+        coordination.AddLink();
+        var initial = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var dropped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var passes = 0;
+        coordination.ClaimPassCompleted += () =>
+        {
+            switch (Interlocked.Increment(ref passes))
+            {
+                case 1: initial.TrySetResult(); break;
+                case 2: dropped.TrySetResult(); break;
+                case 3: recovered.TrySetResult(); break;
+            }
+        };
+        var discovery = new Mock<IWorkflowStateRepository>();
+        var reads = 0;
+        discovery.Setup(s => s.GetRunnableInstancesAsync(It.IsAny<ClaimQuery>())).Returns(() =>
+        {
+            Interlocked.Increment(ref reads);
+            return Task.FromResult<IReadOnlyList<RunnableInstance>>([new("free", time.GetUtcNow().UtcDateTime)]);
+        });
+        using var scanner = new WorkflowRecoveryService(provider.GetRequiredService<IServiceScopeFactory>(), discovery.Object,
+            NullLogger<WorkflowRecoveryService>.Instance, timeProvider: time,
+            settings: provider.GetRequiredService<HostSettings>(), coordination: coordination);
+        try
+        {
+            await entered.Task.WaitAsync(ClaimBound);
+            Assert.Equal(0, host.FreeSlots);
+            await scanner.StartAsync(default);
+            await initial.Task.WaitAsync(ClaimBound);
+            coordination.RequestPass();
+            await dropped.Task.WaitAsync(ClaimBound);
+            Assert.Equal(0, Volatile.Read(ref reads));
+            proxy.RefuseAll = false;
+            release.TrySetResult(null);
+            await probes.WaitAsync(ClaimBound);
+            await recovered.Task.WaitAsync(ClaimBound);
+            Assert.Equal(WorkflowStatus.Completed, (await store.GetWorkflowInstanceAsync("free"))!.Status);
+            Assert.Equal(1, Volatile.Read(ref reads));
+            Assert.Equal(3, Volatile.Read(ref passes));
+            Assert.Equal(time.Start, time.GetUtcNow());
+        }
+        finally
+        {
+            release.TrySetResult(null);
+            await probes.WaitAsync(DrainBound);
+            await scanner.StopAsync(default).WaitAsync(DrainBound);
         }
     }
 

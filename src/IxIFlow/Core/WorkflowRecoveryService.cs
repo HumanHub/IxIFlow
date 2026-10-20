@@ -23,6 +23,7 @@ internal sealed partial class WorkflowRecoveryService(
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private readonly CoordinationState _coordination = coordination ?? new();
     private readonly object _lock = new();
+    private bool _wakePending;
     // Only entries actually taken by a worker are reserved across overlapping passes.
     private readonly Dictionary<string, object> _recovering = new(StringComparer.Ordinal);
     // Dictionary insertion order is not an eviction contract; keep oldest-first explicitly.
@@ -60,12 +61,12 @@ internal sealed partial class WorkflowRecoveryService(
         await await ClaimAsync(cancellationToken);
 
     // Lists the instances this host may claim now and reserves them; the task returned recovers them.
-    private async Task<Task> ClaimAsync(CancellationToken cancellationToken)
+    private async Task<Task> ClaimAsync(CancellationToken cancellationToken, bool woken = false)
     {
         var handedOff = false;
         try
         {
-            var pass = await ReserveAsync(cancellationToken);
+            var pass = await ReserveAsync(cancellationToken, woken);
             handedOff = true;
             return CompletePassAsync(pass);
         }
@@ -82,14 +83,20 @@ internal sealed partial class WorkflowRecoveryService(
         finally { _coordination.CompleteClaimPass(); }
     }
 
-    private async Task<Task> ReserveAsync(CancellationToken cancellationToken)
+    private async Task<Task> ReserveAsync(CancellationToken cancellationToken, bool woken)
     {
         lock (_lock) ExpireRefusals();
         // A host claims only what it has slots for (D-10); the rest waits for the next pass or another host.
         int limit;
         using (var probe = scopes.CreateScope())
+        lock (_lock)
+        {
             limit = Math.Min(MaxCandidatesPerPass,
                 probe.ServiceProvider.GetService<WorkflowHost>()?.FreeSlots ?? _settings.Slots);
+            // A capacity event takes the same lock, so a return cannot race past arming this wake.
+            if (limit == 0) _wakePending |= woken;
+            else _wakePending = false;
+        }
         if (limit == 0)
         {
             return Task.CompletedTask;
@@ -120,11 +127,13 @@ internal sealed partial class WorkflowRecoveryService(
             var now = _time.GetTimestamp();
             // Keep this pass's IDs and all retained refusals; use the remaining room for
             // unexpired deferrals, oldest first. Deferrals must not keep occupying the head.
-            var excluded = attempted.Concat(_refused.Keys).Concat(_deferred
-                .Where(item => _time.GetElapsedTime(item.Value.Started, now) < item.Value.Wait)
-                .OrderByDescending(item => _time.GetElapsedTime(item.Value.Started, now))
-                .Select(item => item.Key)).Distinct(StringComparer.Ordinal).Take(ClaimQuery.MaxExcludedInstanceIds);
-            query = query.Excluding(excluded, limit);
+            var excluded = attempted.Concat(_refused.Keys).Distinct(StringComparer.Ordinal).ToArray();
+            var room = ClaimQuery.MaxExcludedInstanceIds - excluded.Length;
+            var deferred = _deferred.Where(item => _time.GetElapsedTime(item.Value.Started, now) < item.Value.Wait);
+            if (_deferred.Count > room)
+                deferred = deferred.OrderByDescending(item => _time.GetElapsedTime(item.Value.Started, now));
+            query = query.Excluding(excluded.Concat(deferred.Select(item => item.Key))
+                .Distinct(StringComparer.Ordinal).Take(ClaimQuery.MaxExcludedInstanceIds), limit);
         }
         return repository.GetRunnableInstancesAsync(query);
     }
@@ -296,6 +305,18 @@ internal sealed partial class WorkflowRecoveryService(
     {
         var passes = new List<Task>();
         void Wake() => _wakes.Writer.TryWrite(true);
+        WorkflowHost? host;
+        using (var probe = scopes.CreateScope()) host = probe.ServiceProvider.GetService<WorkflowHost>();
+        void CapacityChanged(bool _)
+        {
+            lock (_lock)
+                if (_wakePending && host!.FreeSlots > 0)
+                {
+                    _wakePending = false;
+                    Wake();
+                }
+        }
+        if (host != null) host.FreeSlotsChanged += CapacityChanged;
         _coordination.Wake += Wake;
         var listening = wakeSource == null ? Task.CompletedTask : ListenAsync(wakeSource, Wake, stoppingToken);
         var diagnostics = UnschedulableAsync(stoppingToken);
@@ -303,18 +324,23 @@ internal sealed partial class WorkflowRecoveryService(
         // it, and skips the instances it is still recovering.
         try
         {
+            var woken = false;
             do
             {
-                try { Track(passes, PassAsync(await ClaimAsync(stoppingToken), stoppingToken)); }
+                try { Track(passes, PassAsync(await ClaimAsync(stoppingToken, woken), stoppingToken)); }
                 catch (Exception error) when (error is not OperationCanceledException)
                 { (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not scan running workflows for recovery"); }
-                await WaitForPassAsync(stoppingToken);
+                woken = await WaitForPassAsync(stoppingToken);
             } while (true);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
         }
-        finally { _coordination.Wake -= Wake; }
+        finally
+        {
+            _coordination.Wake -= Wake;
+            if (host != null) host.FreeSlotsChanged -= CapacityChanged;
+        }
         await listening;
         await diagnostics;
         Task[] running;
@@ -323,7 +349,7 @@ internal sealed partial class WorkflowRecoveryService(
         await Task.WhenAll(running);
     }
 
-    private async Task WaitForPassAsync(CancellationToken stoppingToken)
+    private async Task<bool> WaitForPassAsync(CancellationToken stoppingToken)
     {
         var started = _time.GetTimestamp();
         var pollInterval = _coordination.Connected ? _coordination.PollInterval : _settings.PollInterval;
@@ -340,7 +366,7 @@ internal sealed partial class WorkflowRecoveryService(
             await Task.WhenAny(wake, tick, changed);
             wait.Cancel();
             stoppingToken.ThrowIfCancellationRequested();
-            if (wake.IsCompletedSuccessfully || tick.IsCompletedSuccessfully) return;
+            if (wake.IsCompletedSuccessfully || tick.IsCompletedSuccessfully) return wake.IsCompletedSuccessfully;
             // A late refusal changes the expiry timer, without starting an overlapping pass.
         }
     }
