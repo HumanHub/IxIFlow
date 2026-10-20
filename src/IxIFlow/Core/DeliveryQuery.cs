@@ -9,6 +9,7 @@ public sealed record DeliveryQuery(string? PublisherName = null, OutboxDeliveryS
 {
     internal (string EventId, string Publisher)? Validate()
     {
+        if (InstanceId != null) InstanceIds.Validate(InstanceId);
         if (Limit is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(Limit));
         if (Status is { } status && !Enum.IsDefined(status)) throw new ArgumentOutOfRangeException(nameof(Status));
         if (After == null) return null;

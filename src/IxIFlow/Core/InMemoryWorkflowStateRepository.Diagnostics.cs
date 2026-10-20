@@ -6,6 +6,7 @@ public partial class InMemoryWorkflowStateRepository
 
     public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation)
     {
+        InstanceIds.Validate(instanceId);
         lock (_claimLock)
             return Task.FromResult<IReadOnlyList<WorkflowDiagnostic>>(
                 _instances.TryGetValue(instanceId, out var instance) && instance.Incarnation == incarnation &&

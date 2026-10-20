@@ -99,6 +99,7 @@ public abstract partial class RelationalWorkflowStateRepository
 
     public async Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.Read, async () =>
         {

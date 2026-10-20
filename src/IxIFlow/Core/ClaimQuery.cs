@@ -14,9 +14,17 @@ public sealed record ClaimQuery
     public Guid HostId { get; }
     public IReadOnlyDictionary<string, string> Capabilities { get; }
     public int Limit { get; private init; }
-    // Recovery's ordered continuation; ordinary discovery and claims start at zero.
-    internal long ScanOffset { get; init; }
-    internal ClaimQuery Continue(long offset, int limit) => this with { ScanOffset = offset, Limit = limit };
+    // 1,024 recent refusals plus at most 256 candidates considered by this pass.
+    internal const int MaxExcludedInstanceIds = 1280;
+    public IReadOnlyList<string> ExcludedInstanceIds { get; private init; } = Array.Empty<string>();
+
+    internal ClaimQuery Excluding(IEnumerable<string> ids, int limit)
+    {
+        var excluded = ids.Distinct(StringComparer.Ordinal).ToArray();
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(excluded.Length, MaxExcludedInstanceIds);
+        foreach (var id in excluded) InstanceIds.Validate(id);
+        return this with { ExcludedInstanceIds = Array.AsReadOnly(excluded), Limit = limit };
+    }
 }
 
 /// <summary>Operator claims may enter stopped work. Termination claims require a pending command and ignore placement.</summary>

@@ -248,6 +248,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var rows = await connection.QueryAsync<DemandRow>(ReadDemandsSql, new { InstanceId = instanceId });
@@ -342,7 +343,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.CancellationRequest, async () =>
@@ -366,7 +367,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.CancellationRead, async () =>
         {
@@ -393,6 +394,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     public async Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
     {
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(query);
         if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
         var milliseconds = LeaseMilliseconds(instanceId, token, duration);
@@ -498,7 +500,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.LeaseRelease, async () =>
@@ -645,7 +647,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentOutOfRangeException.ThrowIfNegative(limit);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.InboxPage, async () =>
@@ -688,6 +690,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var row = await connection.QuerySingleOrDefaultAsync<EventRow>(RequiredSql(Statement.Event), new { InstanceId = instanceId, EventId = eventId });
@@ -697,6 +700,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     public async Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
+        InstanceIds.ValidateAll(instanceIds);
         var sequences = new Dictionary<string, long>(StringComparer.Ordinal);
         if (instanceIds.Count == 0)
             return sequences;
@@ -711,6 +715,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<StoredWait?> GetWaitAsync(string instanceId, string waitId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var row = await connection.QuerySingleOrDefaultAsync<WaitRow>(RequiredSql(Statement.Wait), new { InstanceId = instanceId, WaitId = waitId });
@@ -720,6 +725,8 @@ public abstract partial class RelationalWorkflowStateRepository :
     public async Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
+        if (query.InstanceId != null) InstanceIds.Validate(query.InstanceId);
+        if (query.InstanceIds != null) InstanceIds.ValidateAll(query.InstanceIds);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(query.Limit);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
@@ -1148,6 +1155,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         await using var transaction = await BeginTransactionAsync(connection, Operation.Read);
@@ -1156,6 +1164,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         await using var transaction = await BeginTransactionAsync(connection, Operation.Read);
@@ -1213,6 +1222,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)
     {
+        InstanceIds.Validate(instanceId);
         var period = tombstoneRetention ?? RetentionSettings.Default.TombstoneRetention;
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(period, TimeSpan.Zero);
         await EnsureSchemaAsync();
@@ -1283,6 +1293,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000)
     {
+        InstanceIds.Validate(instanceId);
         ArgumentOutOfRangeException.ThrowIfNegative(afterSequence);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         await EnsureSchemaAsync();
@@ -1296,6 +1307,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var rows = await connection.QueryAsync<string>(RequiredSql(Statement.IncarnationDiagnostics),
@@ -1470,7 +1482,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     };
     private static int LeaseMilliseconds(string instanceId, string token, TimeSpan duration)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         if (duration <= TimeSpan.Zero || duration.TotalMilliseconds > int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(duration));

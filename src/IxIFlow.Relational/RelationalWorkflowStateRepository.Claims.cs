@@ -10,10 +10,9 @@ public abstract partial class RelationalWorkflowStateRepository
     internal abstract string SetLeaseHostSql { get; }
     internal abstract string StampHostSql { get; }
     internal virtual string ClaimStampHostSql => StampHostSql;
-    internal DynamicParameters WithScan(DynamicParameters parameters, ClaimQuery query, int limit)
+    internal DynamicParameters WithExclusions(DynamicParameters parameters, ClaimQuery query)
     {
-        parameters.Add("ScanOffset", query.ScanOffset);
-        parameters.Add("ScanLimit", query.ScanOffset + limit);
+        parameters.Add("ExcludedInstanceIds", System.Text.Json.JsonSerializer.Serialize(query.ExcludedInstanceIds));
         return parameters;
     }
     internal abstract DynamicParameters PlacementParameters(ClaimQuery query, DateTime now, int limit);

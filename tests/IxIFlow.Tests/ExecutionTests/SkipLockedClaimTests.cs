@@ -33,28 +33,28 @@ public sealed class SkipLockedClaimTests
     private static readonly ClaimQuery Query = new(Guid.NewGuid(), new Dictionary<string, string>(), 100);
 
     [Fact]
-    public Task MemoryRunnableScanContinuesInOrder() => RunnableScanContinuesInOrder(new InMemoryWorkflowStateRepository());
+    public Task MemoryRunnableScanExcludesAtCapacity() => RunnableScanExcludesAtCapacity(new InMemoryWorkflowStateRepository());
 
     [Fact]
-    public async Task SqliteRunnableScanContinuesInOrder()
+    public async Task SqliteRunnableScanExcludesAtCapacity()
     {
         var folder = Path.Combine(Path.GetTempPath(), "skip-locked-scan-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         try
         {
             await using var store = new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "state.db"));
-            await RunnableScanContinuesInOrder(store);
+            await RunnableScanExcludesAtCapacity(store);
         }
         finally { await SqliteTestFiles.DeleteAsync(folder); }
     }
 
     [SqlServerFact, Trait("Category", "SqlIntegration")]
-    public Task SqlServerRunnableScanContinuesInOrder() => RunnableScanContinuesInOrder(Provider(false).Store);
+    public Task SqlServerRunnableScanExcludesAtCapacity() => RunnableScanExcludesAtCapacity(Provider(false).Store);
 
     [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
-    public Task PostgreSqlRunnableScanContinuesInOrder() => RunnableScanContinuesInOrder(Provider(true).Store);
+    public Task PostgreSqlRunnableScanExcludesAtCapacity() => RunnableScanExcludesAtCapacity(Provider(true).Store);
 
-    private static async Task RunnableScanContinuesInOrder(IWorkflowStateRepository store)
+    private static async Task RunnableScanExcludesAtCapacity(IWorkflowStateRepository store)
     {
         var instances = Enumerable.Range(0, 12).Select(_ => Instance()).ToArray();
         try
@@ -62,8 +62,12 @@ public sealed class SkipLockedClaimTests
             foreach (var instance in instances) await store.SeedAsync(instance, query: Query);
             var all = await store.GetRunnableInstancesAsync(Query);
             Assert.Equal(instances.Length, all.Count);
-            for (var offset = 0; offset <= all.Count; offset += 3)
-                Assert.Equal(all.Skip(offset).Take(3), await store.GetRunnableInstancesAsync(Query.Continue(offset, 3)));
+            var excluded = all.Take(6).Select(row => row.InstanceId).Concat(
+                Enumerable.Range(0, ClaimQuery.MaxExcludedInstanceIds - 6).Select(i => "excluded-" + i)).ToArray();
+            var filtered = Query.Excluding(excluded, 3);
+            Assert.Equal(ClaimQuery.MaxExcludedInstanceIds, filtered.ExcludedInstanceIds.Count);
+            Assert.Equal(all.Skip(6).Take(3), await store.GetRunnableInstancesAsync(filtered));
+            Assert.Throws<ArgumentOutOfRangeException>(() => Query.Excluding(excluded.Append("overflow"), 3));
         }
         finally
         {
@@ -71,11 +75,15 @@ public sealed class SkipLockedClaimTests
         }
     }
 
-    [Fact]
-    public async Task AWakeImmediatelyRetriesARefusedInstance()
+    [Theory]
+    [InlineData(false, 1000)]
+    [InlineData(true, 1000)]
+    [InlineData(false, 250)]
+    [InlineData(false, 2000)]
+    public async Task RefusedInstanceIsRetriedAtExpiryBeforeTenSecondPoll(bool wakeAfterRefusal, int plainPollMilliseconds)
     {
         var time = new FakeTimeProvider();
-        var refused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var excluded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var retried = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var calls = 0;
         var client = new Mock<IWorkflowClient>();
@@ -90,23 +98,68 @@ public sealed class SkipLockedClaimTests
         var store = new Mock<IWorkflowStateRepository>();
         store.Setup(r => r.GetRunnableInstancesAsync(It.IsAny<ClaimQuery>())).Returns<ClaimQuery>(query =>
         {
-            if (Volatile.Read(ref calls) == 1) refused.TrySetResult();
-            return Task.FromResult<IReadOnlyList<RunnableInstance>>(query.ScanOffset == 0
-                ? [new("wake", time.GetUtcNow().UtcDateTime)] : []);
+            if (query.ExcludedInstanceIds.Contains("wake")) excluded.TrySetResult();
+            return Task.FromResult<IReadOnlyList<RunnableInstance>>(
+                Volatile.Read(ref calls) < 2 && !query.ExcludedInstanceIds.Contains("wake")
+                    ? [new("wake", time.GetUtcNow().UtcDateTime)] : []);
+        });
+        var coordination = new CoordinationState();
+        coordination.AddLink(); // Default coordinator poll is ten seconds; plain poll is one second.
+        using var provider = RecoveryProvider(client.Object);
+        using var scanner = new WorkflowRecoveryService(provider.GetRequiredService<IServiceScopeFactory>(), store.Object,
+            NullLogger<WorkflowRecoveryService>.Instance, timeProvider: time, coordination: coordination,
+            settings: HostSettings.Default with { Slots = 1, PollInterval = TimeSpan.FromMilliseconds(plainPollMilliseconds) });
+        await scanner.StartAsync(CancellationToken.None);
+        try
+        {
+            await excluded.Task.WaitAsync(ClaimBound);
+            if (wakeAfterRefusal) coordination.RequestPass();
+            var interval = TimeSpan.FromMilliseconds(Math.Min(1000, plainPollMilliseconds));
+            time.Advance(interval - TimeSpan.FromMilliseconds(1));
+            Assert.Equal(1, Volatile.Read(ref calls));
+            time.Advance(TimeSpan.FromMilliseconds(1));
+            await retried.Task.WaitAsync(ClaimBound);
+            Assert.Equal(2, Volatile.Read(ref calls));
+            Assert.Equal(interval, time.GetUtcNow() - time.Start);
+        }
+        finally { await scanner.StopAsync(CancellationToken.None).WaitAsync(DrainBound); }
+    }
+
+    [Fact]
+    public async Task AWakeWithTwentyDueInstancesUsesSixteenFreeSlots()
+    {
+        var candidates = Array.Empty<RunnableInstance>();
+        var initialScan = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var filled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var client = new Mock<IWorkflowClient>();
+        client.Setup(c => c.RecoverAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((id, _) =>
+            {
+                if (Interlocked.Increment(ref attempts) == 16) filled.TrySetResult();
+                return Task.FromResult(new WorkflowExecutionResult { InstanceId = id, Status = WorkflowExecutionStatus.Success });
+            });
+        var store = new Mock<IWorkflowStateRepository>();
+        store.Setup(r => r.GetRunnableInstancesAsync(It.IsAny<ClaimQuery>())).Returns<ClaimQuery>(query =>
+        {
+            var rows = candidates.Where(c => !query.ExcludedInstanceIds.Contains(c.InstanceId)).Take(query.Limit).ToArray();
+            if (rows.Length == 0) initialScan.TrySetResult();
+            return Task.FromResult<IReadOnlyList<RunnableInstance>>(rows);
         });
         var wake = new TestWakeSource();
         using var provider = RecoveryProvider(client.Object);
         using var scanner = new WorkflowRecoveryService(provider.GetRequiredService<IServiceScopeFactory>(), store.Object,
-            NullLogger<WorkflowRecoveryService>.Instance, timeProvider: time,
-            settings: HostSettings.Default with { Slots = 1, PollInterval = TimeSpan.FromHours(1) }, wakeSource: wake);
+            NullLogger<WorkflowRecoveryService>.Instance, timeProvider: new FakeTimeProvider(),
+            settings: HostSettings.Default with { Slots = 16 }, wakeSource: wake);
         await scanner.StartAsync(CancellationToken.None);
         try
         {
-            await refused.Task.WaitAsync(ClaimBound);
             await wake.Listening.Task.WaitAsync(ClaimBound);
+            await initialScan.Task.WaitAsync(ClaimBound);
+            candidates = Enumerable.Range(0, 20).Select(i => new RunnableInstance(i.ToString(), DateTime.UtcNow)).ToArray();
             wake.Wake!();
-            await retried.Task.WaitAsync(ClaimBound);
-            Assert.Equal(2, Volatile.Read(ref calls)); // The fake poll clock has never advanced.
+            await filled.Task.WaitAsync(ClaimBound);
+            Assert.Equal(16, Volatile.Read(ref attempts));
         }
         finally { await scanner.StopAsync(CancellationToken.None).WaitAsync(DrainBound); }
     }
@@ -122,6 +175,183 @@ public sealed class SkipLockedClaimTests
             try { await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken); }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         }
+    }
+
+    [Fact]
+    public async Task EveryPollStartsWithAffinityWorkInAShrinkingBacklog()
+    {
+        var due = Enumerable.Range(0, 4).Select(i => new RunnableInstance("own-" + i, DateTime.UtcNow))
+            .Concat(Enumerable.Range(0, 4).Select(i => new RunnableInstance("other-" + i, DateTime.UtcNow.AddMinutes(-1))))
+            .ToList();
+        var tried = new List<string>();
+        var client = new Mock<IWorkflowClient>();
+        client.Setup(c => c.RecoverAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((id, _) =>
+            {
+                lock (due) { tried.Add(id); due.RemoveAll(c => c.InstanceId == id); }
+                return Task.FromResult(new WorkflowExecutionResult { InstanceId = id, Status = WorkflowExecutionStatus.Success });
+            });
+        using var provider = RecoveryProvider(client.Object);
+        using var scanner = Scanner(provider, due, 1);
+        for (var pass = 0; pass < 4; pass++)
+        {
+            // The mock orders host-affinity work ahead of older other-host work, and removes grants.
+            await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
+            Assert.Equal("own-" + pass, tried[^1]);
+            Assert.Equal(7 - pass, due.Count);
+        }
+        for (var pass = 0; pass < 4; pass++) await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
+        Assert.Equal(Enumerable.Range(0, 4).Select(i => "other-" + i), tried.Skip(4));
+        Assert.Empty(due);
+    }
+
+    [Fact]
+    public async Task RefusalSetEvictsOldestAndNeverExceedsCapacity()
+    {
+        var candidates = Enumerable.Range(0, WorkflowRecoveryService.RefusedCapacity)
+            .Select(i => new RunnableInstance(i.ToString(), DateTime.UtcNow)).ToList();
+        ClaimQuery? lastQuery = null;
+        var client = new Mock<IWorkflowClient>();
+        client.Setup(c => c.RecoverAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((id, _) => Task.FromResult(new WorkflowExecutionResult
+                { InstanceId = id, Status = WorkflowExecutionStatus.Running }));
+        using var provider = RecoveryProvider(client.Object);
+        using var scanner = Scanner(provider, candidates, 1, query =>
+        {
+            lastQuery = query;
+            Assert.True(query.ExcludedInstanceIds.Count <= ClaimQuery.MaxExcludedInstanceIds);
+        });
+        for (var pass = 0; pass < 4; pass++) await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
+        await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
+        Assert.Equal(WorkflowRecoveryService.RefusedCapacity, lastQuery!.ExcludedInstanceIds.Count);
+        Assert.Contains("0", lastQuery.ExcludedInstanceIds);
+        // Stop exposing old instances so that only the new refusal is added this pass.
+        candidates.Clear();
+        candidates.Add(new("new", DateTime.UtcNow));
+        await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
+        Assert.Equal(WorkflowRecoveryService.RefusedCapacity, lastQuery!.ExcludedInstanceIds.Count);
+        Assert.DoesNotContain("0", lastQuery.ExcludedInstanceIds);
+        Assert.Contains("new", lastQuery.ExcludedInstanceIds);
+    }
+
+    [Theory]
+    [InlineData("memory")]
+    [InlineData("sqlite")]
+    [InlineData("sqlserver")]
+    [InlineData("postgresql")]
+    public async Task OverlengthIdsAreRejectedBeforeAnyStoreAccess(string providerName)
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "skip-locked-validation-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        // Server connection strings are deliberately unreachable: invalid arguments must fail first.
+        IWorkflowStateRepository store = providerName switch
+        {
+            "memory" => new InMemoryWorkflowStateRepository(),
+            "sqlite" => new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "state.db")),
+            "sqlserver" => new SqlWorkflowStateRepository("Server=invalid;Database=invalid;Integrated Security=true"),
+            _ => new PostgreSqlWorkflowStateRepository("Host=invalid;Database=invalid;Username=invalid")
+        };
+        try
+        {
+            var id = new string('x', 100) + " ";
+            var reason = new CancellationReason { ReasonCode = "test" };
+            var calls = new Func<Task>[]
+            {
+                () => ClaimAsync(store, id),
+                () => ClaimAsync(store, id, ExecutionClaimKind.Operator),
+                () => ClaimAsync(store, id, ExecutionClaimKind.Termination),
+                () => store.RenewExecutionLeasesAsync([new(id, "lease", LeaseDuration)]),
+                () => store.ReleaseExecutionLeaseAsync(id, "lease"),
+                () => store.GetWorkflowInstanceAsync(id),
+                () => store.GetWorkflowInstanceSummaryAsync(id),
+                () => store.GetWorkflowDemandsAsync(id),
+                () => store.DeleteWorkflowInstanceAsync(id),
+                () => store.RequestCancellationAsync(id, reason),
+                () => store.RequestTerminationAsync(id, reason),
+                () => store.GetCancellationRequestAsync(id),
+                () => store.GetTombstoneAsync(id),
+                () => store.GetWorkflowOwnershipAsync(id),
+                () => store.GetPendingEventsAsync(id, 0, 1),
+                () => store.GetEventAsync(id, "event"),
+                () => store.GetInboxSequencesAsync(["valid", id]),
+                () => store.GetWaitAsync(id, "wait"),
+                () => store.GetOpenWaitsAsync(new WaitQuery(InstanceId: id)),
+                () => store.GetOpenWaitsAsync(new WaitQuery(InstanceIds: [id])),
+                () => store.GetTraceAsync(id),
+                () => store.GetDiagnosticsForIncarnationAsync(id, Guid.NewGuid()),
+                () => store.GetDebugStatesAsync([id]),
+                () => store.GetControlRequestsAsync([id]),
+                () => store.RequestDebugCommandAsync(id, new("debug", DebugCommandKind.Pause, 0, "test")),
+                () => store.AppendEventAsync(new WorkflowEvent(id, "event", "test", "{}")),
+                () => store.QueryInstancesAsync(new InstanceQuery(InstanceId: id)),
+                () => store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: id)),
+                () => store.ListDeliveriesAsync(new DeliveryQuery(InstanceId: id))
+            };
+            foreach (var call in calls) await Assert.ThrowsAsync<ArgumentException>(call);
+            Assert.Throws<ArgumentException>(() => CheckpointCommit.CreateAdmission(Instance(id)));
+            Assert.Throws<ArgumentException>(() => new WorkflowEvent(id, "event", "test", "{}").ContentHash());
+            var parent = Instance();
+            var child = Instance(id);
+            child.ParentInstanceId = parent.InstanceId;
+            child.ParentWaitId = "wait";
+            Assert.Throws<ArgumentException>(() => CheckpointCommit.Create(parent, 1, 0,
+                childStarts: [new(id, JsonSerializer.Serialize(child), "wait")],
+                openedWaits: [new("wait", WaitKind.Child, "", "IxIFlow.ChildCompleted", null)]));
+        }
+        finally
+        {
+            if (store is IAsyncDisposable disposable) await disposable.DisposeAsync();
+            await SqliteTestFiles.DeleteAsync(folder);
+        }
+    }
+
+    [Fact]
+    public Task MemoryHundredCharacterIdCannotBeClaimedThroughAnOverlengthAlias() =>
+        HundredCharacterIdCannotBeClaimedThroughAnOverlengthAlias(new InMemoryWorkflowStateRepository());
+
+    [Fact]
+    public async Task SqliteHundredCharacterIdCannotBeClaimedThroughAnOverlengthAlias()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "skip-locked-id-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            await using var store = new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "state.db"));
+            await HundredCharacterIdCannotBeClaimedThroughAnOverlengthAlias(store);
+        }
+        finally { await SqliteTestFiles.DeleteAsync(folder); }
+    }
+
+    [SqlServerFact, Trait("Category", "SqlIntegration")]
+    public Task SqlServerHundredCharacterIdCannotBeClaimedThroughAnOverlengthAlias() =>
+        HundredCharacterIdCannotBeClaimedThroughAnOverlengthAlias(Provider(false).Store);
+
+    [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
+    public Task PostgreSqlHundredCharacterIdCannotBeClaimedThroughAnOverlengthAlias() =>
+        HundredCharacterIdCannotBeClaimedThroughAnOverlengthAlias(Provider(true).Store);
+
+    private static async Task HundredCharacterIdCannotBeClaimedThroughAnOverlengthAlias(IWorkflowStateRepository store)
+    {
+        var id = Guid.NewGuid().ToString("N") + new string('x', 68);
+        var instance = Instance(id);
+        var checkpoint = JsonSerializer.Deserialize<ExecutionCheckpoint>(instance.ExecutionStateJson)!;
+        checkpoint.Demands = [new WorkflowDemand("gpu", "required")];
+        instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+        try
+        {
+            await store.SeedAsync(instance, query: Query);
+            Assert.Null(await ClaimAsync(store, id)); // Valid 100-character key retains its placement requirement.
+            foreach (var alias in new[] { id + " ", id + "x" })
+            {
+                await Assert.ThrowsAsync<ArgumentException>(() => ClaimAsync(store, alias));
+                await Assert.ThrowsAsync<ArgumentException>(() => store.DeleteWorkflowInstanceAsync(alias));
+                await Assert.ThrowsAsync<ArgumentException>(() => store.AppendEventAsync(new(alias, "event", "test", "{}")));
+                Assert.Throws<ArgumentException>(() => CheckpointCommit.CreateAdmission(Instance(alias)));
+            }
+            var matching = new ClaimQuery(Query.HostId, new Dictionary<string, string> { ["gpu"] = "required" });
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(id, "valid", LeaseDuration, matching));
+        }
+        finally { await store.DeleteWorkflowInstanceAsync(id); }
     }
 
     [SqlServerFact, Trait("Category", "SqlIntegration")]
@@ -834,8 +1064,10 @@ public sealed class SkipLockedClaimTests
             new() { InstanceId = "0-locked-" + Guid.NewGuid().ToString("N") }, DateTime.UtcNow);
         var (free, _, _) = WorkflowInstances.NewInstance(definition, new RecoveryData(),
             new() { InstanceId = "1-free-" + Guid.NewGuid().ToString("N") }, DateTime.UtcNow);
+        var time = new FakeTimeProvider();
         using var scanner = new WorkflowRecoveryService(provider.GetRequiredService<IServiceScopeFactory>(), store,
-            NullLogger<WorkflowRecoveryService>.Instance, settings: provider.GetRequiredService<HostSettings>());
+            NullLogger<WorkflowRecoveryService>.Instance, timeProvider: time,
+            settings: provider.GetRequiredService<HostSettings>());
         Task? pass = null;
         try
         {
@@ -851,7 +1083,8 @@ public sealed class SkipLockedClaimTests
                 Assert.Equal(WorkflowStatus.Completed, (await store.GetWorkflowInstanceAsync(free.InstanceId))!.Status);
                 Assert.Equal(WorkflowStatus.Running, (await store.GetWorkflowInstanceAsync(locked.InstanceId))!.Status);
             }
-            // The next pass retries immediately, with no one-pass refusal exclusion.
+            // The fixed exclusion ends at expiry, independent of pass count.
+            time.Advance(WorkflowRecoveryService.RefusalInterval);
             await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
             Assert.Equal(WorkflowStatus.Completed, (await store.GetWorkflowInstanceAsync(locked.InstanceId))!.Status);
         }
@@ -892,7 +1125,7 @@ public sealed class SkipLockedClaimTests
     }
 
     [Fact]
-    public async Task RecoveryPassTriesCandidatesInOrderOnceAndStopsAtItsBound()
+    public async Task RecoveryPassExcludesRefusalsAndReachesFreeWorkOnTheNextPass()
     {
         var candidates = Enumerable.Range(0, 2 * WorkflowRecoveryService.MaxCandidatesPerPass + 2)
             .Select(i => new RunnableInstance(i.ToString(), DateTime.UtcNow)).ToArray();
@@ -911,10 +1144,11 @@ public sealed class SkipLockedClaimTests
         store.Setup(s => s.GetRunnableInstancesAsync(It.IsAny<ClaimQuery>())).Returns<ClaimQuery>(query =>
         {
             discoveries++;
-            return Task.FromResult<IReadOnlyList<RunnableInstance>>(candidates.Skip((int)query.ScanOffset).Take(query.Limit).ToArray());
+            return Task.FromResult<IReadOnlyList<RunnableInstance>>(candidates.Where(c => !query.ExcludedInstanceIds.Contains(c.InstanceId)).Take(query.Limit).ToArray());
         });
         using var scanner = new WorkflowRecoveryService(provider.GetRequiredService<IServiceScopeFactory>(), store.Object,
-            NullLogger<WorkflowRecoveryService>.Instance, settings: HostSettings.Default with { Slots = 1 });
+            NullLogger<WorkflowRecoveryService>.Instance, timeProvider: new FakeTimeProvider(),
+            settings: HostSettings.Default with { Slots = 1 });
         await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
         Assert.Equal(candidates.Take(WorkflowRecoveryService.MaxCandidatesPerPass).Select(c => c.InstanceId), tried);
         Assert.Equal(1 + (WorkflowRecoveryService.MaxCandidatesPerPass - 1 + WorkflowRecoveryService.RefillPageSize - 1)
@@ -924,17 +1158,67 @@ public sealed class SkipLockedClaimTests
         Assert.Equal(candidates.Skip(WorkflowRecoveryService.MaxCandidatesPerPass)
             .Take(WorkflowRecoveryService.MaxCandidatesPerPass).Select(c => c.InstanceId), tried);
         tried.Clear();
+        // The 512 recorded refusals are excluded; the very next pass reaches the final free instance.
         await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
         Assert.Equal(candidates.Skip(2 * WorkflowRecoveryService.MaxCandidatesPerPass).Select(c => c.InstanceId), tried);
         tried.Clear();
         await scanner.RecoverOnceAsync(CancellationToken.None).WaitAsync(ClaimBound);
-        Assert.Equal(candidates.Take(WorkflowRecoveryService.MaxCandidatesPerPass).Select(c => c.InstanceId), tried);
+        Assert.Equal(new[] { candidates[^1].InstanceId }, tried);
+    }
+
+    [Theory]
+    [InlineData(514, true)]
+    [InlineData(1536, false)]
+    public async Task RecoveryContinuesBoundedPassesBeforeRefusalsExpire(int population, bool reachesFree)
+    {
+        var time = new FakeTimeProvider();
+        var free = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var candidates = Enumerable.Range(0, population).Select(i => new RunnableInstance(i.ToString(), time.GetUtcNow().UtcDateTime)).ToArray();
+        var tried = new ConcurrentQueue<string>();
+        var client = new Mock<IWorkflowClient>();
+        client.Setup(c => c.RecoverAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, CancellationToken>((id, _) =>
+            {
+                tried.Enqueue(id);
+                if (reachesFree && id == candidates[^1].InstanceId) free.TrySetResult();
+                return Task.FromResult(new WorkflowExecutionResult { InstanceId = id,
+                    Status = reachesFree && id == candidates[^1].InstanceId ? WorkflowExecutionStatus.Success : WorkflowExecutionStatus.Running });
+            });
+        var store = new Mock<IWorkflowStateRepository>();
+        store.Setup(s => s.GetRunnableInstancesAsync(It.IsAny<ClaimQuery>())).Returns<ClaimQuery>(query =>
+            Task.FromResult<IReadOnlyList<RunnableInstance>>(candidates.Where(c => !query.ExcludedInstanceIds.Contains(c.InstanceId))
+                .Take(query.Limit).ToArray()));
+        var coordination = new CoordinationState();
+        coordination.AddLink();
+        var stoppedGrowing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var passes = 0;
+        coordination.ClaimPassCompleted += () =>
+        {
+            if (Interlocked.Increment(ref passes) == 5) stoppedGrowing.TrySetResult();
+        };
+        using var provider = RecoveryProvider(client.Object);
+        using var scanner = new WorkflowRecoveryService(provider.GetRequiredService<IServiceScopeFactory>(), store.Object,
+            NullLogger<WorkflowRecoveryService>.Instance, timeProvider: time, coordination: coordination,
+            settings: HostSettings.Default with { Slots = 1 });
+        await scanner.StartAsync(CancellationToken.None);
+        try
+        {
+            await (reachesFree ? free.Task : stoppedGrowing.Task).WaitAsync(ClaimBound);
+            if (reachesFree) Assert.Equal(candidates.Select(c => c.InstanceId), tried);
+            else
+            {
+                Assert.Equal(5 * WorkflowRecoveryService.MaxCandidatesPerPass, tried.Count);
+                Assert.Equal(5, Volatile.Read(ref passes)); // Capacity/eviction does not create an immediate retry loop.
+            }
+            Assert.Equal(time.Start, time.GetUtcNow()); // No poll or expiry was required.
+        }
+        finally { await scanner.StopAsync(CancellationToken.None).WaitAsync(DrainBound); }
     }
 
     [Fact]
     public async Task RecoveryPassRefillsWhileAnotherSlotIsStillRunning()
     {
-        var candidates = new[] { "slow", "busy", "free", "unused" }.Select(id => new RunnableInstance(id, DateTime.UtcNow)).ToArray();
+        var candidates = new[] { "slow", "busy", "free", "unused" }.Select(id => new RunnableInstance(id, DateTime.UtcNow)).ToList();
         var slow = new TaskCompletionSource<WorkflowExecutionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         var reachedFree = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var reachedUnused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -943,6 +1227,7 @@ public sealed class SkipLockedClaimTests
             .Returns<string, CancellationToken>((id, _) =>
             {
                 if (id == "slow") return slow.Task;
+                if (id != "busy") lock (candidates) candidates.RemoveAll(c => c.InstanceId == id);
                 if (id == "free") reachedFree.TrySetResult();
                 if (id == "unused") reachedUnused.TrySetResult();
                 return Task.FromResult(new WorkflowExecutionResult { InstanceId = id,
@@ -964,7 +1249,7 @@ public sealed class SkipLockedClaimTests
             slow.TrySetResult(new WorkflowExecutionResult { InstanceId = "slow", Status = WorkflowExecutionStatus.Success });
             await pass.WaitAsync(DrainBound);
         }
-        client.Verify(c => c.RecoverAsync("busy", It.IsAny<CancellationToken>()), Times.Exactly(2));
+        client.Verify(c => c.RecoverAsync("busy", It.IsAny<CancellationToken>()), Times.Once());
     }
 
     [Fact]
@@ -1048,9 +1333,10 @@ public sealed class SkipLockedClaimTests
                 return firstRun.Task;
             });
         using var provider = RecoveryProvider(client.Object);
+        var time = new FakeTimeProvider();
         using var scanner = Scanner(provider,
             new[] { "a", "b" }.Select(id => new RunnableInstance(id, DateTime.UtcNow)).ToArray(), 2,
-            query => { if (query.ScanOffset > 0) firstRefill.TrySetResult(); });
+            query => { if (query.ExcludedInstanceIds.Contains("a")) firstRefill.TrySetResult(); }, time);
         var first = scanner.RecoverOnceAsync(CancellationToken.None);
         Task? later = null;
         try
@@ -1058,6 +1344,7 @@ public sealed class SkipLockedClaimTests
             await firstEntered.Task.WaitAsync(ClaimBound);
             // Refill starts only after a's no-grant reservation has been released.
             await firstRefill.Task.WaitAsync(ClaimBound);
+            time.Advance(WorkflowRecoveryService.RefusalInterval);
             later = scanner.RecoverOnceAsync(CancellationToken.None);
             await laterEntered.Task.WaitAsync(ClaimBound);
             firstRun.TrySetResult(new WorkflowExecutionResult { InstanceId = "b", Status = WorkflowExecutionStatus.Success });
@@ -1079,16 +1366,18 @@ public sealed class SkipLockedClaimTests
         .AddSingleton(client).AddSingleton<IWorkflowCatalog>(new WorkflowCatalog()).BuildServiceProvider();
 
     private static WorkflowRecoveryService Scanner(ServiceProvider provider, IReadOnlyList<RunnableInstance> candidates, int slots,
-        Action<ClaimQuery>? discovered = null)
+        Action<ClaimQuery>? discovered = null, TimeProvider? time = null)
     {
         var store = new Mock<IWorkflowStateRepository>();
         store.Setup(s => s.GetRunnableInstancesAsync(It.IsAny<ClaimQuery>())).Returns<ClaimQuery>(query =>
         {
             discovered?.Invoke(query);
-            return Task.FromResult<IReadOnlyList<RunnableInstance>>(candidates.Skip((int)query.ScanOffset).Take(query.Limit).ToArray());
+            lock (candidates)
+                return Task.FromResult<IReadOnlyList<RunnableInstance>>(candidates.Where(c => !query.ExcludedInstanceIds.Contains(c.InstanceId)).Take(query.Limit).ToArray());
         });
         return new WorkflowRecoveryService(provider.GetRequiredService<IServiceScopeFactory>(), store.Object,
-            NullLogger<WorkflowRecoveryService>.Instance, settings: HostSettings.Default with { Slots = slots });
+            NullLogger<WorkflowRecoveryService>.Instance, timeProvider: time ?? new FakeTimeProvider(),
+            settings: HostSettings.Default with { Slots = slots });
     }
 
     [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
@@ -1123,6 +1412,89 @@ public sealed class SkipLockedClaimTests
             {
                 await store.DeleteWorkflowInstanceAsync(child.InstanceId);
                 await store.DeleteWorkflowInstanceAsync(parent.InstanceId);
+            }
+        }
+    }
+
+    [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
+    public async Task PostgreSqlClaimTakesAFreshSnapshotAfterAChildInsertionCommits()
+    {
+        var (store, connect) = Provider(true);
+        var (parent, child, commit) = await ChildCreationAsync(store);
+        var schema = "claim_snapshot_" + Guid.NewGuid().ToString("N");
+        var creationGate = schema + "-creation";
+        var probeGate = schema + "-probe";
+        Task<WorkflowCommitResult>? creation = null;
+        Task<int>? probe = null;
+        Task<EventAppendResult>? writer = null;
+        await using var observer = connect();
+        await observer.OpenAsync();
+        try
+        {
+            await observer.ExecuteAsync($"""
+                CREATE SCHEMA {schema};
+                CREATE FUNCTION {schema}.pause_child() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    IF NEW.instance_id = '{child.InstanceId}' THEN
+                        PERFORM pg_advisory_xact_lock(hashtextextended('{creationGate}', 0));
+                    END IF;
+                    RETURN NEW;
+                END; $$;
+                CREATE TRIGGER {schema} AFTER INSERT ON ixiflow_workflow_instances
+                    FOR EACH ROW EXECUTE FUNCTION {schema}.pause_child();
+                -- Stage the first production statement after its snapshot is established,
+                -- immediately before the actual try-lock. The second statement is untouched.
+                CREATE FUNCTION {schema}.pg_try_advisory_xact_lock(bigint) RETURNS boolean LANGUAGE plpgsql AS $$
+                BEGIN
+                    PERFORM pg_catalog.pg_advisory_xact_lock(hashtextextended('{probeGate}', 0));
+                    RETURN pg_catalog.pg_try_advisory_xact_lock($1);
+                END; $$;
+                """);
+            await using (var creatorHold = await HoldAsync(connect))
+            await using (var probeHold = await HoldAsync(connect))
+            await using (var claimant = await HoldAsync(connect))
+            {
+                await HoldPostgreSqlIdentityAsync(creatorHold, creationGate);
+                await HoldPostgreSqlIdentityAsync(probeHold, probeGate);
+                creation = store.CommitWorkflowInstanceAsync(commit);
+                await WaitForBlockedSessionAsync(connect, creatorHold);
+                Assert.Null(await store.GetWorkflowInstanceAsync(child.InstanceId));
+                await claimant.Connection.ExecuteAsync($"SET LOCAL search_path = {schema}, pg_catalog, public",
+                    transaction: claimant.Transaction);
+                var read = store.GetType().GetMethod("ReadClaimStateAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                probe = (Task<int>)read.Invoke(store, [claimant.Connection, claimant.Transaction, child.InstanceId])!;
+                await WaitForBlockedSessionAsync(connect, probeHold);
+                // Commit the real parent's child insertion between the first statement's
+                // snapshot and ID acquisition, reproducing r4-1's missed-row window.
+                await creatorHold.Transaction.CommitAsync();
+                Assert.Equal(WorkflowCommitStatus.Applied, (await creation.WaitAsync(DrainBound)).Status);
+                await probeHold.Transaction.CommitAsync();
+                Assert.Equal(1, await probe.WaitAsync(ClaimBound));
+                writer = store.AppendEventAsync(new(child.InstanceId, "snapshot-event", "test", "{}"));
+                await WaitForBlockedSessionAsync(connect, claimant);
+                Assert.False(writer.IsCompleted); // The fresh read actually owns the row lock.
+                await claimant.Transaction.RollbackAsync();
+            }
+            await writer.WaitAsync(DrainBound);
+        }
+        finally
+        {
+            try
+            {
+                await Task.WhenAll(new Task[] { creation ?? Task.CompletedTask, probe ?? Task.CompletedTask,
+                    writer ?? Task.CompletedTask }).WaitAsync(DrainBound);
+            }
+            finally
+            {
+                try
+                {
+                    await observer.ExecuteAsync($"DROP TRIGGER IF EXISTS {schema} ON ixiflow_workflow_instances; DROP SCHEMA IF EXISTS {schema} CASCADE;");
+                }
+                finally
+                {
+                    await store.DeleteWorkflowInstanceAsync(child.InstanceId);
+                    await store.DeleteWorkflowInstanceAsync(parent.InstanceId);
+                }
             }
         }
     }

@@ -55,6 +55,7 @@ public abstract partial class RelationalWorkflowStateRepository
 
     public async Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         return await TombstoneAsync(connection, null, instanceId, await OutboxNowAsync(connection, null));

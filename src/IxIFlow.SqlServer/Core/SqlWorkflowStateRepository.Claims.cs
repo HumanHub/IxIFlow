@@ -37,6 +37,9 @@ public sealed partial class SqlWorkflowStateRepository
 
     internal override string RunnableSql => $"""
         {CapabilitySnapshotSql}
+        CREATE TABLE #ClaimExcluded (InstanceId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 PRIMARY KEY);
+        INSERT INTO #ClaimExcluded SELECT DISTINCT CAST(value AS NVARCHAR(100)) COLLATE Latin1_General_100_BIN2
+            FROM OPENJSON(@ExcludedInstanceIds);
         -- Only distinct sets and their rows participate in capability matching.
         SELECT sets.DemandSetId INTO #ClaimMatched
         FROM dbo.IxIFlowDemandSets AS sets
@@ -54,31 +57,33 @@ public sealed partial class SqlWorkflowStateRepository
         WITH candidates AS (
             SELECT own.*, 0 AS Affinity FROM #ClaimMatched AS matched
             CROSS APPLY (
-                SELECT TOP (@ScanLimit) instance.InstanceId, instance.RunnableAtUtc
+                SELECT TOP (@Limit) instance.InstanceId, instance.RunnableAtUtc
                 FROM dbo.IxIFlowWorkflowInstances AS instance WITH (READCOMMITTEDLOCK, READPAST, FORCESEEK, INDEX(IX_IxIFlowInstances_SetAffinity))
                 WHERE instance.DemandSetId = matched.DemandSetId AND instance.LastHostId = @HostId
                   AND instance.RunnableAtUtc <= @Now AND {PinMatches}
+                  AND NOT EXISTS (SELECT 1 FROM #ClaimExcluded AS excluded WHERE excluded.InstanceId = instance.InstanceId)
                   AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowLeases AS lease
                       WHERE lease.InstanceId = instance.InstanceId AND lease.ExpiresAtUtc > @Now)
                 ORDER BY instance.RunnableAtUtc, instance.InstanceId) AS own
             UNION ALL
             SELECT other.*, 1 AS Affinity FROM #ClaimMatched AS matched
             CROSS APPLY (
-                SELECT TOP (@ScanLimit) instance.InstanceId, instance.RunnableAtUtc
+                SELECT TOP (@Limit) instance.InstanceId, instance.RunnableAtUtc
                 FROM dbo.IxIFlowWorkflowInstances AS instance WITH (READCOMMITTEDLOCK, READPAST, FORCESEEK, INDEX(IX_IxIFlowInstances_SetRunnable))
                 WHERE instance.DemandSetId = matched.DemandSetId
                   AND (instance.LastHostId IS NULL OR instance.LastHostId <> @HostId)
                   AND instance.RunnableAtUtc <= @Now AND {PinMatches}
+                  AND NOT EXISTS (SELECT 1 FROM #ClaimExcluded AS excluded WHERE excluded.InstanceId = instance.InstanceId)
                   AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowWorkflowLeases AS lease
                       WHERE lease.InstanceId = instance.InstanceId AND lease.ExpiresAtUtc > @Now)
                 ORDER BY instance.RunnableAtUtc, instance.InstanceId) AS other)
         -- Under read committed, affinity can move between the two seeks.
         -- Deduplicate the bounded merge before applying the global limit.
-        SELECT InstanceId, MIN(RunnableAtUtc) AS RunnableAtUtc FROM candidates
+        SELECT TOP (@Limit) InstanceId, MIN(RunnableAtUtc) AS RunnableAtUtc FROM candidates
         GROUP BY InstanceId
         ORDER BY MIN(Affinity), MIN(RunnableAtUtc), InstanceId
-        OFFSET @ScanOffset ROWS FETCH NEXT @Limit ROWS ONLY
         OPTION (LOOP JOIN, RECOMPILE);
+        DROP TABLE #ClaimExcluded;
         DROP TABLE #ClaimMatched;
         DROP TABLE #ClaimCapabilities;
         """;
@@ -123,6 +128,6 @@ public sealed partial class SqlWorkflowStateRepository
         foreach (var capability in query.Capabilities) table.Rows.Add(capability.Key, capability.Value, capability.Key.Length * 2);
         var parameters = WithTimes(new { query.HostId, Limit = limit, CapabilityHost = query.Capabilities.GetValueOrDefault("host") }, ("Now", now));
         parameters.Add("Capabilities", table.AsTableValuedParameter("dbo.IxIFlowClaimCapabilities"));
-        return WithScan(parameters, query, limit);
+        return WithExclusions(parameters, query);
     }
 }
