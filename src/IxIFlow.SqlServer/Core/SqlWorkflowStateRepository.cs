@@ -62,9 +62,21 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 or 51001 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
         operation is Operation.Catalog or Operation.Termination or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.RunnableRead or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease
-            // READPAST with ROWLOCK also works when READ_COMMITTED_SNAPSHOT is enabled.
-            ? await connection.BeginTransactionAsync(operation is Operation.LeaseClaim or Operation.RunnableRead
-                ? IsolationLevel.RepeatableRead : IsolationLevel.ReadCommitted) : null;
+            ? await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted) : null;
+
+    internal override async Task<int> ReadClaimStateAsync(DbConnection connection, DbTransaction transaction, string instanceId)
+    {
+        try
+        {
+            return await base.ReadClaimStateAsync(connection, transaction, instanceId);
+        }
+        catch (SqlException error) when (error.Number == 1222)
+        {
+            // Handle NOWAIT outside the batch, including when XACT_ABORT has aborted the transaction.
+            if (transaction.Connection != null) await transaction.RollbackAsync();
+            return -1;
+        }
+    }
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
     {
@@ -445,26 +457,14 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 SELECT InstanceId, CancellationJson FROM dbo.IxIFlowWorkflowInstances
                 WHERE InstanceId IN @InstanceIds AND CancellationJson IS NOT NULL
                 """,
-        // Lock every status before the lease, as commits do. If READPAST returns no row, a NOWAIT
-        // probe distinguishes a skipped row from an absent key and protects first-claim admission.
-        // Only absent/skipped keys need the range probe; ordinary row claims take no range lock.
+        // Lock the key without a range lock: unrelated absent IDs must not contend on a gap.
+        // A held row or uncommitted insert/delete raises 1222; C# rolls back and returns no grant.
+        // Genuine absence retains the existing lease-row fencing of concurrent first claims.
         Statement.Running => """
             DECLARE @Running INT;
-            BEGIN TRY
-                SELECT @Running = CASE WHEN Status = 'Running' THEN 1 ELSE 0 END
-                FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, READPAST, ROWLOCK, NOWAIT)
-                WHERE InstanceId = @InstanceId;
-                IF @Running IS NULL
-                BEGIN
-                    SELECT @Running = CASE WHEN Status = 'Running' THEN 1 ELSE 0 END
-                    FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK, ROWLOCK, NOWAIT)
-                    WHERE InstanceId = @InstanceId;
-                END;
-            END TRY
-            BEGIN CATCH
-                IF ERROR_NUMBER() <> 1222 THROW;
-                SET @Running = -1;
-            END CATCH;
+            SELECT @Running = CASE WHEN Status = 'Running' THEN 1 ELSE 0 END
+            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK, NOWAIT)
+            WHERE InstanceId = @InstanceId;
             SELECT COALESCE(@Running, 0);
             """,
         Statement.ClaimLease => """

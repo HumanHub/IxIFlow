@@ -42,7 +42,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         EnablePublisher, RetryDisabledDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
         TerminationState, TerminationRequest, TerminationChildren, Cancellation, Cancellations, Runnable, Running, ClaimLease, RenewLease, ReleaseLease, Notice,
-        LockIdentity, TryLockClaimIdentity, LockInbox, ParentInbox, CommitState, Receipt, UpdateReceiptNotices, Lease, TakenChild,
+        LockIdentity, TryLockClaimIdentity, TryLockChildIdentity, LockInbox, ParentInbox, CommitState, Receipt, UpdateReceiptNotices, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, UpdateEventNotice, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
         ReadInstance,
@@ -166,6 +166,9 @@ public abstract partial class RelationalWorkflowStateRepository :
     internal virtual int OwnershipReadBatchSize => int.MaxValue;
     /// <summary>Maps database concurrency failures that require retrying the entire atomic commit.</summary>
     internal virtual bool IsRetryableCommit(Exception error) => false;
+    // Providers may translate a nonwaiting instance-lock failure before any lease work begins.
+    internal virtual Task<int> ReadClaimStateAsync(DbConnection connection, DbTransaction transaction, string instanceId) =>
+        connection.ExecuteScalarAsync<int>(RequiredSql(Statement.Running), new { InstanceId = instanceId }, transaction);
     /// <summary>Applies admission around the whole operation; SQLite instead serializes writes.</summary>
     internal virtual async Task<T> ExecuteOperationAsync<T>(Operation operation, Func<Task<T>> call)
     {
@@ -454,8 +457,7 @@ public abstract partial class RelationalWorkflowStateRepository :
                 return null;
             // Running returns -1 for contention, 0 for an absent/non-running row, and 1 for Running.
             // A skipped row must never follow the absent-instance admission path.
-            var claimState = await connection.ExecuteScalarAsync<int>(RequiredSql(Statement.Running),
-                new { InstanceId = instanceId }, transaction);
+            var claimState = await ReadClaimStateAsync(connection, transaction, instanceId);
             if (claimState < 0) return null;
             var running = claimState > 0;
             var now = await OutboxNowAsync(connection, transaction);
@@ -814,8 +816,13 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             foreach (var child in commit.ChildStarts.OrderBy(c => c.ChildInstanceId, StringComparer.Ordinal))
             {
-                // Child insertion must not wait for the child's advisory identity lock: a delete
-                // waiting there can discover this new child and retry with its parent locked first.
+                // A child ID is known before insertion (including commit replay). Never wait
+                // for its identity after locking the parent: a deleter can hold that identity while
+                // waiting for this parent. Roll back the whole commit and retry instead.
+                if (Sql(Statement.TryLockChildIdentity) is { } childIdentitySql &&
+                    !await connection.ExecuteScalarAsync<bool>(CheckSql(nameof(Statement.TryLockChildIdentity), childIdentitySql),
+                        new { InstanceId = child.ChildInstanceId }, transaction))
+                    return new WorkflowCommitResult(WorkflowCommitStatus.Retry, currentRevision, StoreTimeUtc: now);
                 // Lock an existing child row before checking its tombstone. If purge deletes that
                 // row while we wait, the following read sees the tombstone it committed atomically.
                 var (_, childNow) = await LockAsync<CommitState>(connection, transaction, Statement.CommitState, child.ChildInstanceId);

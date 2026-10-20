@@ -27,6 +27,8 @@ internal sealed partial class WorkflowRecoveryService(
     // tries them again, so the earliest rows cannot keep every slot's worth of the poll to themselves.
     private readonly HashSet<string> _recovering = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (DateTime Until, int Times)> _deferred = new(StringComparer.Ordinal);
+    // Bound contention work even when discovery keeps finding more due instances.
+    internal const int MaxCandidatesPerPass = 256;
 
     // A rejection may be a race, such as another pass or the host's timer getting there first, or
     // lasting, such as a definition this host lacks; the wait grows from seconds to minutes.
@@ -71,7 +73,8 @@ internal sealed partial class WorkflowRecoveryService(
         // A host claims only what it has slots for (D-10); the rest waits for the next pass or another host.
         int limit;
         using (var probe = scopes.CreateScope())
-            limit = probe.ServiceProvider.GetService<WorkflowHost>()?.FreeSlots ?? _settings.Slots;
+            limit = Math.Min(MaxCandidatesPerPass,
+                probe.ServiceProvider.GetService<WorkflowHost>()?.FreeSlots ?? _settings.Slots);
         if (limit == 0)
         {
             return Task.CompletedTask;
@@ -90,8 +93,19 @@ internal sealed partial class WorkflowRecoveryService(
         ClaimQuery query;
         using (var probe = scopes.CreateScope())
             query = new ClaimQuery(_settings.Id, await _settings.GetCapabilitiesAsync(
-                probe.ServiceProvider.GetRequiredService<IWorkflowCatalog>()), limit + skipped.Count);
-        var candidates = await repository.GetRunnableInstancesAsync(query);
+                probe.ServiceProvider.GetRequiredService<IWorkflowCatalog>()), limit);
+        var instances = await ReserveCandidatesAsync(query, skipped, limit, cancellationToken);
+        return RecoverReservedAsync(instances, query, skipped, cancellationToken);
+    }
+
+    private async Task<List<RunnableInstance>> ReserveCandidatesAsync(ClaimQuery query, HashSet<string> skipped,
+        int limit, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (_lock) skipped.UnionWith(_recovering);
+        // Enlarge the ordered page past IDs excluded by this pass; each ID is tried at most once.
+        var candidates = await repository.GetRunnableInstancesAsync(
+            new ClaimQuery(query.HostId, query.Capabilities, limit + skipped.Count));
         // Reserve against the live sets, so a pass running alongside cannot take the same instance.
         var instances = new List<RunnableInstance>();
         lock (_lock)
@@ -100,16 +114,44 @@ internal sealed partial class WorkflowRecoveryService(
                 if (instances.Count == limit)
                     break;
                 if (!skipped.Contains(candidate.InstanceId) && _recovering.Add(candidate.InstanceId))
+                {
+                    skipped.Add(candidate.InstanceId);
                     instances.Add(candidate);
+                }
             }
-        return RecoverReservedAsync(instances, cancellationToken);
+        return instances;
     }
 
-    private async Task RecoverReservedAsync(List<RunnableInstance> instances, CancellationToken cancellationToken)
+    private async Task RecoverReservedAsync(List<RunnableInstance> instances, ClaimQuery query,
+        HashSet<string> skipped, CancellationToken cancellationToken)
     {
+        using var discovery = new SemaphoreSlim(1, 1);
+        var remaining = MaxCandidatesPerPass - instances.Count;
         try
         {
-            await RecoverAsync(instances, cancellationToken);
+            await Parallel.ForEachAsync(instances, new ParallelOptions
+            {
+                MaxDegreeOfParallelism = 8,
+                CancellationToken = cancellationToken
+            }, async (first, token) =>
+            {
+                var instance = first;
+                while (!await RecoverAsync(instance, token))
+                {
+                    // A no-grant result did not use this slot. Refill immediately, even while
+                    // other slots in this pass are still running, preserving discovery order.
+                    await discovery.WaitAsync(token);
+                    try
+                    {
+                        if (remaining == 0) return;
+                        var next = await ReserveCandidatesAsync(query, skipped, 1, token);
+                        if (next.Count == 0) return;
+                        remaining--;
+                        instance = next[0];
+                    }
+                    finally { discovery.Release(); }
+                }
+            });
         }
         finally
         {
@@ -120,54 +162,50 @@ internal sealed partial class WorkflowRecoveryService(
         }
     }
 
-    private async Task RecoverAsync(IReadOnlyList<RunnableInstance> instances, CancellationToken cancellationToken)
+    // Running is the client's ordinary busy/no-grant result; other results consumed this attempt's slot.
+    private async Task<bool> RecoverAsync(RunnableInstance instance, CancellationToken token)
     {
-        await Parallel.ForEachAsync(instances, new ParallelOptions
+        try
         {
-            MaxDegreeOfParallelism = 8,
-            CancellationToken = cancellationToken
-        }, async (instance, token) =>
-        {
-            try
-            {
-                using var scope = scopes.CreateScope();
-                // The host stops before the scanner and drains the work it admitted; the scanner's
-                // own token then only interrupts runs still going, which stay recoverable.
-                var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
-                    .RecoverAsync(instance.InstanceId, token);
-                if (result.Status == WorkflowExecutionStatus.Faulted)
-                    logger.LogWarning("Recovery of workflow {InstanceId} was rejected: {Reason}",
-                        instance.InstanceId, InspectionRedactionPolicy.Default.ResultReason(result));
-                else if (result.Status == WorkflowExecutionStatus.NeedsResolution && result.ErrorMessage != null)
-                    logger.LogWarning("Workflow {InstanceId} needs an operator: {Reason}",
-                        instance.InstanceId, InspectionRedactionPolicy.Default.ResultReason(result));
-                // A row this host rejected, or left stopped, may still be due; let others go first.
-                if (result.Status is WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.NeedsResolution)
-                    Defer(instance.InstanceId);
-                else
-                    lock (_lock)
-                        _deferred.Remove(instance.InstanceId);
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (OperationCanceledException)
-            {
-                // The host is stopping; the instance is recovered after the next start.
-            }
-            catch (Exception error)
-            {
-                (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not recover workflow {InstanceId}", instance.InstanceId);
-                // A row whose recovery throws, such as unreadable data, must not hold the poll.
+            using var scope = scopes.CreateScope();
+            // The host stops before the scanner and drains the work it admitted; the scanner's
+            // own token then only interrupts runs still going, which stay recoverable.
+            var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
+                .RecoverAsync(instance.InstanceId, token);
+            if (result.Status == WorkflowExecutionStatus.Faulted)
+                logger.LogWarning("Recovery of workflow {InstanceId} was rejected: {Reason}",
+                    instance.InstanceId, InspectionRedactionPolicy.Default.ResultReason(result));
+            else if (result.Status == WorkflowExecutionStatus.NeedsResolution && result.ErrorMessage != null)
+                logger.LogWarning("Workflow {InstanceId} needs an operator: {Reason}",
+                    instance.InstanceId, InspectionRedactionPolicy.Default.ResultReason(result));
+            // A row this host rejected, or left stopped, may still be due; let others go first.
+            if (result.Status is WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.NeedsResolution)
                 Defer(instance.InstanceId);
-            }
-            finally
-            {
+            else
                 lock (_lock)
-                    _recovering.Remove(instance.InstanceId);
-            }
-        });
+                    _deferred.Remove(instance.InstanceId);
+            return result.Status != WorkflowExecutionStatus.Running;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            // The host is stopping; the instance is recovered after the next start.
+        }
+        catch (Exception error)
+        {
+            (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not recover workflow {InstanceId}", instance.InstanceId);
+            // A row whose recovery throws, such as unreadable data, must not hold the poll.
+            Defer(instance.InstanceId);
+        }
+        finally
+        {
+            lock (_lock)
+                _recovering.Remove(instance.InstanceId);
+        }
+        return true;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
