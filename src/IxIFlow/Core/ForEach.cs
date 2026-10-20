@@ -61,12 +61,12 @@ internal interface IItemContext
 /// </summary>
 internal sealed class ItemValues
 {
-    private readonly IReadOnlyDictionary<ItemScope, (int Index, string Json)> _values;
+    private readonly IReadOnlyDictionary<ItemScope, (int Index, StoredJson Json)> _values;
     private readonly Dictionary<ItemScope, object?> _read = new(ReferenceEqualityComparer.Instance);
 
-    public static ItemValues None { get; } = new(new Dictionary<ItemScope, (int, string)>());
+    public static ItemValues None { get; } = new(new Dictionary<ItemScope, (int, StoredJson)>());
 
-    public ItemValues(IReadOnlyDictionary<ItemScope, (int Index, string Json)> values) => _values = values;
+    public ItemValues(IReadOnlyDictionary<ItemScope, (int Index, StoredJson Json)> values) => _values = values;
 
     public bool IsEmpty => _values.Count == 0;
 

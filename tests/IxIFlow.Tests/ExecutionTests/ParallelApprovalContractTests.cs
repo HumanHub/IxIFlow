@@ -181,7 +181,7 @@ public class ParallelApprovalContractTests
         await engine.AwaitAsync(started.InstanceId).WaitAsync(TimeSpan.FromSeconds(10));
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
-        Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceCompleted);
+        Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson.InlineText)!.FinanceCompleted);
     }
 
     [Fact]
@@ -248,7 +248,7 @@ public class ParallelApprovalContractTests
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
-        var data = System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!;
+        var data = System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson.InlineText)!;
         Assert.Equal(1, data.FinanceCompleted);
         Assert.Equal(1, data.LegalCompleted);
         Assert.Equal(1, data.Finished);
@@ -505,7 +505,7 @@ public class ParallelApprovalContractTests
             CreateRecoverWorkflow(), new ApprovalData { RequestId = "request-1" }));
 
         var saved = (await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Single();
-        Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson)!.FinanceStarted);
+        Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson.InlineText)!.FinanceStarted);
 
         var recovered = await engine.RecoverAsync(saved.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, recovered.Status);
@@ -1717,6 +1717,7 @@ public class ParallelApprovalContractTests
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _inner.GetPackagesAsync(id);
         public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _inner.GetPackageAsync(id, version);
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _inner.GetPackagePageAsync(id, afterVersion, limit);
+        public IPayloadStore PayloadStore => _inner.PayloadStore;
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
             _inner.GetDefinitionAsync(name, version);
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
@@ -1816,8 +1817,8 @@ public class ParallelApprovalContractTests
             _inner.GetRunnableInstancesAsync(query);
         public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
-        public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
+        public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
+            _inner.RenewExecutionLeasesAsync(leases);
         public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
 
@@ -1837,7 +1838,7 @@ public class ParallelApprovalContractTests
         private void ObserveSave(WorkflowInstance instance)
         {
             if (FailOnFinanceStartCount > 0 && instance.Status == WorkflowStatus.Running &&
-                System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(instance.WorkflowDataJson)?.FinanceStarted == 1)
+                System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(instance.WorkflowDataJson.InlineText)?.FinanceStarted == 1)
             {
                 FailOnFinanceStartCount--;
                 throw new IOException("The checkpoint store is temporarily unavailable");
@@ -1847,16 +1848,19 @@ public class ParallelApprovalContractTests
                 var copy = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
                     System.Text.Json.JsonSerializer.Serialize(instance))!;
                 Initial ??= copy;
-                if (System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(instance.WorkflowDataJson)?.FinanceStarted == 1)
+                if (System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(instance.WorkflowDataJson.InlineText)?.FinanceStarted == 1)
                     AfterFinance ??= copy;
             }
         }
 
         public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
             _inner.GetWorkflowInstanceSummaryAsync(instanceId);
-        public Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-            IReadOnlyCollection<string> instanceIds) =>
-            StoreTestSupport.ReadCancellationsAsync(instanceIds, GetCancellationRequestAsync);
+        public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
+            _inner.GetControlRequestsAsync(instanceIds);
+        public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+            _inner.RequestDebugCommandAsync(instanceId, command);
+        public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
+            _inner.GetDebugStatesAsync(instanceIds);
 
         public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
             _inner.GetWorkflowInstanceAsync(instanceId);

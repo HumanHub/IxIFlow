@@ -31,11 +31,11 @@ internal sealed partial class WorkflowRecoveryService
         for (var pageNumber = 0; pageNumber < 10; pageNumber++)
         {
             var page = await repository.GetUnschedulableAsync(100, _unschedulableCursor, token);
-            var commands = await repository.GetCancellationRequestsAsync(page.Items.Select(row => row.InstanceId).ToArray());
+            var commands = await repository.GetControlRequestsAsync(page.Items.Select(row => row.InstanceId).ToArray());
             foreach (var row in page.Items)
             {
                 token.ThrowIfCancellationRequested();
-                if (commands.GetValueOrDefault(row.InstanceId)?.Mode == WorkflowControlMode.Terminate)
+                if (commands.Cancellations.GetValueOrDefault(row.InstanceId)?.Mode == WorkflowControlMode.Terminate)
                 {
                     // The accepting process may be gone and no host may meet placement. This
                     // bounded scan uses a host slot and the dedicated fenced termination claim.

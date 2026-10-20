@@ -68,6 +68,7 @@ internal sealed partial class TraceBuffer
         {
             var step = _scopes!.Step(frame.ScopeId[..^"/foreach".Length]);
             Add(new ExecutionTraceEntry { Timestamp = now, EntryType = TraceEntryType.ForEachItemEnded,
+                FrameActivationId = frame.ActivationId,
                 Payload = new ItemEndTrace(_scopes.Id(step), step.StepType, continuation.Id, index,
                     frame.ScopeId, continuation.ParentJoinId, cause) });
         }

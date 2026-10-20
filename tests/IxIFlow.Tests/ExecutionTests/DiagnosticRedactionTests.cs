@@ -170,7 +170,7 @@ public sealed class DiagnosticRedactionTests : IClassFixture<SqliteTestDatabase<
         Assert.Equal("pseudonym", InspectionRedactionPolicy.Default.Note(Secret, configured));
         Assert.Equal("\"pseudonym\"", InspectionRedactionPolicy.Default.AttemptNote(SerializedValue.From(Secret)!, configured));
         Assert.Equal("\"\"", InspectionRedactionPolicy.Default.AttemptNote(new SerializedValue
-            { Type = typeof(string).AssemblyQualifiedName!, Json = "invalid" }, configured));
+            { Type = typeof(string).AssemblyQualifiedName!, Json = StoredJson.Inline("invalid") }, configured));
     }
 
     [Fact]

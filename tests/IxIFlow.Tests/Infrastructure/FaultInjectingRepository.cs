@@ -12,6 +12,7 @@ public class FaultInjectingRepository : IWorkflowStateRepository
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _inner.GetPackagesAsync(id);
     public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _inner.GetPackageAsync(id, version);
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _inner.GetPackagePageAsync(id, afterVersion, limit);
+    public IPayloadStore PayloadStore => _inner.PayloadStore;
     public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
         _inner.GetDefinitionAsync(name, version);
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
@@ -134,15 +135,18 @@ public class FaultInjectingRepository : IWorkflowStateRepository
         _inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
     public virtual Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
         _inner.GetCancellationRequestAsync(instanceId);
-    public virtual Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds) =>
-        _inner.GetCancellationRequestsAsync(instanceIds);
+    public virtual Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
+        _inner.GetControlRequestsAsync(instanceIds);
+    public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
+        _inner.RequestDebugCommandAsync(instanceId, command);
+    public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
+        _inner.GetDebugStatesAsync(instanceIds);
     public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
         _inner.GetRunnableInstancesAsync(query);
     public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
         _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
-    public virtual Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-        _inner.RenewExecutionLeaseAsync(instanceId, token, duration);
+    public virtual Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
+        _inner.RenewExecutionLeasesAsync(leases);
     public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
         _inner.ReleaseExecutionLeaseAsync(instanceId, token);
 

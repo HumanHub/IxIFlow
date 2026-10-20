@@ -31,7 +31,7 @@ public static class StoreTestSupport
 
     private static readonly ConditionalWeakTable<IWorkflowStateRepository, ConcurrentDictionary<string, Owner>> Owners = new();
 
-    /// <summary>Retains the test owner while active, or claims using saved demands and pin unless a query is supplied.</summary>
+    /// <summary>Retains the test owner while active, or claims using capabilities that meet saved demands unless a query is supplied.</summary>
     public static async Task<ExecutionLeaseGrant> LeaseAsync(IWorkflowStateRepository store, string instanceId,
         ClaimQuery? query = null, ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
     {
@@ -40,7 +40,7 @@ public static class StoreTestSupport
         try
         {
             var duration = TimeSpan.FromMinutes(5);
-            if (owner.Grant != null && await store.RenewExecutionLeaseAsync(instanceId, owner.Token, duration))
+            if (owner.Grant != null && (await store.RenewExecutionLeasesAsync([new(instanceId, owner.Token, duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed)
                 return owner.Grant;
             if (query == null)
             {
@@ -71,23 +71,6 @@ public static class StoreTestSupport
     {
         var settings = HostSettings.Default;
         return new ClaimQuery(settings.Id, await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings), limit);
-    }
-
-    /// <summary>Explicit cancellation reads for fault-injecting test repositories.</summary>
-    public static async Task<IReadOnlyDictionary<string, CancellationReason>> ReadCancellationsAsync(
-        IReadOnlyCollection<string> ids, Func<string, Task<CancellationReason?>> read)
-    {
-        var requests = new ConcurrentDictionary<string, CancellationReason>(StringComparer.Ordinal);
-        var failures = new ConcurrentBag<Exception>();
-        var distinct = ids.Distinct(StringComparer.Ordinal).ToArray();
-        await Parallel.ForEachAsync(distinct, new ParallelOptions { MaxDegreeOfParallelism = 16 }, async (id, _) =>
-        {
-            try { if (await read(id) is { } reason) requests[id] = reason; }
-            catch (Exception error) { failures.Add(error); }
-        });
-        if (distinct.Length > 0 && failures.Count == distinct.Length)
-            throw new AggregateException("No cancellation request could be read", failures);
-        return requests;
     }
 
     /// <summary>Seeds or updates a store fixture through its normal commit contract.</summary>

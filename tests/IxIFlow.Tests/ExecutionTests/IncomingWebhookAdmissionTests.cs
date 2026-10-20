@@ -15,7 +15,7 @@ public sealed class IncomingWebhookAdmissionTests
     {
         InstanceId = id ?? Guid.NewGuid().ToString("N"), WorkflowName = "Admission", WorkflowVersion = 7,
         Status = WorkflowStatus.Running, WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
-        WorkflowDataJson = "{}", ExecutionStateJson = StoreTestSupport.CheckpointJson
+        WorkflowDataJson = StoredJson.Inline("{}"), ExecutionStateJson = StoreTestSupport.CheckpointJson
     };
 
     private static WorkflowAdmission Request(TimeSpan? retention = null) =>
@@ -172,7 +172,7 @@ public sealed class IncomingWebhookAdmissionTests
     public void SignatureUsesTheOriginalBytesAndChecksBothTimeDirectionsAndEveryRotatedKey()
     {
         var now = DateTimeOffset.FromUnixTimeSeconds(1800000000);
-        var body = Encoding.UTF8.GetBytes(" {\"value\":\"Ã©\"} \n");
+        var body = Encoding.UTF8.GetBytes(" {\"value\":\"é\"} \n");
         var old = Enumerable.Repeat((byte)1, 32).ToArray();
         var current = Enumerable.Repeat((byte)2, 32).ToArray();
         var timestamp = now.ToUnixTimeSeconds().ToString();

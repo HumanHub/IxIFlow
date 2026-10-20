@@ -172,7 +172,7 @@ public sealed class IncomingWebhookStoreScenarios
             var instance = new WorkflowInstance
             {
                 InstanceId = "signed-owner", WorkflowName = "Receipt", WorkflowVersion = 1, Status = WorkflowStatus.Running,
-                WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), WorkflowDataJson = "{}",
+                WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), WorkflowDataJson = StoredJson.Inline("{}"),
                 ExecutionStateJson = StoreTestSupport.CheckpointJson
             };
             var request = new WorkflowAdmission("vendor", "trigger", "delivery", new string('A', 64), "vendor",

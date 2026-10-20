@@ -51,10 +51,34 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         Assert.All(control, entry =>
         {
             Assert.Equal(Start.UtcDateTime, entry.Timestamp);
-            var payload = JsonSerializer.SerializeToElement(entry.Payload, typeof(TracePayload));
-            Assert.Equal(new WorkflowScopeCatalog(definition).Step(payload.GetProperty("StepId").GetString()!).StepType,
-                (WorkflowStepType)payload.GetProperty("StepKind").GetInt32());
-            Assert.False(string.IsNullOrEmpty(payload.GetProperty("ContinuationId").GetString()));
+            if (entry.Payload is ReplayOriginTrace origin)
+            {
+                Assert.Equal(result.InstanceId, origin.InstanceId);
+                Assert.Equal(new WorkflowScopeCatalog(definition).StructureHash, origin.StructureHash);
+                Assert.Equal(TraceDetail.Full, origin.Detail);
+                Assert.NotEmpty(origin.Threads);
+            }
+            else if (entry.Payload is ThreadPositionTrace position)
+            {
+                Assert.False(string.IsNullOrEmpty(position.ContinuationId));
+                Assert.Equal(entry.ContinuationId, position.ContinuationId);
+                if (position.Thread is { } thread)
+                {
+                    Assert.Equal(position.ContinuationId, thread.ContinuationId);
+                    Assert.All(thread.Frames, frame =>
+                    {
+                        Assert.False(string.IsNullOrEmpty(frame.ActivationId));
+                        Assert.False(string.IsNullOrEmpty(frame.ScopeId));
+                    });
+                }
+            }
+            else
+            {
+                var payload = JsonSerializer.SerializeToElement(entry.Payload, typeof(TracePayload));
+                Assert.Equal(new WorkflowScopeCatalog(definition).Step(payload.GetProperty("StepId").GetString()!).StepType,
+                    (WorkflowStepType)payload.GetProperty("StepKind").GetInt32());
+                Assert.False(string.IsNullOrEmpty(payload.GetProperty("ContinuationId").GetString()));
+            }
             Assert.Empty(entry.Metadata);
             Assert.DoesNotContain("secret", JsonSerializer.Serialize(entry));
         });
@@ -118,9 +142,12 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
         Assert.True(completed.Status == WorkflowExecutionStatus.Success, $"{completed.Status}: {completed.ErrorMessage}");
 
         var trace = await client.GetTraceAsync(started.InstanceId);
-        Assert.Equal([TraceEntryType.ActivityStarted, TraceEntryType.ActivityCompleted, TraceEntryType.StepEntered,
-            TraceEntryType.EventRefused, TraceEntryType.EventRefused, TraceEntryType.EventReceived,
-            TraceEntryType.StepEntered, TraceEntryType.DelayFired], trace.Select(entry => entry.EntryType));
+        Assert.Equal([TraceEntryType.ReplayOrigin, TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition,
+            TraceEntryType.ActivityCompleted, TraceEntryType.StepEntered, TraceEntryType.ThreadPosition,
+            TraceEntryType.EventRefused, TraceEntryType.EventRefused, TraceEntryType.ThreadPosition,
+            TraceEntryType.EventReceived, TraceEntryType.ThreadPosition, TraceEntryType.StepEntered,
+            TraceEntryType.ThreadPosition, TraceEntryType.ThreadPosition, TraceEntryType.DelayFired,
+            TraceEntryType.ThreadPosition, TraceEntryType.ThreadPosition], trace.Select(entry => entry.EntryType));
         var decisions = trace.Where(entry => entry.Payload is ReceivedEventTrace).ToArray();
         Assert.Equal(["wrong-key", "wrong-type", "accepted"], decisions.Select(entry => ((ReceivedEventTrace)entry.Payload!)!.EventId));
         Assert.Equal([EventRejection.NoOpenWait, EventRejection.NotMatched, null],
@@ -361,14 +388,14 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var trace = await client.GetTraceAsync(result.InstanceId);
-        Assert.Equal([TraceEntryType.ActivityStarted, TraceEntryType.ActivityCompleted, TraceEntryType.StepEntered,
-            TraceEntryType.ForEachItemStarted, TraceEntryType.ConditionTaken, TraceEntryType.ForEachItemEnded,
-            TraceEntryType.Truncated], trace.Select(entry => entry.EntryType));
+        Assert.Equal([TraceEntryType.ReplayOrigin, TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition,
+            TraceEntryType.ActivityCompleted, TraceEntryType.StepEntered, TraceEntryType.ThreadPosition,
+            TraceEntryType.ForEachItemStarted, TraceEntryType.ConditionTaken, TraceEntryType.Truncated], trace.Select(entry => entry.EntryType));
         var marker = Assert.Single(trace, entry => entry.EntryType == TraceEntryType.Truncated);
-        Assert.Equal(57, Assert.IsType<TraceTruncation>(marker.Payload).DroppedCount); // 1 step + 20 * (start, condition, end), retaining 4.
+        Assert.Equal(60, Assert.IsType<TraceTruncation>(marker.Payload).DroppedCount); // Includes attempted position changes; the per-commit bound stays 5.
         Assert.Equal(Start.UtcDateTime, marker.Timestamp);
         Assert.All(store.Commits, commit => Assert.InRange(commit.TraceEntries.Count, 0, 5));
-        Assert.Equal(Enumerable.Range(1, 7).Select(number => (long)number),
+        Assert.Equal(Enumerable.Range(1, 9).Select(number => (long)number),
             (await store.GetTraceAsync(result.InstanceId)).Select(entry => entry.Sequence));
     }
 
@@ -410,16 +437,19 @@ public sealed class TraceEventsTests : IClassFixture<SqliteTestDatabase<TraceEve
             .If(ctx => true, then => then.Step<Noop>()).Build();
         await EngineAssert.StoreFailureAsync(() => client.RunAsync(definition, new Data()));
         var saved = Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: definition.Name, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)));
-        Assert.Equal([TraceEntryType.ActivityStarted, TraceEntryType.ActivityCompleted],
+        Assert.Equal([TraceEntryType.ReplayOrigin, TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition,
+            TraceEntryType.ActivityCompleted],
             (await client.GetTraceAsync(saved.InstanceId)).Select(entry => entry.EntryType));
         store.FailControlStarts = false;
         Assert.Equal(WorkflowExecutionStatus.Success, (await client.RecoverAsync(saved.InstanceId)).Status);
-        Assert.Equal([TraceEntryType.ActivityStarted, TraceEntryType.ActivityCompleted, TraceEntryType.ConditionTaken,
-            TraceEntryType.ActivityStarted, TraceEntryType.ActivityCompleted],
+        Assert.Equal([TraceEntryType.ReplayOrigin, TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition,
+            TraceEntryType.ActivityCompleted, TraceEntryType.ConditionTaken, TraceEntryType.ThreadPosition,
+            TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition, TraceEntryType.ActivityCompleted,
+            TraceEntryType.ThreadPosition, TraceEntryType.ThreadPosition],
             (await client.GetTraceAsync(saved.InstanceId)).Select(entry => entry.EntryType));
         var boundary = Assert.Single(store.Commits, commit => commit.ReadTraceEntries()
             .Any(entry => entry.EntryType == TraceEntryType.ConditionTaken));
-        Assert.Equal([TraceEntryType.ConditionTaken, TraceEntryType.ActivityStarted],
+        Assert.Equal([TraceEntryType.ConditionTaken, TraceEntryType.ThreadPosition, TraceEntryType.ActivityStarted],
             boundary.ReadTraceEntries().Select(entry => entry.EntryType));
     }
 

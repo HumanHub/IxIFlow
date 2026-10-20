@@ -109,8 +109,9 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
             }, CancellationToken.None);
         }
         catch { queuedLease?.Dispose(); throw; }
-        _ = run.ContinueWith(finished => { queuedLease?.Dispose(); _ = finished.Exception; },
-            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        using (ExecutionContextFlow.SuppressIfNeeded())
+            _ = run.ContinueWith(finished => { queuedLease?.Dispose(); _ = finished.Exception; },
+                CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         if (await Task.WhenAny(accepted.Task, run).WaitAsync(cancellationToken) == accepted.Task)
             return await accepted.Task;
         // The run ended without saving a new start: a repeated start of an existing instance is

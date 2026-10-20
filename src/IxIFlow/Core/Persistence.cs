@@ -44,7 +44,7 @@ public static class WorkflowStoreRules
     public static bool UnwindsNow(WorkflowStatus status, bool acknowledgesCancellation,
         bool unacknowledgedCancellation) =>
         unacknowledgedCancellation && !acknowledgesCancellation &&
-        status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution;
+        status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution or WorkflowStatus.Paused;
 
     /// <summary>
     /// When a committed instance becomes runnable, in the store's clock: now when
@@ -57,7 +57,7 @@ public static class WorkflowStoreRules
     {
         if (runnableNow)
             return now;
-        if (commit.Stopped)
+        if (commit.Stopped || status == WorkflowStatus.Paused)
             return null;
         return status switch
         {
@@ -143,8 +143,10 @@ public static class WorkflowStoreRules
 /// Stores workflow instances. First commits carry a fresh incarnation; child starts allocate
 /// one in the store on insertion. Every instance read round-trips it separately from serialized state.
 /// </summary>
-public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStore, IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore
+public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStore, IWorkflowInbox, IWorkflowOutbox, IWorkflowAdmissionStore, IWorkflowDebugStore
 {
+    /// <summary>Bodies and pins stored transactionally with this repository's referencing rows.</summary>
+    IPayloadStore PayloadStore { get; }
     /// <summary>Due, unleased work no live host meets, ordered by runnable time and ordinal instance ID.</summary>
     Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
         CancellationToken cancellationToken = default);
@@ -195,13 +197,6 @@ public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStor
     Task<CancellationReason?> GetCancellationRequestAsync(string instanceId);
 
     /// <summary>
-    /// Reads cancellation requests for the distinct instances. Instances without a request are omitted.
-    /// Successful reads survive failures of other reads; if every read fails, throws AggregateException.
-    /// </summary>
-    Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds);
-
-    /// <summary>
     /// Lists up to the query limit of due, unowned instances whose active demands this host meets.
     /// This host's last-run rows come first, each group ordered by runnable time and instance ID.
     /// </summary>
@@ -234,9 +229,14 @@ public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStor
     Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable);
 
-    /// <summary>Extends a lease held by the same execution token. Pending termination refuses renewal so recovery can claim at expiry.</summary>
-    Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
-        TimeSpan duration);
+    /// <summary>
+    /// Renews execution tokens in one batch, returning one result per request in the same order.
+    /// Instance IDs must be distinct. Missing, expired or mismatched tokens are refused individually.
+    /// Pending termination refuses renewal and returns its durable reason without extending expiry.
+    /// Providers chunk requests within their parameter limits and use their ownership connection pool.
+    /// </summary>
+    Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+        IReadOnlyList<ExecutionLeaseRenewal> leases);
 
     /// <summary>Releases a lease only when the caller still owns it.</summary>
     Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token);
@@ -290,9 +290,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     {
     }
 
-    public InMemoryWorkflowStateRepository(TimeProvider time, OutboxSettings? outboxSettings = null)
+    public InMemoryWorkflowStateRepository(TimeProvider time, OutboxSettings? outboxSettings = null, PayloadStoreSettings? payloadSettings = null)
     {
         _time = time ?? throw new ArgumentNullException(nameof(time));
+        _payloadSettings = payloadSettings ?? new();
         var options = outboxSettings ?? new OutboxSettings();
         options.Validate();
         _retryHorizon = options.RetryHorizon;
@@ -372,8 +373,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     private static void StripDemands(WorkflowInstance instance)
     {
-        instance.ExecutionStateJson = JsonSerializer.Deserialize<WorkflowInstance>(
-            DemandSet.StripPayload(JsonSerializer.Serialize(instance)))!.ExecutionStateJson;
+        instance.ExecutionStateJson = DemandSet.StripState(instance.ExecutionStateJson);
     }
 
     private readonly Dictionary<(string InstanceId, string CommitId), (long ExpectedRevision, byte[] ContentHash, long Revision, RunnableNotice? Notice, IReadOnlyList<RunnableNotice> MadeRunnable)> _commits = new();
@@ -387,10 +387,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private readonly Dictionary<string, long> _inboxSequence = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _inboxReadThrough = new(StringComparer.Ordinal);
     // Each instance's stored parts by key, beside its trunk in _instances, at its revision (A-08).
-    private readonly Dictionary<string, Dictionary<string, string>> _parts = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, StoredJson>> _parts = new(StringComparer.Ordinal);
     // Each instance's waits by wait ID, so appends and reads touch only that instance's waits.
     private readonly Dictionary<string, Dictionary<string, StoredWait>> _waits = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, List<string>> _traces = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<(string Json, long Revision, long? CommitEndSequence, WorkflowStatus? CommitStatus)>> _traces = new(StringComparer.Ordinal);
     private readonly HashSet<string> _acknowledgedCancellations = new();
 
     public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
@@ -426,8 +426,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     {
         if (!_instances.TryGetValue(instanceId, out var instance) ||
             (reason.Mode == WorkflowControlMode.Terminate ? WorkflowStoreRules.IsTerminal(instance.Status)
-                : instance.Status is not (WorkflowStatus.Running or WorkflowStatus.Suspended or
-                    WorkflowStatus.NeedsResolution)))
+                : instance.Status is not (WorkflowStatus.Ready or WorkflowStatus.Running or WorkflowStatus.Suspended or
+                    WorkflowStatus.NeedsResolution or WorkflowStatus.Paused)))
             return false;
         if (!_cancellations.ContainsKey(instanceId) ||
             reason.Mode == WorkflowControlMode.Terminate && _cancellations[instanceId].Mode != WorkflowControlMode.Terminate)
@@ -454,29 +454,6 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 ? JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason))
                 : null);
         }
-    }
-
-    public async Task<IReadOnlyDictionary<string, CancellationReason>> GetCancellationRequestsAsync(
-        IReadOnlyCollection<string> instanceIds)
-    {
-        ArgumentNullException.ThrowIfNull(instanceIds);
-        var requests = new Dictionary<string, CancellationReason>(StringComparer.Ordinal);
-        var failures = new List<Exception>();
-        foreach (var instanceId in instanceIds.Distinct(StringComparer.Ordinal))
-        {
-            try
-            {
-                if (await GetCancellationRequestAsync(instanceId) is { } reason)
-                    requests[instanceId] = reason;
-            }
-            catch (Exception error)
-            {
-                failures.Add(error);
-            }
-        }
-        if (instanceIds.Count > 0 && failures.Count == instanceIds.Distinct(StringComparer.Ordinal).Count())
-            throw new AggregateException("No cancellation request could be read", failures);
-        return requests;
     }
 
     public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query)
@@ -516,7 +493,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 (WorkflowStoreRules.IsTerminal(candidate.Status) ||
                  kind != ExecutionClaimKind.Termination &&
                  (!(candidate.RunnableAtUtc <= now || kind == ExecutionClaimKind.Operator &&
-                    (candidate.Status == WorkflowStatus.NeedsResolution ||
+                    (candidate.Status is WorkflowStatus.NeedsResolution or WorkflowStatus.Paused ||
                         ExecutionCheckpoint.IsStructured(candidate.ExecutionStateJson) && ExecutionCheckpoint.StopOf(candidate) != null)) ||
                  !DemandMatching.Meets(SavedDemands(instanceId), query, now))))
                 return Task.FromResult<ExecutionLeaseGrant?>(null);
@@ -535,19 +512,33 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         }
     }
 
-    public Task<bool> RenewExecutionLeaseAsync(string instanceId, string token,
-        TimeSpan duration)
+    public virtual Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+        IReadOnlyList<ExecutionLeaseRenewal> leases)
     {
-        ValidateLeaseArguments(instanceId, token, duration);
+        ArgumentNullException.ThrowIfNull(leases);
+        foreach (var request in leases)
+            ValidateLeaseArguments(request.InstanceId, request.Token, request.Duration);
+        if (leases.Select(request => request.InstanceId).Distinct(StringComparer.Ordinal).Count() != leases.Count)
+            throw new ArgumentException("Renewal instance IDs must be distinct", nameof(leases));
         lock (_claimLock)
         {
             var now = Now;
-            if (!_leases.TryGetValue(instanceId, out var lease) ||
-                lease.Token != token || lease.ExpiresAtUtc <= now ||
-                _cancellations.GetValueOrDefault(instanceId)?.Mode == WorkflowControlMode.Terminate)
-                return Task.FromResult(false);
-            _leases[instanceId] = lease with { ExpiresAtUtc = now.Add(duration) };
-            return Task.FromResult(true);
+            var results = new ExecutionLeaseRenewalResult[leases.Count];
+            for (var index = 0; index < leases.Count; index++)
+            {
+                var request = leases[index];
+                if (!_leases.TryGetValue(request.InstanceId, out var lease) ||
+                    lease.Token != request.Token || lease.ExpiresAtUtc <= now)
+                    results[index] = new(ExecutionLeaseRenewalStatus.Refused);
+                else if (_cancellations.GetValueOrDefault(request.InstanceId) is { Mode: WorkflowControlMode.Terminate } reason)
+                    results[index] = new(ExecutionLeaseRenewalStatus.TerminationRequested, JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(reason)));
+                else
+                {
+                    _leases[request.InstanceId] = lease with { ExpiresAtUtc = now.Add(request.Duration) };
+                    results[index] = new(ExecutionLeaseRenewalStatus.Renewed);
+                }
+            }
+            return Task.FromResult<IReadOnlyList<ExecutionLeaseRenewalResult>>(results);
         }
     }
 
@@ -567,7 +558,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         }
     }
 
-    public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+    public virtual Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
     {
         return Commit(commit, null);
     }
@@ -575,13 +566,64 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private async Task<WorkflowCommitResult> Commit(CheckpointCommit commit, WorkflowAdmission? admission)
     {
         ArgumentNullException.ThrowIfNull(commit);
+        Guid? parentIncarnation;
+        lock (_claimLock) parentIncarnation = commit.ParentNotice is { } completion &&
+            _instances.TryGetValue(completion.ParentInstanceId, out var parent) ? parent.Incarnation : null;
+        var noticePayload = commit.ParentNotice is { } preparedNotice
+            ? InboxPayloads.Prepare(ToEvent(preparedNotice), _payloadSettings) : null;
+        if (commit.PreservesPayloadPins) return await CommitCore(commit, admission, parentIncarnation);
+        // No payload transaction is needed until this checkpoint owns references. A previously
+        // referenced checkpoint still takes the transaction when its final references are retired.
+        bool hadPayloads;
+        lock (_claimLock) hadPayloads = _payloadCheckpoints.Contains(commit.InstanceId);
+        if (!hadPayloads && commit.PayloadReferences.Count == 0 && commit.PayloadBodies.Count == 0 &&
+            commit.ChildStarts.All(child => child.PayloadReferences.Count == 0) &&
+            noticePayload is not { References.Count: > 0 } && noticePayload is not { Bodies.Count: > 0 })
+            return await CommitCore(commit, admission, parentIncarnation);
+        Task<WorkflowCommitResult>? replay;
+        lock (_claimLock)
+            replay = _commits.ContainsKey((commit.InstanceId, commit.CommitId)) ? CommitCore(commit, admission, parentIncarnation) : null;
+        if (replay != null) return await replay;
+        WorkflowCommitResult? result = null;
+        try
+        {
+            await PayloadStore.InTransactionAsync(async (pins, ct) =>
+            {
+                await pins.LockAsync(commit.PayloadOwner, commit.PayloadReferences
+                    .Concat(commit.PayloadBodies.Select(b => b.Reference)).Concat(commit.PayloadBodies.SelectMany(b => b.Dependencies))
+                    .Concat(commit.ChildStarts.SelectMany(child => child.PayloadReferences))
+                    .Concat(noticePayload?.References ?? []).Distinct().ToArray(), ct);
+                foreach (var body in commit.PayloadBodies)
+                    await pins.PutAsync(body.Body, body.Dependencies, ct);
+                await pins.ReplaceAsync(commit.PayloadOwner, commit.PayloadReferences, ct);
+                foreach (var child in commit.ChildStarts)
+                    await pins.ReplaceAsync(new("checkpoint", $"{child.ChildInstanceId}/{child.Incarnation:N}"), child.PayloadReferences, ct);
+                if (commit.ParentNotice is { } notice && parentIncarnation is { } parentId)
+                {
+                    await noticePayload!.PublishAsync(pins, InboxPayloads.Owner(notice.ParentInstanceId, parentId), ct);
+                }
+                ct.ThrowIfCancellationRequested();
+                result = await CommitCore(commit, admission, parentIncarnation);
+                // A receipt replay must never replace a newer checkpoint's pins.
+                if (result.Status != WorkflowCommitStatus.Applied) throw new PayloadCommitNotAppliedException();
+            });
+        }
+        catch (PayloadCommitNotAppliedException) { }
+        return result!;
+    }
+
+    private sealed class PayloadCommitNotAppliedException : Exception;
+
+    private async Task<WorkflowCommitResult> CommitCore(CheckpointCommit commit, WorkflowAdmission? admission, Guid? parentIncarnation)
+    {
+        ArgumentNullException.ThrowIfNull(commit);
         var catalogStart = commit.ExpectedRevision == 0 || commit.ChildStarts.Count > 0;
         if (catalogStart) await _catalogLock.WaitAsync();
-        try { return await CommitUnderClaimLock(commit, admission); }
+        try { return await CommitUnderClaimLock(commit, admission, parentIncarnation); }
         finally { if (catalogStart) _catalogLock.Release(); }
     }
 
-    private Task<WorkflowCommitResult> CommitUnderClaimLock(CheckpointCommit commit, WorkflowAdmission? admission)
+    private Task<WorkflowCommitResult> CommitUnderClaimLock(CheckpointCommit commit, WorkflowAdmission? admission, Guid? parentIncarnation)
     {
         ArgumentNullException.ThrowIfNull(commit);
         var snapshot = commit.ReadTrunk();
@@ -623,6 +665,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             }
 
             // Receipts are deleted with the instance, so any replay above belongs to its current creation.
+            if (commit.ParentNotice is { } noticeIdentity &&
+                (_instances.TryGetValue(noticeIdentity.ParentInstanceId, out var noticeParent) ? noticeParent.Incarnation : (Guid?)null) != parentIncarnation)
+                return Task.FromResult(Result(WorkflowCommitStatus.Retry, revision));
             if (commit.ExpectedRevision > 0 && stored != null &&
                 stored.Incarnation != commit.Incarnation)
                 return Task.FromResult(Result(WorkflowCommitStatus.StaleEpoch, revision));
@@ -658,6 +703,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     $"Child workflow '{taken.ChildInstanceId}' cannot start: an instance with its ID exists");
             // One store time for the whole commit: its deadlines, its runnable time and its records (D-35).
             var now = Now;
+            var debugCommands = WorkflowDebugRules.Acknowledge(stored, snapshot, CommandsOf(commit.InstanceId), snapshot.Revision, commit.TraceEntries);
+            var pauseGeneration = WorkflowDebugRules.Checkpoint(snapshot).PauseGeneration;
+            var debugWake = WorkflowDebugRules.NeedsWake(snapshot.Status, debugCommands);
             // Prepare all creation projections before mutating any in-memory table.
             if (stored == null)
                 snapshot.ExecutionStateJson = JsonSerializer.Deserialize<WorkflowInstance>(WorkflowDemands.StampStartPayload(
@@ -666,16 +714,16 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             var createdChildren = commit.ChildStarts.Select(start =>
             {
                 var child = JsonSerializer.Deserialize<WorkflowInstance>(WorkflowDemands.StampStartPayload(start.Payload, now))!;
-                child.Incarnation = Guid.NewGuid();
+                child.Incarnation = start.Incarnation;
                 child.Revision = 1;
                 child.RunnableAtUtc = now;
-                return (Instance: child, Demands: DemandSet.Create(WorkflowDemands.Saved(child)));
+                return (Start: start, Instance: child, Demands: DemandSet.Create(WorkflowDemands.Saved(child)));
             }).ToArray();
             var unacknowledged = _cancellations.ContainsKey(commit.InstanceId) &&
                 !_acknowledgedCancellations.Contains(commit.InstanceId);
             // A run that has not read every arrival neither parks nor goes idle out of reach.
             var unread = Unread(commit);
-            var parked = commit.Parks && !unacknowledged && !unread;
+            var parked = commit.Parks && !unacknowledged && !unread && !debugWake;
             foreach (var settlement in commit.Settlements)
             {
                 var settled = _events[(commit.InstanceId, settlement.EventId)];
@@ -706,7 +754,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             snapshot.LastHostId = admission == null && _leases.TryGetValue(commit.InstanceId, out var committingLease)
                 ? committingLease.HostId : null;
             snapshot.RunnableAtUtc = WorkflowStoreRules.CommittedRunnableAt(snapshot.Status, commit,
-                (commit.Parks && !parked) || (unread && !commit.Stopped &&
+                debugWake || (commit.Parks && !parked) || (unread && !commit.Stopped &&
                     snapshot.Status is WorkflowStatus.Suspended or WorkflowStatus.NeedsResolution) ||
                 WorkflowStoreRules.UnwindsNow(snapshot.Status, snapshot.CancellationReason != null, unacknowledged),
                 now, OpenWaits(commit.InstanceId).Min(open => open.DeadlineUtc));
@@ -741,17 +789,23 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                     _diagnostics.Remove(commit.InstanceId);
             }
             if (commit.ReplacesParts || !_parts.TryGetValue(commit.InstanceId, out var parts))
-                _parts[commit.InstanceId] = parts = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var deleted in commit.DeletedParts)
-                parts.Remove(deleted);
-            foreach (var part in commit.Parts)
-                parts[part.Key] = part.Json;
+                _parts[commit.InstanceId] = parts = new Dictionary<string, StoredJson>(StringComparer.Ordinal);
+            foreach (var deleted in commit.DeletedParts) parts.Remove(deleted);
+            foreach (var part in commit.Parts) parts[part.Key] = part.Json;
             snapshot.Incarnation = stored?.Incarnation ?? commit.Incarnation;
             if (createdDemands != null)
                 SavePlacement(commit.InstanceId, createdDemands);
             SetRunnableAt(snapshot, snapshot.RunnableAtUtc);
             StripDemands(snapshot);
             _instances[commit.InstanceId] = snapshot;
+            if (!commit.PreservesPayloadPins)
+            {
+                if (commit.PayloadReferences.Count > 0) _payloadCheckpoints.Add(commit.InstanceId);
+                else if (_payloadCheckpoints.Count > 0) _payloadCheckpoints.Remove(commit.InstanceId);
+            }
+            if (pauseGeneration != 0) _pauseGenerations[commit.InstanceId] = pauseGeneration;
+            else if (_pauseGenerations.Count > 0) _pauseGenerations.Remove(commit.InstanceId);
+            if (debugCommands.Count > 0) _debugCommands[commit.InstanceId] = debugCommands.ToList();
             _summaries[commit.InstanceId] = InstanceSummary.Of(snapshot) with
             { EndedAtUtc = WorkflowStoreRules.IsTerminal(snapshot.Status) ? _endedAt.GetValueOrDefault(commit.InstanceId, now) : null };
             RecordCompletion(snapshot, now);
@@ -759,7 +813,8 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             {
                 if (!_traces.TryGetValue(commit.InstanceId, out var trace))
                     _traces[commit.InstanceId] = trace = [];
-                trace.AddRange(commit.TraceEntries);
+                var end = checked((long)trace.Count + commit.TraceEntries.Count);
+                trace.AddRange(commit.TraceEntries.Select(json => (json, snapshot.Revision, (long?)end, (WorkflowStatus?)snapshot.Status)));
             }
             if (snapshot.CancellationReason != null && _cancellations.ContainsKey(commit.InstanceId))
                 _acknowledgedCancellations.Add(commit.InstanceId);
@@ -774,11 +829,15 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             // Each child starts as its own instance, runnable now, with no owner yet (D-17).
             foreach (var created in createdChildren)
             {
+                var start = created.Start;
                 var child = created.Instance;
                 SavePlacement(child.InstanceId, created.Demands);
                 SetRunnableAt(child, child.RunnableAtUtc);
                 StripDemands(child);
                 _instances[child.InstanceId] = child;
+                var childGeneration = WorkflowDebugRules.Checkpoint(child).PauseGeneration;
+                if (childGeneration != 0) _pauseGenerations[child.InstanceId] = childGeneration;
+                if (start.PayloadReferences.Count > 0) _payloadCheckpoints.Add(child.InstanceId);
                 _summaries[child.InstanceId] = InstanceSummary.Of(child);
                 _parts.Remove(child.InstanceId);
                 madeRunnable.Add(child.InstanceId);
@@ -823,30 +882,68 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
 
     private static WorkflowEvent ToEvent(ParentNotice notice) =>
         new(notice.ParentInstanceId, notice.EventId, notice.EventType, notice.PayloadJson,
-            TargetWaitId: notice.ParentWaitId);
+            TargetWaitId: notice.ParentWaitId) { PayloadDependencies = notice.PayloadDependencies, PayloadThresholdBytes = 0 };
 
     // Caller holds _claimLock.
     private bool Unread(CheckpointCommit commit) =>
         commit.InboxReadThrough is { } readThrough &&
         _inboxSequence.GetValueOrDefault(commit.InstanceId) > readThrough;
 
-    public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent)
+    public async Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent)
     {
         ArgumentNullException.ThrowIfNull(workflowEvent);
         workflowEvent.Validate();
-        lock (_claimLock)
+        var payload = InboxPayloads.Prepare(workflowEvent, _payloadSettings);
+        if (payload.References.Count == 0 && payload.Bodies.Count == 0)
         {
-            var now = Now;
-            var hash = workflowEvent.ContentHash();
-            if (workflowEvent.DeliveryIdentity is { } identity && _webhookDeliveries.TryGetValue(identity, out var saved) && saved.Expires > now)
-                return Task.FromResult(saved.Hash.SequenceEqual(hash)
-                    ? saved.Receipt with { Status = EventAppendStatus.Duplicate, MadeRunnable = false }
-                    : new EventAppendResult(EventAppendStatus.Conflict));
-            var receipt = Append(workflowEvent, now);
-            if (workflowEvent.DeliveryIdentity is { } key && receipt.Status is EventAppendStatus.Stored or EventAppendStatus.Duplicate or EventAppendStatus.Rejected)
-                _webhookDeliveries[key] = (hash, receipt, now + (workflowEvent.DeliveryRetention ?? TimeSpan.FromHours(24)));
-            return Task.FromResult(receipt);
+            lock (_claimLock) return AppendReceipt(workflowEvent);
         }
+        while (true)
+        {
+            Guid? incarnation;
+            lock (_claimLock) incarnation = _instances.GetValueOrDefault(workflowEvent.InstanceId)?.Incarnation;
+            EventAppendResult receipt = null!;
+            try
+            {
+                await PayloadStore.InTransactionAsync(async (pins, ct) =>
+                {
+                    if (incarnation is { } seen)
+                    {
+                        var owner = InboxPayloads.Owner(workflowEvent.InstanceId, seen);
+                        await pins.LockAsync(owner, payload.References.Concat(payload.Bodies.SelectMany(b => b.Dependencies)).ToArray(), ct);
+                        await payload.PublishAsync(pins, owner, ct);
+                    }
+                    lock (_claimLock)
+                    {
+                        if (_instances.GetValueOrDefault(workflowEvent.InstanceId)?.Incarnation != incarnation)
+                            throw new InboxIdentityChangedException();
+                        receipt = AppendReceipt(workflowEvent);
+                        if (receipt.Status is not (EventAppendStatus.Stored or EventAppendStatus.Rejected))
+                            throw new InboxNotAppendedException();
+                    }
+                });
+                return receipt;
+            }
+            catch (InboxIdentityChangedException) { }
+            catch (InboxNotAppendedException) { return receipt; }
+        }
+    }
+    private sealed class InboxIdentityChangedException : Exception;
+    private sealed class InboxNotAppendedException : Exception;
+
+    // Caller holds _claimLock. Inline appends need only this, with no payload transaction.
+    private EventAppendResult AppendReceipt(WorkflowEvent workflowEvent)
+    {
+        var now = Now;
+        var hash = workflowEvent.ContentHash();
+        if (workflowEvent.DeliveryIdentity is { } identity && _webhookDeliveries.TryGetValue(identity, out var saved) && saved.Expires > now)
+            return saved.Hash.SequenceEqual(hash)
+                ? saved.Receipt with { Status = EventAppendStatus.Duplicate, MadeRunnable = false }
+                : new EventAppendResult(EventAppendStatus.Conflict);
+        var receipt = Append(workflowEvent, now);
+        if (workflowEvent.DeliveryIdentity is { } key && receipt.Status is EventAppendStatus.Stored or EventAppendStatus.Duplicate or EventAppendStatus.Rejected)
+            _webhookDeliveries[key] = (hash, receipt, now + (workflowEvent.DeliveryRetention ?? TimeSpan.FromHours(24)));
+        return receipt;
     }
 
     // Caller holds _claimLock.
@@ -905,12 +1002,13 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
             return;
         if (!_traces.TryGetValue(workflowEvent.InstanceId, out var trace))
             _traces[workflowEvent.InstanceId] = trace = [];
-        trace.Add(WorkflowStoreRules.SerializeTrace(WorkflowStoreRules.RefusedEventTrace(workflowEvent, rejection, now)));
+        trace.Add((WorkflowStoreRules.SerializeTrace(WorkflowStoreRules.RefusedEventTrace(workflowEvent, rejection, now)),
+            instance.Revision, null, null));
     }
 
-    private static StoredWorkflowEvent Stored(WorkflowEvent workflowEvent, long sequence, DateTime now) =>
+    private StoredWorkflowEvent Stored(WorkflowEvent workflowEvent, long sequence, DateTime now) =>
         new(workflowEvent.InstanceId, workflowEvent.EventId, sequence, workflowEvent.EventType, workflowEvent.Key,
-            workflowEvent.TargetWaitId, workflowEvent.PayloadJson, now, EventOutcome.Pending,
+            workflowEvent.TargetWaitId, InboxPayloads.Prepare(workflowEvent, _payloadSettings).Value, now, EventOutcome.Pending,
             Subject: workflowEvent.Subject);
 
     // Caller holds _claimLock.
@@ -987,11 +1085,11 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         if (query.InstanceIds?.Count > 1000) throw new ArgumentException("At most 1000 instance IDs", nameof(query));
         lock (_claimLock)
             return Task.FromResult<IReadOnlyList<StoredWait>>((query.InstanceId != null
-                    ? OpenWaits(query.InstanceId)
+                    ? WaitsOf(query.InstanceId).Values
                     : query.InstanceIds != null
-                        ? query.InstanceIds.Distinct(StringComparer.Ordinal).SelectMany(OpenWaits)
+                        ? query.InstanceIds.Distinct(StringComparer.Ordinal).SelectMany(id => WaitsOf(id).Values)
                         : _waits.Values.SelectMany(waits => waits.Values))
-                .Where(wait => wait.IsOpen &&
+                .Where(wait => (query.IncludeClosed || wait.IsOpen) &&
                                (query.InstanceId == null || wait.InstanceId == query.InstanceId) &&
                                (query.InstanceIds == null || query.InstanceIds.Contains(wait.InstanceId)) &&
                                (query.Key == null || wait.Key == query.Key) &&
@@ -1052,28 +1150,67 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         lock (_claimLock)
             return Task.FromResult<IReadOnlyList<StoredTraceEntry>>(_traces.TryGetValue(instanceId, out var trace)
                 ? trace.Skip((int)Math.Min(afterSequence, trace.Count)).Take(limit)
-                    .Select((json, index) => new StoredTraceEntry(afterSequence + index + 1,
-                        JsonSerializer.Deserialize<ExecutionTraceEntry>(json)!)).ToArray()
+                    .Select((stored, index) => new StoredTraceEntry(afterSequence + index + 1,
+                        JsonSerializer.Deserialize<ExecutionTraceEntry>(stored.Json)!)
+                        { Revision = stored.Revision, CommitEndSequence = stored.CommitEndSequence, CommitStatus = stored.CommitStatus }).ToArray()
                 : []);
     }
 
-    public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)
+    public async Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)
     {
         var period = tombstoneRetention ?? RetentionSettings.Default.TombstoneRetention;
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(period, TimeSpan.Zero);
+        while (!await DeleteWithPayloadsAsync(instanceId, period)) { }
+    }
+
+    private async Task<bool> DeleteWithPayloadsAsync(string instanceId, TimeSpan period,
+        DateTime? cutoff = null, CancellationToken cancellationToken = default)
+    {
+        Guid incarnation;
+        long revision;
+        int eventCount;
+        PayloadReference[] inboxReferences;
         lock (_claimLock)
         {
-            if (_instances.ContainsKey(instanceId))
-            {
-                var now = Now;
-                DeleteInstance(instanceId);
-                _tombstones[instanceId] = new WorkflowTombstone(instanceId, now, now + period);
-            }
-            else
-                _leases.Remove(instanceId);
+            if (!_instances.TryGetValue(instanceId, out var seen))
+            { _leases.Remove(instanceId); return cutoff == null; }
+            incarnation = seen.Incarnation;
+            revision = seen.Revision;
+            var events = _events.Where(pair => pair.Key.InstanceId == instanceId).Select(pair => pair.Value.Event).ToArray();
+            eventCount = events.Length;
+            inboxReferences = events.SelectMany(e => e.PayloadJson.Reference is { } r
+                ? e.PayloadJson.Dependencies.Append(r) : e.PayloadJson.Dependencies).Distinct().ToArray();
         }
-        return Task.CompletedTask;
+        try
+        {
+            await PayloadStore.InTransactionAsync(async (pins, ct) =>
+            {
+                var owner = new PayloadOwner("checkpoint", $"{instanceId}/{incarnation:N}");
+                await pins.LockAsync(owner, inboxReferences, ct);
+                var inboxOwner = InboxPayloads.Owner(instanceId, incarnation);
+                await pins.ReleaseAsync(owner, ct);
+                await pins.ReleaseAsync(inboxOwner, ct);
+                lock (_claimLock)
+                {
+                    if (!_instances.TryGetValue(instanceId, out var current) || current.Incarnation != incarnation ||
+                        current.Revision != revision || _events.Keys.Count(key => key.InstanceId == instanceId) != eventCount ||
+                        cutoff is { } end && (!WorkflowStoreRules.IsTerminal(current.Status) ||
+                            !_endedAt.TryGetValue(instanceId, out var ended) || ended > end ||
+                            _deliveries.Values.Any(d => d.Event.InstanceId == instanceId && d.Status == OutboxDeliveryStatus.Pending) ||
+                            _instances.Values.Any(child => child.ParentInstanceId == instanceId)))
+                        throw new PayloadDeleteNotAppliedException();
+                    ct.ThrowIfCancellationRequested();
+                    var now = Now;
+                    DeleteInstance(instanceId);
+                    _tombstones[instanceId] = new WorkflowTombstone(instanceId, now, now + period);
+                }
+            }, cancellationToken);
+            return true;
+        }
+        catch (PayloadDeleteNotAppliedException) { return false; }
     }
+
+    private sealed class PayloadDeleteNotAppliedException : Exception;
 
     // Caller holds _claimLock.
     private void DeleteInstance(string instanceId)
@@ -1098,6 +1235,9 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
         _leases.Remove(instanceId);
         _endedAt.Remove(instanceId);
         _cancellations.Remove(instanceId);
+        _debugCommands.Remove(instanceId);
+        _pauseGenerations.Remove(instanceId);
+        _payloadCheckpoints.Remove(instanceId);
         _acknowledgedCancellations.Remove(instanceId);
         DeleteOutbox(instanceId);
         foreach (var key in _events.Keys.Where(key => key.InstanceId == instanceId).ToArray())
@@ -1116,7 +1256,7 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
     private WorkflowInstance SnapshotStructured(WorkflowInstance instance)
     {
         var snapshot = CheckpointParts.Assemble(JsonSerializer.Serialize(instance),
-            (_parts.GetValueOrDefault(instance.InstanceId) ?? new Dictionary<string, string>())
+            (_parts.GetValueOrDefault(instance.InstanceId) ?? new Dictionary<string, StoredJson>())
             .Select(part => new CheckpointPart(part.Key, part.Value)), instance.Revision);
         snapshot.Incarnation = instance.Incarnation;
         snapshot.LastHostId = instance.LastHostId;

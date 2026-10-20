@@ -293,6 +293,9 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
     private readonly IReadOnlyDictionary<string, Assembly> _shared;
     private readonly Dictionary<string, ReadOnlyMemory<byte>> _private = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, nint> _native = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+    private readonly object _lifetime = new();
+    private bool _unloading;
+    private Action<AssemblyLoadContext>? _onUnloading;
 
     private readonly List<nint> _ownedNative = [];
     private readonly List<FileStream> _nativeFiles = [];
@@ -302,7 +305,20 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
     internal BundleLoadContext(WorkflowBundle bundle, ArtifactDigest digest,
         IEnumerable<KeyValuePair<string, ReadOnlyMemory<byte>>> packageAssemblies, IReadOnlyDictionary<string, string> native) : base(digest.Value, isCollectible: true)
     {
-        Unloading += _ => ReleaseNative();
+        // Observe retirement before the context is exposed. The runtime's public event
+        // permits subscriptions after it has fired, so late subscribers need this state.
+        Unloading += _ =>
+        {
+            Action<AssemblyLoadContext>? release;
+            lock (_lifetime)
+            {
+                _unloading = true;
+                release = _onUnloading;
+                _onUnloading = null;
+            }
+            try { release?.Invoke(this); }
+            finally { ReleaseNative(); }
+        };
         _shared = WorkflowSharedAssemblies.Validate(bundle.Manifest);
         foreach (var (path, bytes) in bundle.Entries.Where(pair => pair.Key.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)).Concat(packageAssemblies))
         {
@@ -313,6 +329,21 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, $"Duplicate or shared private assembly '{name}'");
         }
         if (native.Count != 0) throw new ArgumentException("Native images must be verified before loading", nameof(native));
+    }
+
+    internal bool TryRegisterUnloading(Action<AssemblyLoadContext> release)
+    {
+        lock (_lifetime)
+        {
+            if (_unloading) return false;
+            _onUnloading += release;
+            return true;
+        }
+    }
+
+    internal void UnregisterUnloading(Action<AssemblyLoadContext>? release)
+    {
+        lock (_lifetime) _onUnloading -= release;
     }
 
     protected override Assembly Load(AssemblyName assemblyName)
@@ -425,10 +456,30 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
 /// <summary>The exact shared compatibility profile. Application assemblies are private bundle assets.</summary>
 public static class WorkflowSharedAssemblies
 {
-    private static readonly IReadOnlyDictionary<string, AssemblyName> Profile = CreateProfile();
     public static bool IsSharedName(string name) => Profile.ContainsKey(name);
     public static AssemblyName? Identity(string name) => Profile.TryGetValue(name, out var identity)
         ? identity.Version == null ? AssemblyLoadContext.Default.LoadFromAssemblyName(identity).GetName() : new AssemblyName(identity.FullName!) : null;
+    private static readonly IReadOnlyDictionary<string, AssemblyName> Framework;
+    private static readonly IReadOnlyDictionary<string, AssemblyName> Profile;
+
+    static WorkflowSharedAssemblies()
+    {
+        Framework = RuntimeAssemblies((string?)AppContext.GetData("APP_CONTEXT_DEPS_FILES"), AppContext.BaseDirectory,
+            out var available);
+        HasFrameworkIdentities = available;
+        Profile = CreateProfile();
+    }
+
+    /// <summary>Whether runtime framework identity discovery completed with a usable framework.</summary>
+    public static bool HasFrameworkIdentities { get; }
+
+    /// <summary>Matches an assembly's full identity against this runtime's shared frameworks.</summary>
+    public static bool IsFrameworkAssembly(AssemblyName name) => IsFrameworkAssembly(name, Framework);
+
+    internal static bool IsFrameworkAssembly(AssemblyName name, IReadOnlyDictionary<string, AssemblyName> identities) => name.Name != null &&
+        identities.TryGetValue(name.Name, out var identity) && name.Version == identity.Version &&
+        (name.CultureName ?? "") == (identity.CultureName ?? "") &&
+        name.GetPublicKeyToken().AsSpan().SequenceEqual(identity.GetPublicKeyToken());
 
     /// <summary>
     /// Whether this process found its runtime and SDK identities. Self-contained single-file processes
@@ -443,17 +494,22 @@ public static class WorkflowSharedAssemblies
 
     private static IReadOnlyDictionary<string, AssemblyName> CreateProfile()
     {
-        var profile = RuntimeAssemblies((string?)AppContext.GetData("APP_CONTEXT_DEPS_FILES"), AppContext.BaseDirectory);
+        var profile = new Dictionary<string, AssemblyName>(Framework, StringComparer.OrdinalIgnoreCase);
         // Do not let the SDK dependency walk reconstruct a partial runtime profile after
         // failed discovery (including an embedded single-file manifest).
-        if (profile.Count == 0) return profile;
+        if (!HasFrameworkIdentities) return profile;
         AddSdkAssemblies(profile, [typeof(WorkflowDefinition).Assembly]);
         profile["IxIFlow.Templates"] = new AssemblyName("IxIFlow.Templates");
         return profile;
     }
 
     internal static Dictionary<string, AssemblyName> RuntimeAssemblies(string? depsFiles, string applicationDirectory)
+        => RuntimeAssemblies(depsFiles, applicationDirectory, out _);
+
+    private static Dictionary<string, AssemblyName> RuntimeAssemblies(string? depsFiles, string applicationDirectory,
+        out bool available)
     {
+        available = false;
         var profile = new Dictionary<string, AssemblyName>(StringComparer.OrdinalIgnoreCase);
         try
         {
@@ -485,6 +541,7 @@ public static class WorkflowSharedAssemblies
                     }
                 }
             }
+            available = profile.ContainsKey("System.Private.CoreLib") && profile.ContainsKey("System.Runtime");
         }
         catch (Exception error) when (error is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
         { profile.Clear(); }
@@ -588,7 +645,12 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
             {
                 entry = new Entry { Load = null! };
                 var created = entry;
-                entry.Load = new(() => Task.Run(() => LoadAsync(digest, created.Stop.Token)));
+                entry.Load = new(() =>
+                {
+                    // A nested acquisition must not give the cached load its caller's bundle scope.
+                    using (ExecutionContextFlow.SuppressIfNeeded())
+                        return Task.Run(() => LoadAsync(digest, created.Stop.Token));
+                });
                 _loaded.Add(digest, entry);
             }
             Interlocked.Increment(ref entry.Users);
@@ -645,6 +707,11 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Built definition differs from the verified bundle manifest");
                 definition.BundleDigest = digest;
                 definition.BundleContext = context;
+                definition.BundleSources = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    [WorkflowBundleArchive.YamlPath] = System.Text.Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.YamlPath].Span),
+                    [WorkflowBundleArchive.SourcePath] = System.Text.Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.SourcePath].Span)
+                };
                 token.ThrowIfCancellationRequested();
                 return new(context, definition);
             }
@@ -686,17 +753,18 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
         foreach (var entry in retired)
         {
             entry.Stop.Cancel();
-            _ = entry.Load.Value.ContinueWith(task =>
-            {
-                if (task.IsCompletedSuccessfully)
+            using (ExecutionContextFlow.SuppressIfNeeded())
+                _ = entry.Load.Value.ContinueWith(task =>
                 {
-                    WorkflowJson.Release(task.Result.Context);
-                    task.Result.Context.ReleaseNative();
-                    task.Result.Context.Unload();
-                }
-                else _ = task.Exception;
-                entry.Stop.Dispose();
-            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                    if (task.IsCompletedSuccessfully)
+                    {
+                        WorkflowJson.Release(task.Result.Context);
+                        task.Result.Context.ReleaseNative();
+                        task.Result.Context.Unload();
+                    }
+                    else _ = task.Exception;
+                    entry.Stop.Dispose();
+                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
     }
 

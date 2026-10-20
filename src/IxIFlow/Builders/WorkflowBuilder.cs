@@ -48,11 +48,12 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
         return this;
     }
 
-    public IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration)
+    public IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
         _steps.Add(new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData>(),
             Name = "Delay",
             StepType = WorkflowStepType.Delay,
@@ -83,11 +84,12 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
     }
 
     public IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null)
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity
     {
         var step = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData>(),
             Id = Guid.NewGuid().ToString(),
             Name = typeof(TActivity).Name,
@@ -113,22 +115,22 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
     public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
         string name,
         Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null,
-        Expression<Func<WorkflowContext<TWorkflowData>, string>>? subjectExpression = null)
+        Expression<Func<WorkflowContext<TWorkflowData>, string>>? subjectExpression = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity
     {
-        var result = Request<TActivity>(name, configure, subjectExpression?.Compile());
+        var result = Request<TActivity>(name, configure, subjectExpression?.Compile(), sourcePath: sourcePath, sourceLine: sourceLine);
         _steps[^1].RequestSubjectExpression = subjectExpression;
         return result;
     }
 
     public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(string name,
         Action<IActivitySetupBuilder<TWorkflowData, TActivity>>? configure = null,
-        Func<WorkflowContext<TWorkflowData>, string>? subject = null)
+        Func<WorkflowContext<TWorkflowData>, string>? subject = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         var replyType = RequestPairing.ReplyTypeOf(typeof(TActivity));
-        var next = Step(configure);
+        var next = Step(configure, sourcePath: sourcePath, sourceLine: sourceLine);
         var step = _steps[^1];
         step.RequestName = name;
         step.ReplyType = replyType;
@@ -194,11 +196,12 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         return this;
     }
 
-    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration)
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
         _steps.Add(new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Name = "Delay",
             StepType = WorkflowStepType.Delay,
@@ -214,11 +217,12 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     ///     Adds an activity step to the workflow
     /// </summary>
     public IWorkflowBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null)
+        Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity
     {
         var step = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = typeof(TActivity).Name,
@@ -244,22 +248,22 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(
         string name,
         Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
-        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null)
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity
     {
-        var result = Request<TActivity>(name, configure, subjectExpression?.Compile());
+        var result = Request<TActivity>(name, configure, subjectExpression?.Compile(), sourcePath: sourcePath, sourceLine: sourceLine);
         _steps[^1].RequestSubjectExpression = subjectExpression;
         return result;
     }
 
     public IWorkflowBuilder<TWorkflowData, TActivity> Request<TActivity>(string requestName,
         Action<IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
-        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null)
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(requestName);
         var replyType = RequestPairing.ReplyTypeOf(typeof(TActivity));
-        var next = Step(configure);
+        var next = Step(configure, sourcePath: sourcePath, sourceLine: sourceLine);
         var step = _steps[^1];
         step.RequestName = requestName;
         step.ReplyType = replyType;
@@ -272,12 +276,13 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     ///     Invokes a workflow by type reference
     /// </summary>
     public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TWorkflow, TInvokedData>(
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TWorkflow : IWorkflow<TInvokedData> where TInvokedData : class
     {
         var identity = WorkflowAttribute.For(typeof(TWorkflow));
         var step = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(Core.Runtime.ChildWorkflowBinding.Resolve<TWorkflow, TInvokedData>),
             Id = Guid.NewGuid().ToString(),
             Name = typeof(TWorkflow).Name,
@@ -304,11 +309,12 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     ///     Invokes a workflow by name and version
     /// </summary>
     public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version,
-        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null)
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TInvokedData : class
     {
         var step = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = workflowName,
@@ -334,10 +340,11 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     ///     Creates a sequence container
     /// </summary>
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Sequence(
-        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         var sequenceStep = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Sequence",
@@ -363,7 +370,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> If(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> condition,
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> then,
-        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>>? @else = null)
+        Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>>? @else = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         // Compile the condition expression at build time for maximum performance
         var compiledCondition = condition.Compile();
@@ -374,6 +381,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         var conditionalStep = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Conditional",
@@ -405,10 +413,11 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     ///     Creates a parallel execution block
     /// </summary>
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Parallel(
-        Action<IParallelBuilder<TWorkflowData, TPreviousStepData>> configure)
+        Action<IParallelBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         var parallelStep = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Parallel",
@@ -431,10 +440,11 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     ///     Creates a try/catch block
     /// </summary>
     public ITryBuilder<TWorkflowData, TPreviousStepData> Try(
-        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         var tryStep = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Try",
@@ -458,10 +468,11 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     ///     Creates a saga container
     /// </summary>
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> Saga(
-        Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> configure)
+        Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         var sagaStep = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Saga",
@@ -493,10 +504,10 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(
         string key,
         Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TEvent : class
     {
-        var result = WaitFor<TEvent>(key, matchesExpression?.Compile(), configure);
+        var result = WaitFor<TEvent>(key, matchesExpression?.Compile(), configure, sourcePath: sourcePath, sourceLine: sourceLine);
         _steps[^1].ConditionExpression = matchesExpression;
         return result;
     }
@@ -507,11 +518,11 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TEvent> WaitFor<TEvent>(
         string key,
         Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TEvent : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        var next = Suspend(key, matches, configure);
+        var next = Suspend(key, matches, configure, sourcePath: sourcePath, sourceLine: sourceLine);
         var waitStep = _steps[^1];
         waitStep.Name = "WaitFor";
         waitStep.StepMetadata["WaitKey"] = key;
@@ -523,10 +534,10 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>>? resumeExpression = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class
     {
-        var result = Suspend<TResumeEvent>(suspendReason, resumeExpression?.Compile(), configure);
+        var result = Suspend<TResumeEvent>(suspendReason, resumeExpression?.Compile(), configure, sourcePath: sourcePath, sourceLine: sourceLine);
         _steps[^1].ConditionExpression = resumeExpression;
         return result;
     }
@@ -534,11 +545,12 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Func<TResumeEvent, WorkflowContext<TWorkflowData>, bool>? resumeCondition = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class
     {
         var suspendStep = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Wait<TWorkflowData, TResumeEvent, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Suspend",
@@ -595,9 +607,9 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     [OverloadResolutionPriority(-1)]
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> DoWhile(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
-        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression)
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
-        var result = DoWhile(configure, conditionExpression.Compile());
+        var result = DoWhile(configure, conditionExpression.Compile(), sourcePath: sourcePath, sourceLine: sourceLine);
         _steps[^1].ConditionExpression = conditionExpression;
         return result;
     }
@@ -607,7 +619,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     /// </summary>
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> DoWhile(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure,
-        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition)
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         // Create wrapper function that takes object and returns bool for maximum performance
         Func<object, bool> conditionWrapper =
@@ -615,6 +627,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         var loopStep = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "DoWhile",
@@ -641,9 +654,9 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     [OverloadResolutionPriority(-1)]
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> WhileDo(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> conditionExpression,
-        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
-        var result = WhileDo(conditionExpression.Compile(), configure);
+        var result = WhileDo(conditionExpression.Compile(), configure, sourcePath: sourcePath, sourceLine: sourceLine);
         _steps[^1].ConditionExpression = conditionExpression;
         return result;
     }
@@ -653,7 +666,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     /// </summary>
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> WhileDo(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool> condition,
-        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure)
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         // Create wrapper function that takes object and returns bool for maximum performance
         Func<object, bool> conditionWrapper =
@@ -661,6 +674,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         var loopStep = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "WhileDo",
@@ -687,20 +701,20 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?>> itemsExpression,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
-        Action<IForEachSetup<TWorkflowData>>? setup = null)
+        Action<IForEachSetup<TWorkflowData>>? setup = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         ArgumentNullException.ThrowIfNull(itemsExpression);
-        var result = ForEach(itemsExpression.Compile(), body, setup);
+        var result = ForEach(itemsExpression.Compile(), body, setup, sourcePath: sourcePath, sourceLine: sourceLine);
         _steps[^1].ForEachItemsExpression = itemsExpression;
         return result;
     }
 
     [OverloadResolutionPriority(-1)]
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Result<TResult>(
-        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult>> valueExpression)
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult>> valueExpression, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         ArgumentNullException.ThrowIfNull(valueExpression);
-        var result = Result(valueExpression.Compile());
+        var result = Result(valueExpression.Compile(), sourcePath: sourcePath, sourceLine: sourceLine);
         _steps[^1].ResultExpression = valueExpression;
         return result;
     }
@@ -708,12 +722,13 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> ForEach<TItem>(
         Func<WorkflowContext<TWorkflowData, TPreviousStepData>, IEnumerable<TItem>?> items,
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>, ItemScope<TItem>> body,
-        Action<IForEachSetup<TWorkflowData>>? setup = null)
+        Action<IForEachSetup<TWorkflowData>>? setup = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         ArgumentNullException.ThrowIfNull(items);
         ArgumentNullException.ThrowIfNull(body);
         var step = new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "ForEach",
@@ -734,11 +749,12 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     }
 
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Result<TResult>(
-        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult> value)
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TResult> value, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         ArgumentNullException.ThrowIfNull(value);
         _steps.Add(new WorkflowStep
         {
+            SourceLocation = sourcePath + ":" + sourceLine,
             Runtime = Core.Runtime.WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
             Id = Guid.NewGuid().ToString(),
             Name = "Result",

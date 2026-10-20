@@ -278,7 +278,7 @@ public sealed class BundleReviewFixTests
             continuation.Previous = new SerializedValue
             {
                 Type = WorkflowTypeIdentity.SavedName(definition.WorkflowDataType!.Assembly.GetType(typeof(Echo).FullName!)!),
-                Json = "{\"Value\":\"recovered parent previous\"}"
+                Json = StoredJson.Inline("{\"Value\":\"recovered parent previous\"}")
             };
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
             await store.SeedAsync(instance, wakeAfter: TimeSpan.Zero);
@@ -288,7 +288,7 @@ public sealed class BundleReviewFixTests
         await host.GetRequiredService<IWorkflowClient>().RecoverAsync(id);
         var child = Assert.Single((await store.QueryInstancesAsync(new(ParentInstanceId: id))).Items);
         var saved = (await store.GetWorkflowInstanceAsync(child.InstanceId))!;
-        Assert.Equal("recovered parent previous", JsonDocument.Parse(saved.WorkflowDataJson).RootElement.GetProperty("Value").GetString());
+        Assert.Equal("recovered parent previous", JsonDocument.Parse(saved.WorkflowDataJson.InlineText).RootElement.GetProperty("Value").GetString());
     }
 
     [Fact]
@@ -450,6 +450,7 @@ public sealed class BundleReviewFixTests
         public Task<StartChildReply> StartChildAsync(StartChild request) => throw new InvalidOperationException("Acquisition must not start a child");
         public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => throw new InvalidOperationException("Acquisition must not read the inbox");
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => throw new InvalidOperationException("Acquisition must not read waits");
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) => throw new InvalidOperationException("Acquisition must not read payloads");
     }
 
     private sealed class ControlledArtifacts(IArtifactStore inner) : IArtifactStore
