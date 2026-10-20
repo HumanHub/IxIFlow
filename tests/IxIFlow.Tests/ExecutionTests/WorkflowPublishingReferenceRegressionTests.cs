@@ -105,8 +105,12 @@ public sealed class WorkflowPublishingReferenceRegressionTests
             var cold = await RunHost(host, false);
             var warm = await RunHost(host, true);
             Assert.Equal(cold, warm);
-            Assert.Contains("ColdApplication, Version=", cold);
-            Assert.Contains("ColdBridge, Version=", cold);
+            // The manifest names the application data type by its saved identifier, which carries its assembly.
+            Assert.Contains("ixi-type:1:", cold);
+            Assert.Contains("ColdApplication", cold);
+            // The bridge is only in the publishing host's reference graph; the workflow never references it,
+            // so the bundle neither carries nor declares it.
+            Assert.DoesNotContain("ColdBridge", cold);
             Assert.DoesNotContain("AmbientOnly", cold);
         }
         finally { Directory.Delete(directory, recursive: true); }
