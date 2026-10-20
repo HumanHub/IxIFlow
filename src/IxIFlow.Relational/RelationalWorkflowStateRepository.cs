@@ -99,7 +99,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         ownership["Application Name"] = (name.Length > limit ? name[..limit] : name) + suffix;
         ownership[maxPoolSizeKey] = ownershipPoolSize;
         ownership[minPoolSizeKey] = Math.Min((int)ownership[minPoolSizeKey], ownershipPoolSize);
-        // Claims and cancellation requests can wait on commit locks; together they use at most half
+        // Claims and cancellation requests together use at most half
         // the reserved pool, so renewals and the cancellation watch always find a connection.
         _admissions = new SemaphoreSlim(Math.Max(1, ownershipPoolSize / 2));
         return ownership.ConnectionString;
@@ -167,6 +167,10 @@ public abstract partial class RelationalWorkflowStateRepository :
     internal virtual int OwnershipReadBatchSize => int.MaxValue;
     /// <summary>Maps database concurrency failures that require retrying the entire atomic commit.</summary>
     internal virtual bool IsRetryableCommit(Exception error) => false;
+    internal virtual bool IsClaimRefusal(Exception error) => false;
+    // Providers may translate a nonwaiting instance-lock failure before any lease work begins.
+    internal virtual Task<int> ReadClaimStateAsync(DbConnection connection, DbTransaction transaction, string instanceId) =>
+        connection.ExecuteScalarAsync<int>(RequiredSql(Statement.Running), new { InstanceId = instanceId }, transaction);
     /// <summary>Applies admission around the whole operation; SQLite instead serializes writes.</summary>
     internal virtual async Task<T> ExecuteOperationAsync<T>(Operation operation, Func<Task<T>> call)
     {
@@ -244,6 +248,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var rows = await connection.QueryAsync<DemandRow>(ReadDemandsSql, new { InstanceId = instanceId });
@@ -338,7 +343,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.CancellationRequest, async () =>
@@ -362,7 +367,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.CancellationRead, async () =>
         {
@@ -389,6 +394,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     public async Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token,
         TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
     {
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(query);
         if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
         var milliseconds = LeaseMilliseconds(instanceId, token, duration);
@@ -397,38 +403,50 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             await using var connection = await OpenConnectionAsync(ownership: true);
             await using var transaction = (await BeginTransactionAsync(connection, Operation.LeaseClaim))!;
-            await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { InstanceId = instanceId });
-            var running = await connection.ExecuteScalarAsync<int>(RequiredSql(Statement.Running),
-                new { InstanceId = instanceId }, transaction) > 0;
-            var now = await OutboxNowAsync(connection, transaction);
-            var eligibility = PlacementParameters(query, now, query.Limit);
-            eligibility.Add("InstanceId", instanceId);
-            eligibility.Add("Operator", kind == ExecutionClaimKind.Operator);
-            bool eligible;
-            if (kind == ExecutionClaimKind.Termination)
+            try
             {
-                var (command, _) = await LockAsync<TerminationRow>(connection, transaction, Statement.TerminationState, instanceId);
-                eligible = command != null && !WorkflowStoreRules.IsTerminal(command.Status) &&
-                    ReadReason(command.CancellationJson)?.Mode == WorkflowControlMode.Terminate;
-            }
-            else eligible = await connection.ExecuteScalarAsync<int>(ClaimEligibilitySql, eligibility, transaction) == 1;
-            if (await TombstoneAsync(connection, transaction, instanceId, now) != null ||
-                !eligible)
-            {
+                // Running returns -1 for contention, 0 for an absent/non-running row, and 1 for Running.
+                // A skipped row must never follow the absent-instance admission path.
+                var claimState = await ReadClaimStateAsync(connection, transaction, instanceId);
+                if (claimState < 0) return null;
+                var running = claimState > 0;
+                var now = await OutboxNowAsync(connection, transaction);
+                var eligibility = PlacementParameters(query, now, query.Limit);
+                eligibility.Add("InstanceId", instanceId);
+                eligibility.Add("Operator", kind == ExecutionClaimKind.Operator);
+                bool eligible;
+                if (kind == ExecutionClaimKind.Termination)
+                {
+                    var (command, _) = await LockAsync<TerminationRow>(connection, transaction, Statement.TerminationState, instanceId);
+                    eligible = command != null && !WorkflowStoreRules.IsTerminal(command.Status) &&
+                        ReadReason(command.CancellationJson)?.Mode == WorkflowControlMode.Terminate;
+                }
+                else eligible = await connection.ExecuteScalarAsync<int>(ClaimEligibilitySql, eligibility, transaction) == 1;
+                if (await TombstoneAsync(connection, transaction, instanceId, now) != null ||
+                    !eligible)
+                {
+                    await transaction.CommitAsync();
+                    return null;
+                }
+                // Capture SQLite's lease clock only after its writer and instance locks.
+                var parameters = ClaimParameters(instanceId, token, TimeSpan.FromMilliseconds(milliseconds));
+                parameters.Add("Running", running);
+                var grant = await connection.QuerySingleOrDefaultAsync<LeaseGrantRow>(RequiredSql(Statement.ClaimLease), parameters, transaction);
+                if (grant != null)
+                {
+                    await connection.ExecuteAsync(SetLeaseHostSql, new { InstanceId = instanceId, query.HostId }, transaction);
+                    await connection.ExecuteAsync(ClaimStampHostSql, new { InstanceId = instanceId }, transaction);
+                }
                 await transaction.CommitAsync();
+                return grant == null ? null : new ExecutionLeaseGrant(grant.Epoch, grant.CrashCount);
+            }
+            catch (Exception error) when (IsClaimRefusal(error))
+            {
+                // A later instance write can refuse after lease arbitration. Undo the entire claim,
+                // including the lease and host, even when XACT_ABORT has already ended it.
+                if (transaction.Connection != null) await transaction.RollbackAsync();
                 return null;
             }
-            // Capture SQLite's lease clock only after its writer and instance locks.
-            var parameters = ClaimParameters(instanceId, token, TimeSpan.FromMilliseconds(milliseconds));
-            parameters.Add("Running", running);
-            var grant = await connection.QuerySingleOrDefaultAsync<LeaseGrantRow>(RequiredSql(Statement.ClaimLease), parameters, transaction);
-            if (grant != null)
-            {
-                await connection.ExecuteAsync(SetLeaseHostSql, new { InstanceId = instanceId, query.HostId }, transaction);
-                await connection.ExecuteAsync(StampHostSql, new { InstanceId = instanceId }, transaction);
-            }
-            await transaction.CommitAsync();
-            return grant == null ? null : new ExecutionLeaseGrant(grant.Epoch, grant.CrashCount);
         });
     }
 
@@ -482,7 +500,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.LeaseRelease, async () =>
@@ -629,7 +647,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentOutOfRangeException.ThrowIfNegative(limit);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.InboxPage, async () =>
@@ -672,6 +690,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var row = await connection.QuerySingleOrDefaultAsync<EventRow>(RequiredSql(Statement.Event), new { InstanceId = instanceId, EventId = eventId });
@@ -681,6 +700,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     public async Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
+        InstanceIds.ValidateAll(instanceIds);
         var sequences = new Dictionary<string, long>(StringComparer.Ordinal);
         if (instanceIds.Count == 0)
             return sequences;
@@ -695,6 +715,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<StoredWait?> GetWaitAsync(string instanceId, string waitId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var row = await connection.QuerySingleOrDefaultAsync<WaitRow>(RequiredSql(Statement.Wait), new { InstanceId = instanceId, WaitId = waitId });
@@ -704,6 +725,8 @@ public abstract partial class RelationalWorkflowStateRepository :
     public async Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query)
     {
         ArgumentNullException.ThrowIfNull(query);
+        if (query.InstanceId != null) InstanceIds.Validate(query.InstanceId);
+        if (query.InstanceIds != null) InstanceIds.ValidateAll(query.InstanceIds);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(query.Limit);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
@@ -790,7 +813,10 @@ public abstract partial class RelationalWorkflowStateRepository :
         var parent = commit.ParentNotice is { } notice
             ? (await LockAsync<InboxRow>(connection, transaction, Statement.ParentInbox,
                 notice.ParentInstanceId, clock: false)).Row : null;
-        await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { commit.InstanceId });
+        // Only a first commit can insert this row. Existing-row commits serialize on the row;
+        // child starts take each child's ID below, after their parent's row.
+        if (commit.ExpectedRevision == 0)
+            await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { commit.InstanceId });
         CommitState? current;
         if (UsesLocalClock)
             current = await connection.QuerySingleOrDefaultAsync<CommitState>(RequiredSql(Statement.CommitState),
@@ -818,8 +844,10 @@ public abstract partial class RelationalWorkflowStateRepository :
         {
             foreach (var child in commit.ChildStarts.OrderBy(c => c.ChildInstanceId, StringComparer.Ordinal))
             {
-                // Child insertion must not wait for the child's advisory identity lock: a delete
-                // waiting there can discover this new child and retry with its parent locked first.
+                // Creation waits, just like deletion: parent row, child identity, child row.
+                // Claims never acquire a parent row while holding a child's identity.
+                await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity,
+                    new { InstanceId = child.ChildInstanceId });
                 // Lock an existing child row before checking its tombstone. If purge deletes that
                 // row while we wait, the following read sees the tombstone it committed atomically.
                 var (_, childNow) = await LockAsync<CommitState>(connection, transaction, Statement.CommitState, child.ChildInstanceId);
@@ -1127,6 +1155,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         await using var transaction = await BeginTransactionAsync(connection, Operation.Read);
@@ -1135,6 +1164,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         await using var transaction = await BeginTransactionAsync(connection, Operation.Read);
@@ -1192,6 +1222,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null)
     {
+        InstanceIds.Validate(instanceId);
         var period = tombstoneRetention ?? RetentionSettings.Default.TombstoneRetention;
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(period, TimeSpan.Zero);
         await EnsureSchemaAsync();
@@ -1262,6 +1293,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000)
     {
+        InstanceIds.Validate(instanceId);
         ArgumentOutOfRangeException.ThrowIfNegative(afterSequence);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         await EnsureSchemaAsync();
@@ -1275,6 +1307,7 @@ public abstract partial class RelationalWorkflowStateRepository :
 
     public async Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation)
     {
+        InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
         await using var connection = await OpenConnectionAsync();
         var rows = await connection.QueryAsync<string>(RequiredSql(Statement.IncarnationDiagnostics),
@@ -1449,7 +1482,7 @@ public abstract partial class RelationalWorkflowStateRepository :
     };
     private static int LeaseMilliseconds(string instanceId, string token, TimeSpan duration)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
         if (duration <= TimeSpan.Zero || duration.TotalMilliseconds > int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(duration));

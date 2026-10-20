@@ -29,15 +29,18 @@ public sealed record WorkflowEvent(
     /// event ID sent again with another hash is a different event and is refused. CloudEvents set
     /// Source and deduplicate solely by source and event ID, scoped to the instance.
     /// </summary>
-    public byte[] ContentHash() => SHA256.HashData(Encoding.UTF8.GetBytes(
-        JsonSerializer.Serialize(Source == null
+    public byte[] ContentHash()
+    {
+        InstanceIds.Validate(InstanceId);
+        return SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(Source == null
             ? new[] { EventType, Key, TargetWaitId, Subject, PayloadJson }
             : new[] { InstanceId, Source, EventId })));
+    }
 
     /// <summary>Checks the fields every store can hold.</summary>
     public void Validate()
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(InstanceId);
+        InstanceIds.Validate(InstanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(EventId);
         ArgumentException.ThrowIfNullOrWhiteSpace(EventType);
         ArgumentNullException.ThrowIfNull(PayloadJson);

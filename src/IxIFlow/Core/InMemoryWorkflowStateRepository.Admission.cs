@@ -18,6 +18,7 @@ public partial class InMemoryWorkflowStateRepository
 
     public Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId)
     {
+        InstanceIds.Validate(instanceId);
         lock (_claimLock)
             return Task.FromResult(_ownership.TryGetValue(instanceId, out var ownership) &&
                 (_instances.TryGetValue(instanceId, out var instance) ? instance.Incarnation == ownership.Incarnation

@@ -252,9 +252,9 @@ public static class WorkflowOperationsExtensions
             if (token.Length > 4096) throw new ArgumentException("Invalid unschedulable cursor");
             try { cursor = JsonSerializer.Deserialize<UnschedulableCursor>(protector.Unprotect(token)); }
             catch (CryptographicException error) { throw new ArgumentException("Invalid unschedulable cursor", error); }
-            if (cursor == null || cursor.RunnableAtUtc == default || cursor.RunnableAtUtc.Kind != DateTimeKind.Utc ||
-                string.IsNullOrWhiteSpace(cursor.InstanceId) || cursor.InstanceId.Length > 400)
+            if (cursor == null || cursor.RunnableAtUtc == default || cursor.RunnableAtUtc.Kind != DateTimeKind.Utc)
                 throw new ArgumentException("Invalid unschedulable cursor");
+            InstanceIds.Validate(cursor.InstanceId);
         }
         var operations = Operations(http);
         var scope = http.RequestServices.GetRequiredService<IInstanceQueryScope>();

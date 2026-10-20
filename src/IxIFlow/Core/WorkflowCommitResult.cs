@@ -308,6 +308,8 @@ public sealed class CheckpointCommit
         IReadOnlyList<WorkflowDiagnostic>? diagnostics = null, IReadOnlyList<string>? retainedDiagnosticIds = null)
     {
         ArgumentNullException.ThrowIfNull(instance);
+        InstanceIds.Validate(instance.InstanceId);
+        if (instance.ParentInstanceId != null) InstanceIds.Validate(instance.ParentInstanceId);
         if (!admission) ArgumentOutOfRangeException.ThrowIfNegativeOrZero(epoch);
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         commitId ??= Guid.NewGuid().ToString("N");
@@ -374,7 +376,8 @@ public sealed class CheckpointCommit
         if (generatedInstance == null && CommittedInstance.Of(instance) != metadata)
             throw new ArgumentException("Commit metadata differs from its payload", nameof(metadata));
         ArgumentNullException.ThrowIfNull(instance);
-        ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
+        InstanceIds.Validate(instance.InstanceId);
+        if (instance.ParentInstanceId != null) InstanceIds.Validate(instance.ParentInstanceId);
         ArgumentOutOfRangeException.ThrowIfNegative(epoch);
         if (epoch == 0 && expectedRevision != 0)
             throw new ArgumentException("Only an admission commit can have epoch zero", nameof(epoch));
@@ -438,7 +441,7 @@ public sealed class CheckpointCommit
         var started = (childStarts ?? []).ToArray();
         foreach (var child in started)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(child.ChildInstanceId, nameof(childStarts));
+            InstanceIds.Validate(child.ChildInstanceId, nameof(childStarts));
             ArgumentException.ThrowIfNullOrWhiteSpace(child.ParentWaitId, nameof(childStarts));
             if (child.Incarnation == Guid.Empty) throw new ArgumentException("A child start requires an incarnation", nameof(childStarts));
             var childInstance = child.Child
@@ -457,7 +460,7 @@ public sealed class CheckpointCommit
         // Copies, so a reason changed after the commit is hashed does not change what the store writes.
         var cancelled = (childCancellations ?? []).Select(child =>
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(child.ChildInstanceId, nameof(childCancellations));
+            InstanceIds.Validate(child.ChildInstanceId, nameof(childCancellations));
             ArgumentNullException.ThrowIfNull(child.Reason, nameof(childCancellations));
             if (child.Reason.Mode != WorkflowControlMode.Terminate)
                 ArgumentException.ThrowIfNullOrWhiteSpace(child.ParentWaitId, nameof(childCancellations));
@@ -468,7 +471,7 @@ public sealed class CheckpointCommit
         }).ToArray();
         if (parentNotice != null)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.ParentInstanceId, nameof(parentNotice));
+            InstanceIds.Validate(parentNotice.ParentInstanceId, nameof(parentNotice));
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.ParentWaitId, nameof(parentNotice));
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.EventId, nameof(parentNotice));
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.EventType, nameof(parentNotice));
