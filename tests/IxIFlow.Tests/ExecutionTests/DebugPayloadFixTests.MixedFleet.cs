@@ -52,12 +52,14 @@ public sealed partial class DebugPayloadFixTests
             .Step<Noop>().WithId("before").WaitFor<Go>("go").Build(), new Data());
         await using var writer = DebugWriter(h);
         // Keep the idle command pending, as when the requesting host cannot take ownership.
-        Assert.NotNull(await h.Store.TryAcquireExecutionLeaseAsync(started.InstanceId, "busy", TimeSpan.FromSeconds(10)));
+        var (suspended, busy) = await h.RecreateForClaimAsync(started.InstanceId, "busy", TimeSpan.FromSeconds(10), suspended: true);
+        started.InstanceId = suspended.InstanceId;
+        Assert.NotNull(busy);
         await SendPause(writer.GetRequiredService<WorkflowHost>(), started.InstanceId);
         await h.Store.ReleaseExecutionLeaseAsync(started.InstanceId, "busy");
-        Assert.Contains(await h.Store.GetRunnableInstancesAsync(10), row => row.InstanceId == started.InstanceId);
+        Assert.Contains(await h.Store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(h.Services, 10)), row => row.InstanceId == started.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.Paused, (await h.Client.RecoverAsync(started.InstanceId)).Status);
-        Assert.DoesNotContain(await h.Store.GetRunnableInstancesAsync(10), row => row.InstanceId == started.InstanceId);
+        Assert.DoesNotContain(await h.Store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(h.Services, 10)), row => row.InstanceId == started.InstanceId);
         Assert.NotNull(Assert.Single((await h.Store.GetDebugStatesAsync([started.InstanceId]))[started.InstanceId]
             .Commands).AcknowledgedRevision);
         await writer.GetRequiredService<WorkflowHost>().ReadAsync(client => client.SetBreakpointsAsync(
@@ -78,7 +80,9 @@ public sealed partial class DebugPayloadFixTests
         var started = await h.Client.RunAsync(Workflow.Create<Data>("mixed-crashed")
             .Step<Noop>().WaitFor<Go>("go").Build(), new Data());
         var saved = (await h.Store.GetWorkflowInstanceAsync(started.InstanceId))!;
-        var lease = (await h.Store.TryAcquireExecutionLeaseAsync(started.InstanceId, "crashed", TimeSpan.FromSeconds(1)))!;
+        var (interrupted, lease) = await h.RecreateForClaimAsync(started.InstanceId, "crashed", TimeSpan.FromSeconds(1));
+        started.InstanceId = interrupted.InstanceId;
+        saved = interrupted;
         saved.Status = WorkflowStatus.Running;
         Assert.Equal(WorkflowCommitStatus.Applied, (await h.Store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(saved, lease.Epoch, saved.Revision))).Status);

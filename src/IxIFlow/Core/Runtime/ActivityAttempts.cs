@@ -386,6 +386,12 @@ internal sealed class ActivityAttempts(
                 throw new WorkflowEngineException(refusal, reply.Message ?? "The child start was refused");
             start = reply.Start ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Missing child start");
         }
+        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidRequest)
+        {
+            continuation.PendingActivity = pending;
+            Attempt(instance, checkpoint, continuation, step, pending, "InvokeWorkflow");
+            return Settles(ActivityRunResult.Unresolved($"The child workflow could not start: {error.Message}"));
+        }
         catch (CheckpointLimitExceededException error)
         {
             // The same child would be refused again, so an operator decides (A-08, D-28).

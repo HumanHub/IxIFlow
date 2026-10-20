@@ -6,6 +6,7 @@ using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
+using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Tests.ExecutionTests;
@@ -231,11 +232,13 @@ public sealed class DataEditTests
     {
         var store = new Store(); await using var services = Services(store, new());
         var id = await Paused(services, Waiting("LeaseEdit")); var before = (await store.GetWorkflowInstanceAsync(id))!;
-        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(id, "other-owner", TimeSpan.FromSeconds(30)));
+        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(id, "other-owner", TimeSpan.FromSeconds(30),
+            await StoreTestSupport.ClaimAsync(services), ExecutionClaimKind.Operator));
         await Refused(services, store, before, before.Revision, Target(before), [Patch(["Number"], 7)]);
         await store.ReleaseExecutionLeaseAsync(id, "other-owner");
         await Ops(services).EditDataAsync(id, "leased", before.Revision, Target(before), [Patch(["Number"], 7)], "editor");
-        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(id, "next-owner", TimeSpan.FromSeconds(30)));
+        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(id, "next-owner", TimeSpan.FromSeconds(30),
+            await StoreTestSupport.ClaimAsync(services), ExecutionClaimKind.Operator));
         await store.ReleaseExecutionLeaseAsync(id, "next-owner");
     }
 
@@ -283,7 +286,7 @@ public sealed class DataEditTests
         Assert.Equal(DebugCommandStatus.Accepted, (await store.RequestDebugCommandAsync(id,
             new("continue", DebugCommandKind.Continue, Target(before).PauseGeneration, "continuer"))).Status);
         store.Release.TrySetResult(); await edit.WaitAsync(Patience);
-        Assert.Contains(await store.GetRunnableInstancesAsync(100), i => i.InstanceId == id);
+        Assert.Contains(await store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(first, 100)), i => i.InstanceId == id);
         Assert.Equal(WorkflowExecutionStatus.Suspended, (await Client(second).RecoverAsync(id)).Status);
         var commands = (await store.GetDebugStatesAsync([id]))[id].Commands.TakeLast(2).ToArray();
         Assert.Equal([DebugCommandKind.EditData, DebugCommandKind.Continue], commands.Select(c => c.Kind));

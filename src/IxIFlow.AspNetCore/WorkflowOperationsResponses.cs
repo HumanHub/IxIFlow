@@ -2,6 +2,9 @@ using IxIFlow.Core;
 
 namespace IxIFlow.AspNetCore;
 
+public sealed record WorkflowUnschedulablePage(IReadOnlyList<UnschedulableInstance> Items,
+    string? NextCursor, DateTime StoreTimeUtc);
+
 public sealed record WorkflowTraceResponse(long Sequence, string TraceId, DateTime Timestamp, TraceClock Clock,
     int StepNumber, string ActivityName, TraceEntryType EntryType, TimeSpan? Duration, string? ErrorMessage, TracePayload? Payload)
 {

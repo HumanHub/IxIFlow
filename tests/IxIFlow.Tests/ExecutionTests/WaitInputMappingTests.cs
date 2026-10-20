@@ -60,16 +60,24 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
         {
             var client = services.GetRequiredService<IWorkflowClient>();
             instanceId = (await client.RunAsync(definition, new Data { Customer = "Ada" })).InstanceId;
-            json = Assert.Single(await client.GetOpenWaitsAsync(new(InstanceId: instanceId))).DefaultPayloadJson;
-            // Model an owner lost after it saved the wait: the checkpoint and waits table stay intact.
+            var savedWait = Assert.Single(await client.GetOpenWaitsAsync(new(InstanceId: instanceId)));
+            json = savedWait.DefaultPayloadJson;
+            // Seed an interrupted execution with the already evaluated checkpoint and wait.
+            // Creation claims the new ID; an idle instance cannot be reclaimed to fabricate a crash.
             var store = services.GetRequiredService<IWorkflowStateRepository>();
             var token = Guid.NewGuid().ToString("N");
-            var lease = (await store.TryAcquireExecutionLeaseAsync(instanceId, token, TimeSpan.FromMinutes(1)))!;
             var instance = (await store.GetWorkflowInstanceAsync(instanceId))!;
+            await store.DeleteWorkflowInstanceAsync(instanceId);
+            instanceId = instance.InstanceId = Guid.NewGuid().ToString("N");
+            instance.Revision = 0;
+            instance.Incarnation = Guid.NewGuid();
+            var lease = (await store.TryAcquireExecutionLeaseAsync(instanceId, token, TimeSpan.FromMinutes(1), await StoreTestSupport.ClaimAsync(services)))!;
             instance.Status = WorkflowStatus.Running;
             Assert.Equal(WorkflowCommitStatus.Applied,
-                (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, lease.Epoch, instance.Revision))).Status);
-            Assert.True(await store.ReleaseExecutionLeaseAsync(instanceId, token));
+                (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, lease.Epoch, instance.Revision,
+                    openedWaits: [new OpenedWait(savedWait.WaitId, savedWait.Kind, savedWait.Key, savedWait.EventType, null,
+                        DefaultPayloadJson: savedWait.DefaultPayloadJson is { } value ? StoredJson.Inline(value) : null)]))).Status);
+            Assert.True((await store.ReleaseExecutionLeaseAsync(instanceId, token)).Released);
         }
         Assert.Equal(1, _reads);
         _failReads = true;

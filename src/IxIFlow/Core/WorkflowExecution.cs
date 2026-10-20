@@ -102,6 +102,13 @@ public class CancellationReason
 public class WorkflowOptions
 {
     internal string? DebugStopOnEntryActor { get; set; }
+    /// <summary>Additional capability constraints, resolved once at creation.</summary>
+    public List<WorkflowDemand> Demands { get; set; } = [];
+    /// <summary>A temporary pin, stamped with an expiry by the creating store.</summary>
+    public Guid? RequiredHostId { get; set; }
+    /// <summary>Wait by default, or refuse when no live host matches.</summary>
+    public WhenUnschedulable WhenUnschedulable { get; set; } = WhenUnschedulable.Wait;
+
     /// <summary>Stable instance ID for an idempotent start command.</summary>
     public string? InstanceId { get; set; }
 
@@ -136,6 +143,10 @@ public class WorkflowOptions
 /// </summary>
 public class WorkflowInstance
 {
+    /// <summary>The host that most recently claimed or committed this instance.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Guid? LastHostId { get; internal set; }
+
     /// <summary>The identity of this creation of the instance, independent of its reusable ID.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Guid Incarnation { get; internal set; }
@@ -628,6 +639,12 @@ public class WorkflowDefinition
     /// <summary>The executable definition's catalog, including author identities and call sites.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public StepTable StepTable => WorkflowDefinitionValidator.ForExecution(this).StepTable;
+    /// <summary>Placement declarations, excluded from executable structure identity.</summary>
+    public List<WorkflowDemand> Demands { get; set; } = [];
+
+    // Deployment policy is retained separately so an equivalent caller-built definition cannot bypass it.
+    internal IReadOnlyList<WorkflowDemand> RegistrationDemands { get; set; } = [];
+
     /// <summary>
     ///     Unique identifier for this workflow definition
     /// </summary>

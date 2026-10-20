@@ -29,6 +29,9 @@ public static class ServiceCollectionExtensions
         // Core workflow services
         services.TryAddSingleton<HostSettings>(_ => HostSettings.Default);
         services.TryAddSingleton(RetentionSettings.Default);
+        services.TryAddSingleton<IRunnableNotifier, NullRunnableNotifier>();
+        services.TryAddSingleton<CoordinationState>();
+        services.AddSingleton<RunnableNotifications>();
         services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
             provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
             provider.GetService<ILogger<WorkflowHost>>(), provider.GetService<ILogger<SensitiveDiagnostics>>(),
@@ -106,6 +109,11 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The park threshold cannot be negative");
         if (options.PollInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(configure), "The poll interval must be positive");
+        if (options.UnschedulableScanInterval <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(options.UnschedulableScanInterval));
+        if (options.HostPinLifetime <= TimeSpan.Zero || options.HostPinLifetime > CheckpointCommit.MaxDuration)
+            throw new ArgumentOutOfRangeException(nameof(options.HostPinLifetime));
+        services.AddSingleton(new DemandSettings(options.HostPinLifetime));
         MemberRegistry.ValidateInterval(options.HeartbeatInterval);
         var capabilities = MemberRegistry.SnapshotCapabilities(options.Capabilities);
         if (capabilities.Keys.Any(WorkflowHeartbeatService.IsAutomaticCapability))
@@ -135,7 +143,8 @@ public static class ServiceCollectionExtensions
         var hostSettings = (options.Slots, options.DrainTimeout, options.PollInterval, options.HostName, options.HeartbeatInterval);
         services.Replace(ServiceDescriptor.Singleton<HostSettings>(_ =>
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
-            { Debugging = options.Debugging, HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes }));
+            { Debugging = options.Debugging, HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes,
+                UnschedulableScanInterval = options.UnschedulableScanInterval }));
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
 
@@ -162,11 +171,13 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection</param>
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection RegisterWorkflow<TWorkflow>(
-        this IServiceCollection services)
+        this IServiceCollection services, Action<WorkflowRegistration>? configure = null)
         where TWorkflow : class
     {
         _ = WorkflowAttribute.For(typeof(TWorkflow));
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
+        var registration = new WorkflowRegistration();
+        configure?.Invoke(registration);
         // Use reflection to find the IWorkflow<T> interface
         var workflowInterface = typeof(TWorkflow)
             .GetInterfaces()
@@ -189,6 +200,8 @@ public static class ServiceCollectionExtensions
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
             var definition = (WorkflowDefinition)buildMethod.Invoke(null, new object?[] { workflow })!;
+            definition.RegistrationDemands = registration.Demands.ToArray();
+            definition.Demands.AddRange(definition.RegistrationDemands);
             return new RegisteredWorkflowDefinition<TWorkflow>(definition);
         });
         services.AddSingleton(serviceProvider =>
@@ -205,20 +218,24 @@ public static class ServiceCollectionExtensions
     /// <param name="services">The service collection</param>
     /// <returns>The service collection for chaining</returns>
     public static IServiceCollection RegisterWorkflow<TWorkflow, TWorkflowData>(
-        this IServiceCollection services)
+        this IServiceCollection services, Action<WorkflowRegistration>? configure = null)
         where TWorkflow : class, IWorkflow<TWorkflowData>
         where TWorkflowData : class
     {
         _ = WorkflowAttribute.For(typeof(TWorkflow));
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
+        var registration = new WorkflowRegistration();
+        configure?.Invoke(registration);
         // Register the workflow class
         services.AddTransient<TWorkflow>();
 
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-            return new RegisteredWorkflowDefinition<TWorkflow>(
-                BuildWorkflowDefinition<TWorkflow, TWorkflowData>(workflow));
+            var definition = BuildWorkflowDefinition<TWorkflow, TWorkflowData>(workflow);
+            definition.RegistrationDemands = registration.Demands.ToArray();
+            definition.Demands.AddRange(definition.RegistrationDemands);
+            return new RegisteredWorkflowDefinition<TWorkflow>(definition);
         });
         services.AddSingleton(serviceProvider =>
             serviceProvider.GetRequiredService<RegisteredWorkflowDefinition<TWorkflow>>().Definition);
@@ -268,6 +285,9 @@ public class IxIFlowOptions
 
     /// <summary>Maximum bytes in one put, default 64 MiB.</summary>
     public long MaxPayloadBytes { get; set; } = PayloadStoreSettings.DefaultMaxPayloadBytes;
+
+    /// <summary>Lifetime of a RequiredHostId demand, measured by store time. Default five minutes.</summary>
+    public TimeSpan HostPinLifetime { get; set; } = TimeSpan.FromMinutes(5);
 
     /// <summary>Emit original exceptions to the sensitive diagnostics logger category. Off by default.</summary>
     public bool EnableSensitiveDiagnostics { get; set; }
@@ -365,6 +385,9 @@ public class IxIFlowOptions
     public TimeSpan PollInterval { get; set; } = HostSettings.DefaultPollInterval;
 
     /// <summary>Time between store registry heartbeats. Defaults to five seconds; at most twenty minutes.</summary>
+    /// <summary>Interval between bounded checks for work no live host can run; defaults to thirty seconds.</summary>
+    public TimeSpan UnschedulableScanInterval { get; set; } = TimeSpan.FromSeconds(30);
+
     public TimeSpan HeartbeatInterval { get; set; } = MemberRegistry.DefaultHeartbeatInterval;
 
     /// <summary>User capability keys and values, published alongside automatic host and workflow capabilities.</summary>

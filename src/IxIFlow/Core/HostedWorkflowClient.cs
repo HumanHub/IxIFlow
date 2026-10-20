@@ -6,11 +6,27 @@ namespace IxIFlow.Core;
 /// The client every application uses: calls become work for the <see cref="WorkflowHost"/>, which runs
 /// them in slots. Reads and cancellation requests take no slot.
 /// </summary>
-internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time, IWorkflowCatalog catalog, IWorkflowStateRepository repository) : IWorkflowClient
+internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time, IWorkflowCatalog catalog,
+    IWorkflowStateRepository repository, CoordinationState? coordination = null) : IWorkflowClient
 {
-    // AwaitAsync also notices work finished on another host; until the store can notify (D-05,
-    // D-12), it checks the saved state at this interval.
+    public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
+        CancellationToken cancellationToken = default) => host.ReadAsync(client => client.GetUnschedulableAsync(limit, cursor, cancellationToken));
+
+    // A finite backstop also covers completions whose writer crashed before publishing a hint.
     private static readonly TimeSpan AwaitPollInterval = TimeSpan.FromSeconds(1);
+    private TimeSpan CurrentAwaitPollInterval => coordination?.Connected == true
+        ? coordination.PollInterval : AwaitPollInterval;
+
+    private async Task WaitForChangeAsync(Task settled, CancellationToken token)
+    {
+        using var poll = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var changed = coordination != null ? ChangeTask(coordination) : Task.Delay(Timeout.Infinite, poll.Token);
+        await Task.WhenAny(settled, changed, Task.Delay(CurrentAwaitPollInterval, time, poll.Token));
+        poll.Cancel();
+        token.ThrowIfCancellationRequested();
+    }
+
+    private static Task ChangeTask(CoordinationState state) { state.Observe(out var changed); return changed; }
 
     public Task<WorkflowExecutionResult> RunAsync<TWorkflowData>(WorkflowDefinition definition,
         TWorkflowData workflowData, WorkflowOptions? options = null, CancellationToken cancellationToken = default)
@@ -168,10 +184,11 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         var receipt = result.Event;
         var status = result.Status;
         while (receipt?.Outcome == EventOutcome.Pending
-                   ? status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended
-                   : status == WorkflowExecutionStatus.Running)
+                   ? status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Suspended
+                   : status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Scheduled)
         {
             using var watch = host.WatchSettled(instanceId, out var settled);
+            await host.ConfirmSubscriptionAsync(instanceId, cancellationToken);
             receipt = await host.ReadAsync(client => client.ReadEventAsync(instanceId, eventId));
             status = await host.ReadAsync(client => client.ReadStatusAsync(instanceId)) ?? status;
             if (receipt?.Outcome != EventOutcome.Pending && status != WorkflowExecutionStatus.Running)
@@ -179,10 +196,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
                 result = await AwaitAsync(instanceId, WorkflowAwaitCondition.Idle, cancellationToken);
                 break;
             }
-            using var poll = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            await Task.WhenAny(settled, Task.Delay(AwaitPollInterval, time, poll.Token));
-            poll.Cancel();
-            cancellationToken.ThrowIfCancellationRequested();
+            await WaitForChangeAsync(settled, cancellationToken);
         }
         result.Event = receipt;
         return result;
@@ -313,6 +327,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
             // Watch before reading, so work that finishes in between is not missed. Only work on
             // this instance wakes the caller; work elsewhere is seen by the poll.
             using var watch = host.WatchSettled(instanceId, out var settled);
+            await host.ConfirmSubscriptionAsync(instanceId, cancellationToken);
             // Waiting reads only the status; the workflow data is read once, when the wait is over.
             var status = await host.ReadAsync(client => client.ReadStatusAsync(instanceId))
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
@@ -321,10 +336,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
                 await host.ReadAsync(client => client.ReadAsync(instanceId)) is { } result &&
                 Satisfies(result.Status, until))
                 return result;
-            using var poll = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            await Task.WhenAny(settled, Task.Delay(AwaitPollInterval, time, poll.Token));
-            poll.Cancel();
-            cancellationToken.ThrowIfCancellationRequested();
+            await WaitForChangeAsync(settled, cancellationToken);
         }
     }
 

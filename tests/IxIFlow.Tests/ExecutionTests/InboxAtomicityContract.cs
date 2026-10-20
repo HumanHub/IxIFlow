@@ -9,7 +9,7 @@ internal static class InboxAtomicityContract
     internal static async Task MixedSettlementsRollBack(IWorkflowStateRepository store)
     {
         var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"),
-            WorkflowName = "InboxAtomicity", Status = WorkflowStatus.Suspended, WorkflowDataJson = StoredJson.Inline("{\"value\":1}") };
+            WorkflowName = "InboxAtomicity", Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{\"value\":1}") };
         var child = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = "AtomicChild", Status = WorkflowStatus.Running, ParentInstanceId = instance.InstanceId, ParentWaitId = "child" };
         try

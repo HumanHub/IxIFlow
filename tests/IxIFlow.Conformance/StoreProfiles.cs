@@ -19,26 +19,52 @@ public static class StoreProfiles
     public const string DistributedPostgreSql = "distributed-postgresql";
 
     /// <summary>Every profile. Use for scenarios that apply to any store.</summary>
-    public static TheoryData<string> All => new() { LocalMemory, LocalSqlite, DistributedSqlServer, DistributedPostgreSql };
+    public static TheoryData<string> All => new(ProfileNames);
+
+    public static IEnumerable<string> ProfileNames => new[] { LocalMemory, LocalSqlite }.Concat(DistributedNames);
+
+    private static IEnumerable<string> DistributedNames =>
+        new[] { DistributedSqlServer, DistributedPostgreSql }.SelectMany(provider =>
+            Enumerable.Range(0, 3).Select(count => count == 0 ? provider : $"{provider}/coordinators-{count}"));
 
     /// <summary>Profiles that allow several hosts on one store (C-18 excludes SQLite).</summary>
-    public static TheoryData<string> MultipleHosts => new() { LocalMemory, DistributedSqlServer, DistributedPostgreSql };
+    public static TheoryData<string> MultipleHosts => new(new[] { LocalMemory }.Concat(DistributedNames));
 
     /// <summary>Profiles with several hosts sharing a durable store.</summary>
-    public static TheoryData<string> Distributed => new() { DistributedSqlServer, DistributedPostgreSql };
+    public static TheoryData<string> Distributed => new(DistributedNames);
 
-    internal static async Task<ProfileStore> CreateAsync(string profile, TimeProvider? time = null) => profile switch
+    public static TheoryData<string> Coordinated => new(DistributedNames.Where(profile => CoordinatorCount(profile) > 0));
+
+    internal static int CoordinatorCount(string profile) => profile.Split('/') switch
     {
-        LocalMemory => ProfileStore.Memory(time),
-        LocalSqlite => ProfileStore.Sqlite(time),
-        DistributedSqlServer => await ProfileStore.SqlServerAsync(),
-        DistributedPostgreSql => await ProfileStore.PostgreSqlAsync(),
+        [LocalMemory or LocalSqlite or DistributedSqlServer or DistributedPostgreSql] => 0,
+        [DistributedSqlServer or DistributedPostgreSql, "coordinators-1"] => 1,
+        [DistributedSqlServer or DistributedPostgreSql, "coordinators-2"] => 2,
         _ => throw new ArgumentOutOfRangeException(nameof(profile), profile, "Unknown test profile")
     };
+
+    internal static async Task<ProfileStore> CreateAsync(string profile, TimeProvider? time = null)
+    {
+        var count = CoordinatorCount(profile);
+        var store = profile.Split('/')[0] switch
+        {
+            LocalMemory => ProfileStore.Memory(time),
+            LocalSqlite => ProfileStore.Sqlite(time),
+            DistributedSqlServer => await ProfileStore.SqlServerAsync(),
+            DistributedPostgreSql => await ProfileStore.PostgreSqlAsync(),
+            _ => throw new ArgumentOutOfRangeException(nameof(profile))
+        };
+        try
+        {
+            await store.StartCoordinatorsAsync(count);
+            return store;
+        }
+        catch { await store.DisposeAsync(); throw; }
+    }
 }
 
 /// <summary>An isolated store for one test. Hosts created from it share the same data.</summary>
-internal sealed class ProfileStore : IAsyncDisposable
+internal sealed partial class ProfileStore : IAsyncDisposable
 {
     private readonly Func<TimeProvider?, IWorkflowStateRepository> _newRepository;
     private readonly Func<Task> _dispose;
@@ -81,7 +107,7 @@ internal sealed class ProfileStore : IAsyncDisposable
         }.ConnectionString;
         return new ProfileStore(StoreProfiles.LocalSqlite,
             clock => new SqliteWorkflowStateRepository(connectionString, clock ?? time),
-            () => SqliteTestFiles.DeleteAsync(folder));
+            () => SqliteTestFiles.DeleteAsync(folder), () => new SqliteConnection(connectionString));
     }
 
     public static async Task<ProfileStore> SqlServerAsync()
@@ -99,6 +125,8 @@ internal sealed class ProfileStore : IAsyncDisposable
             _ => new PostgreSqlWorkflowStateRepository(connectionString),
             () => PostgreSqlTestServer.DropDatabaseAsync(connectionString), () => new NpgsqlConnection(connectionString));
     }
+
+    internal DbConnection NewConnection() => _newConnection!();
 
     internal async Task ExpireExecutionLeaseAsync(string instanceId)
     {
@@ -119,6 +147,7 @@ internal sealed class ProfileStore : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await StopCoordinatorsAsync();
         foreach (var repository in _repositories)
             await repository.DisposeAsync();
         await _dispose();

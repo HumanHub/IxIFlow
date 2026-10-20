@@ -34,6 +34,37 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     private readonly HashSet<Task> _lingering = [];
     // Callers waiting for work on an instance to finish, by instance.
     private readonly Dictionary<string, SettledSignal> _settled = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _awaiters = new(StringComparer.Ordinal);
+
+    // Handlers enqueue subscription changes only. They run under the host lock to preserve ordering.
+    internal event Action<string, bool>? AwaitingChanged;
+    internal event Action? FreeSlotsChanged;
+    internal Func<string, CancellationToken, Task>? AwaitSubscriptionAsync;
+
+    internal Task ConfirmSubscriptionAsync(string instanceId, CancellationToken token) =>
+        AwaitSubscriptionAsync?.Invoke(instanceId, token) ?? Task.CompletedTask;
+
+    internal void ObserveAwaiters(Action<string, bool> observer)
+    {
+        lock (_lock)
+        {
+            AwaitingChanged += observer;
+            foreach (var id in _awaiters.Keys) observer(id, true);
+        }
+    }
+
+    // A new coordinator link replays this snapshot, acknowledges subscriptions, then rereads the store.
+    internal IReadOnlyList<string> AwaitedInstances
+    {
+        get { lock (_lock) return _awaiters.Keys.ToArray(); }
+    }
+
+    internal void NotifyCompletion(string instanceId)
+    {
+        SettledSignal? signal;
+        lock (_lock) _settled.Remove(instanceId, out signal);
+        signal?.Source.TrySetResult();
+    }
     private readonly CancellationTokenSource _draining = new();
     private readonly CancellationTokenSource _stopped = new();
     private bool _accepting = true;
@@ -254,6 +285,9 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             if (!_settled.TryGetValue(instanceId, out var signal))
                 _settled[instanceId] = signal = new SettledSignal();
             signal.Watchers++;
+            var watchers = _awaiters.GetValueOrDefault(instanceId);
+            _awaiters[instanceId] = watchers + 1;
+            if (watchers == 0) AwaitingChanged?.Invoke(instanceId, true);
             settled = signal.Source.Task;
             return new SettledWatch(this, instanceId, signal);
         }
@@ -263,6 +297,13 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     {
         lock (_lock)
         {
+            var remaining = _awaiters[instanceId] - 1;
+            if (remaining == 0)
+            {
+                _awaiters.Remove(instanceId);
+                AwaitingChanged?.Invoke(instanceId, false);
+            }
+            else _awaiters[instanceId] = remaining;
             if (--signal.Watchers == 0 && _settled.TryGetValue(instanceId, out var current) && current == signal)
                 _settled.Remove(instanceId);
         }
@@ -326,6 +367,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             using (var waiting = CancellationTokenSource.CreateLinkedTokenSource(stop.Token, _draining.Token))
                 await _slots.WaitAsync(waiting.Token);
             slotTaken = true;
+            FreeSlotsChanged?.Invoke();
             item.MarkStarted();
             var scope = _scopes.CreateAsyncScope();
             RunContext? context = null;
@@ -338,6 +380,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
                 control.OnScheduled(Schedule);
                 control.OnUnscheduled(Unschedule);
                 control.OnRunnable(WakeNow);
+                control.OnChanged(NotifyCompletion);
                 var client = scope.ServiceProvider.GetRequiredService<SlotClient>();
                 context = new RunContext(client, control);
                 CurrentRun.Value = context;
@@ -369,6 +412,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
                         finally
                         {
                             _slots.Release();
+                            FreeSlotsChanged?.Invoke();
                             lock (_lock)
                                 _lingering.Remove(released.Task);
                             released.TrySetResult();
@@ -384,7 +428,10 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         finally
         {
             if (slotTaken)
+            {
                 _slots.Release();
+                FreeSlotsChanged?.Invoke();
+            }
             item.Complete();
             Finish(item);
         }

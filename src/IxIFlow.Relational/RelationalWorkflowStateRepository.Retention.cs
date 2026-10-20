@@ -83,15 +83,20 @@ public abstract partial class RelationalWorkflowStateRepository
             }
             // Selection is bounded and advisory. Every candidate is rechecked under its normal write
             // lock below. Each deletion has its own transaction to preserve row -> publisher lock order.
-            var selectedAt = await OutboxNowAsync(connection, null);
-            var ids = (await connection.QueryAsync<string>(new CommandDefinition(
-                RequiredSql(Statement.RetentionCandidates),
-                WithTimes(new { Limit = batchSize }, ("Cutoff", selectedAt - finishedRetention)),
-                cancellationToken: cancellationToken))).ToArray();
-            var blocked = (await connection.QueryAsync<(string PublisherName, int Instances)>(new CommandDefinition(
-                RequiredSql(Statement.RetentionBlockedPublishers), WithTimes(new { }, ("Cutoff", selectedAt - finishedRetention)),
-                cancellationToken: cancellationToken))).ToDictionary(row => row.PublisherName, row => row.Instances,
-                    StringComparer.Ordinal);
+            string[] ids;
+            Dictionary<string, int> blocked;
+            await using (var selection = await BeginTransactionAsync(connection, Operation.RetentionRead))
+            {
+                var selectedAt = await OutboxNowAsync(connection, selection);
+                ids = (await connection.QueryAsync<string>(new CommandDefinition(
+                    RequiredSql(Statement.RetentionCandidates),
+                    WithTimes(new { Limit = batchSize }, ("Cutoff", selectedAt - finishedRetention)),
+                    selection, cancellationToken: cancellationToken))).ToArray();
+                blocked = (await connection.QueryAsync<(string PublisherName, int Instances)>(new CommandDefinition(
+                    RequiredSql(Statement.RetentionBlockedPublishers), WithTimes(new { }, ("Cutoff", selectedAt - finishedRetention)),
+                    selection, cancellationToken: cancellationToken))).ToDictionary(row => row.PublisherName, row => row.Instances,
+                        StringComparer.Ordinal);
+            }
             var removed = 0;
             foreach (var id in ids)
             {
@@ -146,6 +151,12 @@ public abstract partial class RelationalWorkflowStateRepository
             await using var expiry = (await BeginTransactionAsync(connection, Operation.Purge))!;
             await ExecuteOptionalAsync(connection, expiry, Statement.RetentionLock,
                 cancellationToken: cancellationToken);
+            // Creators hold this lifecycle lock shared; collection holds it exclusively.
+            // No creator can observe a set and then lose it before inserting its reference.
+            await connection.ExecuteAsync(new CommandDefinition(CollectDemandSetsLockSql, transaction: expiry,
+                cancellationToken: cancellationToken));
+            await connection.ExecuteAsync(new CommandDefinition(CollectDemandSetsSql, new { Limit = batchSize }, expiry,
+                cancellationToken: cancellationToken));
             var expiryNow = await OutboxNowAsync(connection, expiry);
             var expired = await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.ExpireTombstones),
                 WithTimes(new { Limit = batchSize }, ("Now", expiryNow)), expiry,

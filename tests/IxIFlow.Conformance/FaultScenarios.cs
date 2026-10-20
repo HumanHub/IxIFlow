@@ -52,7 +52,7 @@ public sealed class FaultScenarios
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Takeover", Status = WorkflowStatus.Running,
             WorkflowDataJson = StoredJson.Inline("{}")
         };
-        var former = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "former", LeaseDuration))!;
+        var former = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "former", LeaseDuration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         var started = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, former.Epoch, 0));
         Assert.Equal(WorkflowCommitStatus.Applied, started.Status);
         var saved = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
@@ -67,7 +67,7 @@ public sealed class FaultScenarios
 
         // Another owner takes over the expired lease and commits; the former owner's late commit is fenced.
         var current = (await cluster.NewRepository()
-            .TryAcquireExecutionLeaseAsync(instance.InstanceId, "current", LeaseDuration))!;
+            .TryAcquireExecutionLeaseAsync(instance.InstanceId, "current", LeaseDuration, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
         Assert.True(current.Epoch > former.Epoch);
         var late = await store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(instance, former.Epoch, instance.Revision));
@@ -138,7 +138,7 @@ public sealed class FaultScenarios
         var store = cluster.NewRepository();
         for (var owner = 0; owner < 3; owner++)
         {
-            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, $"lost-{owner}", LeaseDuration));
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, $"lost-{owner}", LeaseDuration, await StoreTestSupport.ClaimAsync(cluster.Registry)));
             await ExpireLeaseAsync(cluster, time, instanceId);
         }
         var second = cluster.AddHost();

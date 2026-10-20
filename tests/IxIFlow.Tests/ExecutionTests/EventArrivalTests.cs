@@ -64,7 +64,9 @@ public sealed class EventArrivalTests
             .Build(), new RaceData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, parent.Status);
         var childId = await repository.WaitingInstanceAsync("ChildWithApproval", "approval");
-        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, "other-host", TimeSpan.FromMinutes(1)));
+        await repository.AppendEventAsync(new WorkflowEvent(childId, "approval-1",
+            typeof(Approval).AssemblyQualifiedName!, System.Text.Json.JsonSerializer.Serialize(new Approval { Approved = true }), "approval"));
+        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, "other-host", TimeSpan.FromMinutes(1), await StoreTestSupport.ClaimAsync(services)));
 
         // The event goes to the child (D-17); its owner has not decided it. The caller stores it, tries the
         // child, which another host owns, and reads the event back; from then on it can only wait.
@@ -77,7 +79,7 @@ public sealed class EventArrivalTests
         Assert.Equal(EventOutcome.Pending, (await repository.GetEventAsync(childId, "approval-1"))!.Outcome);
 
         // Once the child is free, it takes the event, and its completion wakes its parent.
-        Assert.True(await repository.ReleaseExecutionLeaseAsync(childId, "other-host"));
+        Assert.True((await repository.ReleaseExecutionLeaseAsync(childId, "other-host")).Released);
         await engine.RecoverAsync(childId);
         Assert.Equal(EventOutcome.Consumed,
             (await EventAssert.DecidedAsync(repository, childId, "approval-1")).Outcome);

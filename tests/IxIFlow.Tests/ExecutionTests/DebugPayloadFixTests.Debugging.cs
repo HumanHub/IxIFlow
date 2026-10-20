@@ -41,7 +41,9 @@ public sealed partial class DebugPayloadFixTests
         await using var h = new Harness(sqlite);
         var started = await h.Client.RunAsync(Workflow.Create<Data>("stopped-debug").Step<Noop>().WaitFor<Go>("go").Build(), new Data());
         var saved = (await h.Store.GetWorkflowInstanceAsync(started.InstanceId))!;
-        var lease = (await h.Store.TryAcquireExecutionLeaseAsync(started.InstanceId, "stop", TimeSpan.FromSeconds(30)))!;
+        var (interrupted, lease) = await h.RecreateForClaimAsync(started.InstanceId, "stop", TimeSpan.FromSeconds(30));
+        started.InstanceId = interrupted.InstanceId;
+        saved = interrupted;
         Assert.Equal(WorkflowCommitStatus.Applied, (await h.Store.CommitWorkflowInstanceAsync(
             CheckpointCommit.PayloadStop(saved, lease.Epoch, "operator stop", h.Clock.GetUtcNow().UtcDateTime))).Status);
         Assert.Equal(DebugCommandStatus.InvalidState, (await h.Store.RequestDebugCommandAsync(started.InstanceId,

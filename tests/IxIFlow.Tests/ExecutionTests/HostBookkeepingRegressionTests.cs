@@ -158,7 +158,7 @@ public sealed class HostBookkeepingRegressionTests
             (await host.Endpoint.CheckpointAsync(new(run.Identity, commit))).Kind);
         host.Time.Advance(TimeSpan.FromMinutes(2));
         Assert.Throws<ExecutionOwnershipLostException>(run.Owner.ThrowIfLost);
-        Assert.NotNull(await host.Store.TryAcquireExecutionLeaseAsync(run.Instance.InstanceId, "takeover", TimeSpan.FromHours(1)));
+        Assert.NotNull(await host.Store.TryAcquireExecutionLeaseAsync(run.Instance.InstanceId, "takeover", TimeSpan.FromHours(1), await StoreTestSupport.ClaimAsync(host.Services)));
         var calls = host.Store.Calls;
 
         run.Instance.WorkflowDataJson = StoredJson.Inline("{\"Value\":\"changed\"}");
@@ -225,7 +225,7 @@ public sealed class HostBookkeepingRegressionTests
         {
             var instance = await SeedAsync(Workflow.Create<Data>("Bookkeeping").Step<Noop>().Build());
             var owner = (await WorkflowExecutionLease.TryAcquireAsync(Store, instance,
-                ExecutionLeaseSettings.Default, _watch, _ => { }, _ => { }, _ => { }, Time))!;
+                ExecutionLeaseSettings.Default, _watch, await StoreTestSupport.ClaimAsync(Services), _ => { }, _ => { }, _ => { }, Time))!;
             var identity = Guid.NewGuid();
             return new(instance, owner, identity, Operations.Admit(instance, owner, identity));
         }

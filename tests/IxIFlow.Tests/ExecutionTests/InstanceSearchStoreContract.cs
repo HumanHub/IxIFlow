@@ -69,7 +69,8 @@ internal static class InstanceSearchStoreContract
             released.Stored = null;
             released.Status = WorkflowStatus.Suspended;
             released.WorkflowVersion = 4;
-            var update = CheckpointCommit.Create(released, (await StoreTestSupport.LeaseAsync(store, released.InstanceId)).Epoch, released.Revision);
+            var update = CheckpointCommit.Create(released,
+                (await StoreTestSupport.LeaseAsync(store, released.InstanceId, kind: ExecutionClaimKind.Operator)).Epoch, released.Revision);
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(update)).Status);
             var projected = Assert.Single((await store.QueryInstancesAsync(new InstanceQuery(InstanceId: held.InstanceId))).Items);
             Assert.Equal(4, projected.WorkflowVersion);

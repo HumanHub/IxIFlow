@@ -40,7 +40,7 @@ public partial class InMemoryWorkflowStateRepository
             if (result.Status == DebugCommandStatus.Accepted)
             {
                 _debugCommands[instanceId] = commands.Append(result.Command!).ToList();
-                if (WorkflowDebugRules.NeedsWake(instance!.Status, _debugCommands[instanceId])) instance.RunnableAtUtc = Now;
+                if (WorkflowDebugRules.NeedsWake(instance!.Status, _debugCommands[instanceId])) SetRunnableAt(instance, Now);
             }
             return Task.FromResult(result);
         }

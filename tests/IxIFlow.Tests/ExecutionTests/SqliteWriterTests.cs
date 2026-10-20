@@ -16,13 +16,13 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
     {
         using var time = new PausedTimeProvider();
         await using var store = new SqliteWorkflowStateRepository(ConnectionString, time);
-        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N") };
+        var instance = new WorkflowInstance { Status = WorkflowStatus.Running, ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N") };
         var grant = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
         var commit = CheckpointCommit.Create(instance, grant.Epoch, 0);
         time.Pause = true;
         var writing = Task.Run(() => store.CommitWorkflowInstanceAsync(commit));
         await time.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        Task<bool> queued;
+        Task<CancellationRequestResult> queued;
         try
         {
             queued = store.RequestCancellationAsync("another-instance", new CancellationReason { ReasonCode = "stop" });
@@ -34,7 +34,7 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
             time.Release.Set();
         }
         await writing.WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.False(await queued.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False((await queued.WaitAsync(TimeSpan.FromSeconds(10))).Accepted);
     }
 
     [Theory]
@@ -54,7 +54,7 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
     public async Task ExternalWriterContentionHasTheSameFailureOnEveryWritePath(string operation)
     {
         await using var store = new SqliteWorkflowStateRepository(ConnectionString);
-        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N") };
+        var instance = new WorkflowInstance { Status = WorkflowStatus.Running, ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N") };
         await store.SeedAsync(instance);
         var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, instance.Revision);
         await using var connection = new SqliteConnection(ConnectionString);
@@ -67,7 +67,7 @@ public sealed class SqliteWriterTests : IClassFixture<SqliteTestDatabase<SqliteW
             "settle delivery" => () => store.SettleDeliveryAsync("event", "publisher", "owner", OutboxPublishResult.Delivered()),
             "renew delivery lease" => () => store.RenewDeliveryLeaseAsync("event", "publisher", "owner", TimeSpan.FromSeconds(10)),
             "cancel" => () => store.RequestCancellationAsync(instance.InstanceId, new CancellationReason { ReasonCode = "stop" }),
-            "claim lease" => () => store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromSeconds(10)),
+            "claim lease" => () => store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())),
             "renew lease" => () => store.RenewExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromSeconds(10)),
             "release lease" => () => store.ReleaseExecutionLeaseAsync(instance.InstanceId, "owner"),
             "append" => () => store.AppendEventAsync(new WorkflowEvent(instance.InstanceId, "event", "test", "{}", "test")),

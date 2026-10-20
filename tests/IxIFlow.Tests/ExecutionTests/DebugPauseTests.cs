@@ -3,6 +3,7 @@ using IxIFlow.ActivitySdk;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
+using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Tests.ExecutionTests;
@@ -36,8 +37,9 @@ public sealed class DebugPauseTests
         var saved = await store.GetWorkflowInstanceAsync("drain");
         Assert.Equal(WorkflowStatus.Paused, saved!.Status);
         Assert.Null(saved.RunnableAtUtc);
-        Assert.DoesNotContain(await store.GetRunnableInstancesAsync(20), r => r.InstanceId == "drain");
-        var grant = await store.TryAcquireExecutionLeaseAsync("drain", "inspection", TimeSpan.FromSeconds(10));
+        Assert.DoesNotContain(await store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(services, 20)), r => r.InstanceId == "drain");
+        var grant = await store.TryAcquireExecutionLeaseAsync("drain", "inspection", TimeSpan.FromSeconds(10),
+            await StoreTestSupport.ClaimAsync(services), ExecutionClaimKind.Operator);
         Assert.NotNull(grant);
         await store.ReleaseExecutionLeaseAsync("drain", "inspection");
         var trace = (await store.GetTraceAsync("drain")).Select(e => e.Entry).ToList();
@@ -146,7 +148,7 @@ public sealed class DebugPauseTests
         Assert.Equal(DebugCommandStatus.Accepted, accepted.Status);
         store.ReleasePause.TrySetResult();
         Assert.Equal(WorkflowExecutionStatus.Paused, (await run.WaitAsync(Timeout)).Status);
-        Assert.Contains(await store.GetRunnableInstancesAsync(20), r => r.InstanceId == "wake");
+        Assert.Contains(await store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(first, 20)), r => r.InstanceId == "wake");
         var stale = await store.RequestDebugCommandAsync("wake", new("stale", DebugCommandKind.Continue, 0, "old"));
         Assert.Equal(DebugCommandStatus.StaleGeneration, stale.Status);
         var continued = await second.GetRequiredService<IWorkflowClient>().RecoverAsync("wake");

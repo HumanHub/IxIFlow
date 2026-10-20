@@ -210,6 +210,7 @@ public sealed class OperationsTests
         await using var owner = Services(store, probe, shortLease: true);
         await using var remote = Services(store);
         var definition = Workflow.Create<Data>("HungTermination").Step<Block>().Build();
+        await remote.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var running = owner.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data(), new WorkflowOptions { InstanceId = "hung" });
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         try
@@ -233,6 +234,7 @@ public sealed class OperationsTests
         var definition = Workflow.Create<Data>("HungCancellationCleanup").Step<Noop>()
             .Try(body => body.WaitFor<Approval>("forward"))
             .Finally(body => body.Step<Block>()).Build();
+        await remote.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var start = await client.RunAsync(definition, new Data());
         var cancelling = client.CancelAsync(start.InstanceId, new CancellationReason { ReasonCode = "graceful" });
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -252,7 +254,7 @@ public sealed class OperationsTests
         var clock = new FakeTimeProvider();
         var store = new InMemoryWorkflowStateRepository(clock);
         var instance = await SeedAsync(store, WorkflowStatus.Running);
-        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "hung-owner", TimeSpan.FromSeconds(10)));
+        Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "hung-owner", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         await using var caller = Services(store);
         using var stopWaiting = new CancellationTokenSource();
         var terminating = caller.GetRequiredService<IWorkflowOperations>().TerminateAsync(instance.InstanceId, "durable", cancellationToken: stopWaiting.Token);
@@ -331,7 +333,8 @@ public sealed class OperationsTests
             WorkflowDataType = "unavailable type", ExecutionStateJson = StoreTestSupport.CheckpointJson,
             ParentInstanceId = parent, ParentWaitId = parentWait };
         var lease = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
-        var result = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, lease.Epoch, 0));
+        var result = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, lease.Epoch, 0,
+            wakeAfter: TimeSpan.Zero));
         Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
         await StoreTestSupport.ReleaseAsync(store, instance.InstanceId);
         return instance;

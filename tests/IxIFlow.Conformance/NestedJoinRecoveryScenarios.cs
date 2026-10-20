@@ -16,8 +16,7 @@ public sealed class NestedJoinRecoveryScenarios
 {
     private const string InnerStep = "root/1/branch/0/0";
     private const string OuterStep = "root/1";
-    public static IEnumerable<object[]> Cases => new[] { StoreProfiles.LocalMemory, StoreProfiles.LocalSqlite,
-        StoreProfiles.DistributedSqlServer, StoreProfiles.DistributedPostgreSql }.SelectMany(profile =>
+    public static IEnumerable<object[]> Cases => StoreProfiles.ProfileNames.SelectMany(profile =>
         new[] { "before", "after", "lost-ack" }.Select(point => new object[] { profile, point }));
 
     [Theory, MemberData(nameof(Cases))]
@@ -48,7 +47,7 @@ public sealed class NestedJoinRecoveryScenarios
         fault.Store = firstStore;
         fault.Point = point;
         var id = Guid.NewGuid().ToString("N");
-        await using (var first = Services(wrapped, registry, effects))
+        await using (var first = Services(profile, wrapped, registry, effects))
         {
             WorkflowExecutionResult? interruptedResult = null;
             var error = await Record.ExceptionAsync(async () => interruptedResult = await first.GetRequiredService<IWorkflowClient>()
@@ -62,7 +61,7 @@ public sealed class NestedJoinRecoveryScenarios
         }
         if (firstStore is IAsyncDisposable disposable) await disposable.DisposeAsync();
         var secondStore = profile.NewRepository();
-        await using var second = Services(secondStore, registry, effects);
+        await using var second = Services(profile, secondStore, registry, effects);
         var finished = await second.GetRequiredService<IWorkflowClient>().RecoverAsync(id).WaitAsync(TimeSpan.FromSeconds(20));
         Assert.True(finished.Status == WorkflowExecutionStatus.Success, finished.ErrorMessage);
         Assert.Equal(22, Assert.IsType<Data>(finished.WorkflowData).Total);
@@ -76,7 +75,7 @@ public sealed class NestedJoinRecoveryScenarios
         Assert.Single(joins, join => join.StepId == OuterStep && join.Path == JoinPath.Merged);
     }
 
-    private static ServiceProvider Services(IWorkflowStateRepository store, IWorkflowCatalog registry, Effects effects)
+    private static ServiceProvider Services(ProfileStore profile, IWorkflowStateRepository store, IWorkflowCatalog registry, Effects effects)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -86,7 +85,14 @@ public sealed class NestedJoinRecoveryScenarios
         services.AddSingleton(effects);
         services.AddTransient<Add>();
         services.AddTransient<Mark>();
-        return services.BuildServiceProvider();
+        profile.ConfigureHost(services);
+        var provider = services.BuildServiceProvider();
+        try
+        {
+            profile.StartHostLinksAsync(provider).GetAwaiter().GetResult();
+            return provider;
+        }
+        catch { provider.DisposeAsync().AsTask().GetAwaiter().GetResult(); throw; }
     }
 
     public class JoinFault : DispatchProxy

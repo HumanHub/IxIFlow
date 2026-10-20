@@ -18,32 +18,41 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT Name, Version, Kind, Source, Revision, State FROM dbo.IxIFlowDefinitions WHERE 1=0;
                 SELECT Name, Version, StructureHash, State, ArtifactDigest, MetadataJson FROM dbo.IxIFlowWorkflowVersions WHERE 1=0;
                 SELECT Digest, Kind, Content, CreatedAtUtc FROM dbo.IxIFlowArtifacts WHERE 1=0;
-                SELECT [InstanceId], [WorkflowName], [WorkflowVersion], [CreatedAtUtc], [StopKind], [StopCrashCount], [Status], [CorrelationId], [RunnableAtUtc], [EndedAtUtc], [StateJson], [CancellationJson], [CancellationAcknowledged], [Revision], [InboxSequence], [InboxReadThrough], [Incarnation], [ParentInstanceId], [ParentWaitId] FROM dbo.IxIFlowWorkflowInstances WHERE 1=0;
-                SELECT [InstanceId], [EventId], [Sequence], [EventType], [EventKey], [TargetWaitId], [Subject], [StoredPayloadJson], [PayloadHash], [ReceivedAtUtc], [Outcome], [WaitId], [Rejection], [SettledAtUtc] FROM dbo.IxIFlowWorkflowEvents WHERE 1=0;
+                SELECT [InstanceId], [WorkflowName], [WorkflowVersion], [CreatedAtUtc], [StopKind], [StopCrashCount], [Status], [CorrelationId], [RunnableAtUtc], [EndedAtUtc], [StateJson], [CancellationJson], [CancellationAcknowledged], [Revision], [InboxSequence], [InboxReadThrough], [Incarnation], [ParentInstanceId], [ParentWaitId], [LastHostId], [DemandSetId], [PinnedHost], [PinExpiresAtUtc], [PinInherit] FROM dbo.IxIFlowWorkflowInstances WHERE 1=0;
+                SELECT [InstanceId], [EventId], [Sequence], [EventType], [EventKey], [TargetWaitId], [Subject], [StoredPayloadJson], [PayloadHash], [ReceivedAtUtc], [Outcome], [WaitId], [Rejection], [SettledAtUtc], [NoticeJson] FROM dbo.IxIFlowWorkflowEvents WHERE 1=0;
                 SELECT [InstanceId], [PartKey], [Json] FROM dbo.IxIFlowWorkflowParts WHERE 1=0;
                 SELECT [InstanceId], [Sequence], [EntryJson], [Revision], [CommitEndSequence], [CommitStatus] FROM dbo.IxIFlowWorkflowTraces WHERE 1=0;
                 SELECT InstanceId, DiagnosticId, DiagnosticJson FROM dbo.IxIFlowWorkflowDiagnostics WHERE 1=0;
                 SELECT [InstanceId], [WaitId], [WaitRef], [Kind], [WaitKey], [EventType], [DefaultPayloadJson], [DeadlineUtc], [OpenedSequence], [OpenedAtUtc], [CloseReason], [ClosedAtUtc] FROM dbo.IxIFlowWorkflowWaits WHERE 1=0;
-                SELECT [InstanceId], [CommitId], [ExpectedRevision], [Revision], [PayloadHash] FROM dbo.IxIFlowWorkflowCommits WHERE 1=0;
-                SELECT [InstanceId], [Token], [ExpiresAtUtc], [Epoch], [CrashCount] FROM dbo.IxIFlowWorkflowLeases WHERE 1=0;
+                SELECT [InstanceId], [CommitId], [ExpectedRevision], [Revision], [PayloadHash], [NoticeJson], [MadeRunnableJson] FROM dbo.IxIFlowWorkflowCommits WHERE 1=0;
+                SELECT [InstanceId], [Token], [ExpiresAtUtc], [Epoch], [CrashCount], [HostId] FROM dbo.IxIFlowWorkflowLeases WHERE 1=0;
                 SELECT [Name], [TypesJson], [DisabledAtUtc], [EnabledAtUtc], [EnabledBy], [UnregisteredAtUtc], [UnregisteredBy], [LastError] FROM dbo.IxIFlowOutboxPublishers WHERE 1=0;
                 SELECT [EventId], [Incarnation], [InstanceId], [EventType], [EventJson], [OccurredAtUtc] FROM dbo.IxIFlowOutboxEvents WHERE 1=0;
                 SELECT [EventId], [PublisherName], [Attempts], [FirstAttemptAtUtc], [GivenUpReason], [RetriedAtUtc], [RetriedBy], [NextAttemptAtUtc], [Status], [LastError], [LeaseToken], [LeaseUntilUtc] FROM dbo.IxIFlowOutboxDeliveries WHERE 1=0;
                 SELECT [InstanceId], [RemovedAtUtc], [ExpiresAtUtc] FROM dbo.IxIFlowWorkflowTombstones WHERE 1=0;
-                SELECT [Incarnation], [Sender], [Trigger], [Key], [Fingerprint], [InstanceId], [WorkflowName], [WorkflowVersion], [ExpiresAtUtc] FROM dbo.IxIFlowWorkflowAdmissions WHERE 1=0;
+                SELECT [Incarnation], [Sender], [Trigger], [Key], [Fingerprint], [InstanceId], [WorkflowName], [WorkflowVersion], [ExpiresAtUtc], [NoticeJson] FROM dbo.IxIFlowWorkflowAdmissions WHERE 1=0;
                 SELECT [Incarnation], [InstanceId], [Sender], [Trigger], [OwnerKind], [Owner], [Tenant] FROM dbo.IxIFlowWorkflowOwnership WHERE 1=0;
-                SELECT [DeliveryIdentity], [PayloadHash], [Sequence], [Rejection], [ExpiresAtUtc] FROM dbo.IxIFlowWebhookDeliveries WHERE 1=0;
+                SELECT [DeliveryIdentity], [PayloadHash], [Sequence], [Rejection], [ExpiresAtUtc], [NoticeJson] FROM dbo.IxIFlowWebhookDeliveries WHERE 1=0;
                 SELECT MemberId, Kind, Name, Endpoint, Slots, EngineVersion, HeartbeatIntervalTicks, StartedAtUtc, HeartbeatAtUtc FROM dbo.IxIFlowHosts WHERE 1=0;
                 SELECT MemberId, CapabilityKey, CapabilityValue FROM dbo.IxIFlowHostCapabilities WHERE 1=0;
+                SELECT DemandSetId FROM dbo.IxIFlowDemandSets WHERE 1=0;
+                SELECT DemandSetId, DemandKey, DemandValue, ExpiresAtUtc, ValueExpiresAtUtc, Inherit, DemandKeyBytes FROM dbo.IxIFlowDemandSetRows WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
             if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sys.indexes WHERE object_id=OBJECT_ID('dbo.IxIFlowWorkflowPayloadRefs') AND name='IX_IxIFlowPayloadRefs_Owner'", transaction: transaction) != 1)
+                throw EarlierBuild();
+            if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.IxIFlowWorkflowInstances') AND name=N'IX_IxIFlowInstances_SetPin'", transaction: transaction) != 1)
                 throw EarlierBuild();
             // Opening an existing database must retain catalog, operations and outbox access paths.
             var indexes = (await connection.QueryAsync<string>("SELECT i.name FROM sys.indexes i JOIN sys.tables t ON t.object_id = i.object_id WHERE SCHEMA_NAME(t.schema_id) = 'dbo'",
                 transaction: transaction)).ToHashSet(StringComparer.OrdinalIgnoreCase);
             string[] requiredIndexes =
             [
+                "IX_IxIFlowInstances_DemandSet",
+                "IX_IxIFlowInstances_SetAffinity",
+                "IX_IxIFlowInstances_SetPin",
+                "IX_IxIFlowInstances_SetRunnable",
+
                 "IX_IxIFlowAdmissions_Expiry",
                 "IX_IxIFlowHosts_Heartbeat",
                 "IX_IxIFlowInstances_Ended",
@@ -58,7 +67,6 @@ public sealed partial class SqlWorkflowStateRepository
                 "IX_IxIFlowWorkflowEvents_Pending",
                 "IX_IxIFlowWorkflowInstances_CorrelationId",
                 "IX_IxIFlowWorkflowInstances_Parent",
-                "IX_IxIFlowWorkflowInstances_Runnable",
                 "IX_IxIFlowWorkflowInstances_Status",
                 "IX_IxIFlowWorkflowInstances_UnfinishedWorkflow",
                 "IX_IxIFlowWorkflowInstances_WorkflowName",
