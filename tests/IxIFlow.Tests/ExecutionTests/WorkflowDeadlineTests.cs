@@ -427,6 +427,8 @@ public sealed class WorkflowDeadlineTests
     private sealed class DelayRootCompletionRepository(FakeTimeProvider time, TimeSpan delay)
         : IWorkflowStateRepository
     {
+        public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => _inner.RegisterPackageAsync(package, artifacts);
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _inner.GetPackagesAsync(id);
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
             _inner.GetDefinitionAsync(name, version);
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>

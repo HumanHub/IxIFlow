@@ -15,6 +15,10 @@ namespace IxIFlow.Authoring;
 
 public sealed class WorkflowPublisherOptions
 {
+    public string TargetFramework { get; init; } = "net10.0";
+    /// <summary>Standard NuGet.Config. Feed credentials remain owned by NuGet and are never persisted in the catalog.</summary>
+    public string? NuGetConfigPath { get; init; }
+    public WorkflowBundleReadLimits PackageReadLimits { get; init; } = new();
     public TimeSpan BuildTimeout { get; init; } = TimeSpan.FromSeconds(30);
     public WorkflowSourceOptions SourceOptions { get; init; } = new();
 }
@@ -24,13 +28,16 @@ public sealed record WorkflowPublishResult(WorkflowVersion? Version, IReadOnlyLi
     public bool Success => Version != null && Diagnostics.All(item => item.Severity != WorkflowDiagnosticSeverity.Error);
 }
 
-/// <summary>Publishes import-free drafts using the host reference profile, entry assembly closure and configured types.</summary>
+/// <summary>Publishes immutable workflows with a digest-pinned NuGet dependency closure.</summary>
 public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactStore artifacts, WorkflowPublisherOptions? options = null,
     ILogger<WorkflowPublisher>? logger = null)
 {
     private readonly WorkflowPublisherOptions _options = options ?? new();
     private readonly ILogger<WorkflowPublisher> _logger = logger ?? NullLogger<WorkflowPublisher>.Instance;
     private const string Path = "workflow.yaml";
+
+    public Task<WorkflowPackage> UploadPackageAsync(Stream package, CancellationToken cancellationToken = default) =>
+        WorkflowPackageResolver.UploadAsync(catalog, artifacts, package, _options.PackageReadLimits, cancellationToken);
 
     public async Task<WorkflowPublishResult> PublishAsync(WorkflowDraftId draftId, CancellationToken cancellationToken = default)
     {
@@ -56,13 +63,17 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             if (draft.Kind != "workflow") return Failure("PUB002", "Only workflow YAML drafts can be published");
             document = WorkflowYamlSerializer.Read(draft.Source);
             location = document.Workflow.Location;
-            if (document.Imports.Catalogs.Count != 0 || document.Imports.Workflows.Count != 0)
+            if (document.Imports.Workflows.Count != 0)
             {
                 location = document.Imports.Location;
-                return Failure("PUB003", "Imports are not supported by this publisher yet");
+                return Failure("PUB003", "Workflow imports are not supported by this publisher yet");
             }
-            var references = WorkflowCompilation.CreateReferences(_options.SourceOptions);
+            location = document.Imports.Catalogs.Count > 0 ? document.Imports.Location : document.Workflow.Location;
+            using var packages = await new WorkflowPackageResolver(catalog, artifacts, _options).ResolveAsync(document.Imports.Catalogs, cancellationToken);
+            var references = WorkflowCompilation.CreateReferences(_options.SourceOptions, packages.References);
             var sourceOptions = ResolveTypes(document, _options.SourceOptions, references);
+            ResolvePackageActivities(sourceOptions, references, packages);
+            foreach (var import in document.Imports.Catalogs) sourceOptions.ResolvedImports.Add(import);
             var validation = await new WorkflowDocumentValidator().ValidateAsync(document, new WorkflowSourceContracts(sourceOptions), cancellationToken);
             diagnostics.AddRange(validation.Diagnostics.Select(item =>
             {
@@ -77,7 +88,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             diagnostics.AddRange(compilation.Diagnostics);
             if (!compilation.Success) return new(null, diagnostics);
             stage = WorkflowPublishStage.Test;
-            var tested = await WorkflowBuild.RunAsync(compilation, _options.BuildTimeout, _logger, cancellationToken);
+            var tested = await WorkflowBuild.RunAsync(compilation, packages.RuntimeAssemblies, _options.BuildTimeout, _logger, cancellationToken);
             if (tested.Error != null)
             {
                 location = tested.Line > 1 ? FindBuildLocation(document, tested.Line, tested.Column) : document.Workflow.Location;
@@ -89,12 +100,12 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 return Failure("PUB005", $"Declared identity '{tested.Name}' v{tested.Version} does not match draft '{draft.Name}' v{draft.Version}");
             }
             stage = WorkflowPublishStage.Publish;
-            var (entries, shared) = BundleAssemblies(compilation.Assembly, references.Paths);
+            var (entries, shared) = BundleAssemblies(compilation.Assembly, references.Paths, packages);
             var manifest = new WorkflowBundleManifest(1, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
                 typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
                 tested.CombinerSignature, WorkflowCompilation.Settings,
                 shared,
-                new Dictionary<string, ArtifactDigest>());
+                new Dictionary<string, ArtifactDigest>()) { TargetFramework = _options.TargetFramework, ActivityPackages = packages.Pins };
             entries.Add(WorkflowBundleArchive.AssemblyPath, compilation.Assembly);
             entries.Add(WorkflowBundleArchive.PdbPath, compilation.Pdb);
             entries.Add(WorkflowBundleArchive.YamlPath, Encoding.UTF8.GetBytes(WorkflowYamlSerializer.Write(document)));
@@ -108,7 +119,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             if (storedDigest != digest) return Failure("PUB006", "The artifact store returned a different archive digest");
             cancellationToken.ThrowIfCancellationRequested();
             var version = new WorkflowVersion(draft.Name, draft.Version, tested.StructureHash,
-                ArtifactDigest: digest, Dependencies: tested.Dependencies, PublishedDraftRevision: draft.Revision,
+                ArtifactDigest: digest, Dependencies: tested.Dependencies, ArtifactReferences: packages.Pins.Select(package => package.Digest).ToArray(), PublishedDraftRevision: draft.Revision,
                 ManifestJson: JsonSerializer.Serialize(bundle.Manifest));
             return new(await catalog.PublishDefinitionAsync(draftId, version, artifacts), diagnostics);
         }
@@ -126,7 +137,8 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         { return Failure("PUB007", error.Message); }
     }
 
-    private static (Dictionary<string, byte[]> Entries, Dictionary<string, string> Shared) BundleAssemblies(byte[] workflow, IEnumerable<string> referencePaths)
+    private static (Dictionary<string, byte[]> Entries, Dictionary<string, string> Shared) BundleAssemblies(byte[] workflow, IEnumerable<string> referencePaths,
+        ResolvedWorkflowPackages packages)
     {
         var paths = referencePaths.ToDictionary(path => AssemblyName.GetAssemblyName(path).Name!, StringComparer.OrdinalIgnoreCase);
         var entries = new Dictionary<string, byte[]>(StringComparer.Ordinal);
@@ -140,6 +152,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         Share(paths["System.Runtime"]);
         var pending = new Queue<byte[]>();
         pending.Enqueue(workflow);
+        foreach (var bytes in packages.AllRuntimeAssemblies) pending.Enqueue(bytes);
         while (pending.TryDequeue(out var bytes))
         {
             using var pe = new System.Reflection.PortableExecutable.PEReader(new MemoryStream(bytes));
@@ -148,11 +161,16 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             {
                 var reference = metadata.GetAssemblyReference(handle);
                 var name = metadata.GetString(reference.Name);
+                if (packages.RuntimeNames.Contains(name)) continue;
                 if (!paths.TryGetValue(name, out var path)) throw new InvalidOperationException($"Dependency '{name}' is outside the publishing reference closure");
                 var identity = AssemblyName.GetAssemblyName(path);
                 if (WorkflowSharedAssemblies.IsShared(identity))
                 {
                     Share(path);
+                    continue;
+                }
+                if (packages.Owners.ContainsKey(name))
+                {
                     continue;
                 }
                 var key = "private/" + name + ".dll";
@@ -182,15 +200,52 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 .Distinct<INamedTypeSymbol>(SymbolEqualityComparer.Default).ToArray();
             if (matches.Length == 1)
             {
-                // Only load the assembly containing the type needed by this workflow.
-                var assembly = AssemblyLoadContext.Default.LoadFromAssemblyName(new AssemblyName(matches[0].ContainingAssembly.Identity.ToString()));
-                var type = FindType(assembly, name)!;
-                result.Types[key] = "global::" + type.FullName!.Replace('+', '.');
-                foreach (var property in type.GetProperties())
+                var type = matches[0];
+                result.Types[key] = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                foreach (var property in Properties(type))
                     result.Members.TryAdd(key + "." + char.ToLowerInvariant(property.Name[0]) + property.Name[1..], property.Name);
             }
         }
         return result;
+    }
+
+    private static IEnumerable<IPropertySymbol> Properties(INamedTypeSymbol type)
+    {
+        for (var current = type; current != null; current = current.BaseType)
+            foreach (var property in current.GetMembers().OfType<IPropertySymbol>().Where(property => property.DeclaredAccessibility == Accessibility.Public))
+                yield return property;
+    }
+
+    private static void ResolvePackageActivities(WorkflowSourceOptions options, WorkflowCompilation.ReferenceSet references, ResolvedWorkflowPackages packages)
+    {
+        IEnumerable<INamedTypeSymbol> Types(INamespaceOrTypeSymbol scope)
+        {
+            foreach (var member in scope.GetMembers())
+            {
+                if (member is INamedTypeSymbol type) yield return type;
+                if (member is INamespaceOrTypeSymbol nested)
+                    foreach (var child in Types(nested)) yield return child;
+            }
+        }
+        foreach (var assembly in references.Assemblies)
+        {
+            if (!packages.Owners.TryGetValue(assembly.Identity.Name, out var owner)) continue;
+            foreach (var type in Types(assembly.GlobalNamespace))
+            {
+                var attribute = type.GetAttributes().SingleOrDefault(attribute => attribute.AttributeClass?.ToDisplayString() == "IxIFlow.ActivitySdk.WorkflowActivityAttribute");
+                if (attribute == null) continue;
+                var key = attribute.ConstructorArguments[0].Value as string ?? "";
+                var version = attribute.NamedArguments.FirstOrDefault(pair => pair.Key == "Version").Value.Value as string ?? "1.0";
+                if (type.IsAbstract || type.DeclaredAccessibility != Accessibility.Public ||
+                    !type.AllInterfaces.Any(contract => contract.ToDisplayString() == "IxIFlow.Core.IAsyncActivity"))
+                    throw new InvalidOperationException($"Package activity '{key}' must be a public concrete IAsyncActivity");
+                if (!options.Activities.TryAdd(key, new(key, version, owner.Id, owner.Version)))
+                    throw new InvalidOperationException($"Duplicate package activity key '{key}'");
+                options.Types[key] = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                foreach (var property in Properties(type))
+                    options.Members.TryAdd(key + "." + char.ToLowerInvariant(property.Name[0]) + property.Name[1..], property.Name);
+            }
+        }
     }
 
     internal static INamedTypeSymbol? FindType(IAssemblySymbol assembly, string name)

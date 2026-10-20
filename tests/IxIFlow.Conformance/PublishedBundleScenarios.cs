@@ -69,7 +69,15 @@ public sealed class PublishedBundleScenarios
         var store = database.NewRepository();
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.PinRetention", Guid.NewGuid().ToString("N"));
         var files = new FileSystemArtifactStore(folder);
-        var pinned = await files.PutAsync(ArtifactKind.Bundle, new MemoryStream([1]));
+        var manifest = new WorkflowBundleManifest(1, "PinRetention", 1, "store-contract", "fixture-data", "fixture-entry",
+            typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
+            "", IxIFlow.Authoring.WorkflowCompilation.Settings, new Dictionary<string, string>(), new Dictionary<string, ArtifactDigest>());
+        var archive = WorkflowBundleArchive.Create(manifest, new Dictionary<string, byte[]>
+        {
+            [WorkflowBundleArchive.AssemblyPath] = [1], [WorkflowBundleArchive.PdbPath] = [2],
+            [WorkflowBundleArchive.YamlPath] = [3], [WorkflowBundleArchive.SourcePath] = [4]
+        });
+        var pinned = await files.PutAsync(ArtifactKind.Bundle, new MemoryStream(archive));
         var orphan = await files.PutAsync(ArtifactKind.Bundle, new MemoryStream([2]));
         await store.RegisterWorkflowVersionAsync(new("PinRetention", 1, "store-contract", ArtifactDigest: pinned), files);
         await store.SeedAsync(new WorkflowInstance

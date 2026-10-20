@@ -21,6 +21,13 @@ public sealed partial class SqlWorkflowStateRepository
             MetadataJson NVARCHAR(MAX) NOT NULL,
             PRIMARY KEY (Name, Version)
         );
+        CREATE TABLE dbo.IxIFlowPackages (
+            Id NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            Version NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            Digest VARCHAR(71) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            MetadataJson NVARCHAR(MAX) NOT NULL,
+            PRIMARY KEY (Id, Version)
+        );
         CREATE TABLE dbo.IxIFlowArtifacts (
             Digest VARCHAR(71) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
             Kind VARCHAR(10) NOT NULL,
@@ -32,6 +39,8 @@ public sealed partial class SqlWorkflowStateRepository
 
     private static string? CatalogSql(Statement statement) => statement switch
     {
+        Statement.CatalogPackages => "SELECT Id, Version, Digest, MetadataJson FROM dbo.IxIFlowPackages WHERE Id=COALESCE(@Id,Id)",
+        Statement.CatalogPackageInsert => "INSERT INTO dbo.IxIFlowPackages (Id, Version, Digest, MetadataJson) VALUES (@Id, @Version, @Digest, @MetadataJson)",
         Statement.CatalogLock => """
             DECLARE @catalogLock INT; EXEC @catalogLock = sys.sp_getapplock @Resource=N'IxIFlow.Catalog', @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=30000; IF @catalogLock < 0 THROW 51000, 'Could not lock the workflow catalog', 1;
             """,

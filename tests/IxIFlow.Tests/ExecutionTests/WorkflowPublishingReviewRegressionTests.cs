@@ -247,7 +247,7 @@ public sealed class WorkflowPublishingReviewRegressionTests
             }
             """);
         Assert.True(compilation.Success, string.Join("; ", compilation.Diagnostics));
-        var result = await WorkflowBuild.RunAsync(compilation, TimeSpan.FromSeconds(10),
+        var result = await WorkflowBuild.RunAsync(compilation, new Dictionary<string, byte[]>(), TimeSpan.FromSeconds(10),
             Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, CancellationToken.None);
         Assert.Equal("Build() failed while inspecting its result", result.Error);
     }
@@ -320,6 +320,8 @@ public sealed class WorkflowPublishingReviewRegressionTests
     {
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => inner.RegisterPackageAsync(package, artifacts);
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => inner.GetPackagesAsync(id);
         public async Task<WorkflowDraft?> GetDefinitionAsync(string name, int version)
         {
             Entered.TrySetResult();
