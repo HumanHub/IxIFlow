@@ -48,7 +48,7 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
 
     // Lock and revalidate the instance before its lease and tombstone, including absent-key admission.
     internal override string DeleteRevalidationSql => """
-        SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
+        SELECT StateJson FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
         WHERE InstanceId = @InstanceId
         """;
     internal override object LeaseParameters(string instanceId, DateTime now) => new { InstanceId = instanceId };
@@ -60,11 +60,26 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
     internal override DateTime ReadTime(DateTime value) => DateTime.SpecifyKind(value, DateTimeKind.Utc);
     internal override int StatementBatchSize => StatementBatch;
     internal override int OwnershipReadBatchSize => 1000;
-    // sp_getapplock reports a deadlock through its return code, translated to 51001 by interning.
+    // sp_getapplock reports a deadlock through its return code, translated to 51001.
     internal override bool IsRetryableCommit(Exception error) => error is SqlException { Number: 1205 or 1222 or 51001 };
+    internal override bool IsClaimRefusal(Exception error) => error is SqlException { Number: 1222 };
     internal override async ValueTask<DbTransaction?> BeginTransactionAsync(DbConnection connection, Operation operation) =>
-        operation is Operation.Catalog or Operation.Termination or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease or Operation.LeaseRenew
-            ? await connection.BeginTransactionAsync() : null;
+        operation is Operation.Catalog or Operation.Termination or Operation.Registry or Operation.OutboxClaim or Operation.OutboxMark or Operation.Purge or Operation.LeaseClaim or Operation.RunnableRead or Operation.Append or Operation.InboxPage or Operation.Commit or Operation.Delete or Operation.CancellationRequest or Operation.LeaseRelease or Operation.LeaseRenew
+            ? await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted) : null;
+
+    internal override async Task<int> ReadClaimStateAsync(DbConnection connection, DbTransaction transaction, string instanceId)
+    {
+        try
+        {
+            return await base.ReadClaimStateAsync(connection, transaction, instanceId);
+        }
+        catch (SqlException error) when (error.Number == 1222)
+        {
+            // Handle NOWAIT outside the batch, including when XACT_ABORT has aborted the transaction.
+            if (transaction.Connection != null) await transaction.RollbackAsync();
+            return -1;
+        }
+    }
 
     internal override async Task<DbConnection> OpenConnectionAsync(bool ownership = false)
     {
@@ -446,13 +461,29 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 SELECT InstanceId, CancellationJson FROM dbo.IxIFlowWorkflowInstances
                 WHERE InstanceId IN @InstanceIds AND CancellationJson IS NOT NULL
                 """,
-        // The instance row is locked before the lease row, in the same order as a commit. No range
-        // lock: a missing row is not a running instance, and a range lock would block other claims.
-        // Lock terminal rows too, so a claim reads any tombstone after concurrent deletion finishes.
+        Statement.LockIdentity => """
+            DECLARE @result int, @resource nvarchar(max) = N'IxIFlow.Instance/' + RTRIM(@InstanceId);
+            IF DATALENGTH(@resource) > 510 THROW 51000, 'Instance identity resource exceeds 255 characters', 1;
+            EXEC @result = sys.sp_getapplock @Resource = @resource,
+                @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = -1;
+            IF @result = -3 THROW 51001, 'Instance identity lock deadlock', 1;
+            IF @result < 0 THROW 51000, 'Could not lock instance identity', 1;
+            """,
+        // The ID lock protects absence through eligibility, lease arbitration and host stamping.
+        // Lock the row without a range lock: unrelated absent IDs must not contend on a gap.
+        // A held row or uncommitted insert/delete raises 1222; C# rolls back and returns no grant.
+        // Genuine absence retains the existing lease-row fencing of concurrent first claims.
         Statement.Running => """
-            SELECT COUNT(CASE WHEN Status = 'Running' THEN 1 END)
-            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
-            WHERE InstanceId = @InstanceId
+            DECLARE @result int, @resource nvarchar(max) = N'IxIFlow.Instance/' + RTRIM(@InstanceId);
+            IF DATALENGTH(@resource) > 510 THROW 51000, 'Instance identity resource exceeds 255 characters', 1;
+            EXEC @result = sys.sp_getapplock @Resource = @resource,
+                @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 0;
+            IF @result < 0 BEGIN SELECT -1; RETURN; END;
+            DECLARE @Running INT;
+            SELECT @Running = CASE WHEN Status = 'Running' THEN 1 ELSE 0 END
+            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK, NOWAIT)
+            WHERE InstanceId = @InstanceId;
+            SELECT COALESCE(@Running, 0);
             """,
         Statement.ClaimLease => """
             -- Lock the lease before allocating so a waiting claim cannot install an older epoch.
@@ -499,11 +530,11 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
                 FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
                 WHERE InstanceId = @InstanceId
                 """,
-        // A first commit must exclude another insertion of this ID. Read the clock in the next
+        // The ID application lock excludes another insertion. Read the clock in the next
         // statement, after any lock wait, so the captured commit time cannot predate the lock (D-35).
         Statement.CommitState => """
             SELECT BundleDigest, StateJson, Revision, Incarnation, CancellationJson, CancellationAcknowledged, InboxSequence, RunnableAtUtc
-            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, HOLDLOCK)
+            FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK)
             WHERE InstanceId = @InstanceId;
             SELECT SYSUTCDATETIME();
             """,

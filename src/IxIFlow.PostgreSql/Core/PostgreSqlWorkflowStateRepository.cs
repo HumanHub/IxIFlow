@@ -74,12 +74,20 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
     // A child its parent still waits for ends that wait as terminated. The parent's row is locked before the
     // child's, as a child's terminal commit locks them, so the parent is read before any lock is taken, and read
     // again once the instance is locked; when it changed in between, nothing is done and the delete starts over.
-    // Only the locked row is deleted: a later save or child insertion without the identity lock is left whole.
+    // Only the locked row is deleted: a later save or child insertion is left whole.
     internal override string DeleteRevalidationSql => """
             SELECT state_json FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE
             """;
 
     internal override bool ReleaseReturnsDue => true;
+    internal override async Task<int> ReadClaimStateAsync(DbConnection connection, DbTransaction transaction, string instanceId)
+    {
+        using var results = await connection.QueryMultipleAsync(Sql(Statement.Running)!, new { InstanceId = instanceId }, transaction);
+        var acquired = await results.ReadSingleAsync<bool>();
+        var state = await results.ReadSingleAsync<int>();
+        // Both probes are nonwaiting. A failed ID probe always refuses, even if the row was available.
+        return acquired ? state : -1;
+    }
     // In key order, so two commits that start the same children wait for each other rather than deadlock.
     internal override bool SortChildStarts => true;
     internal override bool IsRetryableCommit(Exception error) =>
@@ -466,11 +474,19 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
             SELECT instance_id, cancellation_json FROM ixiflow_workflow_instances
             WHERE instance_id = ANY(@InstanceIds) AND cancellation_json IS NOT NULL
             """,
-        // Lock the instance regardless of status before touching its lease; aggregate only after the lock.
+        // Two statements in one round trip: row visibility must be sampled AFTER ID acquisition.
         Statement.Running => """
-            SELECT COUNT(CASE WHEN status = 'Running' THEN 1 END) FROM (
-                SELECT status FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE
-            ) AS locked
+            SELECT set_config('ixiflow.claim_id_acquired',
+                pg_try_advisory_xact_lock(hashtextextended(@InstanceId COLLATE "C", 0))::text, true)::boolean;
+            WITH locked AS MATERIALIZED (
+                SELECT status FROM ixiflow_workflow_instances
+                WHERE current_setting('ixiflow.claim_id_acquired')::boolean
+                    AND instance_id = @InstanceId FOR UPDATE SKIP LOCKED
+            )
+            SELECT CASE WHEN NOT current_setting('ixiflow.claim_id_acquired')::boolean THEN -1
+                ELSE COALESCE((SELECT CASE WHEN status = 'Running' THEN 1 ELSE 0 END FROM locked),
+                CASE WHEN EXISTS (SELECT 1 FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId)
+                    THEN -1 ELSE 0 END) END
             """,
         Statement.ClaimLease => """
             INSERT INTO ixiflow_workflow_leases AS lease (instance_id, token, expires_at_utc, epoch, crash_count)
@@ -674,7 +690,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // exists whether or not the instance's row does: a row that does not exist cannot be locked, and the first
         // commit, a claim and a delete must still not interleave. It is taken after the row lock of the instance's
         // parent, as a child's commit takes that one first, and before the instance's own row.
-        Statement.LockIdentity => "SELECT pg_advisory_xact_lock(hashtextextended(@InstanceId, 0))",
+        Statement.LockIdentity => """SELECT pg_advisory_xact_lock(hashtextextended(@InstanceId COLLATE "C", 0))""",
         Statement.DeleteAllParts => "DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId",
         Statement.DeleteParts => """
                 DELETE FROM ixiflow_workflow_parts WHERE instance_id = @InstanceId AND part_key = ANY(@Keys)

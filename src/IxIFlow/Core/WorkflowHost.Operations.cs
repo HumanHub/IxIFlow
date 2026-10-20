@@ -8,8 +8,11 @@ public sealed partial class WorkflowHost
 {
     internal sealed partial class InstanceOperations
     {
-        public Task<UnschedulablePage> GetUnschedulableAsync(int limit, UnschedulableCursor? cursor, CancellationToken cancellationToken) =>
-            _store.GetUnschedulableAsync(limit, cursor, cancellationToken);
+        public Task<UnschedulablePage> GetUnschedulableAsync(int limit, UnschedulableCursor? cursor, CancellationToken cancellationToken)
+        {
+            UnschedulableWork.Validate(limit, cursor);
+            return _store.GetUnschedulableAsync(limit, cursor, cancellationToken);
+        }
 
         public async Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName) =>
             await _store.GetDeliveryAsync(eventId, publisherName) is { } delivery ? InspectionRedactionPolicy.Default.Delivery(DeliverySummary.From(delivery)) : null;
@@ -27,11 +30,15 @@ public sealed partial class WorkflowHost
             new() { InstanceId = instanceId, Status = WorkflowExecutionStatus.Terminated };
 
         public Task<InstancePage> SearchInstancesAsync(InstanceQuery query) => _store.QueryInstancesAsync(query);
-        public Task<IReadOnlyList<StoredTraceEntry>> GetTracePageAsync(string instanceId, long after, int limit) =>
-            _store.GetTraceAsync(instanceId, after, limit);
+        public Task<IReadOnlyList<StoredTraceEntry>> GetTracePageAsync(string instanceId, long after, int limit)
+        {
+            InstanceIds.Validate(instanceId);
+            return _store.GetTraceAsync(instanceId, after, limit);
+        }
 
         public async Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, string reasonCode, string? description, string? actor, Guid? expectedIncarnation = null)
         {
+            InstanceIds.Validate(instanceId);
             var receipt = await _store.RequestTerminationAsync(instanceId, new CancellationReason
             {
                 Mode = WorkflowControlMode.Terminate, ReasonCode = reasonCode, Description = description ?? "",
@@ -46,6 +53,7 @@ public sealed partial class WorkflowHost
         // stops renewing after termination, so an activity that hangs cannot keep its lease indefinitely.
         public async Task<bool> FinishTerminationAsync(string instanceId, Guid? expectedIncarnation = null)
         {
+            InstanceIds.Validate(instanceId);
             var reason = await _store.GetCancellationRequestAsync(instanceId);
             if (reason?.Mode != WorkflowControlMode.Terminate) return false;
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);

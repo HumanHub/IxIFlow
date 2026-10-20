@@ -11,7 +11,7 @@ The in-process host, client, slots, checkpointed runner, public executor/host me
 
 YAML covers every fluent construct with strict reading and a packaged schema. Activity direction markers, .NET metadata, mapping validation and analyzers are available. Declared workflow names and versions, compiler-free structure hashes and generated/fluent parity tests exist.
 
-The persistent catalog stores drafts and immutable version metadata, supports latest-published selection and guarded retirement, and registers code-defined workflows. Import-free YAML drafts can be published in process as immutable bundles identified by archive digest, with manifest and entry verification. Artifact stores for memory, SQLite, SQL Server, PostgreSQL and the file system, plus bounded retention of unreferenced artifacts, are implemented. Hosts configured with `UseWorkflowBundles` fetch a published version by its saved bundle digest, verify it, check shared-assembly compatibility and load it in its own collectible context; code-defined definitions are still loaded on each host.
+The persistent catalog stores drafts and immutable version metadata, supports latest-published selection and guarded retirement, and registers code-defined workflows. YAML drafts with uploaded or feed-resolved activity packages can be published in process as immutable bundles identified by archive digest, with manifest and entry verification. Artifact stores for memory, SQLite, SQL Server, PostgreSQL and the file system, plus bounded retention of unreferenced artifacts, are implemented. Hosts configured with `UseWorkflowBundles` fetch a published version by its saved bundle digest, verify it, check shared-assembly compatibility and load it in its own collectible context; code-defined definitions are still loaded on each host.
 
 [Placement](coordinator-and-hosts.md) combines definition, registration and start demands, explicit inheritance to children, expiring pins, matching and last-host affinity. [Coordinators](coordinators.md) supply stateless matching, discovery, multiple links, authenticated TLS and polling fallback. Unschedulable work is visible through client/operator reads, telemetry and `GET /unschedulable`. Demands place compute; [full data residency](coordinator-and-hosts.md#placement-and-data-residency) requires a separate cluster and store per region.
 
@@ -25,9 +25,8 @@ Conformance covers memory, SQLite and distributed SQL Server/PostgreSQL, includi
 
 | Area | Planned work |
 | --- | --- |
-| Execution and scheduling | Execution claims that skip rows other transactions hold on SQL Server and PostgreSQL |
-| Workflow publishing/versioning | Activity-package dependency resolution and digest pinning, template dependencies; draft, upload and publishing HTTP APIs |
-| Catalog and authoring services | Unified workflow/activity catalog API with input/output metadata, published activity packages and YAML code activities, inline workflow calls, explicit workflow input/output contracts and local activity registration |
+| Workflow publishing/versioning | Template dependencies in published bundles; draft, upload and publishing HTTP APIs (activity-package resolution and digest pinning are implemented) |
+| Catalog and authoring services | Unified workflow/activity catalog API with input/output metadata, published code activities and YAML code activities, inline workflow calls, explicit workflow input/output contracts and local activity registration |
 | Verification | Identity-test traceability and conformance, fault-injection and commit-budget coverage for the remaining publishing and authoring paths |
 
 The catalog and publishing library APIs are available, and hosts configured with `UseWorkflowBundles` fetch published versions; the draft, publishing, upload and catalog HTTP services remain planned. There is no checkpoint migration before 1.0.

@@ -21,6 +21,14 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             metadata_json text NOT NULL,
             PRIMARY KEY (name, version)
         );
+        CREATE TABLE ixiflow_packages (
+            id text COLLATE "C" NOT NULL,
+            version text COLLATE "C" NOT NULL,
+            dependency_groups_json text NOT NULL,
+            digest text COLLATE "C" NOT NULL,
+            metadata_json text NOT NULL,
+            PRIMARY KEY (id, version)
+        );
         CREATE TABLE ixiflow_artifacts (
             digest text COLLATE "C" NOT NULL PRIMARY KEY,
             kind TEXT NOT NULL,
@@ -35,6 +43,10 @@ public sealed partial class PostgreSqlWorkflowStateRepository
 
     private static string? CatalogSql(Statement statement) => statement switch
     {
+        Statement.CatalogPackages => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=COALESCE(@Id,id)",
+        Statement.CatalogPackage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=@Id AND version=@Version",
+        Statement.CatalogPackagePage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=@Id AND (@AfterVersion IS NULL OR version>@AfterVersion) ORDER BY version LIMIT @Limit",
+        Statement.CatalogPackageInsert => "INSERT INTO ixiflow_packages (id, version, digest, metadata_json, dependency_groups_json) VALUES (@Id, @Version, @Digest, @MetadataJson, @DependencyGroupsJson)",
         Statement.CatalogLock => """
             SELECT pg_advisory_xact_lock(hashtext('IxIFlow.Catalog'))
             """,

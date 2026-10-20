@@ -16,7 +16,7 @@ internal static class UnschedulableWork
     internal static void Validate(int limit, UnschedulableCursor? cursor)
     {
         if (limit is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(limit), "Page size must be 1 through 1000");
-        if (cursor != null) ArgumentException.ThrowIfNullOrWhiteSpace(cursor.InstanceId);
+        if (cursor != null) InstanceIds.Validate(cursor.InstanceId);
     }
 
     internal static ClaimQuery[] LiveHosts(IEnumerable<StoreMember> members, DateTime now) => members

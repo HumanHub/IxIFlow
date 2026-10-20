@@ -24,6 +24,34 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="NETStandard.Library" Version="2.0.3" GeneratePathProperty="true" ExcludeAssets="all" PrivateAssets="all" />
+    <PackageDownload Include="Microsoft.NETCore.App.Ref" Version="[8.0.0]" />
+    <EmbeddedResource Include="NativeFixtures/win-x64/*.dll" LogicalName="IxIFlow.TestSupport.NativeFixtures.win-x64.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="NativeFixtures/linux-x64/*.so" LogicalName="IxIFlow.TestSupport.NativeFixtures.linux-x64.%(Filename)%(Extension)" />
+    <EmbeddedResource Include="NativeFixtures/osx-arm64/*.dylib" LogicalName="IxIFlow.TestSupport.NativeFixtures.osx-arm64.%(Filename)%(Extension)" />
+    <Content Include="$(PkgNETStandard_Library)/build/netstandard2.0/ref/*.dll" Link="PackageDownloads/netstandard.library/2.0.3/build/netstandard2.0/ref/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Wildcards cannot batch over package folders during evaluation; resolve them in a target
+       so the .NET 8 reference pack is found in the global or a fallback package folder. -->
+  <Target Name="IncludeLowerFrameworkReferences" BeforeTargets="AssignTargetPaths">
+    <ItemGroup>
+      <_PackageDownloadRoot Include="$(NuGetPackageFolders)" />
+      <_LowerFrameworkReferenceRoot Include="%(_PackageDownloadRoot.Identity)/microsoft.netcore.app.ref/8.0.0/ref/net8.0"
+                                    Condition="Exists('%(_PackageDownloadRoot.Identity)/microsoft.netcore.app.ref/8.0.0/ref/net8.0')" />
+    </ItemGroup>
+    <PropertyGroup>
+      <!-- NuGet searches these folders in order; use just the first available pack. -->
+      <_LowerFrameworkFirstRoot>@(_LowerFrameworkReferenceRoot)</_LowerFrameworkFirstRoot>
+      <_LowerFrameworkFirstRoot Condition="$(_LowerFrameworkFirstRoot.Contains(';'))">$(_LowerFrameworkFirstRoot.Substring(0, $(_LowerFrameworkFirstRoot.IndexOf(';'))))</_LowerFrameworkFirstRoot>
+    </PropertyGroup>
+    <ItemGroup>
+      <_LowerFrameworkReference Include="$(_LowerFrameworkFirstRoot)/*.dll" Condition="'$(_LowerFrameworkFirstRoot)' != ''" />
+      <Content Include="@(_LowerFrameworkReference)" Link="PackageDownloads/microsoft.netcore.app.ref/8.0.0/ref/net8.0/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+
+  <ItemGroup>
     <Using Include="Xunit" />
   </ItemGroup>
 

@@ -293,6 +293,10 @@ public sealed class CatalogArtifactSecondRoundTests
         public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version) => inner.GetWorkflowDefinitionAsync(name, version);
         public Task<string?> GetWorkflowStructureHashAsync(string name, int version) => inner.GetWorkflowStructureHashAsync(name, version);
         public Task RetireWorkflowVersionAsync(string name, int version) => inner.RetireWorkflowVersionAsync(name, version);
+        public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => inner.RegisterPackageAsync(package, artifacts);
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => inner.GetPackagesAsync(id);
+        public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => inner.GetPackageAsync(id, version);
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => inner.GetPackagePageAsync(id, afterVersion, limit);
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => inner.GetDefinitionAsync(name, version);
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) => inner.SaveDefinitionAsync(definition, expectedRevision);
         public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) => inner.RegisterWorkflowVersionAsync(version, artifacts);

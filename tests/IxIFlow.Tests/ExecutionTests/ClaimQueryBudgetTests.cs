@@ -28,6 +28,47 @@ public sealed class ClaimQueryBudgetTests(ITestOutputHelper output) : IClassFixt
     [Trait("Category", "PostgreSqlIntegration")]
     public Task PostgreSqlPlansAndBudget() => RunAsync(true);
 
+    // Recovery passes exclude recent refusals and the pass's own candidates (C-11); the same
+    // plans and budget must hold with the largest exclusion list a pass can send.
+    [DockerBudgetFact]
+    [Trait("Category", "SqlIntegration")]
+    [Trait("Spec", "C-11")]
+    public Task SqlServerPlansAndBudgetWithAFullExclusionList() => RunAsync(false, excluded: true);
+
+    [DockerBudgetFact]
+    [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Spec", "C-11")]
+    public Task PostgreSqlPlansAndBudgetWithAFullExclusionList() => RunAsync(true, excluded: true);
+
+    [Fact]
+    [Trait("Category", "SqliteIntegration")]
+    [Trait("Spec", "C-11")]
+    public async Task SqliteSeeksWithAFullExclusionList()
+    {
+        var connectionString = SqliteTestDatabase<ClaimQueryBudgetTests>.ConnectionString;
+        await using var store = new SqliteWorkflowStateRepository(connectionString);
+        await store.GetWorkflowDemandsAsync("schema");
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync();
+        var query = new ClaimQuery(Guid.NewGuid(), Enumerable.Range(0, 514)
+            .ToDictionary(index => "key-" + index, _ => "value")).Excluding(FullExclusions(), 100);
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var sql = (string)store.GetType().GetProperty("RunnableSql", flags)!.GetValue(store)!;
+        var parameters = (DynamicParameters)store.GetType().GetMethod("PlacementParameters", flags)!
+            .Invoke(store, [query, DateTime.UtcNow, query.Limit])!;
+        var plan = (await connection.QueryAsync("EXPLAIN QUERY PLAN " + sql, parameters))
+            .Select(row => (string)row.detail).ToArray();
+        output.WriteLine(string.Join(Environment.NewLine, plan));
+        Assert.Contains(plan, row => row.StartsWith("SEARCH instance ", StringComparison.Ordinal)
+            && row.Contains("(demand_set_id=?", StringComparison.Ordinal));
+        Assert.DoesNotContain(plan, row => row.StartsWith("SCAN instance", StringComparison.Ordinal));
+    }
+
+    // Real affinity-first, old-due metal rows in the server fixture, so dense scans must seek past
+    // an excluded head; the sparse cuda rows are not excluded, so their counts stay the same.
+    private static IEnumerable<string> FullExclusions(bool realRows = false) => Enumerable.Range(1, ClaimQuery.MaxExcludedInstanceIds)
+        .Select(i => realRows ? (300000 - 3 * i).ToString(System.Globalization.CultureInfo.InvariantCulture) : "excluded-" + i);
+
     [Fact]
     [Trait("Category", "SqliteIntegration")]
     public async Task SqliteMaterializesAndIndexesTheSnapshot()
@@ -54,7 +95,7 @@ public sealed class ClaimQueryBudgetTests(ITestOutputHelper output) : IClassFixt
         Assert.DoesNotContain(plan, row => row.StartsWith("SCAN instance", StringComparison.Ordinal));
     }
 
-    private async Task RunAsync(bool postgres)
+    private async Task RunAsync(bool postgres, bool excluded = false)
     {
         var connectionString = postgres
             ? await PostgreSqlTestServer.CreateDatabaseAsync("claim_budget")
@@ -138,6 +179,7 @@ public sealed class ClaimQueryBudgetTests(ITestOutputHelper output) : IClassFixt
                 if (scenario == "large")
                     for (var index = 0; index < 512; index++) capabilities.Add("extra-" + index, "value");
                 var query = new ClaimQuery(hostId, capabilities, 32);
+                if (excluded) query = query.Excluding(FullExclusions(realRows: true), 32);
                 await store.GetRunnableInstancesAsync(query); // warm connection pool and plan
                 var clock = Stopwatch.StartNew();
                 var found = await store.GetRunnableInstancesAsync(query);
