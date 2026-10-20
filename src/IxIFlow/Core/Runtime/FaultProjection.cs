@@ -9,7 +9,7 @@ namespace IxIFlow.Core.Runtime;
 internal sealed class FaultProjection
 {
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Type,
-        System.Runtime.CompilerServices.ConditionalWeakTable<Type, WeakReference<FaultProjection>>> Cache = new();
+        System.Runtime.CompilerServices.ConditionalWeakTable<Type, FaultProjection>> Cache = new();
 
     private readonly Type _exceptionType;
     private readonly Type _faultType;
@@ -50,16 +50,11 @@ internal sealed class FaultProjection
 
     public static FaultProjection For(Type exceptionType, Type faultType)
     {
-        // Either type may be shared while the other is collectible. A strong value in the
-        // inner table could otherwise keep the outer key alive through the shared inner key.
-        var slot = Cache.GetValue(exceptionType, _ => new()).GetValue(faultType, _ => new(null!));
-        lock (slot)
-        {
-            if (slot.TryGetTarget(out var projection)) return projection;
-            projection = new FaultProjection(exceptionType, faultType);
-            slot.SetTarget(projection);
-            return projection;
-        }
+        // A shared inner key is always alive and would make its dependent handle root the
+        // collectible outer key through the projection. Put the collectible key inside.
+        var swap = exceptionType.IsCollectible && !faultType.IsCollectible;
+        return Cache.GetValue(swap ? faultType : exceptionType, _ => new())
+            .GetValue(swap ? exceptionType : faultType, _ => new FaultProjection(exceptionType, faultType));
     }
 
     public IReadOnlyCollection<PropertyInfo> SourceProperties =>

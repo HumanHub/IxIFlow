@@ -162,7 +162,7 @@ public sealed partial class WorkflowHost
             var claim = await ClaimQueryAsync();
             if (!await MeetsDemandsAsync(instanceId, WorkflowDemands.Saved(instance), claim)) return Scheduled(instanceId);
 
-            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
+            using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest, cancellationToken);
             using var types = definitionLease.EnterTypes();
             var definition = definitionLease.Definition;
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
@@ -187,7 +187,7 @@ public sealed partial class WorkflowHost
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Resolve child workflow '{pending.ChildWorkflowId}' before recovering its parent invocation");
             using var childDefinitionLease = step.StepType == WorkflowStepType.WorkflowInvocation && pending.ChildBundleDigest != null
-                ? await registry.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest) : null;
+                ? await registry.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest, cancellationToken) : null;
             var childDataType = childDefinitionLease?.Definition.WorkflowDataType ?? (step.StepType == WorkflowStepType.WorkflowInvocation
                 ? await ResolveChildDataTypeAsync(step) : null);
             var decision = PrepareResolution(scopes, step, resolution, childDataType, _defaultActor);
@@ -419,7 +419,7 @@ public sealed partial class WorkflowHost
                 return await ExistingStartAsync(repeated, definition, WorkflowDefinitionValidator.ForExecution(definition), versionOmitted);
             }
             using var definitionLease = definition.BundleDigest is { } digest
-                ? await registry.AcquireWorkflowDefinitionAsync(definition.Name, definition.Version, digest) : null;
+                ? await registry.AcquireWorkflowDefinitionAsync(definition.Name, definition.Version, digest, cancellationToken) : null;
             using var types = definitionLease?.EnterTypes();
             var registration = definitionLease?.Definition ?? await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
             var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, workflowData, options, Now,
@@ -548,22 +548,28 @@ public sealed partial class WorkflowHost
             await _store.GetEventAsync(instanceId, eventId) is { } stored ? EventReceipt.Of(stored) : null;
 
         /// <summary>Open waits that match the query, across instances.</summary>
-        public async Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query)
+        public async Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query)
         {
             var waits = await _store.GetOpenWaitsAsync(query);
-            var result = new List<StoredWait>();
-            foreach (var wait in waits)
+            var result = new List<OpenWait>();
+            var leases = new Dictionary<ArtifactDigest, WorkflowDefinitionLease>();
+            try
             {
-                var instance = await _store.GetWorkflowInstanceSummaryAsync(wait.InstanceId);
-                using var lease = instance?.BundleDigest == null ? null
-                    : await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest);
-                using var types = lease?.EnterTypes();
-                result.Add(wait.DefaultPayloadJson == null ? wait : wait with
+                foreach (var wait in waits)
                 {
-                    DefaultPayloadJson = InspectionRedactionPolicy.Default.StoredValue(wait.DefaultPayloadJson, wait.EventType, services).GetRawText()
-                });
+                    var instance = await _store.GetWorkflowInstanceSummaryAsync(wait.InstanceId);
+                    WorkflowDefinitionLease? lease = null;
+                    if (instance?.BundleDigest is { } digest && !leases.TryGetValue(digest, out lease))
+                        leases.Add(digest, lease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, digest));
+                    using var types = lease?.EnterTypes();
+                    result.Add(new OpenWait(wait.InstanceId, wait.WaitId, wait.Kind, wait.Key, wait.EventType,
+                        InspectionRedactionPolicy.Default.EventSchema(wait.EventType), wait.DeadlineUtc, wait.OpenedAtUtc,
+                        ReplyToken.Create(wait.InstanceId, wait.WaitId), wait.DefaultPayloadJson == null ? null
+                            : InspectionRedactionPolicy.Default.StoredValue(wait.DefaultPayloadJson, wait.EventType, services).GetRawText()));
+                }
+                return result;
             }
-            return result;
+            finally { foreach (var lease in leases.Values) lease.Dispose(); }
         }
 
         /// <summary>
@@ -644,7 +650,7 @@ public sealed partial class WorkflowHost
             var localDefinition = checkedCheckpoint != null && instance!.BundleDigest == null
                 ? await registry.GetWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion) : null;
             using var definitionLease = checkedCheckpoint == null ? null : instance!.BundleDigest != null
-                ? await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest)
+                ? await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion, instance.BundleDigest, cancellationToken)
                 : localDefinition == null ? null : new WorkflowDefinitionLease(localDefinition);
             using var types = definitionLease?.EnterTypes();
             var checkedDefinition = definitionLease?.Definition;
@@ -834,7 +840,7 @@ public sealed partial class WorkflowHost
                 assigned.ExecutionStateJson = StoredCheckpoint.WholeState(instance);
                 var assign = new Assign(signals.AssignmentId, assigned, instance.PartsAt(instance.Revision),
                     checkpoint.StructureHash, assignment.Owner.Epoch, signals.InboxSequence, _limits, depth == 1, [], preparation);
-                var ready = await Executor.ExecuteAsync(assign, CancellationToken.None);
+                var ready = await Executor.ExecuteAsync(assign, cancellationToken);
                 if (ready.AssignmentId != signals.AssignmentId)
                     throw new ExecutionOwnershipLostException(new InvalidOperationException("Ready is not assigned"));
                 var readyAdmission = AdmitReady(ready);

@@ -284,9 +284,9 @@ public sealed class AssignmentRequestTests
 
     private sealed class ParentOnlySource(WorkflowDefinition parent) : IWorkflowDefinitionSource
     {
-        public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest) =>
+        public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest, CancellationToken cancellationToken = default) =>
             new((await GetWorkflowDefinitionAsync(name, version))!);
-        public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version) =>
+        public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version, CancellationToken cancellationToken = default) =>
             AcquireWorkflowDefinitionAsync(name, version, null);
 
         public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version)

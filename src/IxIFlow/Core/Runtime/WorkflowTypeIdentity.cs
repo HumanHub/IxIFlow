@@ -104,6 +104,7 @@ public static class WorkflowTypeIdentity
         if (kind is 'V' or 'A')
         {
             var rank = kind == 'A' ? Count(text, ref position) : 0;
+            if (kind == 'A' && rank is < 1 or > 32) throw new FormatException("Invalid array rank");
             var element = Read(text, ref position, depth + 1);
             return element == null ? null : kind == 'V' ? element.MakeArrayType() : element.MakeArrayType(rank);
         }

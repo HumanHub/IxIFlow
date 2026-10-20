@@ -107,7 +107,9 @@ public sealed class IncomingWebhookStoreScenarios
         var sql = missing switch
         {
             "owner-kind" => $"ALTER TABLE {database.Table("ownership")} DROP COLUMN {(database.SqlServer ? "OwnerKind" : "owner_kind")}",
-            "bundle-digest" => $"ALTER TABLE {database.Table("instances")} DROP COLUMN {(database.SqlServer ? "BundleDigest" : "bundle_digest")}",
+            "bundle-digest" => database.SqlServer
+                ? "DROP INDEX IX_IxIFlowWorkflowInstances_BundleDigest ON dbo.IxIFlowWorkflowInstances; ALTER TABLE dbo.IxIFlowWorkflowInstances DROP COLUMN BundleDigest"
+                : $"DROP INDEX ix_ixiflow_instances_bundle_digest; ALTER TABLE {database.Table("instances")} DROP COLUMN bundle_digest",
             "old-column" => $"ALTER TABLE {database.Table("instances")} DROP COLUMN {(database.SqlServer ? "StateJson" : "state_json")}",
             "outbox" => "DROP TABLE " + (database.SqlServer ? "dbo.IxIFlowOutboxDeliveries" : "ixiflow_outbox_deliveries"),
             "epoch" => profile == "sqlite" ? "DROP TABLE ixiflow_execution_epoch"

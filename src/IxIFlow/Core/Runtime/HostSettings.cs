@@ -22,7 +22,7 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
             // Read the revision before enumerating. A registration racing the enumeration then
             // invalidates this snapshot on the next lookup instead of being cached as already seen.
             var revision = catalog.DefinitionRevision;
-            if (refresh || BundleHostingEnabled || _capabilitySnapshot == null || !ReferenceEquals(_capabilityCatalog, catalog) ||
+            if (refresh || _capabilitySnapshot == null || !ReferenceEquals(_capabilityCatalog, catalog) ||
                 _definitionRevision != revision)
             {
                 _capabilitySnapshot = MemberRegistry.SnapshotCapabilities(
