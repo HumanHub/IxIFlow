@@ -33,9 +33,12 @@ public sealed class BundleRound2Tests
         var fixture = Folder("runtime");
         foreach (var name in new[] { "Microsoft.NETCore.App.deps.json", "System.Private.CoreLib.dll", "System.Runtime.dll" })
             File.Copy(Path.Combine(runtime, name), Path.Combine(fixture, name));
+        // Discovery now fails closed for an incomplete framework, so materialize all assets
+        // declared by the real manifest, retaining the application-beside-CoreLib assertions.
+        foreach (var path in Directory.EnumerateFiles(runtime, "*.dll"))
+            File.Copy(path, Path.Combine(fixture, Path.GetFileName(path)), overwrite: true);
         File.Copy(typeof(FirstData).Assembly.Location, Path.Combine(fixture, Path.GetFileName(typeof(FirstData).Assembly.Location)));
-        var profile = new Dictionary<string, AssemblyName>();
-        WorkflowSharedAssemblies.AddRuntimeAssemblies(profile, fixture);
+        var profile = WorkflowSharedAssemblies.RuntimeAssemblies(Path.Combine(fixture, "Microsoft.NETCore.App.deps.json"), _root);
         Assert.Contains("System.Private.CoreLib", profile.Keys);
         Assert.Contains("System.Runtime", profile.Keys);
         Assert.DoesNotContain(typeof(FirstData).Assembly.GetName().Name!, profile.Keys);
@@ -179,14 +182,16 @@ public sealed class BundleRound2Tests
         var unique = Guid.NewGuid().ToString("N");
         var json = JsonSerializer.Serialize(new { Name = unique });
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
-        var cache = (ConcurrentDictionary<string, Lazy<bool>>)typeof(WorkflowHeartbeatService)
-            .GetField("Compatibility", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
-        Assert.False(WorkflowHeartbeatService.Compatible(json));
+        var memo = new WorkflowHeartbeatService.CompatibilityMemo();
+        var retained = new HashSet<string>();
+        var cache = (ConcurrentDictionary<string, Lazy<bool>>)typeof(WorkflowHeartbeatService.CompatibilityMemo)
+            .GetField("_entries", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(memo)!;
+        Assert.False(memo.Compatible(json, retained, null));
         var first = cache[hash];
         Assert.True(first.IsValueCreated);
-        Assert.False(WorkflowHeartbeatService.Compatible(new string(json.ToCharArray())));
+        Assert.False(memo.Compatible(new string(json.ToCharArray()), retained, null));
         Assert.Same(first, cache[hash]);
-        Assert.False(WorkflowHeartbeatService.Compatible(json + " "));
+        Assert.False(memo.Compatible(json + " ", retained, null));
         var changedHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json + " ")));
         Assert.NotSame(first, cache[changedHash]);
     }

@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.Loader;
+using System.Security.Cryptography;
 using System.Text.Json;
 using IxIFlow.Core.Runtime;
 
@@ -10,6 +11,7 @@ public sealed record WorkflowBundleOptions(string CacheDirectory, int MaxCachedB
 {
     public WorkflowBundleReadLimits ReadLimits { get; init; } = new();
     public TimeSpan FetchTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan CacheLockTimeout { get; init; } = TimeSpan.FromSeconds(30);
 }
 
 /// <summary>Owns a definition for an operation. Dispose only after all work using its types has finished.</summary>
@@ -32,7 +34,8 @@ public sealed class WorkflowDefinitionLease : IDisposable
     }
 }
 
-internal sealed class BundleCache(IArtifactStore artifacts, string directory, WorkflowBundleReadLimits limits, TimeSpan fetchTimeout)
+internal sealed class BundleCache(IArtifactStore artifacts, string directory, WorkflowBundleReadLimits limits, TimeSpan fetchTimeout,
+    TimeSpan cacheLockTimeout)
 {
     private readonly string _directory = Path.GetFullPath(directory);
 
@@ -46,21 +49,33 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
             // unlinking it would permit two processes to lock different file identities.
             try
             {
+                using var locking = CancellationTokenSource.CreateLinkedTokenSource(token);
+                locking.CancelAfter(cacheLockTimeout);
                 Directory.CreateDirectory(_directory);
                 while (cacheLock == null)
                 {
-                    token.ThrowIfCancellationRequested();
+                    locking.Token.ThrowIfCancellationRequested();
                     try { cacheLock = new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
                     catch (IOException error) when (error is not (FileNotFoundException or DirectoryNotFoundException))
-                    { await Task.Delay(25, token); }
+                    { await Task.Delay(25, locking.Token); }
                 }
             }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
             if (cacheLock != null)
             {
                 try
                 {
                     await using var cached = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    if (cached.Length > limits.MaxArchiveBytes)
+                    {
+                        // A genuine limit must preserve a valid archive; poisoned oversized files
+                        // must still be classified as corruption and evicted.
+                        var hash = await SHA256.HashDataAsync(cached, token);
+                        if (new ArtifactDigest("sha256:" + Convert.ToHexString(hash).ToLowerInvariant()) != digest)
+                            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "The cached bundle archive digest differs from the published digest");
+                        throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Bundle archive exceeds the configured size limit");
+                    }
                     return await WorkflowBundleArchive.ReadAsync(cached, digest, token, limits);
                 }
                 catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.ArtifactMismatch)
@@ -71,7 +86,7 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
             }
-            // Lock contention has its own caller-controlled lifetime. Only the download and
+            // Lock contention has its own bounded lifetime. Only the download and
             // verification consume the fetch budget.
             using var fetch = CancellationTokenSource.CreateLinkedTokenSource(token);
             fetch.CancelAfter(fetchTimeout);
@@ -98,10 +113,11 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
                 }
                 return verified;
             }
-            catch (OperationCanceledException error) when (!token.IsCancellationRequested && fetch.IsCancellationRequested)
+            catch (OperationCanceledException error) when (!token.IsCancellationRequested)
             {
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    $"Fetching bundle {digest} exceeded the configured timeout", error);
+                    fetch.IsCancellationRequested ? $"Fetching bundle {digest} exceeded the configured timeout"
+                        : $"Fetching bundle {digest} was cancelled by the artifact store", error);
             }
         }
         finally { cacheLock?.Dispose(); }
@@ -173,37 +189,52 @@ public static class WorkflowSharedAssemblies
 
     private static IReadOnlyDictionary<string, AssemblyName> CreateProfile()
     {
-        var profile = new Dictionary<string, AssemblyName>(StringComparer.OrdinalIgnoreCase);
-        var runtime = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
-        AddRuntimeAssemblies(profile, runtime);
-        // Additional framework assemblies must come from the shared framework layout,
-        // never an application's directory (including self-contained deployments).
-        var paths = ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? "").Split(Path.PathSeparator)
-            .Where(path => Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName(path)))) == "shared");
-        foreach (var path in paths)
-        {
-            try { var identity = AssemblyName.GetAssemblyName(path); profile[identity.Name!] = identity; }
-            catch (BadImageFormatException) { }
-        }
+        var profile = RuntimeAssemblies((string?)AppContext.GetData("APP_CONTEXT_DEPS_FILES"), AppContext.BaseDirectory);
+        // Do not let the SDK dependency walk reconstruct a partial runtime profile after
+        // failed discovery (including an embedded single-file manifest).
+        if (profile.Count == 0) return profile;
         AddSdkAssemblies(profile, [typeof(WorkflowDefinition).Assembly]);
         profile["IxIFlow.Templates"] = new AssemblyName("IxIFlow.Templates");
         return profile;
     }
 
-    internal static void AddRuntimeAssemblies(IDictionary<string, AssemblyName> profile, string runtimeDirectory)
+    internal static Dictionary<string, AssemblyName> RuntimeAssemblies(string? depsFiles, string applicationDirectory)
     {
-        using var manifest = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(runtimeDirectory, "Microsoft.NETCore.App.deps.json")));
-        foreach (var target in manifest.RootElement.GetProperty("targets").EnumerateObject())
-        foreach (var library in target.Value.EnumerateObject())
+        var profile = new Dictionary<string, AssemblyName>(StringComparer.OrdinalIgnoreCase);
+        try
         {
-            if (!library.Value.TryGetProperty("runtime", out var assets)) continue;
-            foreach (var asset in assets.EnumerateObject())
+            foreach (var file in (depsFiles ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
             {
-                var path = Path.Combine(runtimeDirectory, asset.Name);
-                try { var identity = AssemblyName.GetAssemblyName(path); profile[identity.Name!] = identity; }
-                catch (Exception error) when (error is FileNotFoundException or FileLoadException or BadImageFormatException) { }
+                var path = Path.GetFullPath(file, applicationDirectory);
+                var directory = Path.GetDirectoryName(path)!;
+                using var manifest = JsonDocument.Parse(File.ReadAllBytes(path));
+                var root = manifest.RootElement;
+                // The application's deps contains project/package libraries as well as
+                // runtimepacks. Framework deps contains only the framework's own assets.
+                var application = Path.TrimEndingDirectorySeparator(directory).Equals(
+                    Path.TrimEndingDirectorySeparator(applicationDirectory), OperatingSystem.IsWindows()
+                        ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal) ||
+                    root.GetProperty("libraries").EnumerateObject().Any(library =>
+                        library.Value.GetProperty("type").GetString() == "project");
+                var target = root.GetProperty("targets").GetProperty(root.GetProperty("runtimeTarget").GetProperty("name").GetString()!);
+                foreach (var library in target.EnumerateObject())
+                {
+                    if (application && !library.Name.StartsWith("runtimepack.", StringComparison.Ordinal)) continue;
+                    if (!library.Value.TryGetProperty("runtime", out var assets)) continue;
+                    foreach (var asset in assets.EnumerateObject())
+                    {
+                        if (!asset.Name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)) continue;
+                        var assetPath = Path.Combine(directory, asset.Name);
+                        if (!File.Exists(assetPath)) assetPath = Path.Combine(applicationDirectory, Path.GetFileName(asset.Name));
+                        var identity = AssemblyName.GetAssemblyName(assetPath);
+                        profile[identity.Name!] = identity;
+                    }
+                }
             }
         }
+        catch (Exception error) when (error is not (OutOfMemoryException or StackOverflowException or AccessViolationException))
+        { profile.Clear(); }
+        return profile;
     }
 
     internal static void AddSdkAssemblies(IDictionary<string, AssemblyName> profile, IEnumerable<Assembly> roots)
@@ -234,6 +265,8 @@ public static class WorkflowSharedAssemblies
 
     internal static IReadOnlyDictionary<string, Assembly> Validate(WorkflowBundleManifest manifest)
     {
+        if (!Profile.ContainsKey("System.Private.CoreLib"))
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Shared compatibility profile omits 'System.Private.CoreLib'");
         if (manifest.EngineVersion != typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString() ||
             manifest.CheckpointContractVersion != WorkflowDefinitionValidator.CheckpointContractVersion)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Bundle engine/checkpoint compatibility profile differs from this host");
@@ -270,7 +303,7 @@ internal sealed class LoadedBundle(BundleLoadContext context, WorkflowDefinition
 internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBundleOptions options) : IDisposable
 {
     private readonly object _gate = new();
-    private readonly BundleCache _cache = new(artifacts, options.CacheDirectory, options.ReadLimits, options.FetchTimeout);
+    private readonly BundleCache _cache = new(artifacts, options.CacheDirectory, options.ReadLimits, options.FetchTimeout, options.CacheLockTimeout);
     private readonly Dictionary<ArtifactDigest, Entry> _loaded = [];
     private long _clock;
     private bool _disposed;

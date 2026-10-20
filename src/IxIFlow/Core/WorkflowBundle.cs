@@ -126,9 +126,9 @@ public static class WorkflowBundleArchive
                 while ((count = await input.ReadAsync(chunk, cancellationToken)) != 0)
                 {
                     actualExpanded += count;
+                    if (output.Length + count > entry.Length) throw Mismatch("Bundle entry length differs from its declaration");
                     if (output.Length + count > maximum || actualExpanded > limits.MaxExpandedBytes)
                         throw Limit("Bundle expanded size exceeds the configured limit");
-                    if (output.Length + count > entry.Length) throw Mismatch("Bundle entry length differs from its declaration");
                     await output.WriteAsync(chunk.AsMemory(0, count), cancellationToken);
                 }
                 if (output.Length != entry.Length) throw Mismatch("Bundle entry length differs from its declaration");
