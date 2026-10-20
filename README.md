@@ -200,7 +200,7 @@ For time-dependent mappings and conditions, use `ctx.UtcNow`. Tests can register
 
 ## Status and roadmap
 
-Available foundations include the public executor/host message contract, [demands, pins, affinity and unschedulable-work inspection](docs/coordinator-and-hosts.md), coordinator discovery and secured links, incoming webhooks, and [redaction](docs/redaction.md). The persistent catalog, digest-addressed artifacts, verified immutable YAML bundles, draft publishing, version lifecycle and unreferenced artifact retention are implemented. Publishing a bundle does not yet deploy it to an executing host. See the [roadmap](docs/roadmap.md) for the available subset and [residency](docs/coordinator-and-hosts.md#placement-and-data-residency) for regional deployment.
+Available foundations include the public executor/host message contract, [demands, pins, affinity and unschedulable-work inspection](docs/coordinator-and-hosts.md), coordinator discovery and secured links, incoming webhooks, and [redaction](docs/redaction.md). The persistent catalog, digest-addressed artifacts, verified immutable YAML bundles, draft publishing, version lifecycle and unreferenced artifact retention are implemented. Hosts configured with `UseWorkflowBundles` fetch, verify and load published bundles by digest. See the [roadmap](docs/roadmap.md) for the available subset and [residency](docs/coordinator-and-hosts.md#placement-and-data-residency) for regional deployment.
 
 The following work is planned for 1.0 and is **not yet available**, or has an implemented subset with the remaining work stated here:
 

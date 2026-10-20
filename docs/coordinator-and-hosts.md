@@ -35,7 +35,7 @@ Choose a single provider on the builder returned by `AddIxIFlow()`. Memory is th
 
 The [store guide](stores.md) covers their operational differences. [Hosting.Services](../samples/IxIFlow.Samples/Hosting.cs) compiles all four registrations. Provider schemas initialize on first use.
 
-Register executable definitions with `IWorkflowCatalog` before recovery can need them. The catalog persists drafts and version metadata in the selected store; executable definitions remain local to each host. Every host that may run an instance must load the matching definition version and activity code until host bundle fetching is available. [Review's sample setup](../tests/IxIFlow.Samples.Tests/SampleTests.cs) registers its pinned child before starting the parent.
+Register executable definitions with `IWorkflowCatalog` before recovery can need them. The catalog persists drafts and version metadata in the selected store; code-defined executable definitions remain local to each host. Every host that may run a code-defined instance must load the matching definition version and activity code. Published versions are fetched by bundle digest on hosts configured with `UseWorkflowBundles`, which advertise `bundle-host`. [Review's sample setup](../tests/IxIFlow.Samples.Tests/SampleTests.cs) registers its pinned child before starting the parent.
 
 ## Host registry and capabilities
 
