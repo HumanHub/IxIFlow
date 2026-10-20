@@ -15,7 +15,7 @@ The persistent catalog stores drafts and immutable version metadata, supports la
 
 [Placement](coordinator-and-hosts.md) combines definition, registration and start demands, explicit inheritance to children, expiring pins, matching and last-host affinity. [Coordinators](coordinators.md) supply stateless matching, discovery, multiple links, authenticated TLS and polling fallback. Unschedulable work is visible through client/operator reads, telemetry and `GET /unschedulable`. Demands place compute; [full data residency](coordinator-and-hosts.md#placement-and-data-residency) requires a separate cluster and store per region.
 
-Completion outbox publishers, outgoing signed webhooks and [incoming HTTP triggers](incoming-webhooks.md) with atomic idempotent admission are implemented, as are retained results, instance cleanup and tombstones. Committed control-flow, event and operator traces live outside checkpoints; snapshots, scoped logging and OpenTelemetry signals are available. [Redaction](redaction.md) protects inspection values and error text, with privileged reads for raw diagnostics. Versioned Liquid templates and application-supplied message senders also work.
+Completion outbox publishers, outgoing signed webhooks and [incoming HTTP triggers](incoming-webhooks.md) with atomic idempotent admission are implemented, as are retained results, instance cleanup and tombstones. Committed control-flow, event and operator traces live outside checkpoints; snapshots, scoped logging and OpenTelemetry signals are available. The [debugger](debugging.md) (breakpoints, all-stop pause, stepping, audited data edits, the [Debug Adapter Protocol](debug-adapter.md), inspection and replay) and opt-in [large-payload](large-payloads.md) storage by reference are available. [Redaction](redaction.md) protects inspection values and error text, with privileged reads for raw diagnostics. Versioned Liquid templates and application-supplied message senders also work.
 
 Instance search, safe operator wait listings, trace paging, hard termination and outbox administration are available through [IWorkflowOperations](operations.md) and the authorized [HTTP operations mapping](operations-http.md). Termination can stop an instance even when no live host satisfies its demands or pin. [Reply tokens](reply-tokens.md) are capabilities for answering one wait; HTTP trace and snapshot reads require both inspect and reply authorization.
 
@@ -25,14 +25,12 @@ Conformance covers memory, SQLite and distributed SQL Server/PostgreSQL, includi
 
 | Area | Planned work |
 | --- | --- |
-| Execution and scheduling | Commit resend backoff, batched host lease renewal and completion of demand-aware local-first start/resume admission; execution-claim skip-locked policy remains open |
+| Execution and scheduling | Execution claims that skip rows other transactions hold on SQL Server and PostgreSQL |
 | Workflow publishing/versioning | Activity-package dependency resolution and digest pinning, template dependencies; draft, upload and publishing HTTP APIs |
-| Catalog and authoring services | Unified workflow/activity catalog API with input/output metadata, remaining placement and inspection parity for code-defined workflows, published activity packages and YAML code activities, inline workflow calls, explicit workflow input/output contracts and local activity registration |
-| Debugger and audit | Breakpoints and their commits, all-stop pause, stepping through loops, audited data edits, Debug Adapter Protocol and inspection/replay tooling. Timers will keep running while paused; edits will record actor, time, revision and paths |
-| Large payloads | Opt-in storage by reference for workflow data, events and child inputs/results, with transactional reference tracking and collection; bodies stay in the state store |
-| Verification | Identity-test traceability and conformance, fault-injection and commit-budget coverage for the remaining publishing, debugger and payload paths |
+| Catalog and authoring services | Unified workflow/activity catalog API with input/output metadata, published activity packages and YAML code activities, inline workflow calls, explicit workflow input/output contracts and local activity registration |
+| Verification | Identity-test traceability and conformance, fault-injection and commit-budget coverage for the remaining publishing and authoring paths |
 
-The catalog and publishing library APIs are available; their broader HTTP services and automatic deployment to hosts remain planned. There is no checkpoint migration before 1.0. The debugger and large-payload work are not yet available.
+The catalog and publishing library APIs are available, and hosts configured with `UseWorkflowBundles` fetch published versions; the draft, publishing, upload and catalog HTTP services remain planned. There is no checkpoint migration before 1.0.
 
 ## After 1.0
 
