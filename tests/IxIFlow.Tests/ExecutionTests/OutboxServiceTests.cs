@@ -193,7 +193,9 @@ public sealed class OutboxServiceTests
         await service.StartAsync(default);
         await published.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await service.StopAsync(default);
-        Assert.Null(await store.GetPublisherAsync("retired"));
+        var retired = Assert.IsType<OutboxPublisherState>(await store.GetPublisherAsync("retired"));
+        Assert.Equal("host", retired.UnregisteredBy);
+        Assert.NotNull(retired.UnregisteredAtUtc);
         Assert.Equal(OutboxDeliveryStatus.GivenUp, (await store.GetDeliveryAsync(pending.Event.Id, "retired"))!.Status);
     }
 

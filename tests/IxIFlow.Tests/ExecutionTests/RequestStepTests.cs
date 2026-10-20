@@ -361,7 +361,7 @@ public sealed class RequestStepTests
 
         var started = await engine.RunAsync(definition, new OrderData());
 
-        Assert.Equal(WorkflowExecutionStatus.Faulted, started.Status);
+        Assert.Equal(WorkflowExecutionStatus.Terminated, started.Status);
         EventAssert.Rejected(await engine.ReplyAsync(Assert.Single(outbox.Sent).Token,
             new ApprovalDecision { Approved = true }), EventRejection.WaitCancelled);
     }

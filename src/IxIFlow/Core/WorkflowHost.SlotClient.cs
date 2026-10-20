@@ -11,6 +11,16 @@ public sealed partial class WorkflowHost
     /// </summary>
     internal sealed class SlotClient
     {
+        public Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName) => _runner.GetDeliveryAsync(eventId, publisherName);
+        public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) => _runner.ListDeliveriesAsync(query);
+        public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => _runner.RetryDeliveryAsync(eventId, publisherName, actor);
+        public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() => _runner.ListPublishersAsync();
+        public Task<bool> EnablePublisherAsync(string publisherName, string actor) => _runner.EnablePublisherAsync(publisherName, actor);
+        public Task UnregisterPublisherAsync(string publisherName, string actor) => _runner.UnregisterPublisherAsync(publisherName, actor);
+        public Task<InstancePage> SearchInstancesAsync(InstanceQuery query) => _runner.SearchInstancesAsync(query);
+        public Task<IReadOnlyList<StoredTraceEntry>> GetTracePageAsync(string id, long after, int limit) => _runner.GetTracePageAsync(id, after, limit);
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string id, string code, string? description, string? actor, Guid? expectedIncarnation = null) => _runner.RequestTerminationAsync(id, code, description, actor, expectedIncarnation);
+        public Task<bool> FinishTerminationAsync(string id, Guid incarnation) => _runner.FinishTerminationAsync(id, expectedIncarnation: incarnation);
         private readonly InstanceOperations _runner;
 
         public SlotClient(InstanceOperations runner)
@@ -86,14 +96,14 @@ public sealed partial class WorkflowHost
 
         public Task<WorkflowExecutionResult> RecoverAsync(
             string instanceId,
-            CancellationToken cancellationToken = default) =>
-            ForInstanceAsync(instanceId, _runner.RecoverAsync(instanceId, cancellationToken));
+            CancellationToken cancellationToken = default, Guid? expectedIncarnation = null) =>
+            ForInstanceAsync(instanceId, _runner.RecoverAsync(instanceId, cancellationToken, expectedIncarnation));
 
         public Task<WorkflowExecutionResult> ReleaseAsync(
             string instanceId,
             string? actor = null,
-            CancellationToken cancellationToken = default) =>
-            ForInstanceAsync(instanceId, _runner.ReleaseAsync(instanceId, actor, cancellationToken));
+            CancellationToken cancellationToken = default, Guid? expectedIncarnation = null) =>
+            ForInstanceAsync(instanceId, _runner.ReleaseAsync(instanceId, actor, cancellationToken, expectedIncarnation));
 
         public Task<WorkflowExecutionResult> CancelAsync(
             string instanceId, CancellationReason reason,
@@ -105,11 +115,11 @@ public sealed partial class WorkflowHost
         /// the instance is idle and must be recovered to unwind.
         /// </summary>
         public async Task<WorkflowExecutionResult?> RequestCancellationAsync(string instanceId,
-            CancellationReason reason, CancellationToken cancellationToken = default)
+            CancellationReason reason, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
         {
             try
             {
-                return await _runner.RequestCancellationAsync(instanceId, reason, cancellationToken);
+                return await _runner.RequestCancellationAsync(instanceId, reason, cancellationToken, expectedIncarnation);
             }
             catch (WorkflowEngineException error) when (WorkflowEngineException.IsEngineFailure(error))
             {
@@ -125,8 +135,8 @@ public sealed partial class WorkflowHost
 
         public Task<WorkflowExecutionResult> ResolveAsync(
             string instanceId, string invocationId, ActivityResolution resolution,
-            CancellationToken cancellationToken = default) =>
-            ForInstanceAsync(instanceId, _runner.ResolveAsync(instanceId, invocationId, resolution, cancellationToken));
+            CancellationToken cancellationToken = default, Guid? expectedIncarnation = null) =>
+            ForInstanceAsync(instanceId, _runner.ResolveAsync(instanceId, invocationId, resolution, cancellationToken, expectedIncarnation));
 
         public Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
             _runner.GetTraceAsync(instanceId);

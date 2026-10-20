@@ -30,18 +30,17 @@ LeaseParameters supplies captured Now only when the lease SQL references it. Cla
 
 ## SQL contract
 
-Sql supplies fixed statements and predicates. ReadInstanceSql(filter, wholly) and QuerySql(filter) are the only builders that accept internal predicates; caller values remain parameters. Required SQL is checked before Dapper sees it, and a missing or empty statement reports both its name and provider.
+Sql supplies fixed statements and predicates. ReadInstanceSql(filter, wholly) accepts internal predicates. Search assembles row-only predicates through InstanceTable, SearchColumn, SearchValues and provider limit syntax; caller values remain parameters. Required SQL is checked before Dapper sees it, and a missing or empty statement reports both its name and provider.
 
 Optional fixed statements are LockIdentity, AdvanceInbox (when InsertEvent advances the inbox), LockAndReadPage, RetentionLock, PublisherLock and PublisherSharedLock. SQLite leaves the three retention/publisher locks null because its immediate writer transaction supplies serialization. A supplied LockAndReadPage acquires the inbox lock and returns the boundary, events and waits in one statement batch. Otherwise the base runs LockInbox and then requires PendingEvents. SQL Server retains its single round trip through LockAndReadPage.
 
 | Statement group | Results and ordering |
 | --- | --- |
-| QuerySql | InstanceId, StateJson, RunnableAtUtc, Revision, Incarnation. |
+| QueryInstancesAsync | Row columns only, with combined filters and a cursor over creation descending, ID ascending. No state JSON or parts. |
 | ClaimDeliveries, DeliveryLock, DeliveryRead | EventId, EventJson, PublisherName, Attempts, FirstAttemptAtUtc, NextAttemptAtUtc, Status, LastError, LeaseToken, LeaseUntilUtc. ClaimDeliveries locks up to Limit due records and skips locked rows on server stores; DeliveryLock locks one record. |
 | Publishers, PublisherRead | Name, TypesJson, DisabledAtUtc, LastError. |
 | OutboxClock | The store clock after delivery locks have been acquired. SQLite samples its injected clock instead. |
 | ReadInstanceSql | Trunk, then parts (InstanceId, PartKey, Json), then current stamp (InstanceId, Revision, Incarnation) when needed. Retry reads reapply the original filter. |
-| ReadParts | Parts for selected IDs, then current stamps when needed. Snapshot reads return only parts. |
 | LockInbox | Status, InboxSequence and TracingEnabled (projected from StateJson), followed by server time for server-clock stores. |
 | DeleteParentInbox | Status and InboxSequence, followed by server time for server-clock stores. |
 | ParentInbox | Status and InboxSequence, with no clock result. |
@@ -56,7 +55,7 @@ Optional fixed statements are LockIdentity, AdvanceInbox (when InsertEvent advan
 | Runnable, Cancellation, Cancellations, InboxSequences, Trace | InstanceId/RunnableAtUtc; cancellation JSON; InstanceId/cancellation JSON; InstanceId/InboxSequence; Sequence/EntryJson. |
 | DeleteState | State JSON or no row. |
 
-Writes that return rows (ClaimLease) may use a multi-statement batch ending in SELECT where RETURNING/OUTPUT is unavailable. ByName, ByStatus, ByCorrelation and ByParent use @Value.
+Writes that return rows (ClaimLease) may use a multi-statement batch ending in SELECT where RETURNING/OUTPUT is unavailable. Search collections use PostgreSQL arrays, SQL Server table-valued parameters, and bounded SQLite parameter lists.
 
 ## Deletion and provider capabilities
 

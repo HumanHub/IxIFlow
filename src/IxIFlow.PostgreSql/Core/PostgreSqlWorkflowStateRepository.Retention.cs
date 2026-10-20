@@ -19,12 +19,12 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 SELECT d.event_id, d.publisher_name
                 FROM ixiflow_outbox_deliveries d
                 JOIN ixiflow_outbox_events e ON e.event_id=d.event_id
-                WHERE d.status=0 AND d.attempts=0 AND d.first_attempt_at_utc IS NULL AND e.occurred_at_utc<=@Cutoff
+                WHERE d.status=0 AND d.attempts=0 AND d.first_attempt_at_utc IS NULL AND COALESCE(d.retried_at_utc, e.occurred_at_utc)<=@Cutoff
                 ORDER BY e.occurred_at_utc, d.event_id, d.publisher_name LIMIT @Limit
                 FOR UPDATE OF d SKIP LOCKED
             )
             UPDATE ixiflow_outbox_deliveries d
-            SET status=2, last_error=@Error, lease_token=NULL, lease_until_utc=NULL
+            SET status=2, given_up_reason=1, last_error=@Error, lease_token=NULL, lease_until_utc=NULL
             FROM candidates c WHERE d.event_id=c.event_id AND d.publisher_name=c.publisher_name
             """,
         Statement.RetentionLock => "SELECT pg_advisory_xact_lock(73489623)",
@@ -41,7 +41,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         Statement.RetentionCandidates => """
             SELECT i.instance_id FROM ixiflow_workflow_instances i WHERE i.ended_at_utc <= @Cutoff AND i.status IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
               AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_events e JOIN ixiflow_outbox_deliveries d ON d.event_id=e.event_id WHERE e.instance_id=i.instance_id AND d.status=0)
-              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id AND c.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
+              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id)
             ORDER BY i.ended_at_utc, i.instance_id LIMIT @Limit
             """,
         Statement.RetentionBlockedPublishers => """
@@ -51,13 +51,13 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             JOIN ixiflow_outbox_deliveries d ON d.event_id=e.event_id
             WHERE i.ended_at_utc<=@Cutoff AND i.status IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
               AND d.status=0 AND d.first_attempt_at_utc IS NULL
-              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id AND c.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
+              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id)
             GROUP BY d.publisher_name
             """,
         Statement.RetentionEligible => """
             SELECT count(*) FROM ixiflow_workflow_instances i WHERE i.instance_id=@InstanceId AND i.ended_at_utc <= @Cutoff AND i.status IN ('Completed','Failed','Cancelled','Terminated','TimedOut')
               AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_events e JOIN ixiflow_outbox_deliveries d ON d.event_id=e.event_id WHERE e.instance_id=i.instance_id AND d.status=0)
-              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id AND c.status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
+              AND NOT EXISTS (SELECT 1 FROM ixiflow_workflow_instances c WHERE c.parent_instance_id=i.instance_id)
             """,
         Statement.ExpireTombstones => """
             DELETE FROM ixiflow_workflow_tombstones WHERE instance_id IN

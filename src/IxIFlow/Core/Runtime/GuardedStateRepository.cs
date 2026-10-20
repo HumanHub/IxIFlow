@@ -46,8 +46,16 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
 
     public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
         Guard(() => _store.RegisterPublisherAsync(name, eventTypes, replayRetained), "Accessing workflow outbox");
-    public Task UnregisterPublisherAsync(string name) =>
-        Guard(() => _store.UnregisterPublisherAsync(name), "Unregistering workflow outbox publisher");
+    public Task UnregisterPublisherAsync(string name, string actor = "host") =>
+        Guard(() => _store.UnregisterPublisherAsync(name, actor), "Unregistering workflow outbox publisher");
+    public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) =>
+        Guard(() => _store.ListDeliveriesAsync(query), "Listing workflow outbox deliveries");
+    public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) =>
+        Guard(() => _store.RetryDeliveryAsync(eventId, publisherName, actor), "Retrying workflow outbox delivery");
+    public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() =>
+        Guard(() => _store.ListPublishersAsync(), "Listing workflow outbox publishers");
+    public Task<bool> EnablePublisherAsync(string publisherName, string actor) =>
+        Guard(() => _store.EnablePublisherAsync(publisherName, actor), "Enabling workflow outbox publisher");
     public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
         Guard(() => _store.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit), "Accessing workflow outbox");
     public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
@@ -74,8 +82,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
     public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
         Guard(() => _store.GetTombstoneAsync(instanceId), $"Reading retention tombstone for '{instanceId}'");
 
-    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason) =>
-        Guard(() => _store.RequestCancellationAsync(instanceId, reason),
+    public Task<bool> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        Guard(() => _store.RequestCancellationAsync(instanceId, reason, expectedIncarnation),
             $"Requesting cancellation of workflow instance '{instanceId}'");
 
     public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
@@ -104,7 +112,7 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
 
     public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
         Guard(() => _store.GetWaitAsync(instanceId, waitId),
-            $"Reading wait '{waitId}' of workflow instance '{instanceId}'");
+            $"Reading wait reference '{WaitReference.Of(instanceId, waitId)}' of workflow instance '{instanceId}'");
 
     public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
         Guard(() => _store.GetOpenWaitsAsync(query), "Listing open workflow waits");
@@ -144,9 +152,6 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetTraceAsync(instanceId, afterSequence, limit),
             $"Reading the trace of workflow instance '{instanceId}'");
 
-    public Task<IEnumerable<WorkflowInstance>> GetChildInstancesAsync(string parentInstanceId) =>
-        Guard(() => _store.GetChildInstancesAsync(parentInstanceId),
-            $"Reading the children of workflow instance '{parentInstanceId}'");
 
     public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
         Guard(() => _store.GetWorkflowInstanceAsync(instanceId),
@@ -156,17 +161,13 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetWorkflowInstanceSummaryAsync(instanceId),
             $"Reading workflow instance '{instanceId}'");
 
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByNameAsync(string workflowName) =>
-        Guard(() => _store.GetWorkflowInstancesByNameAsync(workflowName),
-            $"Listing instances of workflow '{workflowName}'");
+    public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
+        Guard(() => _store.QueryInstancesAsync(query), "Searching workflow instances");
 
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByStatusAsync(WorkflowStatus status) =>
-        Guard(() => _store.GetWorkflowInstancesByStatusAsync(status),
-            $"Listing {status} workflow instances");
+    public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
+        Guard(() => _store.RequestTerminationAsync(instanceId, reason, expectedIncarnation), "Requesting workflow termination");
 
-    public Task<IEnumerable<WorkflowInstance>> GetWorkflowInstancesByCorrelationIdAsync(string correlationId) =>
-        Guard(() => _store.GetWorkflowInstancesByCorrelationIdAsync(correlationId),
-            $"Listing workflow instances correlated by '{correlationId}'");
+
 
     public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null) =>
         Guard(() => _store.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention),

@@ -3,7 +3,6 @@ using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using IxIFlow.Core;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -11,18 +10,17 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Primitives;
+using static IxIFlow.AspNetCore.WorkflowHttp;
 
 namespace IxIFlow.AspNetCore;
 
 public static class WorkflowTriggerExtensions
 {
-    internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    internal static readonly JsonSerializerOptions JsonOptions = WorkflowHttp.JsonOptions;
     private static readonly object BodyKey = new();
     private static readonly object WebhookIdKey = new();
     private static readonly ConditionalWeakTable<IEndpointRouteBuilder, Catalog> Catalogs = new();
     private const string StatusName = "IxIFlow.WorkflowStatus";
-    private sealed record WorkflowRoute(string Identity);
     private sealed class Catalog { public List<TriggerRegistration> Registrations { get; } = []; }
 
     public static IEndpointRouteBuilder MapWorkflowTriggers(this IEndpointRouteBuilder endpoints,
@@ -34,7 +32,6 @@ public static class WorkflowTriggerExtensions
         var catalog = Catalogs.GetValue(endpoints, _ => new());
         var all = catalog.Registrations.Concat(builder.Registrations).ToArray();
         if (all.Count(r => r.Status) != 1) throw new InvalidOperationException("Map exactly one authorized workflow status endpoint");
-        var policies = endpoints.ServiceProvider.GetRequiredService<IAuthorizationPolicyProvider>();
         _ = endpoints.ServiceProvider.GetRequiredService<IWorkflowIngressClient>();
         foreach (var registration in builder.Registrations)
         {
@@ -43,8 +40,7 @@ public static class WorkflowTriggerExtensions
             if (registration.Policy == null || (registration.Status || registration.Events) && registration.InstancePolicy == null)
                 throw new InvalidOperationException("Every workflow endpoint requires a policy; status and events also require an instance policy");
             foreach (var policy in new[] { registration.Policy, registration.InstancePolicy }.OfType<string>())
-                if (policies.GetPolicyAsync(policy).GetAwaiter().GetResult() == null)
-                    throw new InvalidOperationException("Unknown workflow authorization policy: " + policy);
+                ValidatePolicy(endpoints, policy);
             var pattern = RoutePatternFactory.Parse(registration.Pattern);
             if ((registration.Status || registration.Events) && !pattern.Parameters.Any(p => p.Name == "id") ||
                 registration.Events && !pattern.Parameters.Any(p => p.Name == "key"))
@@ -78,54 +74,8 @@ public static class WorkflowTriggerExtensions
             route.AddEndpointFilter(new IngressFilter(registration));
             if (registration.Status) route.WithName(StatusName);
         }
-        if (!endpoints.DataSources.OfType<RegistrationValidator>().Any())
-        {
-            var validator = new RegistrationValidator(endpoints);
-            endpoints.DataSources.Add(validator);
-            endpoints.ServiceProvider.GetRequiredService<WorkflowHost>().RegisterStartupValidation(validator.Validate);
-        }
+        ValidateAtStartup(endpoints);
         return endpoints;
-    }
-
-    private static string Shape(string route) => Regex.Replace(route.TrimEnd('/'), @"\{(\*{0,2})[^}:?=]+([^}]*)\}", "{$1$2}");
-
-    // The host also forces this after every hosted service has started and all routes have been mapped.
-    private sealed class RegistrationValidator(IEndpointRouteBuilder endpoints) : EndpointDataSource
-    {
-        private readonly object _gate = new();
-        private bool _checking;
-        public void Validate() => _ = Endpoints;
-        public override IReadOnlyList<Endpoint> Endpoints
-        {
-            get
-            {
-                lock (_gate)
-                {
-                    if (_checking) return [];
-                    _checking = true;
-                    try
-                    {
-                        var routes = endpoints.DataSources.Where(s => s is not RegistrationValidator)
-                            .SelectMany(s => s.Endpoints).OfType<RouteEndpoint>().ToArray();
-                        if (routes.Select(r => r.Metadata.GetMetadata<WorkflowRoute>()).OfType<WorkflowRoute>()
-                            .GroupBy(r => r.Identity, StringComparer.Ordinal).Any(g => g.Count() > 1))
-                            throw new InvalidOperationException("Workflow trigger identities must be unique");
-                        foreach (var group in routes.GroupBy(r => Shape(r.RoutePattern.RawText ?? ""), StringComparer.OrdinalIgnoreCase))
-                        {
-                            if (!group.Any(r => r.Metadata.GetMetadata<WorkflowRoute>() != null)) continue;
-                            var verbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                            foreach (var route in group)
-                                foreach (var method in route.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods ?? ["*"])
-                                    if (!verbs.Add(method) || method == "*" && verbs.Count > 1 || method != "*" && verbs.Contains("*"))
-                                        throw new InvalidOperationException("Conflicting routes at " + group.Key);
-                        }
-                        return [];
-                    }
-                    finally { _checking = false; }
-                }
-            }
-        }
-        public override IChangeToken GetChangeToken() => new CancellationChangeToken(CancellationToken.None);
     }
 
     private sealed class IngressFilter(TriggerRegistration registration) : IEndpointFilter
@@ -133,7 +83,7 @@ public static class WorkflowTriggerExtensions
         public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext invocation, EndpointFilterDelegate next)
         {
             var http = invocation.HttpContext;
-            try
+            return await HandleErrorsAsync(async () =>
             {
                 if (registration.SignedSender != null)
                 {
@@ -151,29 +101,10 @@ public static class WorkflowTriggerExtensions
                     ], "StandardWebhooks"));
                     http.Items[WebhookIdKey] = id;
                 }
-                if (http.User.Identity?.IsAuthenticated != true)
-                    return Results.Problem(statusCode: 401, title: "Authentication required");
-                var authorization = http.RequestServices.GetRequiredService<IAuthorizationService>();
-                if (!(await authorization.AuthorizeAsync(http.User, http, registration.Policy!)).Succeeded)
-                    return Results.Problem(statusCode: 403, title: "Workflow access denied");
+                if (await WorkflowHttp.AuthorizeAsync(http, http, registration.Policy!) is { } denied)
+                    return denied;
                 return await next(invocation);
-            }
-            catch (BadHttpRequestException error)
-            {
-                return Results.Problem(statusCode: error.StatusCode, title: "Invalid workflow request");
-            }
-            catch (Exception error) when (error is JsonException or ArgumentException or FormatException)
-            {
-                return Results.Problem(statusCode: 400, title: "Invalid workflow request");
-            }
-            catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.ResourceExhausted)
-            {
-                return Results.Problem(statusCode: 413, title: "Workflow request exceeds the configured limit");
-            }
-            catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.ArtifactUnavailable)
-            {
-                return Results.Problem(statusCode: 503, title: "Workflow version unavailable");
-            }
+            });
         }
     }
 
@@ -229,6 +160,10 @@ public static class WorkflowTriggerExtensions
         if (registration.Status || registration.Events)
         {
             var id = http.Request.RouteValues["id"]!.ToString()!;
+            if (registration.Events && http.Request.Headers.ContainsKey("X-IxIFlow-Reply-Token") &&
+                (!ReplyToken.TryRead(
+                    SingleHeader(http, "X-IxIFlow-Reply-Token"), out var tokenInstance, out _, out _) || tokenInstance != id))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown reply token");
             var ownership = await ingress.GetOwnershipAsync(id);
             if (ownership == null) return Results.Problem(statusCode: 404, title: "Unknown workflow");
             var ownerKind = registration.SignedSender != null ? WorkflowOwnerKind.SignedSender : WorkflowOwnerKind.Principal;
@@ -308,13 +243,14 @@ public static class WorkflowTriggerExtensions
         new(result.InstanceId, PublicStatus(result.Status), projection(result));
 
     private static bool IsTerminal(WorkflowExecutionStatus status) => status is WorkflowExecutionStatus.Success or
-        WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.Failed or WorkflowExecutionStatus.Cancelled or WorkflowExecutionStatus.TimedOut;
+        WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.Failed or WorkflowExecutionStatus.Cancelled or WorkflowExecutionStatus.TimedOut or WorkflowExecutionStatus.Terminated;
 
     private static string PublicStatus(WorkflowExecutionStatus? status) => status switch
     {
         WorkflowExecutionStatus.Success => "Completed",
         WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.Failed => "Failed",
         WorkflowExecutionStatus.Cancelled => "Cancelled",
+        WorkflowExecutionStatus.Terminated => "Terminated",
         WorkflowExecutionStatus.TimedOut => "TimedOut",
         WorkflowExecutionStatus.Removed => "Removed",
         WorkflowExecutionStatus.Suspended => "Waiting",
@@ -334,12 +270,15 @@ public static class WorkflowTriggerExtensions
             return Results.Problem(statusCode: 400, title: "CloudEvents type is not allowlisted");
         var data = map(parsed.Data);
         var identity = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new[] { envelope.Source, envelope.Id }))));
-        var receipt = await ingress.AcceptEventAsync(new WorkflowEvent(instanceId, identity, data.GetType().AssemblyQualifiedName!,
+        var workflowEvent = new WorkflowEvent(instanceId, identity, data.GetType().AssemblyQualifiedName!,
             JsonSerializer.Serialize(data, data.GetType()), http.Request.RouteValues["key"]!.ToString(),
             DeliveryIdentity: http.Items.TryGetValue(WebhookIdKey, out var webhookId)
                 ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(
                     new[] { registration.SignedSender, registration.Id, (string)webhookId! })))) : null,
-            Source: envelope.Source, DeliveryRetention: registration.Retention), http.RequestAborted);
+            Source: envelope.Source, DeliveryRetention: registration.Retention);
+        var receipt = http.Request.Headers.ContainsKey("X-IxIFlow-Reply-Token")
+            ? await ingress.AcceptReplyAsync(SingleHeader(http, "X-IxIFlow-Reply-Token"), workflowEvent, http.RequestAborted)
+            : await ingress.AcceptEventAsync(workflowEvent, http.RequestAborted);
         if (receipt.Status == EventAppendStatus.Duplicate)
         {
             if (receipt.Rejection != null)

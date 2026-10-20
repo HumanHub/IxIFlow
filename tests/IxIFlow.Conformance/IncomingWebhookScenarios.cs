@@ -72,7 +72,7 @@ public sealed class IncomingWebhookScenarios
         using var retry = await Start(http, key: "lost-response");
         Assert.Equal(HttpStatusCode.Accepted, retry.StatusCode);
         Assert.Equal(id, await Id(retry));
-        Assert.Single(await factory.Repository.GetWorkflowInstancesByNameAsync("HttpApproval"));
+        Assert.Single(await Task.WhenAll((await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items.Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Theory]
@@ -85,7 +85,7 @@ public sealed class IncomingWebhookScenarios
         using var first = await Start(http, key: "conflict");
         using var conflict = await Start(http, key: "conflict", value: 9);
         Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
-        Assert.Single(await factory.Repository.GetWorkflowInstancesByNameAsync("HttpApproval"));
+        Assert.Single(await Task.WhenAll((await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items.Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Theory]
@@ -101,7 +101,7 @@ public sealed class IncomingWebhookScenarios
         request.Headers.Add("webhook-signature", "v1,invalid");
         using var response = await http.SendAsync(request);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        Assert.Empty(await factory.Repository.GetWorkflowInstancesByNameAsync("HttpApproval"));
+        Assert.Empty(await Task.WhenAll((await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items.Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Theory]

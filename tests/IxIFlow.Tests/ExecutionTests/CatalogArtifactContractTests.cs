@@ -219,7 +219,7 @@ public sealed class CatalogArtifactContractTests
                         var result = await client.RunAsync(parentDefinition, new Data());
                         var finished = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished);
                         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
-                        Assert.Single(await store.GetWorkflowInstancesByNameAsync(name));
+                        Assert.Single((await store.QueryInstancesAsync(new(WorkflowName: name, Limit: int.MaxValue))).Items);
                     }
                     else
                     {
@@ -258,7 +258,7 @@ public sealed class CatalogArtifactContractTests
         try { await catalog.RetireWorkflowVersionAsync("Retirement race", 1); }
         finally { store.Release.TrySetResult(); }
         await Refused(async () => await start, WorkflowErrorKind.ArtifactUnavailable);
-        Assert.Empty(await store.GetWorkflowInstancesByNameAsync("Retirement race"));
+        Assert.Empty((await store.QueryInstancesAsync(new(WorkflowName: "Retirement race", Limit: int.MaxValue))).Items);
     }
 
     [Theory, InlineData(false), InlineData(true)]

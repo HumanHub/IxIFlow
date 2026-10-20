@@ -298,7 +298,7 @@ public class EngineContractRegressionTests
             .CancelAsync(instance.InstanceId,
                 new CancellationReason { ReasonCode = "operator" });
 
-        Assert.Equal(WorkflowExecutionStatus.Failed, result.Status);
+        Assert.Equal(WorkflowExecutionStatus.Terminated, result.Status);
     }
 
     // A cancellation that arrives after the instance completed changes nothing and does not report it cancelled.
@@ -1052,7 +1052,7 @@ public class EngineContractRegressionTests
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => engine.RunAsync(parent, new RegressionData()));
         Assert.Contains("Workflow definition not found: MissingChild v1", error.Message);
-        var saved = Assert.Single(await repository.GetWorkflowInstancesByNameAsync("MissingChildParent"));
+        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "MissingChildParent", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
         Assert.NotEqual(WorkflowStatus.Failed, saved.Status);
 
         await scope.ServiceProvider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(

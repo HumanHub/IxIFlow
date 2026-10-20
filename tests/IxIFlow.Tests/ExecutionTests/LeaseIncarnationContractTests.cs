@@ -258,7 +258,7 @@ public sealed class LeaseIncarnationContractTests
             Assert.Equal(original.Revision, replacement.Revision);
             Assert.Equal(replacement.Incarnation, (await store.GetWorkflowInstanceSummaryAsync(id))!.Incarnation);
             Assert.Equal(replacement.Incarnation,
-                Assert.Single(await store.GetWorkflowInstancesByNameAsync(replacement.WorkflowName)).Incarnation);
+                Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: replacement.WorkflowName, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!))).Incarnation);
 
             var first = (await store.TryAcquireExecutionLeaseAsync(id, "new-first", duration))!;
             Assert.True(first.Epoch > oldGrant.Epoch);
@@ -519,7 +519,7 @@ public sealed class LeaseIncarnationContractTests
                     childStarts: [new ChildStart(child.InstanceId, payload.ToJsonString(), "child")]));
                 var row = (await store.GetWorkflowInstanceAsync(child.InstanceId))!;
                 Assert.True(incarnations.Add(row.Incarnation));
-                Assert.Equal(row.Incarnation, Assert.Single(await store.GetChildInstancesAsync(parentId)).Incarnation);
+                Assert.Equal(row.Incarnation, Assert.Single(await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: parentId, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!))).Incarnation);
                 Assert.Equal(row.Incarnation, (await store.GetWorkflowInstanceSummaryAsync(child.InstanceId))!.Incarnation);
                 await store.DeleteWorkflowInstanceAsync(parentId, tombstones);
                 await advance(parentId, tombstones + TimeSpan.FromDays(1));
