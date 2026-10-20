@@ -28,11 +28,11 @@ public interface ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>
     ISagaContinuationBuilder<TWorkflowData, TPreviousStepData> CompensateUpTo<TActivity>()
         where TActivity : IAsyncActivity;
 
-    ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData> Step<TActivity>()
+    ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData> Step<TActivity>([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     ISagaErrorBuilder<TWorkflowData, TFault, TActivity> Step<TActivity>(
-        Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>> configure)
+        Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -40,13 +40,13 @@ public interface ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>
     ISagaErrorBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
         string key,
         Expression<Func<TEvent, WorkflowContext<TWorkflowData>, bool>>? matchesExpression = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TEvent : class;
 
     ISagaErrorBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
         string key,
         Func<TEvent, WorkflowContext<TWorkflowData>, bool>? matches = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null)
+        Action<ISuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TEvent : class;
 
 }

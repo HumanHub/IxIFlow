@@ -141,7 +141,7 @@ public sealed class WorkflowExecutorHostTests
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
             WorkflowDataType = typeof(ExecutorData).AssemblyQualifiedName!,
-            WorkflowDataJson = JsonSerializer.Serialize(data),
+            WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(data)),
             Status = WorkflowStatus.Running,
             CreatedAt = now,
             StartedAt = now
@@ -185,6 +185,8 @@ public sealed class WorkflowExecutorHostTests
     /// <summary>A host with no store: it records what the executor asks of it.</summary>
     private sealed class RecordingHost(ExecutorProbe probe) : IExecutionHost
     {
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
         private readonly List<WorkflowStatus> _commits = [];
 
         public IReadOnlyList<WorkflowStatus> Commits => _commits;

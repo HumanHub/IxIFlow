@@ -32,7 +32,7 @@ dotnet run --project samples/IxIFlow.Samples -- --yaml
 dotnet test tests/IxIFlow.Samples.Tests
 ```
 
-The console entry point runs Quote in fluent C# or generated YAML form and prints Ada's amount and outcome: 12.50 and ready (number formatting follows the console culture). Other examples expose a `Definition()` method; [SampleTests.cs](../tests/IxIFlow.Samples.Tests/SampleTests.cs) and [YamlSampleTests.cs](../tests/IxIFlow.Samples.Tests/YamlSampleTests.cs) show their setup and execution. Review also registers its pinned child in `IWorkflowVersionRegistry` before starting the parent.
+The console entry point runs Quote in fluent C# or generated YAML form and prints Ada's amount and outcome: 12.50 and ready (number formatting follows the console culture). Other examples expose a `Definition()` method; [SampleTests.cs](../tests/IxIFlow.Samples.Tests/SampleTests.cs) and [YamlSampleTests.cs](../tests/IxIFlow.Samples.Tests/YamlSampleTests.cs) show their setup and execution. Review also registers its pinned child in `IWorkflowCatalog` before starting the parent.
 
 `IxIFlow.Samples` references the generator as an analyzer and imports the engine's package props because it uses project references. Its eighteen `*.workflow.yaml` files are compiler additional files. A NuGet consumer of `IxIFlow` gets that glob, generator, analyzers and code fixes from the package automatically. The same package ships the workflow JSON Schema for editors; see [editor support](../src/IxIFlow.Generators/README.md#editor-support).
 

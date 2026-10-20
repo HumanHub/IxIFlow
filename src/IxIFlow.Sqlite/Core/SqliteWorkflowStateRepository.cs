@@ -15,6 +15,8 @@ namespace IxIFlow.Core;
 /// </summary>
 public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowStateRepository, IAsyncDisposable
 {
+    internal override PayloadDialect PayloadSqlDialect => PayloadDialect.Sqlite;
+
     private readonly string _connectionString;
     private readonly TimeProvider _time;
     private readonly SemaphoreSlim _writer = new(1, 1);
@@ -35,7 +37,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     }
 
     public SqliteWorkflowStateRepository(string connectionString, TimeProvider? timeProvider = null,
-        OutboxSettings? outboxSettings = null) : base(outboxSettings)
+        OutboxSettings? outboxSettings = null, PayloadStoreSettings? payloadSettings = null) : base(outboxSettings, payloadSettings)
     {
         _connectionString = FileConnectionString(connectionString);
         _time = timeProvider ?? TimeProvider.System;
@@ -115,7 +117,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                     THEN false ELSE cancellation_acknowledged END,
                 runnable_at_utc = CASE WHEN cancellation_json IS NULL OR NOT cancellation_acknowledged
                     THEN @Now ELSE runnable_at_utc END
-            WHERE instance_id = @InstanceId AND (@ExpectedIncarnation IS NULL OR incarnation = @ExpectedIncarnation) AND status IN ('Running', 'Suspended', 'NeedsResolution')
+            WHERE instance_id = @InstanceId AND (@ExpectedIncarnation IS NULL OR incarnation = @ExpectedIncarnation) AND status IN ('Ready', 'Running', 'Suspended', 'NeedsResolution', 'Paused')
             """, new { InstanceId = instanceId, ReasonJson = reasonJson, Now = Timestamp(now), ExpectedIncarnation = expectedIncarnation?.ToString() }, transaction);
         return row == null ? CancellationOutcome.Gone : changed == 0 ? CancellationOutcome.Unchanged
             : row.CancellationJson == null || !row.CancellationAcknowledged
@@ -138,7 +140,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             Kind = (short)wait.Kind,
             wait.Key,
             wait.EventType,
-            wait.DefaultPayloadJson,
+            DefaultPayloadJson = wait.DefaultPayloadJson is { } payload ? JsonSerializer.Serialize(payload) : null,
             Deadline = Timestamp(now + wait.Timeout),
             Sequence = inboxSequence,
             Now = Timestamp(now)
@@ -158,7 +160,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             InstanceId = instanceId,
             wait.WaitId,
             Deadline = Timestamp(now + wait.Timeout),
-            wait.DefaultPayloadJson
+            DefaultPayloadJson = wait.DefaultPayloadJson is { } payload ? JsonSerializer.Serialize(payload) : null
         }), transaction);
     }
 
@@ -183,23 +185,26 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         await connection.ExecuteAsync("""
                 INSERT INTO ixiflow_workflow_parts (instance_id, part_key, json)
                 VALUES (@InstanceId, @Key, @Json)
-                """, parts.Select(part => new { InstanceId = instanceId, part.Key, part.Json }), transaction);
+                """, parts.Select(part => new { InstanceId = instanceId, part.Key, Json = JsonSerializer.Serialize(part.Json) }), transaction);
     }
 
     internal override async Task AppendTraceAsync(DbConnection connection, DbTransaction transaction,
-        string instanceId, IReadOnlyList<string> entries)
+        string instanceId, IReadOnlyList<string> entries, long revision, WorkflowStatus? commitStatus)
     {
         var sequence = await connection.ExecuteScalarAsync<long>("""
             SELECT COALESCE(max(sequence), 0) FROM ixiflow_workflow_traces WHERE instance_id = @InstanceId
             """, new { InstanceId = instanceId }, transaction);
         await connection.ExecuteAsync("""
-            INSERT INTO ixiflow_workflow_traces (instance_id, sequence, entry_json)
-            VALUES (@InstanceId, @Sequence, @Entry)
+            INSERT INTO ixiflow_workflow_traces (instance_id, sequence, entry_json, revision, commit_end_sequence, commit_status)
+            VALUES (@InstanceId, @Sequence, @Entry, @Revision, @CommitEndSequence, @CommitStatus)
             """, entries.Select((entry, index) => new
         {
             InstanceId = instanceId,
             Sequence = sequence + index + 1,
-            Entry = entry
+            Entry = entry,
+            Revision = revision,
+            CommitEndSequence = commitStatus != null ? (long?)(sequence + entries.Count) : null,
+            CommitStatus = (int?)commitStatus
         }), transaction);
     }
 
@@ -422,25 +427,19 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 WHERE ixiflow_workflow_leases.expires_at_utc <= @Now
                 RETURNING epoch AS Epoch, crash_count AS CrashCount
                 """,
-        Statement.RenewLease => """
-                UPDATE ixiflow_workflow_leases
-                SET expires_at_utc = @Until
-                WHERE instance_id = @InstanceId AND token = @Token
-                    AND expires_at_utc > @Now
-                """,
         Statement.ReleaseLease => """
                 UPDATE ixiflow_workflow_leases SET expires_at_utc = '0001-01-01 00:00:00.0000000'
                 WHERE instance_id = @InstanceId AND token = @Token AND expires_at_utc > @Now
                 """,
         Statement.LockInbox or Statement.ParentInbox or Statement.DeleteParentInbox => """
-            SELECT status AS Status, inbox_sequence AS InboxSequence,
+            SELECT status AS Status, inbox_sequence AS InboxSequence, revision AS Revision,
                 COALESCE(json_extract(state_json, '$.TracingEnabled'), 1) AS TracingEnabled,
                 COALESCE(json_type(state_json, '$.ExecutionStateJson.OperatorStop') = 'object', 0) AS Stopped
             FROM ixiflow_workflow_instances
             WHERE instance_id = @InstanceId
             """,
         Statement.CommitState => """
-            SELECT revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
+            SELECT state_json AS StateJson, revision AS Revision, incarnation AS Incarnation, cancellation_json AS CancellationJson,
                 cancellation_acknowledged AS CancellationAcknowledged, inbox_sequence AS InboxSequence, runnable_at_utc AS RunnableAtUtc
             FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId
             """,
@@ -486,7 +485,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 """,
         Statement.InsertEvent => """
             INSERT INTO ixiflow_workflow_events
-                (instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, payload_json,
+                (instance_id, event_id, sequence, event_type, event_key, target_wait_id, subject, stored_payload_json,
                  payload_hash, received_at_utc, outcome, rejection, settled_at_utc)
             VALUES (@InstanceId, @EventId, @Sequence, @EventType, @Key, @TargetWaitId, @Subject, @PayloadJson,
                 @Hash, @Now, CASE WHEN @Rejection IS NULL THEN 0 ELSE 2 END, @Rejection,
@@ -569,6 +568,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 DELETE FROM ixiflow_workflow_leases WHERE instance_id = @InstanceId
                 """,
         Statement.DeleteRows => """
+                DELETE FROM ixiflow_workflow_debug_commands WHERE instance_id = @InstanceId;
                 DELETE FROM ixiflow_outbox_deliveries WHERE event_id IN (SELECT e.event_id FROM ixiflow_outbox_events e WHERE e.instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=e.event_id AND pending.status=0));
                 DELETE FROM ixiflow_outbox_events WHERE instance_id=@InstanceId AND NOT EXISTS (SELECT 1 FROM ixiflow_outbox_deliveries pending WHERE pending.event_id=ixiflow_outbox_events.event_id);
                 DELETE FROM ixiflow_workflow_waits WHERE instance_id = @InstanceId;
@@ -584,7 +584,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
         Statement.InsertDiagnostic => "INSERT INTO ixiflow_workflow_diagnostics (instance_id, diagnostic_id, diagnostic_json) VALUES (@InstanceId, @DiagnosticId, @DiagnosticJson)",
         Statement.DeleteDiagnostics => "DELETE FROM ixiflow_workflow_diagnostics WHERE instance_id = @InstanceId AND diagnostic_id IN @Ids",
         Statement.Trace => """
-            SELECT sequence, entry_json FROM ixiflow_workflow_traces
+            SELECT sequence, entry_json, revision, commit_end_sequence, commit_status FROM ixiflow_workflow_traces
             WHERE instance_id = @InstanceId AND sequence > @AfterSequence
             ORDER BY sequence
             LIMIT @Limit
@@ -613,6 +613,9 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
 
     await connection.ExecuteAsync(DemandsSchema, transaction: transaction);
     await connection.ExecuteAsync("""
+        CREATE TABLE IF NOT EXISTS ixiflow_workflow_debug_commands (
+            instance_id TEXT NOT NULL, command_id TEXT NOT NULL, command_order BIGINT NOT NULL,
+            command_json TEXT NOT NULL, PRIMARY KEY (instance_id, command_id), UNIQUE (instance_id, command_order));
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_instances (
             instance_id TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
             incarnation TEXT NOT NULL,
@@ -676,7 +679,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             event_key TEXT COLLATE BINARY NULL,
             target_wait_id TEXT COLLATE BINARY NULL,
             subject TEXT COLLATE BINARY NULL,
-            payload_json TEXT NOT NULL,
+            stored_payload_json TEXT NOT NULL,
             payload_hash BLOB NOT NULL,
             received_at_utc TEXT NOT NULL,
             outcome INTEGER NOT NULL,
@@ -704,6 +707,9 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             instance_id TEXT COLLATE BINARY NOT NULL,
             sequence INTEGER NOT NULL,
             entry_json TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            commit_end_sequence INTEGER NULL,
+            commit_status INTEGER NULL,
             PRIMARY KEY (instance_id, sequence)
         );
         CREATE TABLE IF NOT EXISTS ixiflow_workflow_waits (
@@ -755,6 +761,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
     await connection.ExecuteAsync(RetentionSchema, transaction: transaction);
     await connection.ExecuteAsync(AdmissionSchema, transaction: transaction);
     await connection.ExecuteAsync(RegistrySchema, transaction: transaction);
+    await connection.ExecuteAsync(PayloadSchema, transaction: transaction);
     await connection.ExecuteAsync(CatalogSchema, transaction: transaction);
     await transaction.CommitAsync();
     }

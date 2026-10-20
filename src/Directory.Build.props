@@ -1,0 +1,10 @@
+<Project>
+  <!-- Every package ships under Apache 2.0 with its license text and NOTICE. -->
+  <PropertyGroup>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)../LICENSE" Pack="true" PackagePath="/" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)../NOTICE" Pack="true" PackagePath="/" Visible="false" />
+  </ItemGroup>
+</Project>

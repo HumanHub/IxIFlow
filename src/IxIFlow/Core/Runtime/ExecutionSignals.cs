@@ -9,6 +9,20 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
     private int _runCancelled;
     private int _ownershipLost;
     private int _recycle;
+    private WorkflowDebugState? _debug;
+    public WorkflowDebugState? Debug => Volatile.Read(ref _debug);
+    public void Deliver(DebugCommands message)
+    {
+        if (message.AssignmentId != AssignmentId) return;
+        while (true)
+        {
+            var previous = Debug;
+            if (previous != null && previous.Version >= message.State.Version && previous.PauseGeneration >= message.State.PauseGeneration) return;
+            if (Interlocked.CompareExchange(ref _debug, message.State, previous) != previous) continue;
+            Pulse();
+            return;
+        }
+    }
 
     public Guid AssignmentId { get; } = assignmentId;
     public void Dispose() => close(AssignmentId);
@@ -25,11 +39,23 @@ internal sealed class ExecutionSignals(Guid assignmentId, Action<Guid> close) : 
         {
             CancelKind.Ownership => Interlocked.Exchange(ref _ownershipLost, 1) == 0,
             CancelKind.Run => Interlocked.Exchange(ref _runCancelled, 1) == 0,
-            CancelKind.Workflow when message.Reason != null =>
-                Interlocked.CompareExchange(ref _cancellation, message.Reason, null) == null,
+            CancelKind.Workflow when message.Reason != null => Request(message.Reason),
             _ => false
         };
         if (changed) Pulse();
+    }
+
+    // The first request stands, except that a termination escalates an earlier graceful one.
+    private bool Request(CancellationReason reason)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref _cancellation);
+            if (current != null && (current.Mode == WorkflowControlMode.Terminate ||
+                                    reason.Mode != WorkflowControlMode.Terminate))
+                return false;
+            if (Interlocked.CompareExchange(ref _cancellation, reason, current) == current) return true;
+        }
     }
 
     public void Deliver(Arrivals message)

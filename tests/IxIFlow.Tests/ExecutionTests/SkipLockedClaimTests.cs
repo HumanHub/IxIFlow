@@ -215,7 +215,7 @@ public sealed class SkipLockedClaimTests
     {
         InstanceId = id ?? Guid.NewGuid().ToString("N"), WorkflowName = "SkipLocked",
         Status = WorkflowStatus.Running, ExecutionStateJson = StoreTestSupport.CheckpointJson,
-        WorkflowDataJson = "{}"
+        WorkflowDataJson = StoredJson.Inline("{}")
     };
 
     private static Task<ExecutionLeaseGrant?> ClaimAsync(IWorkflowStateRepository store, string id,

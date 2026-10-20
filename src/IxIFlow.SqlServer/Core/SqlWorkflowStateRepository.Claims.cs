@@ -89,7 +89,7 @@ public sealed partial class SqlWorkflowStateRepository
                 WHERE instance.InstanceId = @InstanceId
                   AND instance.Status NOT IN ('Completed', 'Failed', 'Cancelled', 'Terminated', 'TimedOut')
                   AND (instance.RunnableAtUtc <= @Now OR (@Operator = 1
-                      AND (instance.Status = 'NeedsResolution' OR JSON_QUERY(instance.StateJson, '$.ExecutionStateJson.OperatorStop') IS NOT NULL)))
+                      AND (instance.Status IN ('NeedsResolution', 'Paused') OR JSON_QUERY(instance.StateJson, '$.ExecutionStateJson.OperatorStop') IS NOT NULL)))
                   AND {PinMatches}
                   AND NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDemandSetRows AS demand
                       LEFT JOIN #ClaimCapabilities AS capability ON {CapabilityKeyJoin}

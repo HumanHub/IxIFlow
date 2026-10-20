@@ -19,7 +19,7 @@ public static class IxIFlowPostgreSqlExtensions
         builder.ChooseStore("PostgreSQL");
         builder.Services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(provider =>
             new PostgreSqlWorkflowStateRepository(connectionString,
-                outboxSettings: provider.GetRequiredService<OutboxSettings>())));
+                outboxSettings: provider.GetRequiredService<OutboxSettings>(), payloadSettings: provider.GetRequiredService<PayloadStoreSettings>())));
         builder.Services.Replace(ServiceDescriptor.Singleton<IRunnableWakeSource>(provider =>
             (PostgreSqlWorkflowStateRepository)provider.GetRequiredService<IWorkflowStateRepository>()));
         return builder;
