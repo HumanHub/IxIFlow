@@ -149,6 +149,9 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.ReleaseExecutionLeaseAsync(instanceId, token),
             $"Releasing the execution lease of workflow instance '{instanceId}'");
 
+    public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation) =>
+        Guard(() => _store.GetDiagnosticsForIncarnationAsync(instanceId, incarnation), "reading incarnation-bound workflow diagnostics");
+
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
         int limit = 1000) =>
         Guard(() => _store.GetTraceAsync(instanceId, afterSequence, limit),

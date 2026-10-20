@@ -23,9 +23,11 @@ public class WorkflowExecutionResult
     
     public string? ErrorMessage { get; set; }
     public string? ErrorType { get; set; }
-    /// <summary>The engine failure that holds an operator stop, when applicable.</summary>
+    /// <summary>The engine failure kind, when applicable. Inspection still uses the safe diagnostic identity.</summary>
     public WorkflowErrorKind? ErrorKind { get; set; }
     public string? ErrorStackTrace { get; set; }
+    /// <summary>Safe identity for correlating this error with inspection and diagnostics.</summary>
+    public InspectionError? Diagnostic { get; set; }
     public TimeSpan ExecutionTime { get; set; }
     public List<ExecutionTraceEntry> TraceEntries { get; set; } = new();
     public object? WorkflowData { get; set; }

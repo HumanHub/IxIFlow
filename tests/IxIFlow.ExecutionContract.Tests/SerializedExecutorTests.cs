@@ -164,5 +164,5 @@ public sealed class SerializedExecutorTests
         commit.Payload, commit.Parts, commit.DeletedParts, commit.ReplacesParts, commit.Incarnation,
         epoch ?? commit.Epoch, commit.CommitId, commit.ExpectedRevision, commit.ClearsCrashCount, commit.Parks,
         commit.Settlements, commit.InboxReadThrough, commit.OpenedWaits, commit.ArmedWaits, commit.ClosedWaits,
-        commit.WakeAfter, commit.Stopped, commit.ChildStarts, commit.ChildCancellations, commit.ParentNotice, commit.TraceEntries);
+        commit.WakeAfter, commit.Stopped, commit.ChildStarts, commit.ChildCancellations, commit.ParentNotice, commit.TraceEntries, commit.Diagnostics, commit.RetainedDiagnosticIds);
 }

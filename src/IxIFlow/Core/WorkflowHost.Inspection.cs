@@ -95,7 +95,8 @@ public sealed partial class WorkflowHost
             var threads = InspectionProjection.Threads(instance, checkpoint, scopes, Now);
             var debug = checkpoint.Debug;
             var result = new InstanceInspection(new(instance.InstanceId, instance.WorkflowName, instance.WorkflowVersion,
-                instance.Status, instance.ParentInstanceId, instance.CreatedAt, instance.CompletedAt, instance.LastError)
+                instance.Status, instance.ParentInstanceId, instance.CreatedAt, instance.CompletedAt,
+                InspectionRedactionPolicy.Default.Reason(checkpoint.ResultDiagnostic))
                     { Incarnation = instance.Incarnation },
                 instance.Revision, checkpoint.StructureHash,
                 new(debug.PauseGeneration, debug.AppliedOrder, debug.Stop, debug.Stepping)
@@ -105,12 +106,12 @@ public sealed partial class WorkflowHost
                 {
                     var p = c.PendingActivity!; var a = p.Attempts.LastOrDefault();
                     return new InspectionAttempt(c.Id, p.Id, p.StepId, a?.Id, a?.Kind, a?.Host,
-                        p.StartedAtUtc, p.ResolutionReason);
+                        p.StartedAtUtc, InspectionRedactionPolicy.Default.Reason(p.ResolutionDiagnostic));
                 }).ToArray(),
                 checkpoint.Waits.Select(w => new InspectionWait(WaitReference.Of(instanceId, w.Id), w.ContinuationId,
                     w.StepId, w.TableKind, w.Key, w.DeadlineUtc, w.ChildWorkflowId)).ToArray(),
                 checkpoint.Continuations.Select(c => new InspectionData(c.Id,
-                    JsonSerializer.SerializeToElement(checkpoint.DataOf(c), checkpoint.RootData.GetType()))).ToArray());
+                    InspectionRedactionPolicy.Default.Value(checkpoint.DataOf(c), services))).ToArray());
             return InspectionPrivacy.Clean(result, WaitIds(instance, checkpoint));
         }
 

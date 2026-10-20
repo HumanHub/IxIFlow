@@ -36,10 +36,12 @@ internal static class BreakpointDispatch
         }
         var hitAt = evaluation?.HitAtUtc ?? now;
         BreakpointStop? stop = null;
+        Exception? failure = null;
         foreach (var breakpoint in candidates)
         {
             string? reason = null;
             IReadOnlyList<BreakpointConditionDiagnostic> diagnostics = [];
+            Exception? evaluationError = null;
             if (breakpoint.Condition != null)
             {
                 try
@@ -67,6 +69,7 @@ internal static class BreakpointDispatch
                 }
                 catch (Exception error)
                 {
+                    evaluationError = error;
                     reason = "ConditionEvaluationFailed";
                     // Exception messages can contain application values; persist only the exception type.
                     diagnostics = [new("BPC002", $"Condition failed: {error.GetType().FullName}", 0,
@@ -74,8 +77,21 @@ internal static class BreakpointDispatch
                 }
             }
             if (stop == null || reason != null && stop.Reason == null)
+            {
                 stop = new(branch.Id, stepId, breakpoint.Id, position.ActivationId, position.LoopIterationCount,
                     breakpoint.HitCount, hitAt) { Reason = reason, Diagnostics = diagnostics };
+                failure = evaluationError;
+            }
+        }
+        if (stop is { Diagnostics.Count: > 0 })
+        {
+            var diagnostic = failure != null ? checkpoint.RecordDiagnostic(failure) : checkpoint.RecordDiagnostic(
+                "BreakpointConditionCompilation", string.Join(Environment.NewLine, stop.Diagnostics.Select(d => d.Message)));
+            stop = stop with { Diagnostics = stop.Diagnostics.Select(d => d with { Message = diagnostic.ToString() }).ToArray() };
+            if (failure != null)
+                ((InspectionRedactionPolicy?)services.GetService(typeof(InspectionRedactionPolicy)) ?? InspectionRedactionPolicy.Default)
+                    .LogSensitive(services.GetService(typeof(Microsoft.Extensions.Logging.ILogger<SensitiveDiagnostics>))
+                        as Microsoft.Extensions.Logging.ILogger<SensitiveDiagnostics>, failure);
         }
         checkpoint.Debug = debug with { Breakpoints = breakpoints, Stop = stop, Evaluation = null };
         return stop != null;

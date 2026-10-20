@@ -90,6 +90,7 @@ public sealed class CheckpointCommit
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
         IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
         ParentNotice? parentNotice, IReadOnlyList<string> traceEntries,
+        IReadOnlyList<WorkflowDiagnostic> diagnostics, IReadOnlyList<string>? retainedDiagnosticIds,
         IReadOnlyList<PayloadReference> payloadReferences, bool preservesPayloadPins, IReadOnlyList<PayloadBody> payloadBodies)
     {
         Instance = instance;
@@ -115,6 +116,8 @@ public sealed class CheckpointCommit
         ChildCancellations = childCancellations;
         ParentNotice = parentNotice;
         TraceEntries = traceEntries;
+        Diagnostics = diagnostics;
+        RetainedDiagnosticIds = retainedDiagnosticIds;
         PayloadReferences = payloadReferences;
         PreservesPayloadPins = preservesPayloadPins;
         PayloadBodies = payloadBodies;
@@ -126,6 +129,7 @@ public sealed class CheckpointCommit
             $"{JsonSerializer.Serialize(armedWaits)}\n{JsonSerializer.Serialize(closedWaits)}\n" +
             $"{JsonSerializer.Serialize(childStarts)}\n{JsonSerializer.Serialize(childCancellations)}\n" +
             $"{JsonSerializer.Serialize(parentNotice)}\n{JsonSerializer.Serialize(traceEntries)}\n" +
+            $"{JsonSerializer.Serialize(diagnostics)}\n{JsonSerializer.Serialize(retainedDiagnosticIds)}\n" +
             $"{(replacesParts ? 1 : 0)}\n{JsonSerializer.Serialize(deletedParts)}\n{JsonSerializer.Serialize(parts)}\n" +
             $"{(payloadReferences.Count == 0 ? "[]" : JsonSerializer.Serialize(payloadReferences))}\n{preservesPayloadPins}\n" +
             $"{(payloadBodies.Count == 0 ? "[]" : JsonSerializer.Serialize(payloadBodies.Select(body => new { body.Reference, body.Dependencies })))}\n" + payload));
@@ -160,7 +164,7 @@ public sealed class CheckpointCommit
         FromFields(Instance, Payload, Parts, DeletedParts, ReplacesParts, Incarnation, Epoch, CommitId,
             ExpectedRevision, ClearsCrashCount, Parks, Settlements, InboxReadThrough, OpenedWaits,
             ArmedWaits, ClosedWaits, WakeAfter, Stopped, ChildStarts, ChildCancellations, ParentNotice,
-            TraceEntries, PayloadReferences, PreservesPayloadPins, bodies);
+            TraceEntries, Diagnostics, RetainedDiagnosticIds, PayloadReferences, PreservesPayloadPins, bodies);
 
     public PayloadOwner PayloadOwner => new("checkpoint", $"{InstanceId}/{Incarnation:N}");
 
@@ -181,6 +185,15 @@ public sealed class CheckpointCommit
     /// in order.
     /// </summary>
     public IReadOnlyList<string> TraceEntries { get; }
+
+    /// <summary>New immutable raw records, inserted beside the trace in this commit's transaction.</summary>
+    public IReadOnlyList<WorkflowDiagnostic> Diagnostics { get; }
+
+    /// <summary>
+    /// Diagnostic IDs to keep; all other rows are removed atomically. Null preserves rows for a
+    /// store-level commit that does not manage runtime retention. An empty list removes them all.
+    /// </summary>
+    public IReadOnlyList<string>? RetainedDiagnosticIds { get; }
 
     /// <summary>The positive execution epoch granted with the owner's lease.</summary>
     public long Epoch { get; }
@@ -269,9 +282,11 @@ public sealed class CheckpointCommit
         IReadOnlyList<OpenedWait>? openedWaits = null, IReadOnlyList<ClosedWait>? closedWaits = null,
         IReadOnlyList<ArmedWait>? armedWaits = null, TimeSpan? wakeAfter = null, bool stopped = false,
         IReadOnlyList<ChildStart>? childStarts = null, IReadOnlyList<ChildCancellation>? childCancellations = null,
-        ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null)
+        ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null,
+        IReadOnlyList<WorkflowDiagnostic>? diagnostics = null, IReadOnlyList<string>? retainedDiagnosticIds = null)
         => CreateCore(instance, epoch, expectedRevision, commitId, clearsCrashCount, parks, settlements, inboxReadThrough,
-            openedWaits, closedWaits, armedWaits, wakeAfter, stopped, childStarts, childCancellations, parentNotice, traceEntries);
+            openedWaits, closedWaits, armedWaits, wakeAfter, stopped, childStarts, childCancellations, parentNotice, traceEntries,
+            diagnostics: diagnostics, retainedDiagnosticIds: retainedDiagnosticIds);
 
     /// <summary>A first checkpoint for atomic admission. No execution owner exists until a host claims it.</summary>
     public static CheckpointCommit CreateAdmission(WorkflowInstance instance) => CreateCore(instance, 0, 0, admission: true);
@@ -282,7 +297,8 @@ public sealed class CheckpointCommit
         IReadOnlyList<OpenedWait>? openedWaits = null, IReadOnlyList<ClosedWait>? closedWaits = null,
         IReadOnlyList<ArmedWait>? armedWaits = null, TimeSpan? wakeAfter = null, bool stopped = false,
         IReadOnlyList<ChildStart>? childStarts = null, IReadOnlyList<ChildCancellation>? childCancellations = null,
-        ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null, bool admission = false)
+        ParentNotice? parentNotice = null, IReadOnlyList<ExecutionTraceEntry>? traceEntries = null, bool admission = false,
+        IReadOnlyList<WorkflowDiagnostic>? diagnostics = null, IReadOnlyList<string>? retainedDiagnosticIds = null)
     {
         ArgumentNullException.ThrowIfNull(instance);
         if (!admission) ArgumentOutOfRangeException.ThrowIfNegativeOrZero(epoch);
@@ -306,7 +322,7 @@ public sealed class CheckpointCommit
             openedWaits ?? [], armedWaits ?? [], closedWaits ?? [], wakeAfter, stopped,
             childStarts ?? [], childCancellations ?? [], parentNotice,
             (traceEntries ?? []).Select(WorkflowStoreRules.SerializeTrace).ToArray(),
-            stored.PayloadReferences, generatedInstance: instance);
+            diagnostics ?? [], retainedDiagnosticIds, stored.PayloadReferences, generatedInstance: instance);
     }
 
     /// <summary>
@@ -321,12 +337,13 @@ public sealed class CheckpointCommit
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
         IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
         ParentNotice? parentNotice, IReadOnlyList<string> traceEntries,
+        IReadOnlyList<WorkflowDiagnostic> diagnostics, IReadOnlyList<string>? retainedDiagnosticIds,
         IReadOnlyList<PayloadReference>? payloadReferences = null, bool preservesPayloadPins = false,
         IReadOnlyList<PayloadBody>? payloadBodies = null)
         => FromFieldsCore(metadata, payload, parts, deletedParts, replacesParts, incarnation, epoch, commitId,
             expectedRevision, clearsCrashCount, parks, settlements, inboxReadThrough, openedWaits, armedWaits,
             closedWaits, wakeAfter, stopped, childStarts, childCancellations, parentNotice, traceEntries,
-            payloadReferences, preservesPayloadPins, payloadBodies);
+            diagnostics, retainedDiagnosticIds, payloadReferences, preservesPayloadPins, payloadBodies);
 
     private static CheckpointCommit FromFieldsCore(CommittedInstance metadata, string payload,
         IReadOnlyList<CheckpointPart> parts, IReadOnlyList<string> deletedParts, bool replacesParts,
@@ -336,6 +353,7 @@ public sealed class CheckpointCommit
         IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
         IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
         ParentNotice? parentNotice, IReadOnlyList<string> traceEntries,
+        IReadOnlyList<WorkflowDiagnostic> diagnostics, IReadOnlyList<string>? retainedDiagnosticIds,
         IReadOnlyList<PayloadReference>? payloadReferences = null, bool preservesPayloadPins = false,
         IReadOnlyList<PayloadBody>? payloadBodies = null, WorkflowInstance? generatedInstance = null)
     {
@@ -452,6 +470,19 @@ public sealed class CheckpointCommit
                 instance.ParentWaitId != parentNotice.ParentWaitId)
                 throw new ArgumentException("Only a child's terminal commit notifies its own parent", nameof(parentNotice));
         }
+        ArgumentNullException.ThrowIfNull(diagnostics);
+        var raw = diagnostics.ToArray();
+        foreach (var diagnostic in raw)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(diagnostic.DiagnosticId, nameof(diagnostics));
+            if (diagnostic.DiagnosticId.Length > 100)
+                throw new ArgumentException("Diagnostic IDs must be at most 100 characters", nameof(diagnostics));
+        }
+        if (raw.Select(item => item.DiagnosticId).Distinct(StringComparer.Ordinal).Count() != raw.Length)
+            throw new ArgumentException("A commit records each diagnostic once", nameof(diagnostics));
+        var retained = retainedDiagnosticIds?.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        if (retained != null && raw.Any(item => !retained.Contains(item.DiagnosticId, StringComparer.Ordinal)))
+            throw new ArgumentException("New diagnostics must be retained by their commit", nameof(diagnostics));
         ArgumentNullException.ThrowIfNull(parts);
         ArgumentNullException.ThrowIfNull(deletedParts);
         ArgumentNullException.ThrowIfNull(traceEntries);
@@ -481,7 +512,8 @@ public sealed class CheckpointCommit
             replacesParts, incarnation, epoch, commitId, expectedRevision, clearsCrashCount, parks,
             Array.AsReadOnly(settled), inboxReadThrough, Array.AsReadOnly(opened), Array.AsReadOnly(armed),
             Array.AsReadOnly(closed), wakeAfter, stopped, Array.AsReadOnly(started), Array.AsReadOnly(cancelled),
-            parentNotice, Array.AsReadOnly(traceEntries.ToArray()),
+            parentNotice, Array.AsReadOnly(traceEntries.ToArray()), Array.AsReadOnly(raw),
+            retained == null ? null : Array.AsReadOnly(retained),
             Array.AsReadOnly((payloadReferences ?? []).Distinct().OrderBy(r => r.Digest, StringComparer.Ordinal).ToArray()),
             preservesPayloadPins, Array.AsReadOnly((payloadBodies ?? []).Select(body =>
             {
@@ -492,10 +524,12 @@ public sealed class CheckpointCommit
 
     // Hard termination needs only readable metadata, even when saved branch or data bodies are unavailable.
     internal static CheckpointCommit Terminate(WorkflowInstance saved, WorkflowInstance terminated, long epoch,
-        IReadOnlyList<ChildCancellation> children, ParentNotice? parentNotice, ExecutionTraceEntry trace) =>
+        IReadOnlyList<ChildCancellation> children, ParentNotice? parentNotice, ExecutionTraceEntry trace,
+        IReadOnlyList<string> retainedDiagnosticIds) =>
         FromFields(CommittedInstance.Of(terminated), JsonSerializer.Serialize(terminated), [], [], false,
             saved.Incarnation, epoch, Guid.NewGuid().ToString("N"), saved.Revision, true, false, [], null,
             [], [], [], null, true, [], children, parentNotice, [WorkflowStoreRules.SerializeTrace(trace)],
+            [], retainedDiagnosticIds,
             preservesPayloadPins: true);
 
     internal static CheckpointCommit PayloadStop(WorkflowInstance saved, long epoch, string reason, DateTime now,
@@ -510,16 +544,25 @@ public sealed class CheckpointCommit
         // Only the readable trunk is parsed. No branch, data, input or list payload is assembled.
         var instance = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(saved))!;
         var metadata = System.Text.Json.Nodes.JsonNode.Parse(instance.ExecutionStateJson)!.AsObject();
+        var checkpoint = Runtime.ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
+        instance.LastError = stop.Reason;
+        stop.Diagnostic = checkpoint.RecordDiagnostic(stop.Kind == Runtime.OperatorStopKind.Quarantine
+            ? "Quarantine" : stop.Kind.ToString(), stop.Reason);
+        stop.Reason = stop.Diagnostic.ToString();
+        // Keep branch diagnostic identities without loading their bodies. The next ordinary commit
+        // applies runtime retention once those branches are available again.
+        metadata[nameof(Runtime.ExecutionCheckpoint.Diagnostics)] = JsonSerializer.SerializeToNode(checkpoint.Diagnostics);
+        metadata[nameof(Runtime.ExecutionCheckpoint.ResultDiagnostic)] = JsonSerializer.SerializeToNode(stop.Diagnostic);
         metadata[nameof(Runtime.ExecutionCheckpoint.OperatorStop)] = JsonSerializer.SerializeToNode(
             stop);
         // Preserve stored-only fields such as ForEach ResultCount exactly; no state object is reconstructed.
         instance.ExecutionStateJson = metadata.ToJsonString();
         instance.Status = WorkflowStatus.NeedsResolution;
-        instance.LastError = stop.Reason;
         instance.LastErrorStackTrace = null;
         return FromFields(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance), [], [], false,
             saved.Incarnation, epoch, Guid.NewGuid().ToString("N"), saved.Revision, clearsCrashCount, false, [], null,
-            [], [], [], null, true, [], [], null, [], preservesPayloadPins: true);
+            [], [], [], null, true, [], [], null, [], checkpoint.PendingDiagnostics,
+            checkpoint.Diagnostics!.Select(item => item.DiagnosticId).ToArray(), preservesPayloadPins: true);
     }
 
     private static void ValidateDuration(TimeSpan? duration, string parameter)

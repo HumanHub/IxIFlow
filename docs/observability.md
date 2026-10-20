@@ -11,7 +11,7 @@ Trace entries are appended separately from checkpoints, in the transaction that 
 
 History includes workflow/activity lifecycle, control-flow entry and choices, loop iterations, branches and joins, ForEach item boundaries, catch/finally entry, compensation, retries, waits/timeouts/delays, event decisions and operator resolution/cancellation/release. Typed `TracePayload` records identify steps, scopes, continuations, indexes, invocation IDs and decision reasons; JSON uses a `Type` discriminator. Timeout, event and child-cancellation payloads use `WaitRef`, not raw wait IDs or reply tokens. `WaitReference.Of(instanceId, waitId)` is the first 16 lowercase hex characters of SHA-256 over UTF-8 `instanceId + ":" + waitId`.
 
-Transition and operator payloads avoid copying workflow/event values, resolution outputs/notes and exception contents. Activity history can carry errors and attempt information. This is not a redaction system; configure logging/exporters and application data handling accordingly.
+Transition and operator payloads avoid copying workflow/event values, resolution outputs/notes and exception contents. Typed activity notes use the [redaction projection](redaction.md); string and operator notes are wholly sensitive. Errors expose safe types/codes and diagnostic IDs. Spans omit messages and exception events; ordinary engine logs omit exception objects. Raw diagnostics require an application-authorized read, and full exception logging requires `IxIFlowOptions.EnableSensitiveDiagnostics`; category filters alone cannot enable emission. Raw records live beside the trace, inserted atomically with the recording commit and never rewritten by subsequent commits. Their [bounded retention](redaction.md#privileged-raw-diagnostics) preserves operator-authored records as well as pending failures and the terminal failure, with only one recent failure record for completed attempts; trace identities may refer to expired raw records. Instance deletion and retention purge remove these rows.
 
 `IWorkflowClient.GetTraceAsync(id)` returns committed history across runs. A foreground run result's `TraceEntries` contains the entries collected for that run; a result read back from stored state does not reload history into itself. Repository `GetTraceAsync` pages by sequence. Retention removes history with the instance.
 
@@ -28,7 +28,7 @@ The per-commit limit resets after acknowledgement. It bounds pending diagnostics
 
 ## Snapshots
 
-`GetSnapshotAsync(id)` derives each live continuation's saved position and scope frames from the checkpoint and registered definition. It lists neither waits nor pending activities; use `GetOpenWaitsAsync` and `GetPendingActivitiesAsync` for those. It shows saved state, not a live debugger pause.
+`GetSnapshotAsync(id)` derives each live continuation's saved position and scope frames from the checkpoint and registered definition. Its `Data` contains workflow data projected through redaction. It lists neither waits nor pending activities; use `GetOpenWaitsAsync` and `GetPendingActivitiesAsync` for those. Open-wait default payloads use the same projection. The snapshot shows saved state, not a live debugger pause.
 
 [Observability.cs](../samples/IxIFlow.Samples/Observability.cs) compiles this inspection method with `IxIFlow.Core` imported:
 
