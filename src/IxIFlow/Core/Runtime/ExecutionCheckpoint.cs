@@ -140,7 +140,12 @@ internal sealed class ExecutionCheckpoint
     {
         // Check the envelope before interpreting state that belongs to another schema.
         using var document = JsonDocument.Parse(json);
-        var root = document.RootElement;
+        ValidateEnvelope(document.RootElement);
+        return JsonSerializer.Deserialize<ExecutionCheckpoint>(json)!;
+    }
+
+    internal static void ValidateEnvelope(JsonElement root)
+    {
         var version = root.ValueKind == JsonValueKind.Object && root.TryGetProperty(nameof(SchemaVersion), out var savedVersion)
             ? savedVersion.ToString() : "missing";
         if (root.ValueKind != JsonValueKind.Object ||
@@ -150,7 +155,6 @@ internal sealed class ExecutionCheckpoint
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Unsupported execution checkpoint version '{version}'; expected 4. " +
                 "Saved instances from earlier builds cannot be read; no migration is available");
-        return JsonSerializer.Deserialize<ExecutionCheckpoint>(json)!;
     }
 
     /// <summary>

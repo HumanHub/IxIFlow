@@ -662,7 +662,8 @@ public sealed partial class WorkflowHost
             if (!release && !forEvent && instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
                 return await ReadResult(instance);
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
-            var debugState = (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId);
+            var debugState = (hostSettings ?? HostSettings.Default).Debugging
+                ? (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId) : null;
             if (instance?.Status == WorkflowStatus.Paused && cancellationReason == null &&
                 debugState?.Commands.FirstOrDefault(c => c.AcknowledgedRevision == null) is { Kind: DebugCommandKind.EditData, Edit: { } edit } pendingEdit)
             {
@@ -736,7 +737,7 @@ public sealed partial class WorkflowHost
             var stopCleared = checkpoint.OperatorStop != null;
             return await AssignAsync(instance, assignment, signals, cancellationToken,
                 new RecoveryPreparation([], newCancellation ? cancellationReason : null,
-                    stopCleared, release, actor) { ReactivateWaitingActivities = !forEvent || stopCleared });
+                    stopCleared, release, actor) { ReactivateWaitingActivities = !forEvent || stopCleared }, checkpoint);
         }
 
         // An idle instance has work when an event waits for it or the store finds one of its deadlines due
@@ -825,7 +826,8 @@ public sealed partial class WorkflowHost
                 _ => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Ownership)),
                 reason => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Workflow, reason)),
                 sequence => Executor.Deliver(new Arrivals(signals.AssignmentId, sequence)), _time,
-                state => Executor.Deliver(new DebugCommands(signals.AssignmentId, state)));
+                (hostSettings ?? HostSettings.Default).Debugging
+                    ? state => Executor.Deliver(new DebugCommands(signals.AssignmentId, state)) : null);
 
         internal sealed class RunReceipt
         {
@@ -837,7 +839,7 @@ public sealed partial class WorkflowHost
 
         private async Task<WorkflowExecutionResult> AssignAsync(WorkflowInstance instance,
             HostedRun assignment, ExecutionSignals signals, CancellationToken cancellationToken,
-            RecoveryPreparation? preparation = null)
+            RecoveryPreparation? preparation = null, ExecutionCheckpoint? checkpointMetadata = null)
         {
             var depth = Interlocked.Increment(ref _runDepth);
             using var cancellation = cancellationToken.Register(() =>
@@ -845,14 +847,15 @@ public sealed partial class WorkflowHost
             try
             {
                 if (preparation?.Released == true) assignment.AcceptOnCommit();
-                var checkpoint = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
-                var assigned = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(instance))!;
+                var checkpoint = checkpointMetadata ?? ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
+                var assigned = instance.CopyForAssignment();
                 assigned.Incarnation = instance.Incarnation;
                 assigned.ExecutionStateJson = instance.ExecutionStateJson;
                 var assign = new Assign(signals.AssignmentId, assigned, instance.PartsAt(instance.Revision),
                     checkpoint.StructureHash, assignment.Owner.Epoch, signals.InboxSequence, _limits, depth == 1, checkpoint.Debug.Breakpoints, preparation)
                 {
-                    DebugState = (await _store.GetDebugStatesAsync([instance.InstanceId])).GetValueOrDefault(instance.InstanceId),
+                    DebugState = (hostSettings ?? HostSettings.Default).Debugging
+                        ? (await _store.GetDebugStatesAsync([instance.InstanceId])).GetValueOrDefault(instance.InstanceId) : null,
                     DebuggingEnabled = (hostSettings ?? HostSettings.Default).Debugging
                 };
                 var ready = await Executor.ExecuteAsync(assign, CancellationToken.None);
@@ -978,8 +981,10 @@ public sealed partial class WorkflowHost
                     if (result.Revision > receipt.Revision)
                     {
                         receipt.Revision = result.Revision;
-                        receipt.Instance = CheckpointParts.Summarize(commit.Payload,
-                            commit.ApplyParts(basedOn.SavedParts).GetValueOrDefault(CheckpointParts.DataKey), result.Revision);
+                        receipt.Instance = commit.ReadTrunk();
+                        if (commit.ApplyParts(basedOn.SavedParts).TryGetValue(CheckpointParts.DataKey, out var data))
+                            receipt.Instance.WorkflowDataJson = data;
+                        receipt.Instance.Revision = result.Revision;
                         receipt.Instance.Incarnation = commit.Incarnation;
                         receipt.Instance.RunnableAtUtc = result.RunnableAtUtc;
                         receipt.Trace.AddRange(commit.TraceEntries.Select(json =>
@@ -1251,6 +1256,8 @@ public sealed partial class WorkflowHost
                     commit.Epoch != owner.Epoch || commit.Incarnation != instance.Incarnation)
                     return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Conflict,
                         Conflict: ConflictReason.NotAssigned));
+                Task preceding;
+                TaskCompletionSource<CheckpointReply> completion;
                 lock (_queue.Sync)
                 {
                     var hash = Convert.ToHexString(commit.ContentHash);
@@ -1259,19 +1266,19 @@ public sealed partial class WorkflowHost
                             ? pending.Task
                             : Task.FromResult(new CheckpointReply(identity, CheckpointReplyKind.Conflict,
                                 Conflict: ConflictReason.Revision));
-                    var completion = new TaskCompletionSource<CheckpointReply>(TaskCreationOptions.RunContinuationsAsynchronously);
-                    var preceding = _queue.Tail;
+                    completion = new TaskCompletionSource<CheckpointReply>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    preceding = _queue.Tail;
                     _outstanding.Add(commit.CommitId, (commit.ExpectedRevision, hash, completion.Task));
                     _queue.Tail = completion.Task;
-                    _ = ApplyAsync(preceding, request, completion);
-                    return completion.Task;
                 }
+                // Registration and ordering are complete before entering the store. Synchronous
+                // stores can finish inline, without scheduling an extra work item for every commit.
+                _ = ApplyAsync(preceding, request, completion);
+                return completion.Task;
             }
 
             private async Task ApplyAsync(Task preceding, Checkpoint request, TaskCompletionSource<CheckpointReply> completion)
             {
-                // Yield before entering the store so admission, dedup registration and ordering are established first.
-                await Task.Yield();
                 try
                 {
                     try { await preceding; } catch { /* A failed request does not break the queue. */ }
@@ -1312,7 +1319,7 @@ public sealed partial class WorkflowHost
                     Volatile.Write(ref _retryable, null);
                 if (reply.Kind == CheckpointReplyKind.Ack && reply.Revision > _saved.Revision)
                 {
-                    _saved = commit.ReadInstance(_saved);
+                    _saved = commit.ReadSavedInstance(_saved);
                     _saved.Incarnation = commit.Incarnation;
                     if (_acceptOnCommit)
                     {

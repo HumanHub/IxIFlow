@@ -57,6 +57,23 @@ internal sealed class CheckpointPayloads(ExecutionLimits limits, PayloadBudget b
     }
     public StoredJson Serialize<T>(T value, JsonSerializerOptions? options = null)
     {
+        // With claim check off, use the shared serializer metadata, just as an ordinary checkpoint
+        // does. Existing references still need dependency metadata when a run resumes with it off.
+        if (limits.PayloadThresholdBytes == 0)
+        {
+            var text = JsonSerializer.Serialize(value, options);
+            if (!text.Contains("\"reference\"", StringComparison.Ordinal))
+                return StoredJson.Inline(text).WithDependencies([]);
+            var references = new HashSet<PayloadReference>();
+            // Serializer-written property names cannot contain an escaped reference key.
+            Scan(text, references);
+            return StoredJson.Inline(text).WithDependencies(references.ToArray());
+        }
+        return SerializeWithPayloads(value, options);
+    }
+
+    private StoredJson SerializeWithPayloads<T>(T value, JsonSerializerOptions? options)
+    {
         var previous = _observed;
         _observed = [];
         try
@@ -87,10 +104,18 @@ internal sealed class CheckpointPayloads(ExecutionLimits limits, PayloadBudget b
         }
     }
 
-    internal static IReadOnlyList<PayloadReference> References(string trunk, IReadOnlyDictionary<string, StoredJson> parts)
+    internal static IReadOnlyList<PayloadReference> References(string trunk, IReadOnlyDictionary<string, StoredJson> parts) =>
+        References(StoredJson.Inline(trunk), parts);
+
+    internal static IReadOnlyList<PayloadReference> References(StoredJson trunk, IReadOnlyDictionary<string, StoredJson> parts)
     {
+        if (trunk.HasDependencyMetadata && trunk.Dependencies.Count == 0 && parts.All(part =>
+                part.Value.IsInline && part.Value.Dependencies.Count == 0 &&
+                (!(part.Key.StartsWith("c/", StringComparison.Ordinal) || part.Key.StartsWith("f/", StringComparison.Ordinal)) ||
+                 part.Value.HasDependencyMetadata))) return [];
         var found = new HashSet<PayloadReference>();
-        Scan(trunk, found);
+        if (trunk.HasDependencyMetadata) found.UnionWith(trunk.Dependencies);
+        else Scan(trunk.InlineText, found);
         foreach (var (key, value) in parts)
         {
             if (value.Reference is { } reference)
@@ -112,6 +137,9 @@ internal sealed class CheckpointPayloads(ExecutionLimits limits, PayloadBudget b
     }
     private static void Scan(string json, HashSet<PayloadReference> found)
     {
+        // Engine-written reference keys are literal. Escaped keys in imported JSON take the full
+        // parser path too; an ordinary checkpoint needs neither a DOM nor a recursive traversal.
+        if (!json.Contains("\"reference\"", StringComparison.Ordinal) && !json.Contains("\\u", StringComparison.Ordinal)) return;
         using var document = JsonDocument.Parse(json);
         Visit(document.RootElement);
         void Visit(JsonElement element)

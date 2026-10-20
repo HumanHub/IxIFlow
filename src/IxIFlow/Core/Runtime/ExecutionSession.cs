@@ -13,7 +13,7 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
         {
             if (_payloads != null) return _payloads;
             _payloads = new(Limits, _budget);
-            if (SavedInstance?.SavedParts is { } parts)
+            if (Limits.PayloadThresholdBytes != 0 && SavedInstance?.SavedParts is { } parts)
                 _payloads.Known(CheckpointPayloads.References(SavedInstance.ExecutionStateJson, parts));
             return _payloads;
         }

@@ -13,9 +13,10 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class StoredCheckpoint
 {
-    private StoredCheckpoint(string trunk, Dictionary<string, StoredJson> parts, PartMarks marks)
+    private StoredCheckpoint(StoredJson trunk, Dictionary<string, StoredJson> parts, PartMarks marks)
     {
-        Trunk = trunk;
+        Trunk = trunk.InlineText;
+        _trunk = trunk;
         Parts = parts;
         Marks = marks;
     }
@@ -31,6 +32,8 @@ internal sealed class StoredCheckpoint
 
     /// <summary>The validated execution checkpoint's trunk, as JSON.</summary>
     public string Trunk { get; }
+    private readonly StoredJson _trunk;
+    public IReadOnlyList<PayloadReference> PayloadReferences => CheckpointPayloads.References(_trunk, Parts);
 
     /// <summary>Every part by key, the workflow data's included.</summary>
     public Dictionary<string, StoredJson> Parts { get; }
@@ -119,7 +122,7 @@ internal sealed class StoredCheckpoint
             checkpoint.PayloadRetries = checkpoint.Continuations.Where(c => c.ParentJoinId != null &&
                 parts[BranchKey(c.Id)].Reference != null).Select(c => new PayloadRetry { Id = c.Id, RetryAfterUtc = c.RetryAfterUtc }).ToList();
             if (checkpoint.PayloadRetries.Count == 0) checkpoint.PayloadRetries = null;
-            return new StoredCheckpoint(Serialize(checkpoint, Stored).InlineText, parts, marks);
+            return new StoredCheckpoint(Serialize(checkpoint, Stored), parts, marks);
         }
         finally { checkpoint.SplitBranches = null; checkpoint.PayloadRetries = null; }
     }
@@ -149,7 +152,14 @@ internal sealed class StoredCheckpoint
 
     internal static async Task<string> WholeStateAsync(WorkflowInstance instance, PayloadReader reader)
     {
-        if (!IsTrunk(instance.ExecutionStateJson)) return instance.ExecutionStateJson;
+        // Both callers deserialize the assembled checkpoint immediately afterwards. Validate the
+        // envelope before fetching bodies, without deserializing the whole checkpoint twice.
+        using (var document = JsonDocument.Parse(instance.ExecutionStateJson))
+        {
+            ExecutionCheckpoint.ValidateEnvelope(document.RootElement);
+            if (!document.RootElement.TryGetProperty(nameof(ExecutionCheckpoint.StoredTrunk), out var trunk) ||
+                trunk.ValueKind != JsonValueKind.True) return instance.ExecutionStateJson;
+        }
         var parts = instance.PartsAt(instance.Revision) ?? throw new InvalidOperationException("Missing checkpoint parts");
         foreach (var (key, value) in parts)
             if (key.StartsWith("c/", StringComparison.Ordinal) || key.StartsWith("f/", StringComparison.Ordinal) ||
@@ -236,6 +246,9 @@ internal sealed class StoredCheckpoint
             foreach (var property in type.Properties)
                 switch (property.Name)
                 {
+                    case nameof(ExecutionCheckpoint.Debug):
+                        property.ShouldSerialize = (_, value) => value is DebugCheckpoint { IsEmpty: false };
+                        break;
                     case nameof(ExecutionCheckpoint.Continuations):
                         property.Get = value => ((ExecutionCheckpoint)value).Continuations
                             .Where(item => item.ParentJoinId == null).ToList();

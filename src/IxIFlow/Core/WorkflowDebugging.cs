@@ -35,6 +35,9 @@ public sealed record WorkflowControlRequests(IReadOnlyDictionary<string, Cancell
 /// <summary>The durable execution hold and the command prefix applied by a commit.</summary>
 public sealed record DebugCheckpoint(long PauseGeneration = 0, long AppliedOrder = 0)
 {
+    [JsonIgnore]
+    internal bool IsEmpty => PauseGeneration == 0 && AppliedOrder == 0 && Breakpoints.Count == 0 &&
+        Stop == null && Evaluation == null && SkipOnce.Count == 0 && Stepping == null;
     public IReadOnlyList<Breakpoint> Breakpoints { get; init; } = [];
     public BreakpointStop? Stop { get; init; }
     public BreakpointEvaluation? Evaluation { get; init; }
@@ -69,10 +72,21 @@ public static class WorkflowDebugRules
 
     public static DebugCheckpoint Checkpoint(WorkflowInstance instance)
     {
+        if (!HasCheckpoint(instance)) return new();
         using var json = JsonDocument.Parse(instance.ExecutionStateJson);
         return json.RootElement.TryGetProperty("Debug", out var debug) && debug.ValueKind != JsonValueKind.Null
             ? debug.Deserialize<DebugCheckpoint>()! : new();
     }
+
+    private static bool HasCheckpoint(WorkflowInstance instance) =>
+        instance.ExecutionStateJson.Contains("\"Debug\"", StringComparison.Ordinal) ||
+        // Imported JSON may escape any letter in the property name. Escaped quotes in ordinary
+        // saved application values do not require parsing the checkpoint for debugger state.
+        instance.ExecutionStateJson.Contains("\\u0044", StringComparison.Ordinal) ||
+        instance.ExecutionStateJson.Contains("\\u0065", StringComparison.Ordinal) ||
+        instance.ExecutionStateJson.Contains("\\u0062", StringComparison.Ordinal) ||
+        instance.ExecutionStateJson.Contains("\\u0075", StringComparison.Ordinal) ||
+        instance.ExecutionStateJson.Contains("\\u0067", StringComparison.Ordinal);
 
     public static DebugCommandResult Validate(WorkflowInstance? instance, IReadOnlyList<DebugCommand> commands,
         DebugCommandRequest request)
@@ -149,6 +163,14 @@ public static class WorkflowDebugRules
     }
 
     public static IReadOnlyList<DebugCommand> Acknowledge(WorkflowInstance? previous, WorkflowInstance next,
+        IReadOnlyList<DebugCommand> commands, long revision, IReadOnlyList<string> traceEntries)
+    {
+        if (commands.Count == 0 && (previous == null || !HasCheckpoint(previous)) && !HasCheckpoint(next))
+            return commands;
+        return AcknowledgeDebug(previous, next, commands, revision, traceEntries);
+    }
+
+    private static IReadOnlyList<DebugCommand> AcknowledgeDebug(WorkflowInstance? previous, WorkflowInstance next,
         IReadOnlyList<DebugCommand> commands, long revision, IReadOnlyList<string> traceEntries)
     {
         var before = previous == null ? new DebugCheckpoint() : Checkpoint(previous);

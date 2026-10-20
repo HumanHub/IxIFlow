@@ -118,6 +118,7 @@ public sealed class CheckpointCommit
         PayloadReferences = payloadReferences;
         PreservesPayloadPins = preservesPayloadPins;
         PayloadBodies = payloadBodies;
+        _trunk = new(() => CheckpointParts.Summarize(Payload, null, checked(ExpectedRevision + 1)));
         _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes(
             $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}{(stopped ? 1 : 0)}\n" +
             $"{inboxReadThrough?.ToString() ?? "-"}\n{wakeAfter?.Ticks.ToString() ?? "-"}\n" +
@@ -126,13 +127,15 @@ public sealed class CheckpointCommit
             $"{JsonSerializer.Serialize(childStarts)}\n{JsonSerializer.Serialize(childCancellations)}\n" +
             $"{JsonSerializer.Serialize(parentNotice)}\n{JsonSerializer.Serialize(traceEntries)}\n" +
             $"{(replacesParts ? 1 : 0)}\n{JsonSerializer.Serialize(deletedParts)}\n{JsonSerializer.Serialize(parts)}\n" +
-            $"{JsonSerializer.Serialize(payloadReferences)}\n{preservesPayloadPins}\n{JsonSerializer.Serialize(payloadBodies.Select(body => new { body.Reference, body.Dependencies }))}\n" + payload));
+            $"{(payloadReferences.Count == 0 ? "[]" : JsonSerializer.Serialize(payloadReferences))}\n{preservesPayloadPins}\n" +
+            $"{(payloadBodies.Count == 0 ? "[]" : JsonSerializer.Serialize(payloadBodies.Select(body => new { body.Reference, body.Dependencies })))}\n" + payload));
     }
 
     /// <summary>The longest timeout, delay or park a commit may carry.</summary>
     public static readonly TimeSpan MaxDuration = TimeSpan.FromDays(36500);
 
     private readonly byte[] _contentHash;
+    private readonly Lazy<WorkflowInstance> _trunk;
 
     public string InstanceId { get; }
 
@@ -297,13 +300,13 @@ public sealed class CheckpointCommit
         // Stamp the caller too, so later checkpoints use the same incarnation as this immutable first commit.
         if (expectedRevision == 0)
             instance.Incarnation = Guid.NewGuid();
-        return FromFields(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(stored.Trunk)),
+        return FromFieldsCore(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(stored.Trunk)),
             written, deleted, saved == null, instance.Incarnation, epoch, commitId,
             expectedRevision, clearsCrashCount, parks, settlements ?? [], inboxReadThrough,
             openedWaits ?? [], armedWaits ?? [], closedWaits ?? [], wakeAfter, stopped,
             childStarts ?? [], childCancellations ?? [], parentNotice,
             (traceEntries ?? []).Select(WorkflowStoreRules.SerializeTrace).ToArray(),
-            Runtime.CheckpointPayloads.References(stored.Trunk, stored.Parts));
+            stored.PayloadReferences, generatedInstance: instance);
     }
 
     /// <summary>
@@ -320,12 +323,29 @@ public sealed class CheckpointCommit
         ParentNotice? parentNotice, IReadOnlyList<string> traceEntries,
         IReadOnlyList<PayloadReference>? payloadReferences = null, bool preservesPayloadPins = false,
         IReadOnlyList<PayloadBody>? payloadBodies = null)
+        => FromFieldsCore(metadata, payload, parts, deletedParts, replacesParts, incarnation, epoch, commitId,
+            expectedRevision, clearsCrashCount, parks, settlements, inboxReadThrough, openedWaits, armedWaits,
+            closedWaits, wakeAfter, stopped, childStarts, childCancellations, parentNotice, traceEntries,
+            payloadReferences, preservesPayloadPins, payloadBodies);
+
+    private static CheckpointCommit FromFieldsCore(CommittedInstance metadata, string payload,
+        IReadOnlyList<CheckpointPart> parts, IReadOnlyList<string> deletedParts, bool replacesParts,
+        Guid incarnation, long epoch, string commitId, long expectedRevision,
+        bool clearsCrashCount, bool parks, IReadOnlyList<EventSettlement> settlements,
+        long? inboxReadThrough, IReadOnlyList<OpenedWait> openedWaits, IReadOnlyList<ArmedWait> armedWaits,
+        IReadOnlyList<ClosedWait> closedWaits, TimeSpan? wakeAfter, bool stopped,
+        IReadOnlyList<ChildStart> childStarts, IReadOnlyList<ChildCancellation> childCancellations,
+        ParentNotice? parentNotice, IReadOnlyList<string> traceEntries,
+        IReadOnlyList<PayloadReference>? payloadReferences = null, bool preservesPayloadPins = false,
+        IReadOnlyList<PayloadBody>? payloadBodies = null, WorkflowInstance? generatedInstance = null)
     {
         ArgumentNullException.ThrowIfNull(metadata);
         ArgumentNullException.ThrowIfNull(payload);
-        var instance = JsonSerializer.Deserialize<WorkflowInstance>(payload)
+        // Locally generated payload and trace JSON already came from these validated objects.
+        // Imported wire fields still take the complete parse and consistency checks below.
+        var instance = generatedInstance ?? JsonSerializer.Deserialize<WorkflowInstance>(payload)
             ?? throw new ArgumentException("A commit carries an instance payload", nameof(payload));
-        if (CommittedInstance.Of(instance) != metadata)
+        if (generatedInstance == null && CommittedInstance.Of(instance) != metadata)
             throw new ArgumentException("Commit metadata differs from its payload", nameof(metadata));
         ArgumentNullException.ThrowIfNull(instance);
         ArgumentException.ThrowIfNullOrWhiteSpace(instance.InstanceId);
@@ -453,9 +473,10 @@ public sealed class CheckpointCommit
             !deleted.SequenceEqual(deleted.Distinct().Order(StringComparer.Ordinal)) ||
             written.Any(part => deleted.Contains(part.Key, StringComparer.Ordinal)) || replacesParts && deleted.Length != 0)
             throw new ArgumentException("Part keys must be unique, ordered and either written or deleted", nameof(parts));
-        foreach (var trace in traceEntries)
-            _ = JsonSerializer.Deserialize<ExecutionTraceEntry>(trace)
-                ?? throw new ArgumentException("Invalid trace entry", nameof(traceEntries));
+        if (generatedInstance == null)
+            foreach (var trace in traceEntries)
+                _ = JsonSerializer.Deserialize<ExecutionTraceEntry>(trace)
+                    ?? throw new ArgumentException("Invalid trace entry", nameof(traceEntries));
         return new CheckpointCommit(metadata, payload, Array.AsReadOnly(written), Array.AsReadOnly(deleted),
             replacesParts, incarnation, epoch, commitId, expectedRevision, clearsCrashCount, parks,
             Array.AsReadOnly(settled), inboxReadThrough, Array.AsReadOnly(opened), Array.AsReadOnly(armed),
@@ -513,7 +534,9 @@ public sealed class CheckpointCommit
     /// </summary>
     public WorkflowInstance ReadTrunk()
     {
-        return CheckpointParts.Summarize(Payload, null, checked(ExpectedRevision + 1));
+        // The payload is immutable. Decode it once; each consumer still gets independent mutable
+        // metadata, without repeatedly walking the checkpoint JSON embedded in that payload.
+        return _trunk.Value.CopyForAssignment();
     }
 
     /// <summary>
@@ -550,6 +573,17 @@ public sealed class CheckpointCommit
                 "The commit writes only the parts that changed; read it with the instance it was based on");
         return CheckpointParts.Assemble(Payload, ApplyParts(based)
             .Select(part => new CheckpointPart(part.Key, part.Value)), checked(ExpectedRevision + 1));
+    }
+
+    // Bookkeeping needs the stored trunk and parts, not a reconstructed executable checkpoint.
+    internal WorkflowInstance ReadSavedInstance(WorkflowInstance basedOn)
+    {
+        var parts = ApplyParts(basedOn.SavedParts);
+        var saved = ReadTrunk();
+        if (parts.TryGetValue(CheckpointParts.DataKey, out var data)) saved.WorkflowDataJson = data;
+        saved.Incarnation = Incarnation;
+        saved.Saved(parts, saved.Revision);
+        return saved;
     }
 }
 

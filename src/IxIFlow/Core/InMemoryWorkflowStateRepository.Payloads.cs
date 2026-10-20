@@ -8,6 +8,8 @@ public partial class InMemoryWorkflowStateRepository
 {
     private IPayloadStore? _payloadStore;
     private PayloadStoreSettings _payloadSettings = new();
+    // Maintained with checkpoint publication under _claimLock, including child insertion and deletion.
+    private readonly HashSet<string> _payloadCheckpoints = new(StringComparer.Ordinal);
     public virtual IPayloadStore PayloadStore => LazyInitializer.EnsureInitialized(ref _payloadStore,
         () => new MemoryPayloadStore(_time, _payloadSettings));
 
@@ -17,6 +19,16 @@ public partial class InMemoryWorkflowStateRepository
         private readonly Dictionary<string, PayloadRecord> _rows = new(StringComparer.Ordinal);
         private readonly SortedSet<string> _orderedDigests = new(StringComparer.Ordinal);
         private readonly object _index = new();
+
+        public override ValueTask<IReadOnlyList<PayloadReference>> FindCollectionCandidatesAsync(int limit, TimeSpan grace, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+            if (grace < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(grace));
+            lock (_index)
+                if (_rows.Count == 0) return ValueTask.FromResult<IReadOnlyList<PayloadReference>>([]);
+            return base.FindCollectionCandidatesAsync(limit, grace, ct);
+        }
 
         internal override async ValueTask<T> Execute<T>(Func<PayloadCatalog, CancellationToken, ValueTask<T>> action, CancellationToken ct)
         {
