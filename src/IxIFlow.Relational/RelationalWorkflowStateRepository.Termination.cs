@@ -9,7 +9,7 @@ public abstract partial class RelationalWorkflowStateRepository
 {
     public async Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         await EnsureSchemaAsync();
         return await ExecuteOperationAsync(Operation.Termination, async () =>

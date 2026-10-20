@@ -5,6 +5,7 @@ namespace IxIFlow.Core.Runtime;
 /// <summary>Signals between the host and the runs in one work item's scope.</summary>
 internal sealed class RunControl
 {
+    internal bool ExecutionClaimed { get; set; }
     private Action<string>? _accepted;
     private Action<string>? _instanceKnown;
     private Action<string, DateTime>? _scheduled;

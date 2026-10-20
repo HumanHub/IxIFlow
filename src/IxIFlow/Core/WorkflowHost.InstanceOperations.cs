@@ -99,7 +99,7 @@ public sealed partial class WorkflowHost
         public async Task<WorkflowExecutionResult?> RequestCancellationAsync(string instanceId,
             CancellationReason reason, CancellationToken cancellationToken, Guid? expectedIncarnation = null)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             ArgumentNullException.ThrowIfNull(reason);
             cancellationToken.ThrowIfCancellationRequested();
             reason = OperatorTrace.WithActor(reason, _defaultActor, Now);
@@ -138,7 +138,7 @@ public sealed partial class WorkflowHost
         /// <summary>The saved state of an instance as a result, or null when it does not exist.</summary>
         public async Task<WorkflowExecutionResult?> ReadAsync(string instanceId, CancellationToken cancellationToken = default)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
             return instance == null ? await RemovedResultAsync(instanceId) : await ReadResultAsync(instance, cancellationToken);
         }
@@ -146,7 +146,7 @@ public sealed partial class WorkflowHost
         /// <summary>The status of an instance as a result would report it, without reading its data.</summary>
         public async Task<WorkflowExecutionStatus?> ReadStatusAsync(string instanceId)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
             return instance == null ? (await RemovedResultAsync(instanceId))?.Status : StatusOf(instance.Status);
         }
@@ -168,7 +168,7 @@ public sealed partial class WorkflowHost
             string actor, CancellationToken cancellationToken, string? continuationId = null, DebugStepKind? stepKind = null,
             Guid? expectedIncarnation = null)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(actor);
             cancellationToken.ThrowIfCancellationRequested();
             if (!(hostSettings ?? HostSettings.Default).Debugging)
@@ -226,7 +226,7 @@ public sealed partial class WorkflowHost
         public async Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
             string invocationId, ActivityResolution resolution, CancellationToken cancellationToken, Guid? expectedIncarnation = null)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(invocationId);
             ArgumentNullException.ThrowIfNull(resolution);
             if (await FinishTerminationAsync(instanceId, expectedIncarnation))
@@ -306,7 +306,7 @@ public sealed partial class WorkflowHost
 
         public async Task<IReadOnlyList<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId, CancellationToken cancellationToken = default)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance?.Status != WorkflowStatus.NeedsResolution || !HasStructuredCheckpoint(instance))
                 return [];
@@ -341,7 +341,7 @@ public sealed partial class WorkflowHost
         /// <summary>The instance's whole trace, in the order its commits stored it.</summary>
         public async Task<IReadOnlyList<ExecutionTraceEntry>> GetTraceAsync(string instanceId)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             var trace = new List<ExecutionTraceEntry>();
             for (long after = 0;;)
             {
@@ -359,7 +359,7 @@ public sealed partial class WorkflowHost
         /// </summary>
         public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId, CancellationToken cancellationToken = default)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance == null || !HasStructuredCheckpoint(instance))
                 return null;
@@ -487,8 +487,7 @@ public sealed partial class WorkflowHost
             bool versionOmitted = false)
             where TData : class
         {
-            if (options.InstanceId != null && string.IsNullOrWhiteSpace(options.InstanceId))
-                throw new ArgumentException("An explicit workflow instance ID cannot be empty", nameof(options));
+            if (options.InstanceId != null) InstanceIds.Validate(options.InstanceId);
             if (options.ExecutionTimeout is { } executionTimeout && executionTimeout <= TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(options),
                     "Execution timeout must be positive");
@@ -646,6 +645,9 @@ public sealed partial class WorkflowHost
         /// <summary>Open waits that match the query, across instances.</summary>
         public async Task<IReadOnlyList<OpenWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default)
         {
+            ArgumentNullException.ThrowIfNull(query);
+            if (query.InstanceId != null) InstanceIds.Validate(query.InstanceId);
+            if (query.InstanceIds != null) InstanceIds.ValidateAll(query.InstanceIds);
             var waits = await _store.GetOpenWaitsAsync(query);
             var reader = NewPayloadReader();
             var result = new List<OpenWait>();
@@ -681,7 +683,7 @@ public sealed partial class WorkflowHost
             string? targetWaitId = null, string? subject = null)
             where TEvent : class
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             ArgumentNullException.ThrowIfNull(@event);
             ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
             var type = @event.GetType();
@@ -729,6 +731,7 @@ public sealed partial class WorkflowHost
         private async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, bool release,
             CancellationToken cancellationToken, bool forEvent = false, string? actor = null, Guid? expectedIncarnation = null)
         {
+            InstanceIds.Validate(instanceId);
             if (await FinishTerminationAsync(instanceId, expectedIncarnation))
                 return TerminatedResult(instanceId);
             using var lease = await gate.EnterAsync(instanceId, cancellationToken);
@@ -925,13 +928,16 @@ public sealed partial class WorkflowHost
         private int _runDepth;
 
         private async Task<WorkflowExecutionLease?> AcquireAsync(WorkflowInstance instance, ExecutionSignals signals,
-            ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
-            await
-            WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, renewer, await ClaimQueryAsync(),
+            ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
+        {
+            var owner = await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, renewer, await ClaimQueryAsync(),
                 _ => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Ownership)),
                 reason => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Workflow, reason)),
                 sequence => Executor.Deliver(new Arrivals(signals.AssignmentId, sequence)), _time, kind, Released,
                 state => Executor.Deliver(new DebugCommands(signals.AssignmentId, state)));
+            if (owner != null) _control.ExecutionClaimed = true;
+            return owner;
+        }
 
         internal sealed class RunReceipt
         {

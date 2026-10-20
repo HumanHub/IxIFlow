@@ -18,7 +18,7 @@ internal sealed class WorkflowDiagnostics(IServiceProvider services, IWorkflowSt
 {
     public async Task<IReadOnlyList<WorkflowDiagnostic>> ReadAsync(string instanceId, CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         cancellationToken.ThrowIfCancellationRequested();
         var instance = await repository.GetWorkflowInstanceSummaryAsync(instanceId);
         cancellationToken.ThrowIfCancellationRequested();

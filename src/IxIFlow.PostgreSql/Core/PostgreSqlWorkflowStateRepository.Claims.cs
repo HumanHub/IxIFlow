@@ -40,6 +40,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 FROM ixiflow_workflow_instances AS instance
                 WHERE instance.demand_set_id = matched.demand_set_id AND instance.last_host_id = @HostId
                   AND instance.runnable_at_utc <= @Now AND {PinMatches}
+                  AND NOT (instance.instance_id = ANY(@ExcludedInstanceIds))
                   AND COALESCE((SELECT lease.expires_at_utc <= @Now FROM ixiflow_workflow_leases AS lease
                       WHERE lease.instance_id = instance.instance_id), true)
                 ORDER BY instance.runnable_at_utc, instance.instance_id LIMIT @Limit) AS own
@@ -51,6 +52,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 WHERE instance.demand_set_id = matched.demand_set_id
                   AND (instance.last_host_id IS NULL OR instance.last_host_id <> @HostId)
                   AND instance.runnable_at_utc <= @Now AND {PinMatches}
+                  AND NOT (instance.instance_id = ANY(@ExcludedInstanceIds))
                   AND COALESCE((SELECT lease.expires_at_utc <= @Now FROM ixiflow_workflow_leases AS lease
                       WHERE lease.instance_id = instance.instance_id), true)
                 ORDER BY instance.runnable_at_utc, instance.instance_id LIMIT @Limit) AS other)
@@ -85,6 +87,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
     internal override DynamicParameters PlacementParameters(ClaimQuery query, DateTime now, int limit)
     {
         return WithTimes(new { query.HostId, Limit = limit, CapabilityHost = query.Capabilities.GetValueOrDefault("host"),
+            ExcludedInstanceIds = query.ExcludedInstanceIds.ToArray(),
             CapabilityKeys = query.Capabilities.Keys.ToArray(),
             CapabilityValues = query.Capabilities.Values.ToArray() }, ("Now", now));
     }

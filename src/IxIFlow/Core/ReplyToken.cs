@@ -14,7 +14,7 @@ public static class ReplyToken
 
     public static string Create(string instanceId, string waitId, string? subject = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(waitId);
         var json = JsonSerializer.SerializeToUtf8Bytes(new[] { Version, instanceId, waitId, subject });
         return Convert.ToBase64String(json).TrimEnd('=').Replace('+', '-').Replace('/', '_');

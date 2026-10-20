@@ -10,6 +10,7 @@ public sealed partial class WorkflowHost
     {
         private async Task<WorkflowDefinitionLease> DebugDefinitionAsync(string instanceId, CancellationToken cancellationToken)
         {
+            InstanceIds.Validate(instanceId);
             cancellationToken.ThrowIfCancellationRequested();
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId)
                 ?? throw new InvalidOperationException("Instance is unavailable");
@@ -78,7 +79,7 @@ public sealed partial class WorkflowHost
 
         public async Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             cancellationToken.ThrowIfCancellationRequested();
             var instance = await _store.GetWorkflowInstanceAsync(instanceId);
             if (instance == null || !HasStructuredCheckpoint(instance)) return null;
@@ -120,7 +121,7 @@ public sealed partial class WorkflowHost
         public async Task<IReadOnlyList<StoredTraceEntry>> GetTracePageAsync(string instanceId, long afterSequence, int limit,
             CancellationToken cancellationToken)
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+            InstanceIds.Validate(instanceId);
             ArgumentOutOfRangeException.ThrowIfNegative(afterSequence);
             if (limit is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(limit));
             cancellationToken.ThrowIfCancellationRequested();

@@ -61,10 +61,10 @@ internal sealed class CoordinatorLinks(CoordinatorClientOptions options, IWorkfl
     {
         lock (_gate) return Task.WhenAll(_active.Select(link => link.Acknowledged(id))).WaitAsync(token);
     }
-    private void FreeSlotsChanged()
+    private void FreeSlotsChanged(bool executionCapacityAvailable)
     {
         ReportCapacity();
-        if (state.Connected && host.FreeSlots > 0) state.RequestPass();
+        if (executionCapacityAvailable && state.Connected && host.FreeSlots > 0) state.RequestPass();
     }
     private void ReportCapacity()
     {

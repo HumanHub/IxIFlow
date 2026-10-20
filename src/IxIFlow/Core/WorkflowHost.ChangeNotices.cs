@@ -6,7 +6,7 @@ public sealed partial class WorkflowHost
 
     internal IDisposable WatchChanges(string instanceId, Action changed)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(changed);
         void OnChanged(string id) { if (id == instanceId) changed(); }
         Changed += OnChanged;
