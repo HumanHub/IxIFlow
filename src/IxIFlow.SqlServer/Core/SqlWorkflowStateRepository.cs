@@ -609,7 +609,8 @@ public sealed partial class SqlWorkflowStateRepository : RelationalWorkflowState
             """,
         Statement.UpdateCommit => """
             UPDATE dbo.IxIFlowWorkflowInstances SET
-                WorkflowName = @WorkflowName, WorkflowVersion, CreatedAtUtc, StopKind, StopCrashCount, Status = @Status,
+                WorkflowName = @WorkflowName, WorkflowVersion = @WorkflowVersion, CreatedAtUtc = @CreatedAtUtc,
+                StopKind = @StopKind, StopCrashCount = @StopCrashCount, Status = @Status,
                 CorrelationId = @CorrelationId, ParentInstanceId = @ParentInstanceId, ParentWaitId = @ParentWaitId,
                 RunnableAtUtc = @RunnableAtUtc,
                 InboxReadThrough = COALESCE(@InboxReadThrough, InboxReadThrough),
