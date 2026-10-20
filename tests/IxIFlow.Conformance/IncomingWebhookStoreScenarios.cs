@@ -129,6 +129,27 @@ public sealed class IncomingWebhookStoreScenarios
 
     [Theory]
     [MemberData(nameof(SqlStores))]
+    public async Task ADatabaseMissingOnlyTheBundleDigestIndexIsRefused(string profile)
+    {
+        await using var database = await CreateAsync(profile);
+        var first = database.Repository();
+        try { Assert.Null(await first.GetWorkflowInstanceAsync("missing")); }
+        finally { await DisposeRepositoryAsync(first); }
+        await database.Connection.ExecuteAsync(database.SqlServer
+            ? "DROP INDEX IX_IxIFlowWorkflowInstances_BundleDigest ON dbo.IxIFlowWorkflowInstances"
+            : "DROP INDEX ix_ixiflow_instances_bundle_digest");
+        var second = database.Repository();
+        try
+        {
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => second.GetWorkflowInstanceAsync("missing"));
+            Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
+            Assert.Contains("must be recreated", error.Message);
+        }
+        finally { await DisposeRepositoryAsync(second); }
+    }
+
+    [Theory]
+    [MemberData(nameof(SqlStores))]
     public async Task ACompleteCurrentDatabaseCanBeOpenedAgainWithoutSchemaChanges(string profile)
     {
         await using var database = await CreateAsync(profile);

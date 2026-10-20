@@ -116,7 +116,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         // The run ended without saving a new start: a repeated start of an existing instance is
         // accepted; anything else, such as another host owning the ID, is not.
         var result = await run;
-        var saved = await host.ReadAsync(client => client.ReadAsync(result.InstanceId));
+        var saved = await host.ReadAsync(client => client.ReadAsync(result.InstanceId, cancellationToken));
         if (saved != null && result.Status != WorkflowExecutionStatus.Running)
             return result.InstanceId;
         throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
@@ -169,7 +169,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
             client => client.DeliverReplyAsync(instanceId, waitId, reply, eventId, subject), cancellationToken);
     }
 
-    public async Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query)
+    public async Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
         // Only waits without a request are listed: a request's answer goes to the token the request
@@ -179,7 +179,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
             return new([], isRemoved: true);
         if (query.Kind is not (null or WaitKind.Event))
             return new([]);
-        var waits = await host.ReadAsync(client => client.GetOpenWaitsAsync(query with { Kind = WaitKind.Event }));
+        var waits = await host.ReadAsync(client => client.GetOpenWaitsAsync(query with { Kind = WaitKind.Event }, cancellationToken));
         var removed = query.InstanceId is { } instanceId &&
             await GetStatusAsync(instanceId) == WorkflowExecutionStatus.Removed;
         return new(removed ? [] : waits, removed);
@@ -189,7 +189,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         Func<WorkflowHost.SlotClient, Task<EventAppendResult>> deliver, CancellationToken cancellationToken)
     {
         var appended = await host.ReadAsync(deliver);
-        if (await host.ReadAsync(client => client.AnswerAsync(instanceId, eventId, appended)) is { } answered)
+        if (await host.ReadAsync(client => client.AnswerAsync(instanceId, eventId, appended, cancellationToken)) is { } answered)
             return answered;
         var result = await UntilIdleAsync(host.RunAsync(instanceId,
             (client, _, token) => client.TakeEventAsync(instanceId, eventId, token),
@@ -230,7 +230,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         {
             cancellationToken.ThrowIfCancellationRequested();
             var waits = await host.ReadAsync(client => client.GetOpenWaitsAsync(
-                new WaitQuery(Key: key, Kind: WaitKind.Event, AfterWaitRef: after, Limit: PublishPageSize)));
+                new WaitQuery(Key: key, Kind: WaitKind.Event, AfterWaitRef: after, Limit: PublishPageSize), cancellationToken));
             foreach (var instanceId in waits.Select(wait => wait.InstanceId).Where(reached.Add))
             {
                 var appended = await host.ReadAsync(client => client.DeliverAsync(instanceId, key, @event, eventId));
@@ -312,16 +312,16 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
     public Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId) =>
         host.ReadAsync(client => client.ReadStatusAsync(instanceId));
 
-    public async Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId)
+    public async Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId, CancellationToken cancellationToken = default)
     {
-        var items = await host.ReadAsync(client => client.GetPendingActivitiesAsync(instanceId));
+        var items = await host.ReadAsync(client => client.GetPendingActivitiesAsync(instanceId, cancellationToken));
         var removed = await GetStatusAsync(instanceId) == WorkflowExecutionStatus.Removed;
         return new(removed ? [] : items, removed);
     }
 
-    public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId)
+    public async Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId, CancellationToken cancellationToken = default)
     {
-        var snapshot = await host.ReadAsync(client => client.GetSnapshotAsync(instanceId));
+        var snapshot = await host.ReadAsync(client => client.GetSnapshotAsync(instanceId, cancellationToken));
         return await GetStatusAsync(instanceId) == WorkflowExecutionStatus.Removed
             ? new WorkflowExecutionSnapshot { InstanceId = instanceId, IsRemoved = true } : snapshot;
     }
@@ -348,7 +348,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"Workflow instance '{instanceId}' does not exist").At(instanceId);
             if (Satisfies(status, until) &&
-                await host.ReadAsync(client => client.ReadAsync(instanceId)) is { } result &&
+                await host.ReadAsync(client => client.ReadAsync(instanceId, cancellationToken)) is { } result &&
                 Satisfies(result.Status, until))
                 return result;
             await WaitForChangeAsync(settled, cancellationToken);
