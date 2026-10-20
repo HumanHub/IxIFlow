@@ -1,8 +1,11 @@
 using System.Reflection;
 using System.Runtime.Loader;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using System.Security.Cryptography;
 using System.Text.Json;
 using IxIFlow.Core.Runtime;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core;
 
@@ -35,13 +38,167 @@ public sealed class WorkflowDefinitionLease : IDisposable
 }
 
 internal sealed class BundleCache(IArtifactStore artifacts, string directory, WorkflowBundleReadLimits limits, TimeSpan fetchTimeout,
-    TimeSpan cacheLockTimeout)
+    TimeSpan cacheLockTimeout, ILogger? logger = null)
 {
     private readonly string _directory = Path.GetFullPath(directory);
-
-    internal async Task<WorkflowBundle> ReadAsync(ArtifactDigest digest, CancellationToken token)
+    private readonly Lazy<string> _nativeDirectory = new(() =>
     {
-        var path = Path.Combine(_directory, digest.Value[7..] + ".bundle");
+        var root = Path.GetFullPath(directory);
+        Directory.CreateDirectory(root);
+        return new DirectoryInfo(root).ResolveLinkTarget(true)?.FullName ?? root;
+    });
+
+    internal Task<WorkflowBundle> ReadAsync(ArtifactDigest digest, CancellationToken token) =>
+        ReadArtifactAsync(digest, ".bundle", WorkflowBundleArchive.ReadVerifiedAsync, token);
+
+    internal async Task<IReadOnlyDictionary<string, ReadOnlyMemory<byte>>> ReadPackageAsync(WorkflowPackagePin pin, CancellationToken token)
+    {
+        try
+        {
+            return await ReadArtifactAsync(pin.Digest, ".nupkg", async (stream, bounds, stop) =>
+            {
+                var entries = await WorkflowPackageArchive.ReadVerifiedAsync(stream, bounds, stop);
+                WorkflowPackageArchive.Verify(pin, entries);
+                stop.ThrowIfCancellationRequested();
+                return entries;
+            }, token);
+        }
+        catch (WorkflowEngineException error) when (error.Kind is WorkflowErrorKind.ArtifactMismatch or WorkflowErrorKind.ArtifactUnavailable)
+        { throw new WorkflowEngineException(error.Kind, $"Activity package '{pin.Id}@{pin.Version}' ({pin.Digest}): {error.Message}", error); }
+    }
+
+    internal async Task LoadNativeAsync(ArtifactDigest bundle,
+        IReadOnlyDictionary<string, (ReadOnlyMemory<byte> Bytes, ArtifactDigest Hash)> native,
+        BundleLoadContext context, CancellationToken token)
+    {
+        if (native.Count == 0) return;
+        // The configured root is a trust boundary; links above it are the administrator's choice.
+        var resolvedRoot = _nativeDirectory.Value;
+        var root = Path.Combine(resolvedRoot, "native", bundle.Value[7..], System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier);
+        await using var guard = await NativeLockAsync(Path.Combine(resolvedRoot, bundle.Value[7..] + ".native.lock"), token);
+        RejectLinks(resolvedRoot, root);
+        Directory.CreateDirectory(root);
+        RejectLinks(resolvedRoot, root);
+        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        var expected = native.Keys.ToHashSet(comparer);
+        foreach (var entry in Directory.EnumerateFileSystemEntries(root))
+            if (!expected.Contains(Path.GetFileName(entry))) RemoveNativeEntry(entry);
+        // Temporary names are under the digest lock, so every leftover belongs to a crashed writer.
+        var opened = new Dictionary<string, FileStream>(comparer);
+        using var privateImages = !OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()
+            ? NativeImageDirectory.Create(logger: logger) : null;
+        try
+        {
+            foreach (var (name, asset) in native)
+            {
+                token.ThrowIfCancellationRequested();
+                var path = Path.Combine(root, name);
+                FileStream? stream = null;
+                if (Path.Exists(path))
+                {
+                    if ((File.GetAttributes(path) & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0) RemoveNativeEntry(path);
+                    else
+                    {
+                        stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                        opened.Add(name, stream);
+                        if (!await VerifyNativeAsync(stream, asset.Bytes.Length, asset.Hash, limits.MaxEntryBytes, token))
+                        { stream.Dispose(); opened.Remove(name); stream = null; File.Delete(path); }
+                    }
+                }
+                if (stream == null)
+                {
+                    var temporary = Path.Combine(root, Guid.NewGuid().ToString("N") + ".native.tmp");
+                    try
+                    {
+                        await File.WriteAllBytesAsync(temporary, asset.Bytes.ToArray(), token);
+                        File.Move(temporary, path);
+                    }
+                    finally { TryDelete(temporary); }
+                    stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    opened.Add(name, stream);
+                    if (!await VerifyNativeAsync(stream, asset.Bytes.Length, asset.Hash, limits.MaxEntryBytes, token))
+                    { stream.Dispose(); throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Native cache differs from its pin"); }
+                }
+            }
+            var paths = new Dictionary<string, string>(comparer);
+            foreach (var (name, stream) in opened)
+            {
+                if (OperatingSystem.IsLinux()) paths.Add(name, "/proc/self/fd/" + stream.SafeFileHandle.DangerousGetHandle());
+                else if (OperatingSystem.IsWindows()) paths.Add(name, stream.Name);
+                else
+                {
+                    var path = Path.Combine(privateImages!.Root, name);
+                    await File.WriteAllBytesAsync(path, native[name].Bytes.ToArray(), token);
+                    using var verified = File.OpenRead(path);
+                    if (!await VerifyNativeAsync(verified, native[name].Bytes.Length, native[name].Hash, limits.MaxEntryBytes, token))
+                        throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Private native image differs from its pin");
+                    paths.Add(name, path);
+                }
+            }
+            context.OwnNativeFiles(opened.Values.ToArray());
+            opened.Clear();
+            context.LoadNative(paths, native.ToDictionary(pair => pair.Key, pair => pair.Value.Bytes, comparer));
+            // POSIX retains each loaded mapping after unlink. All later imports use
+            // the owned handles, so even a partial load never needs these paths again.
+        }
+        finally
+        {
+            foreach (var stream in opened.Values) stream.Dispose();
+        }
+    }
+
+    internal static async Task<bool> VerifyNativeAsync(Stream stream, long length, ArtifactDigest expected, long maximum, CancellationToken token)
+    {
+        if (stream.Length > maximum || stream.Length != length) return false;
+        var hash = await SHA256.HashDataAsync(stream, token);
+        return stream.Position == length && "sha256:" + Convert.ToHexString(hash).ToLowerInvariant() == expected.Value;
+    }
+
+    private static void RemoveNativeEntry(string path)
+    {
+        var attributes = File.GetAttributes(path);
+        if ((attributes & FileAttributes.Directory) != 0) Directory.Delete(path, (attributes & FileAttributes.ReparsePoint) == 0);
+        else File.Delete(path);
+    }
+
+    private static void RejectLinks(string root, string path)
+    {
+        var relative = Path.GetRelativePath(root, path);
+        if (Path.IsPathRooted(relative) || relative.Split(Path.DirectorySeparatorChar).Contains(".."))
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Native path escapes its cache root");
+        var current = root;
+        foreach (var segment in relative.Split(Path.DirectorySeparatorChar))
+        {
+            current = Path.Combine(current, segment);
+            if (Path.Exists(current) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Native cache paths below the root must not contain links");
+        }
+    }
+
+    private async Task<FileStream> NativeLockAsync(string path, CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(cacheLockTimeout);
+        try
+        {
+            while (true)
+            {
+                timeout.Token.ThrowIfCancellationRequested();
+                try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+                catch (IOException error) when ((error.HResult & 0xffff) is 11 or 32 or 33 or 35)
+                { await Task.Delay(25, timeout.Token); }
+            }
+        }
+        catch (OperationCanceledException error) when (!token.IsCancellationRequested)
+        { throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Native cache lock exceeded the configured timeout", error); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Native cache lock is unavailable", error); }
+    }
+
+    private async Task<T> ReadArtifactAsync<T>(ArtifactDigest digest, string extension,
+        Func<Stream, WorkflowBundleReadLimits, CancellationToken, Task<T>> verify, CancellationToken token)
+    {
+        var path = Path.Combine(_directory, digest.Value[7..] + extension);
         FileStream? cacheLock = null;
         try
         {
@@ -73,10 +230,12 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
                         // must still be classified as corruption and evicted.
                         var hash = await SHA256.HashDataAsync(cached, token);
                         if (new ArtifactDigest("sha256:" + Convert.ToHexString(hash).ToLowerInvariant()) != digest)
-                            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "The cached bundle archive digest differs from the published digest");
-                        throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Bundle archive exceeds the configured size limit");
+                            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "The cached artifact archive digest differs from the published digest");
+                        throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Artifact archive exceeds the configured size limit");
                     }
-                    return await WorkflowBundleArchive.ReadAsync(cached, digest, token, limits);
+                    await using var verifiedCache = new MemoryStream();
+                    await WorkflowBundleArchive.CopyArchiveAsync(cached, verifiedCache, digest, limits, token);
+                    return await verify(verifiedCache, limits, token);
                 }
                 catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.ArtifactMismatch)
                 {
@@ -86,18 +245,17 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
             }
-            // Lock contention has its own bounded lifetime. Only the download and
-            // verification consume the fetch budget.
+            // Lock waiting has its own bounded lifetime; each artifact gets a fresh fetch budget.
             using var fetch = CancellationTokenSource.CreateLinkedTokenSource(token);
             fetch.CancelAfter(fetchTimeout);
             try
             {
                 await using var download = await artifacts.OpenAsync(digest, fetch.Token)
-                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Bundle artifact {digest} is unavailable");
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Published artifact {digest} is unavailable");
                 await using var temporary = new FileStream(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".bundle"),
                     FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 81920, FileOptions.Asynchronous | FileOptions.DeleteOnClose);
                 await WorkflowBundleArchive.CopyArchiveAsync(download, temporary, digest, limits, fetch.Token);
-                var verified = await WorkflowBundleArchive.ReadVerifiedAsync(temporary, limits, fetch.Token);
+                var verified = await verify(temporary, limits, fetch.Token);
                 if (cacheLock != null)
                 {
                     var staging = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -116,8 +274,8 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
             catch (OperationCanceledException error) when (!token.IsCancellationRequested)
             {
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                    fetch.IsCancellationRequested ? $"Fetching bundle {digest} exceeded the configured timeout"
-                        : $"Fetching bundle {digest} was cancelled by the artifact store", error);
+                    fetch.IsCancellationRequested ? $"Fetching artifact {digest} exceeded the configured timeout"
+                        : $"Fetching artifact {digest} was cancelled by the artifact store", error);
             }
         }
         finally { cacheLock?.Dispose(); }
@@ -134,12 +292,21 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
 {
     private readonly IReadOnlyDictionary<string, Assembly> _shared;
     private readonly Dictionary<string, ReadOnlyMemory<byte>> _private = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, nint> _native = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     private readonly object _lifetime = new();
     private bool _unloading;
     private Action<AssemblyLoadContext>? _onUnloading;
 
-    internal BundleLoadContext(WorkflowBundle bundle, ArtifactDigest digest) : base(digest.Value, isCollectible: true)
+    private readonly NativeLifetime _nativeLifetime;
+    private readonly ILogger? _logger;
+    private readonly object _nativeGate = new();
+
+    internal BundleLoadContext(WorkflowBundle bundle, ArtifactDigest digest,
+        IEnumerable<KeyValuePair<string, ReadOnlyMemory<byte>>> packageAssemblies, IReadOnlyDictionary<string, string> native,
+        ILogger? logger = null) : base(digest.Value, isCollectible: true)
     {
+        _logger = logger;
+        _nativeLifetime = new(this, logger);
         // Observe retirement before the context is exposed. The runtime's public event
         // permits subscriptions after it has fired, so late subscribers need this state.
         Unloading += _ =>
@@ -151,10 +318,15 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
                 release = _onUnloading;
                 _onUnloading = null;
             }
-            release?.Invoke(this);
+            if (release != null)
+                foreach (Action<AssemblyLoadContext> registration in release.GetInvocationList())
+                {
+                    try { registration(this); }
+                    catch (Exception error) { LogCleanupFailure(_logger, error, "unloading registration"); }
+                }
         };
         _shared = WorkflowSharedAssemblies.Validate(bundle.Manifest);
-        foreach (var (path, bytes) in bundle.Entries.Where(pair => pair.Key.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)))
+        foreach (var (path, bytes) in bundle.Entries.Where(pair => pair.Key.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)).Concat(packageAssemblies))
         {
             using var pe = new System.Reflection.PortableExecutable.PEReader(new MemoryStream(bytes.ToArray()));
             var metadata = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(pe);
@@ -162,6 +334,7 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
             if (_shared.ContainsKey(name) || !_private.TryAdd(name, bytes))
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, $"Duplicate or shared private assembly '{name}'");
         }
+        if (native.Count != 0) throw new ArgumentException("Native images must be verified before loading", nameof(native));
     }
 
     internal bool TryRegisterUnloading(Action<AssemblyLoadContext> release)
@@ -188,8 +361,143 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
         throw new FileNotFoundException($"Private bundle dependency '{assemblyName}' is missing");
     }
 
-    protected override nint LoadUnmanagedDll(string unmanagedDllName) =>
-        throw new DllNotFoundException($"Native bundle dependency '{unmanagedDllName}' is not declared");
+    internal void LoadNative(IReadOnlyDictionary<string, string> paths, IReadOnlyDictionary<string, ReadOnlyMemory<byte>> images)
+    {
+        lock (_nativeGate)
+        {
+            var rid = System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier;
+            WorkflowNativeLibraries.Validate(images, rid);
+            var visiting = new HashSet<string>(_native.Comparer);
+            void Load(string name)
+            {
+                if (_native.ContainsKey(name)) return;
+                if (!visiting.Add(name)) throw new DllNotFoundException("Cyclic declared native imports cannot be safely preloaded");
+                foreach (var import in WorkflowNativeImports.Read(images[name]).Dependencies)
+                {
+                    var dependency = WorkflowNativeLibraries.DependencyName(import, rid);
+                    if (images.ContainsKey(dependency)) Load(dependency);
+                    else LoadSystem(import);
+                }
+                var handle = WorkflowNativeLibraries.Load(paths[name]);
+                _nativeLifetime.Handles.Add(handle); _native.Add(name, handle);
+                visiting.Remove(name);
+            }
+            foreach (var name in images.Keys) Load(name);
+        }
+    }
+
+    internal void OwnNativeFiles(IEnumerable<FileStream> files) => _nativeLifetime.OwnFiles(files);
+
+    // Unloading is only a request: delegates, objects and even their finalizers may
+    // still call P/Invoke. The runtime retains the context until its loader allocator
+    // dies. The raw long weak handle survives eager finalization of managed weak
+    // wrappers and still sees f-reachable/resurrected contexts. Release is safe only
+    // after that handle clears, including when nobody explicitly requests Unload().
+    private sealed class NativeLifetime(BundleLoadContext context, ILogger? logger)
+    {
+        private GCHandle _context = GCHandle.Alloc(context, GCHandleType.WeakTrackResurrection);
+        internal readonly List<nint> Handles = [];
+        private readonly List<(FileStream Stream, SafeFileHandle Handle)> _files = [];
+        private int _released;
+
+        ~NativeLifetime()
+        {
+            if (!_context.IsAllocated) return;
+            if (_context.Target != null)
+            {
+                GC.ReRegisterForFinalize(this);
+                return;
+            }
+            Release();
+        }
+
+        internal void OwnFiles(IEnumerable<FileStream> files)
+        {
+            foreach (var file in files)
+            {
+                var handle = file.SafeFileHandle;
+                var acquired = false;
+                // SafeFileHandle can be finalized independently while this owner is
+                // re-registered. Keep its OS handle open until our eventual Release.
+                handle.DangerousAddRef(ref acquired);
+                _files.Add((file, handle));
+            }
+        }
+
+        private void Release()
+        {
+            if (Interlocked.Exchange(ref _released, 1) != 0) return;
+            _context.Free();
+            for (var i = Handles.Count - 1; i >= 0; i--)
+                try { System.Runtime.InteropServices.NativeLibrary.Free(Handles[i]); }
+                catch (Exception error) { LogCleanupFailure(logger, error, "native module release"); }
+            Handles.Clear();
+            foreach (var (file, handle) in _files)
+            {
+                try { file.Dispose(); }
+                catch (Exception error) { LogCleanupFailure(logger, error, "native file release"); }
+                try { handle.DangerousRelease(); }
+                catch (Exception error) { LogCleanupFailure(logger, error, "native file handle release"); }
+            }
+            _files.Clear();
+        }
+    }
+
+    internal static void LogCleanupFailure(ILogger? logger, Exception error, string phase)
+    {
+        // Cleanup, including finalizer cleanup, must also survive a failing logger.
+        try { logger?.LogWarning("Bundle cleanup failed during {Phase} ({ErrorType}): {ErrorMessage}\n{ErrorStack}",
+            phase, error.GetType().FullName, error.Message, error.StackTrace ?? ""); }
+        catch (Exception) { }
+    }
+
+    internal static void UnloadSafely(AssemblyLoadContext context, ILogger? logger)
+    {
+        try { context.Unload(); }
+        catch (Exception error)
+        {
+            LogCleanupFailure(logger, error, "runtime unload");
+            // The runtime clears the public event before invoking it. If a public
+            // handler throws, a second call completes the interrupted transition.
+            try { context.Unload(); }
+            catch (Exception retry) { LogCleanupFailure(logger, retry, "runtime unload retry"); }
+        }
+    }
+
+    private nint LoadSystem(string name, HashSet<string>? loading = null)
+    {
+        if (_native.TryGetValue(name, out var existing)) return existing;
+        var macSystemPath = OperatingSystem.IsMacOS() && WorkflowNativeLibraries.IsSystemImport(name, "osx");
+        var path = macSystemPath ? name : WorkflowNativeLibraries.SystemPath(name);
+        if (path == null) throw new DllNotFoundException($"Native dependency '{name}' is not in an OS system directory");
+        if (OperatingSystem.IsLinux())
+        {
+            loading ??= new(StringComparer.Ordinal);
+            if (!loading.Add(name)) return 0; // OS library cycles are already in the trusted system closure.
+            var table = WorkflowNativeImports.Read(File.ReadAllBytes(path));
+            // DT_NEEDED must reuse the absolute system image, rather than trigger another search.
+            if (name.Contains(".so", StringComparison.Ordinal) && table.Identity != name)
+                throw new DllNotFoundException($"OS native dependency '{name}' has a different SONAME");
+            foreach (var import in table.Dependencies)
+                if (!_native.ContainsKey(import)) LoadSystem(import, loading);
+        }
+        var handle = WorkflowNativeLibraries.Load(path);
+        _nativeLifetime.Handles.Add(handle); _native.Add(name, handle);
+        return handle;
+    }
+
+    protected override nint LoadUnmanagedDll(string unmanagedDllName)
+    {
+        lock (_nativeGate)
+        {
+            if (unmanagedDllName.IndexOfAny(['/', '\\', ':']) >= 0)
+                throw new DllNotFoundException("Native imports must be names without paths");
+            foreach (var candidate in new[] { unmanagedDllName, unmanagedDllName + ".dll", unmanagedDllName + ".so", "lib" + unmanagedDllName + ".so",
+                         unmanagedDllName + ".dylib", "lib" + unmanagedDllName + ".dylib" })
+                if (_native.TryGetValue(candidate, out var handle)) return handle;
+            return LoadSystem(unmanagedDllName);
+        }
+    }
 
     internal void VerifyClosure(Assembly root)
     {
@@ -211,6 +519,9 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
 /// <summary>The exact shared compatibility profile. Application assemblies are private bundle assets.</summary>
 public static class WorkflowSharedAssemblies
 {
+    public static bool IsSharedName(string name) => Profile.ContainsKey(name);
+    public static AssemblyName? Identity(string name) => Profile.TryGetValue(name, out var identity)
+        ? identity.Version == null ? AssemblyLoadContext.Default.LoadFromAssemblyName(identity).GetName() : new AssemblyName(identity.FullName!) : null;
     private static readonly IReadOnlyDictionary<string, AssemblyName> Framework;
     private static readonly IReadOnlyDictionary<string, AssemblyName> Profile;
 
@@ -322,8 +633,15 @@ public static class WorkflowSharedAssemblies
 
     internal static bool IsCompatible(WorkflowBundleManifest manifest)
     {
-        try { Validate(manifest); return manifest.ActivityPackages.Count == 0; }
-        catch (Exception error) when (error is WorkflowEngineException or ArgumentException or FileLoadException or BadImageFormatException) { return false; }
+        try
+        {
+            WorkflowBundleArchive.CheckManifest(manifest);
+            Validate(manifest);
+            return manifest.ActivityPackages.All(package => !package.AppliesTo(System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier) || !package.RequiresRuntimeIdentifier ||
+                package.RuntimeAssets.ContainsKey(System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier));
+        }
+        // An incompatible profile is an ordinary answer; a corrupt manifest reaches the caller's memo, which logs it once.
+        catch (Exception error) when (error is WorkflowEngineException { Kind: not WorkflowErrorKind.ArtifactMismatch } or ArgumentException or FileLoadException or BadImageFormatException) { return false; }
     }
 
     internal static IReadOnlyDictionary<string, Assembly> Validate(WorkflowBundleManifest manifest)
@@ -363,10 +681,10 @@ internal sealed class LoadedBundle(BundleLoadContext context, WorkflowDefinition
     internal WorkflowDefinition Definition { get; } = definition;
 }
 
-internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBundleOptions options) : IDisposable
+internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBundleOptions options, ILogger? logger = null) : IDisposable
 {
     private readonly object _gate = new();
-    private readonly BundleCache _cache = new(artifacts, options.CacheDirectory, options.ReadLimits, options.FetchTimeout, options.CacheLockTimeout);
+    private readonly BundleCache _cache = new(artifacts, options.CacheDirectory, options.ReadLimits, options.FetchTimeout, options.CacheLockTimeout, logger);
     private readonly Dictionary<ArtifactDigest, Entry> _loaded = [];
     private long _clock;
     private bool _disposed;
@@ -416,12 +734,26 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
         {
             var bundle = await _cache.ReadAsync(digest, token);
             token.ThrowIfCancellationRequested();
-            var context = new BundleLoadContext(bundle, digest);
+            var managed = new Dictionary<string, ReadOnlyMemory<byte>>(StringComparer.Ordinal);
+            var native = new Dictionary<string, (ReadOnlyMemory<byte> Bytes, ArtifactDigest Hash)>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+            foreach (var pin in bundle.Manifest.ActivityPackages.Where(pin => pin.AppliesTo(System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier)))
+            {
+                var rid = System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier;
+                var selected = pin.RuntimeAssets.GetValueOrDefault(rid) ??
+                    (!pin.RequiresRuntimeIdentifier ? pin.RuntimeAssets.GetValueOrDefault("") : null)
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Package '{pin.Id}@{pin.Version}' has no native assets for runtime '{rid}'");
+                var entries = await _cache.ReadPackageAsync(pin, token);
+                foreach (var path in selected.ManagedAssemblies) managed.Add(pin.Id + "/" + path, entries[path]);
+                foreach (var path in selected.NativeLibraries)
+                {
+                    if (!native.TryAdd(Path.GetFileName(path), (entries[path], pin.Entries[path])))
+                        throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, $"Duplicate native package asset '{path}'");
+                }
+            }
+            var context = new BundleLoadContext(bundle, digest, managed, new Dictionary<string, string>(), logger);
             try
             {
-                // Refuse package imports until package artifact loading is implemented.
-                if (bundle.Manifest.ActivityPackages.Count != 0)
-                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Activity-package imports are not supported by bundle hosts yet");
+                await _cache.LoadNativeAsync(digest, native, context, token);
                 using var assembly = new MemoryStream(bundle.Entries[WorkflowBundleArchive.AssemblyPath].ToArray());
                 using var pdb = new MemoryStream(bundle.Entries[WorkflowBundleArchive.PdbPath].ToArray());
                 var entryAssembly = context.LoadFromStream(assembly, pdb);
@@ -446,7 +778,7 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
                 token.ThrowIfCancellationRequested();
                 return new(context, definition);
             }
-            catch { WorkflowJson.Release(context); context.Unload(); throw; }
+            catch { Retire(context); throw; }
         }
         catch (Exception error) when (error is not (WorkflowEngineException or OperationCanceledException or OutOfMemoryException))
         { throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Could not load bundle {digest}: {error.GetBaseException().Message}", error); }
@@ -483,19 +815,27 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
         }
         foreach (var entry in retired)
         {
-            entry.Stop.Cancel();
+            try { entry.Stop.Cancel(); }
+            catch (Exception error) { BundleLoadContext.LogCleanupFailure(logger, error, "load cancellation"); }
             using (ExecutionContextFlow.SuppressIfNeeded())
                 _ = entry.Load.Value.ContinueWith(task =>
                 {
-                    if (task.IsCompletedSuccessfully)
+                    try
                     {
-                        WorkflowJson.Release(task.Result.Context);
-                        task.Result.Context.Unload();
+                        if (task.IsCompletedSuccessfully) Retire(task.Result.Context);
+                        else _ = task.Exception;
                     }
-                    else _ = task.Exception;
-                    entry.Stop.Dispose();
+                    catch (Exception error) { BundleLoadContext.LogCleanupFailure(logger, error, "bundle retirement"); }
+                    finally { entry.Stop.Dispose(); }
                 }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
+    }
+
+    private void Retire(BundleLoadContext context)
+    {
+        try { WorkflowJson.Release(context); }
+        catch (Exception error) { BundleLoadContext.LogCleanupFailure(logger, error, "JSON profile release"); }
+        BundleLoadContext.UnloadSafely(context, logger);
     }
 
     public void Dispose()

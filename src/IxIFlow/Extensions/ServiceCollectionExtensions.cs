@@ -69,7 +69,8 @@ public static class ServiceCollectionExtensions
         // Workflow state and persistence
         services.AddSingleton<IWorkflowCatalog>(provider => new WorkflowCatalog(
             provider.GetRequiredService<IWorkflowStateRepository>(), provider.GetServices<WorkflowDefinition>(),
-            provider.GetRequiredService<IArtifactStore>(), provider.GetService<WorkflowBundleOptions>()));
+            provider.GetRequiredService<IArtifactStore>(), provider.GetService<WorkflowBundleOptions>(),
+            provider.GetService<ILogger<WorkflowCatalog>>()));
         services.TryAddSingleton<IArtifactStore>(provider => new RepositoryArtifactStore(provider.GetRequiredService<IWorkflowStateRepository>()));
         services.AddSingleton<IWorkflowDefinitionSource>(provider => provider.GetRequiredService<IWorkflowCatalog>());
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();

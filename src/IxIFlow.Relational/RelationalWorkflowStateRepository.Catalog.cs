@@ -31,6 +31,60 @@ public abstract partial class RelationalWorkflowStateRepository
         public int Version { get; set; }
     }
 
+    private sealed class PackageRow
+    {
+        public string Id { get; set; } = "";
+        public string Version { get; set; } = "";
+        public string Digest { get; set; } = "";
+        public string MetadataJson { get; set; } = "";
+        public string DependencyGroupsJson { get; set; } = "";
+        public WorkflowPackage Value
+        {
+            get
+            {
+                var package = JsonSerializer.Deserialize<WorkflowPackage>(MetadataJson)!;
+                if (package.Id != Id || package.Version != Version || package.Digest.Value != Digest || JsonSerializer.Serialize(package.DependencyGroups) != DependencyGroupsJson)
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Package catalog columns differ from its metadata");
+                WorkflowPackageRules.Validate(package);
+                return package;
+            }
+        }
+    }
+
+    public async Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) =>
+        await CatalogConnectionAsync<IReadOnlyList<WorkflowPackage>>(async (connection, transaction) =>
+            (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackages), new { Id = id?.ToLowerInvariant() }, transaction))
+                .Select(row => row.Value).ToArray());
+
+    public async Task<WorkflowPackage?> GetPackageAsync(string id, string version) =>
+        await CatalogConnectionAsync(async (connection, transaction) =>
+            (await connection.QuerySingleOrDefaultAsync<PackageRow>(RequiredSql(Statement.CatalogPackage),
+                new { Id = id.ToLowerInvariant(), Version = version }, transaction))?.Value);
+
+    public async Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
+        return await CatalogConnectionAsync<IReadOnlyList<WorkflowPackage>>(async (connection, transaction) =>
+            (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackagePage),
+                new { Id = id.ToLowerInvariant(), AfterVersion = afterVersion, Limit = limit }, transaction)).Select(row => row.Value).ToArray());
+    }
+
+    public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts)
+    {
+        WorkflowPackageRules.Validate(package);
+        return CatalogWriteAsync(async (connection, transaction) =>
+        {
+            if (!await artifacts.ExistsAsync(package.Digest))
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Package artifact {package.Digest} is unavailable");
+            var existing = (await connection.QuerySingleOrDefaultAsync<PackageRow>(RequiredSql(Statement.CatalogPackage), new { package.Id, package.Version }, transaction))?.Value;
+            WorkflowPackageRules.CheckRegistration(existing, package);
+            if (existing == null)
+                await connection.ExecuteAsync(RequiredSql(Statement.CatalogPackageInsert), new
+                { package.Id, package.Version, Digest = package.Digest.Value, MetadataJson = JsonSerializer.Serialize(package), DependencyGroupsJson = JsonSerializer.Serialize(package.DependencyGroups) }, transaction);
+            return true;
+        });
+    }
+
     private async Task<IReadOnlyList<WorkflowVersion>> ReadVersionsAsync(DbConnection connection, DbTransaction? transaction) =>
         (await connection.QueryAsync<VersionRow>(RequiredSql(Statement.CatalogVersions), transaction: transaction))
         .Select(row => row.Value).ToArray();
@@ -283,20 +337,30 @@ public abstract partial class RelationalWorkflowStateRepository
         }, Operation.Artifact);
     }
 
-    public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
+    public async Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(retention, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
-        cancellationToken.ThrowIfCancellationRequested();
-        return CatalogWriteAsync(async (connection, transaction) =>
+        while (true)
         {
-            var references = WorkflowCatalogRules.ArtifactReferences(await ReadVersionsAsync(connection, transaction))
-                .Concat((await connection.QueryAsync<string>(RequiredSql(Statement.CatalogInstanceDigests), transaction: transaction))
-                    .Select(value => new ArtifactDigest(value))).ToHashSet();
-            var cutoff = await OutboxNowAsync(connection, transaction) - retention;
-            return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);
-        });
+            cancellationToken.ThrowIfCancellationRequested();
+            var versions = await GetWorkflowVersionsAsync();
+            var pins = await CatalogConnectionAsync(async (connection, transaction) =>
+                (await connection.QueryAsync<string>(RequiredSql(Statement.CatalogInstanceDigests), transaction: transaction))
+                    .Select(value => new ArtifactDigest(value)).ToArray());
+            var prepared = await WorkflowCatalogRules.ReadOrphanPinsAsync(versions, pins, artifacts, cancellationToken);
+            var result = await CatalogWriteAsync<int?>(async (connection, transaction) =>
+            {
+                var references = WorkflowCatalogRules.RetentionReferences(await ReadVersionsAsync(connection, transaction),
+                    (await connection.QueryAsync<string>(RequiredSql(Statement.CatalogInstanceDigests), transaction: transaction)).Select(value => new ArtifactDigest(value)).ToArray(),
+                    (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackages), new { Id = (string?)null }, transaction)).Select(row => row.Value).ToArray(), prepared);
+                if (references == null) return null;
+                var cutoff = await OutboxNowAsync(connection, transaction) - retention;
+                return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);
+            });
+            if (result.HasValue) return result.Value;
+        }
     }
 
     internal virtual object ArtifactReferencesParameter(IReadOnlySet<ArtifactDigest> references) =>
