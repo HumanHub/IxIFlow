@@ -27,7 +27,7 @@ internal sealed partial class HostedWorkflowOperations
 {
     public async Task<WorkflowOperation> SubmitResolutionAsync(string instanceId, string invocationId, ActivityResolution resolution, Guid? expectedIncarnation = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(invocationId);
         ArgumentNullException.ThrowIfNull(resolution);
         var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
@@ -36,7 +36,7 @@ internal sealed partial class HostedWorkflowOperations
 
     public async Task<WorkflowOperation> SubmitReleaseAsync(string instanceId, string actor, Guid? expectedIncarnation = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
         return await SubmitRunAsync(instanceId, (client, token) => client.ReleaseAsync(instanceId, actor, token, incarnation));
@@ -62,7 +62,7 @@ internal sealed partial class HostedWorkflowOperations
 
     public async Task<WorkflowOperation> SubmitCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(reason);
         var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
         var requested = await host.ReadAsync(client => client.RequestCancellationAsync(instanceId, reason, CancellationToken.None, incarnation));
@@ -74,7 +74,7 @@ internal sealed partial class HostedWorkflowOperations
 
     public async Task<WorkflowOperation> SubmitTerminationAsync(string instanceId, string reasonCode, string? description, string actor, Guid? expectedIncarnation = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(instanceId);
+        InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(reasonCode);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);

@@ -123,6 +123,6 @@ internal sealed class CoordinatorMatcher(CoordinatorOptions options, TimeProvide
     }
     private static void ValidateId(string id)
     {
-        if (string.IsNullOrWhiteSpace(id) || id.Length > 400) throw LinkProtocol.Invalid();
+        if (string.IsNullOrWhiteSpace(id) || id.Length > InstanceIds.MaxLength) throw LinkProtocol.Invalid();
     }
 }
