@@ -21,6 +21,8 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     private readonly ILogger _logger;
     private readonly ILogger<SensitiveDiagnostics>? _sensitiveDiagnostics;
     private readonly InspectionRedactionPolicy _inspectionPolicy;
+    internal ExecutionLeaseRenewer Renewer { get; }
+    private readonly bool _ownsRenewer;
     private readonly object _lock = new();
     private readonly Dictionary<string, List<Subscriber>> _watched = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _stop = new();
@@ -34,10 +36,12 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
 
     public CancellationWatch(IWorkflowStateRepository store, TimeProvider? time = null,
         ILogger<CancellationWatch>? logger = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
-        InspectionRedactionPolicy? inspectionPolicy = null)
+        InspectionRedactionPolicy? inspectionPolicy = null, ExecutionLeaseRenewer? renewer = null)
     {
         _store = GuardedStateRepository.Wrap(store);
         _time = time ?? TimeProvider.System;
+        Renewer = renewer ?? new ExecutionLeaseRenewer(store, _time);
+        _ownsRenewer = renewer == null;
         _logger = logger ?? NullLogger<CancellationWatch>.Instance;
         _sensitiveDiagnostics = sensitiveDiagnostics;
         _inspectionPolicy = inspectionPolicy ?? InspectionRedactionPolicy.Default;
@@ -234,6 +238,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
         lock (_lock)
             _disposed = true;
         _stop.Cancel();
+        if (_ownsRenewer) Renewer.Dispose();
     }
 
     public async ValueTask DisposeAsync()
@@ -261,6 +266,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
         {
             // Failed calls have also finished and released their connections.
         }
+        if (_ownsRenewer) await Renewer.DisposeAsync();
     }
 
     private sealed class Subscriber(CancellationWatch watch, string instanceId,

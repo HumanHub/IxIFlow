@@ -282,12 +282,13 @@ public sealed class AssignmentResultRegressionTests
             return await base.CommitWorkflowInstanceAsync(commit);
         }
 
-        Task<bool> IWorkflowStateRepository.RenewExecutionLeaseAsync(string id, string token, TimeSpan duration)
+        async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> IWorkflowStateRepository.RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
         {
-            if (!_holdRenewal) return base.RenewExecutionLeaseAsync(id, token, duration);
+            if (!_holdRenewal) return await base.RenewExecutionLeasesAsync(leases);
             Interlocked.Increment(ref HeldRenewals);
             _renewalStarted.TrySetResult();
-            return Renewal.Task;
+            var renewed = await Renewal.Task;
+            return leases.Select(_ => new ExecutionLeaseRenewalResult(renewed ? ExecutionLeaseRenewalStatus.Renewed : ExecutionLeaseRenewalStatus.Refused)).ToArray();
         }
 
         Task<WorkflowInstance?> IWorkflowStateRepository.GetWorkflowInstanceAsync(string id) =>

@@ -446,8 +446,8 @@ public sealed class ResourceLimitTests
     {
         public volatile bool Hang;
 
-        public override Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration) =>
-            Hang ? new TaskCompletionSource<bool>().Task : base.RenewExecutionLeaseAsync(instanceId, token, duration);
+        public override Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
+            Hang ? new TaskCompletionSource<IReadOnlyList<ExecutionLeaseRenewalResult>>().Task : base.RenewExecutionLeasesAsync(leases);
     }
     private static async Task VerifyLeasesAndCancellationWithExhaustedMainPool(string connectionString, Func<string, IWorkflowStateRepository> newRepository, Func<string, System.Data.Common.DbConnection> newConnection)
     {
@@ -467,7 +467,7 @@ public sealed class ResourceLimitTests
             await Assert.ThrowsAnyAsync<Exception>(() => store.GetWorkflowInstanceAsync(instanceId));
 
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
-            Assert.True(await store.RenewExecutionLeaseAsync(instanceId, "owner", Patience));
+            Assert.True((await store.RenewExecutionLeasesAsync([new(instanceId, "owner", Patience)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
             Assert.Empty(await store.GetCancellationRequestsAsync([instanceId]));
             Assert.True((await store.RequestCancellationAsync(instanceId,
                 new CancellationReason { ReasonCode = "operator" })).Accepted);

@@ -41,7 +41,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
         EnablePublisher, RetryDisabledDeliveries,
         InsertOutboxEvent, InsertDelivery, ClaimDeliveries, DeliveryLock, DeliveryUpdate, DeliveryRead, DisablePublisher, ExpireUnattemptedDeliveries,
-        TerminationState, TerminationRequest, TerminationChildren, Cancellation, Cancellations, Runnable, Running, ClaimLease, RenewLease, ReleaseLease, Notice,
+        TerminationState, TerminationRequest, TerminationChildren, Cancellation, Cancellations, Runnable, Running, ClaimLease, ReleaseLease, Notice,
         LockIdentity, LockInbox, ParentInbox, CommitState, Receipt, UpdateReceiptNotices, Lease, TakenChild,
         EventHash, CandidateWait, AdvanceInbox, InsertEvent, UpdateEventNotice, PendingEvents, Event, InboxSequences,
         Wait, OpenWaits, EarliestDeadline, DeleteAllParts, DeleteParts, InsertCommit, UpdateCommit, FinishInbox, UpdateLease,
@@ -483,22 +483,45 @@ public abstract partial class RelationalWorkflowStateRepository :
         });
     }
 
-    public async Task<bool> RenewExecutionLeaseAsync(string instanceId, string token, TimeSpan duration)
+    internal abstract int RenewalBatchSize { get; }
+    internal abstract string RenewalSql(IReadOnlyList<ExecutionLeaseRenewal> leases, DynamicParameters parameters);
+
+    public async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+        IReadOnlyList<ExecutionLeaseRenewal> leases)
     {
-        var milliseconds = LeaseMilliseconds(instanceId, token, duration);
+        ArgumentNullException.ThrowIfNull(leases);
+        foreach (var lease in leases) LeaseMilliseconds(lease.InstanceId, lease.Token, lease.Duration);
+        if (leases.Select(lease => lease.InstanceId).Distinct(StringComparer.Ordinal).Count() != leases.Count)
+            throw new ArgumentException("Renewal instance IDs must be distinct", nameof(leases));
+        if (leases.Count == 0) return [];
         await EnsureSchemaAsync();
-        return await ExecuteOperationAsync(Operation.LeaseRenew, async () =>
+        var results = new List<ExecutionLeaseRenewalResult>(leases.Count);
+        foreach (var batch in leases.Chunk(RenewalBatchSize))
         {
-            await using var connection = await OpenConnectionAsync(ownership: true);
-            await using var transaction = await BeginTransactionAsync(connection, Operation.LeaseRenew);
-            if (ReadReason(await connection.ExecuteScalarAsync<string?>(RequiredSql(Statement.Cancellation),
-                    new { InstanceId = instanceId }, transaction))?.Mode == WorkflowControlMode.Terminate)
-                return false;
-            var changed = await connection.ExecuteAsync(RequiredSql(Statement.RenewLease),
-                ClaimParameters(instanceId, token, TimeSpan.FromMilliseconds(milliseconds)), transaction);
-            await CompleteAsync(transaction);
-            return changed == 1;
-        });
+            var outcomes = await ExecuteOperationAsync(Operation.LeaseRenew, async () =>
+            {
+                await using var connection = await OpenConnectionAsync(ownership: true);
+                await using var transaction = await BeginTransactionAsync(connection, Operation.LeaseRenew);
+                // SQLite captures its clock only after acquiring the writer lock.
+                var parameters = new DynamicParameters();
+                var sql = RenewalSql(batch, parameters);
+                var rows = (await connection.QueryAsync<RenewalRow>(sql, parameters, transaction)).ToArray();
+                if (rows.Length != batch.Length)
+                    throw new InvalidOperationException("A renewal batch must return one result per lease");
+                var replies = rows.Select(row => new ExecutionLeaseRenewalResult(row.Status,
+                    row.Status == ExecutionLeaseRenewalStatus.TerminationRequested ? ReadReason(row.CancellationJson) : null)).ToArray();
+                await CompleteAsync(transaction);
+                return replies;
+            });
+            results.AddRange(outcomes);
+        }
+        return results;
+    }
+
+    private sealed class RenewalRow
+    {
+        public ExecutionLeaseRenewalStatus Status { get; set; }
+        public string? CancellationJson { get; set; }
     }
 
     public async Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token)
