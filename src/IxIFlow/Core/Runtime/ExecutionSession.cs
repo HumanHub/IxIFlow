@@ -43,7 +43,9 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
             SavedInstance.WorkflowDataJson = parts.GetValueOrDefault(CheckpointParts.DataKey) ?? StoredJson.Inline("");
             SavedInstance.Saved(parts, reply.Revision);
             Payloads.Acknowledged();
-            Payloads.Known(CheckpointPayloads.References(SavedInstance.ExecutionStateJson, parts));
+            // The immutable commit already carries the complete owner set. Reusing it also avoids
+            // reparsing the trunk and inline parts on every acknowledgement when claim check is off.
+            Payloads.Known(commit.PayloadReferences);
         }
         return reply;
     }
