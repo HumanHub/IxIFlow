@@ -26,15 +26,18 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
 
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         var trace = await engine.GetTraceAsync(started.InstanceId);
-        Assert.Equal([TraceEntryType.ActivityStarted, TraceEntryType.ActivityCompleted, TraceEntryType.StepEntered,
-            TraceEntryType.EventReceived, TraceEntryType.ActivityStarted, TraceEntryType.ActivityCompleted],
+        Assert.Equal([TraceEntryType.ReplayOrigin, TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition,
+            TraceEntryType.ActivityCompleted, TraceEntryType.StepEntered, TraceEntryType.ThreadPosition,
+            TraceEntryType.ThreadPosition, TraceEntryType.EventReceived, TraceEntryType.ThreadPosition,
+            TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition, TraceEntryType.ActivityCompleted,
+            TraceEntryType.ThreadPosition],
             trace.Select(entry => entry.EntryType));
-        Assert.Equal([1L, 2, 3, 4, 5, 6], (await repository.GetTraceAsync(started.InstanceId)).Select(entry => entry.Sequence));
+        Assert.Equal(Enumerable.Range(1, 13).Select(n => (long)n), (await repository.GetTraceAsync(started.InstanceId)).Select(entry => entry.Sequence));
         Assert.DoesNotContain("ExecutionHistory",
             System.Text.Json.JsonSerializer.Serialize(await repository.GetWorkflowInstanceAsync(started.InstanceId)));
         // A result carries what its own run recorded.
-        Assert.Equal(3, started.TraceEntries.Count);
-        Assert.Equal(3, resumed.TraceEntries.Count);
+        Assert.Equal(6, started.TraceEntries.Count);
+        Assert.Equal(7, resumed.TraceEntries.Count);
         Assert.Equal(started.TraceEntries.Select(entry => entry.TraceId).Concat(resumed.TraceEntries.Select(entry => entry.TraceId)),
             trace.Select(entry => entry.TraceId));
     }
@@ -139,7 +142,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
         var awaited = await engine.AwaitAsync(started.InstanceId);
 
         Assert.Empty(awaited.TraceEntries);
-        Assert.Equal(3, (await engine.GetTraceAsync(started.InstanceId)).Count);
+        Assert.Equal(6, (await engine.GetTraceAsync(started.InstanceId)).Count);
     }
 
     [SqlServerFact]
