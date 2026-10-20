@@ -16,7 +16,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Feature", "host")]
 [Trait("Spec", "C-09")]
 [Trait("Category", "ClaimQueryBudget")]
-public sealed class ClaimQueryBudgetTests(ITestOutputHelper output)
+public sealed class ClaimQueryBudgetTests(ITestOutputHelper output) : IClassFixture<SqliteTestDatabase<ClaimQueryBudgetTests>>
 {
     private static readonly TimeSpan ScanBudget = TimeSpan.FromMilliseconds(500);
 
