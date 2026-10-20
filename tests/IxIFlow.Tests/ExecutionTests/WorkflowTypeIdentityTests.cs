@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.Loader;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 
@@ -31,12 +32,26 @@ public class WorkflowTypeIdentityTests
     [Fact]
     public void SavedTypeResolvesAgainstTheCurrentlyLoadedAssemblyVersion()
     {
-        var savedName = typeof(WorkflowTypeIdentityTests).AssemblyQualifiedName!;
-        var changedVersion = System.Text.RegularExpressions.Regex.Replace(savedName,
-            @"Version=\d+\.\d+\.\d+\.\d+", "Version=99.0.0.0");
-        Assert.NotEqual(savedName, changedVersion);
+        var loadedType = typeof(WorkflowTypeIdentityTests);
+        var savedContext = new AssemblyLoadContext("saved-type-version", isCollectible: true);
+        try
+        {
+            Type savedType;
+            using (savedContext.EnterContextualReflection())
+            {
+                var assembly = AssemblyBuilder.DefineDynamicAssembly(
+                    new AssemblyName(loadedType.Assembly.GetName().Name!) { Version = new Version(99, 0, 0, 0) },
+                    AssemblyBuilderAccess.RunAndCollect);
+                savedType = assembly.DefineDynamicModule("Tests")
+                    .DefineType(loadedType.FullName!, TypeAttributes.Public).CreateType()!;
+            }
+            var savedName = WorkflowTypeIdentity.SavedName(savedType);
+            Assert.NotEqual(loadedType.AssemblyQualifiedName, savedType.AssemblyQualifiedName);
+            Assert.Equal(WorkflowTypeIdentity.SavedName(loadedType), savedName);
 
-        Assert.Equal(typeof(WorkflowTypeIdentityTests), WorkflowTypeIdentity.Resolve(changedVersion));
+            Assert.Equal(loadedType, WorkflowTypeIdentity.Resolve(savedName));
+        }
+        finally { savedContext.Unload(); }
     }
 
     private static Type VersionedType(Version version)
