@@ -946,8 +946,8 @@ public sealed partial class WorkflowHost
             RecoveryPreparation? preparation = null, ExecutionCheckpoint? checkpointMetadata = null)
         {
             var depth = Interlocked.Increment(ref _runDepth);
-            using var cancellation = cancellationToken.Register(() =>
-                Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Run)));
+            using var cancellation = cancellationToken.UnsafeRegister(_ =>
+                Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Run)), null);
             try
             {
                 if (preparation?.Released == true) assignment.AcceptOnCommit();

@@ -24,7 +24,8 @@ internal static class WorkflowBuild
             catch (Exception) { completion.TrySetResult(new(Error: "Build() failed while inspecting its result")); }
         })
         { IsBackground = true, Name = "IxIFlow publish Build" };
-        thread.Start();
+        using (ExecutionContext.SuppressFlow())
+            thread.Start();
         try
         {
             var result = await completion.Task.WaitAsync(timeout, cancellationToken);

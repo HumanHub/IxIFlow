@@ -73,7 +73,7 @@ public sealed class WorkflowExecutor
         var signals = PrepareAssignment(assign.AssignmentId);
         var session = new ExecutionSession(_host, assign.AssignmentId, assign.Instance.InstanceId,
             assign.Epoch, assign.Limits, assign.CanPark);
-        using var stopping = stop.Register(() => Deliver(new Cancel(assign.AssignmentId, CancelKind.Run)));
+        using var stopping = stop.UnsafeRegister(_ => Deliver(new Cancel(assign.AssignmentId, CancelKind.Run)), null);
         try
         {
             signals.ThrowIfOwnershipLost();
@@ -563,8 +563,9 @@ public sealed class WorkflowExecutor
                             // A cancelled activity can outlive its assignment. Keep its context usable
                             // until the actual task ends, including when the host's grace period expires.
                             var activityLease = definitionLease.Retain();
-                            _ = running.Task.ContinueWith(_ => activityLease.Dispose(), CancellationToken.None,
-                                TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                            using (ExecutionContext.SuppressFlow())
+                                _ = running.Task.ContinueWith(_ => activityLease.Dispose(), CancellationToken.None,
+                                    TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                             inFlight.Add(runnable.Id, running);
                         }
                         else
