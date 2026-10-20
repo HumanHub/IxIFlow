@@ -42,7 +42,7 @@ public class ActivityPackageTests
 
         var document = Document();
         var options = await ResolvedContracts(registry);
-        var definition = await YamlTestCompilation.BuildAsync(document, options);
+        var definition = await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, options);
 
         var services = new ServiceCollection();
         services.AddLogging();
@@ -117,7 +117,7 @@ public class ActivityPackageTests
         Assert.Equal("example.email.send", activity.Activity);
         Assert.Equal("1.0", activity.ActivityVersion);
 
-        var definition = await YamlTestCompilation.BuildAsync(rewritten, await ResolvedContracts(registry));
+        var definition = await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(rewritten, await ResolvedContracts(registry));
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();

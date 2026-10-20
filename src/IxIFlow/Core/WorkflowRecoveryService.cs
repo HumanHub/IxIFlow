@@ -66,7 +66,7 @@ internal sealed partial class WorkflowRecoveryService(
         ClaimQuery query;
         using (var probe = scopes.CreateScope())
             query = new ClaimQuery(_settings.Id, await WorkflowHeartbeatService.CapabilitiesAsync(
-                probe.ServiceProvider.GetRequiredService<IWorkflowVersionRegistry>(), _settings), limit + skipped.Count);
+                probe.ServiceProvider.GetRequiredService<IWorkflowCatalog>(), _settings), limit + skipped.Count);
         var candidates = await repository.GetRunnableInstancesAsync(query);
         // Reserve against the live sets, so a pass running alongside cannot take the same instance.
         var instances = new List<RunnableInstance>();

@@ -16,7 +16,7 @@ internal static class ResumeOnceScenario
     public static async Task RunAsync(IWorkflowStateRepository firstRepository,
         IWorkflowStateRepository secondRepository, string instanceId)
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var counter = new ResumeCounter();
         using var firstHost = CreateHost(firstRepository, registry, counter);
         using var secondHost = CreateHost(secondRepository, registry, counter);
@@ -51,7 +51,7 @@ internal static class ResumeOnceScenario
     }
 
     private static ServiceProvider CreateHost(IWorkflowStateRepository repository,
-        IWorkflowVersionRegistry registry, ResumeCounter counter)
+        IWorkflowCatalog registry, ResumeCounter counter)
     {
         var services = new ServiceCollection();
         services.AddLogging();

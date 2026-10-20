@@ -1,10 +1,12 @@
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Extensions;
+using IxIFlow.Tests.Infrastructure;
 using IxIFlow.Builders.Interfaces;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -149,7 +151,7 @@ public sealed class DeclaredStructureHashTests
     [Fact]
     public async Task RegistrationUsesIdentityAndStructureAndKeepsTheFirstMetadata()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var first = Waiting();
         first.Description = "Original description";
         var reworded = Waiting();
@@ -179,29 +181,39 @@ public sealed class DeclaredStructureHashTests
         services.AddIxIFlow();
         services.RegisterWorkflow<TypedChild>();
         using var provider = services.BuildServiceProvider();
-        var registered = provider.GetRequiredService<IWorkflowVersionRegistry>();
-        var children = new ChildWorkflows(provider, registered, TimeProvider.System);
-        Assert.Equal(3, (await children.ResolveAsync(parent.Steps[1], starting: true)).Version);
-        var wrongStep = Parent().Steps[1];
-        wrongStep.WorkflowVersion = 4;
+        var registered = provider.GetRequiredService<IWorkflowCatalog>();
+        var client = provider.GetRequiredService<IWorkflowClient>();
+        Assert.Equal(WorkflowExecutionStatus.Success,
+            (await client.RunToEndAsync(parent, new StructureHashData())).Status);
+        var child = Assert.Single((await provider.GetRequiredService<IWorkflowStateRepository>()
+            .QueryInstancesAsync(new(WorkflowName: "Pinned child", Limit: int.MaxValue))).Items);
+        Assert.Equal(3, child.WorkflowVersion);
+        var wrongParent = Parent();
+        wrongParent.Name = "Wrong version parent";
+        wrongParent.Steps[1].WorkflowVersion = 4;
         var wrongVersion = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            children.ResolveAsync(wrongStep, starting: true));
+            client.RunAsync(wrongParent, new StructureHashData()));
+        Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, wrongVersion.Kind);
         Assert.Contains("v3", wrongVersion.Message);
         Assert.Contains("v4", wrongVersion.Message);
 
         var replacement = Workflow.Create<StructureHashData>("Pinned child", 3).Step<StructureHashMultiply>().Step<StructureHashMultiply>().Build();
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await registry.RegisterWorkflowAsync(replacement);
+        services.AddSingleton<IWorkflowCatalog>(registry);
+        using var mismatchedProvider = services.BuildServiceProvider();
         var mismatch = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            new ChildWorkflows(provider, registry, TimeProvider.System).ResolveAsync(parent.Steps[1], starting: true));
+            mismatchedProvider.GetRequiredService<IWorkflowClient>().RunAsync(Parent(), new StructureHashData()));
+        Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, mismatch.Kind);
         var original = (await registered.GetWorkflowDefinitionAsync("Pinned child", 3))!;
+        Assert.Contains("differs from its registered definition: registered structure hash", mismatch.Message);
         AssertMismatch(mismatch.Message, original, replacement);
     }
 
     [Fact]
     public async Task RegistrationRemembersTheHashBeforeTheDefinitionWasMutated()
     {
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         var definition = Waiting();
         var savedHash = Hash(definition);
         await registry.RegisterWorkflowAsync(definition);
@@ -243,8 +255,15 @@ public sealed class DeclaredStructureHashTests
         }
         var before = (await store.GetWorkflowInstanceAsync(id))!;
         var noExecution = new Mock<IActivityExecutor>(MockBehavior.Strict);
-        using var second = Services(store, noExecution.Object);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(changed);
+        // This case models a host loading different code, independently of the durable catalog
+        // rejection covered below. A host-local catalog supplies that capability snapshot.
+        var secondServices = new ServiceCollection().AddLogging();
+        secondServices.AddSingleton<IWorkflowStateRepository>(store);
+        secondServices.AddIxIFlow();
+        secondServices.AddSingleton<IWorkflowCatalog>(new WorkflowCatalog());
+        secondServices.AddSingleton<IActivityExecutor>(noExecution.Object);
+        using var second = secondServices.BuildServiceProvider();
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(changed);
         var client = second.GetRequiredService<IWorkflowClient>();
         if (operation == "start")
         {
@@ -279,11 +298,84 @@ public sealed class DeclaredStructureHashTests
         Assert.Equal(before.LastHostId, saved.LastHostId);
 
         using var correct = Services(store);
-        await correct.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(original);
+        await correct.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(original);
         var completed = await correct.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(id, "go", new StructureHashAnswer(), "ready", patience.Token).WaitAsync(patience.Token);
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(EventOutcome.Consumed, (await store.GetEventAsync(id, "ready"))!.Outcome);
+    }
+
+    [Theory]
+    [InlineData(false, "recover")]
+    [InlineData(true, "recover")]
+    [InlineData(false, "recover-idle")]
+    [InlineData(true, "recover-idle")]
+    [InlineData(false, "resume")]
+    [InlineData(true, "resume")]
+    [InlineData(false, "start")]
+    [InlineData(true, "start")]
+    public async Task CatalogPositionalChangesAreRefusedBeforeExecution(bool insert, string operation)
+    {
+        var store = new InMemoryWorkflowStateRepository();
+        var seedStore = new InMemoryWorkflowStateRepository();
+        var original = Waiting();
+        var changed = insert ? Waiting(insert: true) : Waiting(reverse: true);
+        Assert.NotEqual(Hash(original), Hash(changed));
+        string id;
+        using (var first = Services(seedStore))
+        {
+            var started = await first.GetRequiredService<IWorkflowClient>().RunAsync(original, new StructureHashData());
+            Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+            id = started.InstanceId;
+        }
+        await store.RegisterWorkflowVersionAsync((await seedStore.GetWorkflowVersionAsync(original.Name, original.Version))!);
+        using var second = Services(store);
+        var catalog = second.GetRequiredService<IWorkflowCatalog>();
+        var registration = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.RegisterWorkflowAsync(changed));
+        Assert.Equal(WorkflowErrorKind.InvalidRequest, registration.Kind);
+        AssertMismatch(registration.Message, original, changed);
+        await catalog.RegisterWorkflowAsync(original);
+
+        // Registration is immutable; exercise the execution safety net with a mismatched saved hash.
+        var instance = (await seedStore.GetWorkflowInstanceAsync(id))!;
+        // Import the corrupt snapshot as a first fixture commit; an idle row cannot be reclaimed
+        // merely to edit its checkpoint under the filtered lease API.
+        instance.Revision = 0;
+        var checkpoint = JsonNode.Parse(instance.ExecutionStateJson)!;
+        checkpoint["StructureHash"] = Hash(changed);
+        instance.ExecutionStateJson = checkpoint.ToJsonString();
+        var sourceWaits = await seedStore.GetOpenWaitsAsync(new WaitQuery(InstanceId: id));
+        var owner = await StoreTestSupport.LeaseAsync(store, id);
+        Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
+            CheckpointCommit.Create(instance, owner.Epoch, 0, openedWaits: sourceWaits.Select(wait =>
+                new OpenedWait(wait.WaitId, wait.Kind, wait.Key, wait.EventType, null, wait.DefaultPayloadJson)).ToArray()))).Status);
+        await StoreTestSupport.ReleaseAsync(store, id);
+        var checkpointJson = (await store.GetWorkflowInstanceAsync(id))!.ExecutionStateJson;
+        var client = second.GetRequiredService<IWorkflowClient>();
+        if (operation == "start")
+        {
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.RunAsync(original,
+                new StructureHashData(), new WorkflowOptions { InstanceId = id }));
+            AssertMismatch(error.Message, original, changed);
+        }
+        else
+        {
+            WorkflowExecutionResult result;
+            if (operation == "resume")
+                result = await client.ResumeAsync(id, "go", new StructureHashAnswer());
+            else
+            {
+                if (operation == "recover")
+                    await store.AppendEventAsync(new WorkflowEvent(id, "ready", typeof(StructureHashAnswer).AssemblyQualifiedName!, "{}", "go"));
+                result = await client.RecoverAsync(id);
+            }
+            Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+            AssertMismatch(result.ErrorMessage!, original, changed);
+        }
+        var saved = (await store.GetWorkflowInstanceAsync(id))!;
+        Assert.Equal(Hash(changed), ExecutionCheckpoint.ReadTrunk(saved.ExecutionStateJson).StructureHash);
+        Assert.Equal(checkpointJson, saved.ExecutionStateJson);
+        Assert.Equal(WorkflowStatus.Suspended, saved.Status);
     }
 
     [Fact]

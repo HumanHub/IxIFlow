@@ -108,7 +108,7 @@ public sealed class ActivityContractTests
         var options = new WorkflowSourceOptions();
         options.Types["Data"] = "global::IxIFlow.Tests.ExecutionTests.ActivityContractTests.Data";
         options.Types["InOut"] = "global::IxIFlow.Tests.ExecutionTests.ActivityContractTests.RequiredInOut";
-        var definition = YamlTestCompilation.Build(WorkflowSourceTranslator.Translate(yaml, "contract.yaml", options));
+        var definition = IxIFlow.Authoring.WorkflowCompilation.Build(WorkflowSourceTranslator.Translate(yaml, "contract.yaml", options));
         var result = await Execute(definition, new Data { Number = 4 });
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(expected, Assert.IsType<Data>(result.WorkflowData).Number);

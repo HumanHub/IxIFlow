@@ -176,7 +176,7 @@ public sealed class UnschedulableTests
         Assert.NotEqual(savedHash, new WorkflowScopeCatalog(changed).StructureHash);
         var store = new InMemoryWorkflowStateRepository();
         await Seed(store, WorkflowDemands.Resolve(original, new HashData(), new WorkflowOptions(), savedHash).ToArray());
-        var registry = new WorkflowVersionRegistry();
+        var registry = new WorkflowCatalog();
         await registry.RegisterWorkflowAsync(changed);
         var settings = HostSettings.Default;
         var capabilities = await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings);
@@ -200,7 +200,7 @@ public sealed class UnschedulableTests
         services.AddSingleton<TimeProvider>(time);
         using var provider = services.BuildServiceProvider();
         var definition = Workflow.Create<HashData>("FailExpiry").Step<HashNoop>().WaitFor<HashEvent>("wait").Build();
-        var registry = provider.GetRequiredService<IWorkflowVersionRegistry>();
+        var registry = provider.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(definition);
         var settings = provider.GetRequiredService<HostSettings>();
         await store.RegisterMemberAsync(Host(settings.Id, await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings), TimeSpan.FromSeconds(5)));

@@ -279,7 +279,7 @@ public sealed class ForEachTests
         store.FailCommit = _ => false;
 
         using var second = Services(store: store);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var recovered = await Engine(second).RecoverAsync(instanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
@@ -297,7 +297,7 @@ public sealed class ForEachTests
                 .Input(activity => activity.Log).From(_ => "")
                 .Output(activity => activity.Log).To(ctx => ctx.WorkflowData.Echo))
             .Build();
-        await services.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(child);
+        await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var definition = Workflow.Create<OrderData>("ChildPerLine")
             .Step<NoopActivity>()
             .ForEach(ctx => ctx.WorkflowData.Lines, (body, line) => body
@@ -978,7 +978,7 @@ public sealed class ForEachTests
         MutableSource.Lines = Order(100, 100, 100, 100).Lines;
 
         using var second = Services(store: store);
-        await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var recovered = await Engine(second).RecoverAsync(instanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);

@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging;
 namespace IxIFlow.Coordinator;
 
 internal sealed class CoordinatorLink(Uri endpoint, CoordinatorClientOptions options, WorkflowHost host,
-    HostSettings settings, IWorkflowVersionRegistry registry, TimeProvider time,
+    HostSettings settings, IWorkflowCatalog registry, TimeProvider time,
     Action<CoordinatorLink, bool> connectionChanged, ILogger logger) : IDisposable
 {
     private readonly object _gate = new();

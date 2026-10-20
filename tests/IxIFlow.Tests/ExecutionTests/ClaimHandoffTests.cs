@@ -56,8 +56,8 @@ public sealed class ClaimHandoffTests
         await using var matching = Provider(store, "matching", ran);
         var definition = Workflow.Create<Data>("Handoff").Demand("gpu", "cuda")
             .Step<Mark>().WaitFor<Go>("go").Step<Mark>().Build();
-        await wrong.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
-        await matching.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await wrong.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+        await matching.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         await using var wrongScope = wrong.CreateAsyncScope();
         await using var matchingScope = matching.CreateAsyncScope();
         var from = wrongScope.ServiceProvider.GetRequiredService<WorkflowHost.InstanceOperations>();
@@ -86,9 +86,9 @@ public sealed class ClaimHandoffTests
 
         // A real resolution checkpoint takes the separate operator lease, with the same placement rule.
         var resolutionDefinition = Workflow.Create<Data>("PlacedResolution").Demand("gpu", "cuda").Step<Mark>().Build();
-        await wrong.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(resolutionDefinition);
-        await matching.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(resolutionDefinition);
-        var (instance, checkpoint, scopes) = WorkflowHost.InstanceOperations.NewInstance(resolutionDefinition, new Data(), new(), DateTime.UtcNow);
+        await wrong.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(resolutionDefinition);
+        await matching.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(resolutionDefinition);
+        var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(resolutionDefinition, new Data(), new(), DateTime.UtcNow);
         instance.Status = WorkflowStatus.NeedsResolution;
         var invocation = new ActivityInvocationState { StepId = scopes.Id(resolutionDefinition.Steps[0]) };
         checkpoint.Continuations[0].Status = ContinuationStatus.WaitingResolution;
@@ -116,7 +116,7 @@ public sealed class ClaimHandoffTests
         await using var matching = Provider(store, "matching", ran);
         var definition = Workflow.Create<Data>("AwaitHandoff").Demand("gpu", "cuda")
             .Step<Mark>().WaitFor<Go>("go").Step<Mark>().Build();
-        await matching.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+        await matching.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var client = wrong.GetRequiredService<IWorkflowClient>();
         using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var id = Guid.NewGuid().ToString("N");
@@ -155,8 +155,8 @@ public sealed class ClaimHandoffTests
             await using var first = Provider(store, "matching", ran, hostTime);
             await using var second = Provider(store, "matching", ran, hostTime);
             var definition = Workflow.Create<Data>("ClockedPin").Step<Mark>().WaitFor<Go>("go").Step<Mark>().Build();
-            await first.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
-            await second.GetRequiredService<IWorkflowVersionRegistry>().RegisterWorkflowAsync(definition);
+            await first.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+            await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
             await using var firstScope = first.CreateAsyncScope();
             await using var secondScope = second.CreateAsyncScope();
             var from = firstScope.ServiceProvider.GetRequiredService<WorkflowHost.InstanceOperations>();

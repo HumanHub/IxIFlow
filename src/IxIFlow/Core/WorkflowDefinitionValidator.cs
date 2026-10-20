@@ -8,6 +8,30 @@ namespace IxIFlow.Core;
 /// <summary>Checks the build rules of a definition.</summary>
 public static class WorkflowDefinitionValidator
 {
+    /// <summary>Validates executable shape and returns the compiler-independent structure hash.</summary>
+    public static string Inspect(WorkflowDefinition definition)
+    {
+        Validate(definition);
+        return ForExecution(definition).StructureHash;
+    }
+
+    public static string GetCombinerSignature(WorkflowDefinition definition)
+    {
+        Validate(definition);
+        return BranchData.CombinerSignature(definition.WorkflowDataType);
+    }
+
+    public const int CheckpointContractVersion = 4;
+
+    public static IReadOnlyList<WorkflowVersionReference> GetDependencies(WorkflowDefinition definition)
+    {
+        Validate(definition);
+        return ForExecution(definition).AllSteps.Select(pair => pair.Value)
+            .Where(step => step.WorkflowName != null && step.WorkflowVersion != null)
+            .Select(step => new WorkflowVersionReference(step.WorkflowName!, step.WorkflowVersion!.Value))
+            .Distinct().OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ToArray();
+    }
+
     private static readonly ConditionalWeakTable<WorkflowDefinition, Lazy<Validation>> Validated = new();
     private static readonly ConditionalWeakTable<Type, string[]> UnrestorableProperties = new();
 
@@ -34,9 +58,9 @@ public static class WorkflowDefinitionValidator
     {
         Check(() =>
         {
-            if (string.IsNullOrWhiteSpace(definition.Name))
+            if (string.IsNullOrWhiteSpace(definition.Name) || definition.Name.Length != definition.Name.Trim().Length)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                    "A workflow name is required");
+                    "A workflow name is required and cannot have leading or trailing whitespace");
             if (definition.Version < 1)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Workflow '{definition.Name}' requires a positive version");
@@ -106,7 +130,7 @@ public static class WorkflowDefinitionValidator
                 throw WorkflowBuildError.Invalid(step,
                     $"Wait at '{id}' requires a positive timeout and a timeout branch");
             if (step.StepType == WorkflowStepType.WorkflowInvocation &&
-                (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowVersion is not > 0))
+                (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowName.Length != step.WorkflowName.Trim().Length || step.WorkflowVersion is not > 0))
                 throw WorkflowBuildError.Invalid(step,
                     $"Workflow invocation at '{id}' has no child workflow reference");
             if (step.StepMetadata.ContainsKey("OutcomeType") &&

@@ -117,16 +117,17 @@ public sealed class WorkflowSourceTranslatorTests
     }
 
     [Theory]
-    [InlineData("Missing", "{kind: constant, value: 1}")]
-    [InlineData("Value", "{kind: constant, value: text}")]
-    public void PropertyAndTypeErrorsAreMappedToYaml(string property, string expression)
+    // A missing property is reported at the target; a wrongly typed constant at the constant.
+    [InlineData("Missing", "{kind: constant, value: 1}", 8, 16)]
+    [InlineData("Value", "{kind: constant, value: text}", 9, 38)]
+    public void PropertyAndTypeErrorsAreMappedToYaml(string property, string expression, int line, int column)
     {
         var yaml = Header + Activity + "    input:\n      - target: " + property + "\n        from: " + expression + "\n";
         var source = WorkflowSourceTranslator.Translate(yaml, "invalid.yaml");
         var errors = Compilation(source).GetDiagnostics().Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error).ToArray();
         Assert.NotEmpty(errors);
         Assert.All(errors, error => Assert.Equal("invalid.yaml", error.Location.GetMappedLineSpan().Path));
-        Assert.Contains(errors, error => error.Location.GetMappedLineSpan().StartLinePosition.Line == 8);
+        Assert.Contains(errors, error => error.Location.GetMappedLineSpan().StartLinePosition == new LinePosition(line, column));
     }
 
     [Fact]
