@@ -11,7 +11,7 @@ internal sealed record WorkflowBuildResult(string Name = "", int Version = 0, st
 
 internal static class WorkflowBuild
 {
-    public static async Task<WorkflowBuildResult> RunAsync(WorkflowCompilationResult compilation, TimeSpan timeout,
+    public static async Task<WorkflowBuildResult> RunAsync(WorkflowCompilationResult compilation, IReadOnlyDictionary<string, byte[]> dependencies, TimeSpan timeout,
         ILogger logger, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -19,7 +19,7 @@ internal static class WorkflowBuild
         // A noncooperative Build must neither occupy the pool nor keep the process alive at shutdown.
         var thread = new Thread(() =>
         {
-            try { completion.TrySetResult(Inspect(compilation)); }
+            try { completion.TrySetResult(Inspect(compilation, dependencies)); }
             // Includes failures while extracting/formatting the original build diagnostic.
             catch (Exception) { completion.TrySetResult(new(Error: "Build() failed while inspecting its result")); }
         })
@@ -45,11 +45,11 @@ internal static class WorkflowBuild
         }
     }
 
-    private static WorkflowBuildResult Inspect(WorkflowCompilationResult compilation)
+    private static WorkflowBuildResult Inspect(WorkflowCompilationResult compilation, IReadOnlyDictionary<string, byte[]> dependencies)
     {
         try
         {
-            return WorkflowCompilation.WithDefinition(compilation.Assembly, compilation.Pdb, definition =>
+            return WorkflowCompilation.WithDefinition(compilation.Assembly, compilation.Pdb, dependencies, definition =>
             {
                 var structureHash = WorkflowDefinitionValidator.Inspect(definition);
                 // Only value metadata leaves the scratch context; validation finishes before Unload.

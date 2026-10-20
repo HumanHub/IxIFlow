@@ -7,10 +7,35 @@ public partial class InMemoryWorkflowStateRepository
     private readonly SemaphoreSlim _catalogLock = new(1, 1);
     private readonly Dictionary<(string, int), WorkflowDraft> _definitions = new();
     private readonly Dictionary<(string, int), WorkflowVersion> _versions = new();
+    private readonly Dictionary<(string, string), WorkflowPackage> _packages = new();
     private readonly Dictionary<ArtifactDigest, (ArtifactKind Kind, byte[] Content, DateTime Created)> _artifacts = new();
 
     private static WorkflowVersion CopyVersion(WorkflowVersion row) =>
         JsonSerializer.Deserialize<WorkflowVersion>(JsonSerializer.Serialize(row))!;
+
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null)
+    {
+        lock (_claimLock) return Task.FromResult<IReadOnlyList<WorkflowPackage>>(_packages.Values
+            .Where(package => id == null || package.Id == id.ToLowerInvariant()).Select(WorkflowPackageRules.Copy).ToArray());
+    }
+
+    public async Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts)
+    {
+        WorkflowPackageRules.Validate(package);
+        await _catalogLock.WaitAsync();
+        try
+        {
+            if (!await artifacts.ExistsAsync(package.Digest))
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Package artifact {package.Digest} is unavailable");
+            lock (_claimLock)
+            {
+                var key = (package.Id, package.Version);
+                WorkflowPackageRules.CheckRegistration(_packages.GetValueOrDefault(key), package);
+                _packages[key] = WorkflowPackageRules.Copy(package);
+            }
+        }
+        finally { _catalogLock.Release(); }
+    }
 
     public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version)
     {
@@ -205,14 +230,17 @@ public partial class InMemoryWorkflowStateRepository
         try
         {
             IReadOnlySet<ArtifactDigest> references;
+            WorkflowVersion[] versions;
+            ArtifactDigest[] pins;
             DateTime cutoff;
             lock (_claimLock)
             {
-                references = WorkflowCatalogRules.ArtifactReferences(_versions.Values)
-                    .Concat(_instances.Values.Where(instance => instance.BundleDigest != null)
-                        .Select(instance => instance.BundleDigest!.Value)).ToHashSet();
+                versions = _versions.Values.Select(CopyVersion).ToArray();
+                pins = _instances.Values.Where(instance => instance.BundleDigest != null)
+                    .Select(instance => instance.BundleDigest!.Value).Distinct().ToArray();
                 cutoff = Now - retention;
             }
+            references = await WorkflowCatalogRules.RetentionReferencesAsync(versions, pins, artifacts, cancellationToken);
             return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);
         }
         finally { _catalogLock.Release(); }

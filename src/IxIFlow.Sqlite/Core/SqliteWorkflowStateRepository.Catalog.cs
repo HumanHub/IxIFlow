@@ -21,6 +21,13 @@ public sealed partial class SqliteWorkflowStateRepository
             metadata_json TEXT NOT NULL,
             PRIMARY KEY (name, version)
         );
+        CREATE TABLE ixiflow_packages (
+            id TEXT COLLATE BINARY NOT NULL,
+            version TEXT COLLATE BINARY NOT NULL,
+            digest TEXT COLLATE BINARY NOT NULL,
+            metadata_json TEXT NOT NULL,
+            PRIMARY KEY (id, version)
+        );
         CREATE TABLE ixiflow_artifacts (
             digest TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
             kind TEXT NOT NULL,
@@ -32,6 +39,8 @@ public sealed partial class SqliteWorkflowStateRepository
 
     private static string? CatalogSql(Statement statement) => statement switch
     {
+        Statement.CatalogPackages => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson FROM ixiflow_packages WHERE id=COALESCE(@Id,id)",
+        Statement.CatalogPackageInsert => "INSERT INTO ixiflow_packages (id, version, digest, metadata_json) VALUES (@Id, @Version, @Digest, @MetadataJson)",
         Statement.CatalogLock => null,
         Statement.CatalogSharedLock => null,
         Statement.CatalogInstanceDigests => "SELECT DISTINCT bundle_digest FROM ixiflow_workflow_instances WHERE bundle_digest IS NOT NULL",

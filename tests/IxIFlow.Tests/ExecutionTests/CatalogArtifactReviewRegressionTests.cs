@@ -532,6 +532,8 @@ public sealed class CatalogArtifactReviewRegressionTests
     {
         public int Registrations;
         public int VersionReads;
+        public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => inner.RegisterPackageAsync(package, artifacts);
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => inner.GetPackagesAsync(id);
         public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => inner.GetDefinitionAsync(name, version);
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) => inner.SaveDefinitionAsync(definition, expectedRevision);
         public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null)

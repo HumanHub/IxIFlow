@@ -15,7 +15,8 @@ public sealed record WorkflowBundleManifest(
     WorkflowCompilerSettings Compiler, IReadOnlyDictionary<string, string> SharedAssemblies,
     IReadOnlyDictionary<string, ArtifactDigest> Entries)
 {
-    public IReadOnlyList<ArtifactDigest> ActivityPackages { get; init; } = [];
+    public string TargetFramework { get; init; } = "net10.0";
+    public IReadOnlyList<WorkflowPackagePin> ActivityPackages { get; init; } = [];
 }
 
 public sealed record WorkflowBundle(WorkflowBundleManifest Manifest, IReadOnlyDictionary<string, ReadOnlyMemory<byte>> Entries);
@@ -155,13 +156,27 @@ public static class WorkflowBundleArchive
         }
     }
 
-    private static void CheckManifest(WorkflowBundleManifest manifest)
+    internal static void CheckManifest(WorkflowBundleManifest manifest)
     {
         if (manifest.FormatVersion != 1 || string.IsNullOrWhiteSpace(manifest.Name) || manifest.Version < 1 ||
             string.IsNullOrWhiteSpace(manifest.StructureHash) || string.IsNullOrWhiteSpace(manifest.DataType) ||
             string.IsNullOrWhiteSpace(manifest.EntryType) || string.IsNullOrWhiteSpace(manifest.EngineVersion) ||
             manifest.CheckpointContractVersion < 1 || manifest.Compiler == null || manifest.SharedAssemblies == null || manifest.Entries == null || manifest.ActivityPackages == null)
             throw Mismatch("Invalid bundle manifest metadata");
+        var packageIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pin in manifest.ActivityPackages)
+        {
+            if (pin == null) throw Mismatch("Invalid null package pin");
+            try { WorkflowPackageRules.Validate(new(pin.Id, pin.Version, pin.Digest, pin.Entries)); }
+            catch (Exception error) when (error is WorkflowEngineException or ArgumentException)
+            { throw Mismatch("Invalid package pin", error); }
+            if (!packageIds.Add(pin.Id) || pin.ReferenceAssemblies == null || pin.RuntimeAssets == null ||
+                (!pin.RequiresRuntimeIdentifier && !pin.RuntimeAssets.ContainsKey("")) ||
+                pin.RuntimeAssets.Values.Any(assets => assets == null || assets.ManagedAssemblies == null || assets.NativeLibraries == null) ||
+                pin.ReferenceAssemblies.Concat(pin.RuntimeAssets.Values.SelectMany(assets => assets.ManagedAssemblies.Concat(assets.NativeLibraries)))
+                    .Any(path => !pin.Entries.ContainsKey(path)))
+                throw Mismatch("Invalid package asset pin");
+        }
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ManifestPath };
         foreach (var (path, digest) in manifest.Entries)
         {

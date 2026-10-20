@@ -206,7 +206,7 @@ public sealed class BundleLoadingTests
             manifest = manifest with { SharedAssemblies = shared };
         }
         if (defect == "private") entries.Remove("private/System.Payments.dll");
-        if (defect == "packages") manifest = manifest with { ActivityPackages = [version.ArtifactDigest.Value] };
+        if (defect == "packages") manifest = manifest with { ActivityPackages = [new("invalid.imports", "1.0.0", ArtifactDigest.Of([42]), new Dictionary<string, ArtifactDigest> { ["invalid.nuspec"] = ArtifactDigest.Of([1]) }, [], new Dictionary<string, WorkflowPackageAssets> { [""] = new([], []) }, false)] };
         var bytes = WorkflowBundleArchive.Create(manifest, entries);
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(bytes));
         using var catalog = new WorkflowCatalog(store, artifacts: store, bundles: new(Folder()));
@@ -293,7 +293,7 @@ public sealed class BundleLoadingTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static WeakReference PrepareAndRelease(WorkflowBundle bundle, ArtifactDigest digest, int stage)
     {
-        var context = new BundleLoadContext(bundle, digest);
+        var context = new BundleLoadContext(bundle, digest, [], new Dictionary<string, string>());
         using (WorkflowTypeIdentity.Enter(context))
         {
             var assembly = context.LoadFromStream(new MemoryStream(bundle.Entries[WorkflowBundleArchive.AssemblyPath].ToArray()));

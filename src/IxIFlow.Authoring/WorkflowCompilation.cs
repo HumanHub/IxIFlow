@@ -58,6 +58,15 @@ public static class WorkflowCompilation
         return references;
     }
 
+    internal static ReferenceSet CreateReferences(WorkflowSourceOptions options, IEnumerable<string> packageReferences)
+    {
+        var packagePaths = packageReferences.ToArray();
+        var packageNames = packagePaths.Select(path => AssemblyName.GetAssemblyName(path).Name!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var references = new ReferenceSet(NormalizeReferences(ReferencePaths().Where(path => !packageNames.Contains(AssemblyName.GetAssemblyName(path).Name!)).Concat(packagePaths)));
+        ValidateConfiguredTypes(options, references);
+        return references;
+    }
+
     private static IEnumerable<string> ConfiguredTypeNames(WorkflowSourceOptions options) =>
         options.Types.Values.Concat(options.WorkflowDataTypes.Values)
             .Concat(options.Workflows.Values.Select(item => item.DataType)).Distinct(StringComparer.Ordinal);
@@ -196,8 +205,11 @@ public static class WorkflowCompilation
         WithDefinition(assemblyBytes, pdbBytes, static definition => definition);
 
     internal static T WithDefinition<T>(byte[] assemblyBytes, byte[] pdbBytes, Func<WorkflowDefinition, T> inspect)
+        => WithDefinition(assemblyBytes, pdbBytes, new Dictionary<string, byte[]>(), inspect);
+
+    internal static T WithDefinition<T>(byte[] assemblyBytes, byte[] pdbBytes, IReadOnlyDictionary<string, byte[]> dependencies, Func<WorkflowDefinition, T> inspect)
     {
-        var context = new ScratchContext();
+        var context = new ScratchContext(dependencies);
         try
         {
             using var assemblyStream = new MemoryStream(assemblyBytes);
@@ -212,9 +224,10 @@ public static class WorkflowCompilation
         finally { context.Unload(); }
     }
 
-    private sealed class ScratchContext() : AssemblyLoadContext(isCollectible: true)
+    private sealed class ScratchContext(IReadOnlyDictionary<string, byte[]> dependencies) : AssemblyLoadContext(isCollectible: true)
     {
-        protected override Assembly? Load(AssemblyName name) => Default.Assemblies.FirstOrDefault(assembly =>
-            AssemblyName.ReferenceMatchesDefinition(name, assembly.GetName()));
+        protected override Assembly? Load(AssemblyName name) => dependencies.TryGetValue(name.Name!, out var bytes)
+            ? LoadFromStream(new MemoryStream(bytes, writable: false)) : Default.Assemblies.FirstOrDefault(assembly =>
+                AssemblyName.ReferenceMatchesDefinition(name, assembly.GetName()));
     }
 }

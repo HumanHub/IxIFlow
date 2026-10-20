@@ -21,6 +21,13 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             metadata_json text NOT NULL,
             PRIMARY KEY (name, version)
         );
+        CREATE TABLE ixiflow_packages (
+            id text COLLATE "C" NOT NULL,
+            version text COLLATE "C" NOT NULL,
+            digest text COLLATE "C" NOT NULL,
+            metadata_json text NOT NULL,
+            PRIMARY KEY (id, version)
+        );
         CREATE TABLE ixiflow_artifacts (
             digest text COLLATE "C" NOT NULL PRIMARY KEY,
             kind TEXT NOT NULL,
@@ -35,6 +42,8 @@ public sealed partial class PostgreSqlWorkflowStateRepository
 
     private static string? CatalogSql(Statement statement) => statement switch
     {
+        Statement.CatalogPackages => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson FROM ixiflow_packages WHERE id=COALESCE(@Id,id)",
+        Statement.CatalogPackageInsert => "INSERT INTO ixiflow_packages (id, version, digest, metadata_json) VALUES (@Id, @Version, @Digest, @MetadataJson)",
         Statement.CatalogLock => """
             SELECT pg_advisory_xact_lock(hashtext('IxIFlow.Catalog'))
             """,

@@ -31,6 +31,47 @@ public abstract partial class RelationalWorkflowStateRepository
         public int Version { get; set; }
     }
 
+    private sealed class PackageRow
+    {
+        public string Id { get; set; } = "";
+        public string Version { get; set; } = "";
+        public string Digest { get; set; } = "";
+        public string MetadataJson { get; set; } = "";
+        public WorkflowPackage Value
+        {
+            get
+            {
+                var package = JsonSerializer.Deserialize<WorkflowPackage>(MetadataJson)!;
+                if (package.Id != Id || package.Version != Version || package.Digest.Value != Digest)
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Package catalog columns differ from its metadata");
+                WorkflowPackageRules.Validate(package);
+                return package;
+            }
+        }
+    }
+
+    public async Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) =>
+        await CatalogConnectionAsync<IReadOnlyList<WorkflowPackage>>(async (connection, transaction) =>
+            (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackages), new { Id = id?.ToLowerInvariant() }, transaction))
+                .Select(row => row.Value).ToArray());
+
+    public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts)
+    {
+        WorkflowPackageRules.Validate(package);
+        return CatalogWriteAsync(async (connection, transaction) =>
+        {
+            if (!await artifacts.ExistsAsync(package.Digest))
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Package artifact {package.Digest} is unavailable");
+            var existing = (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackages), new { package.Id }, transaction))
+                .Select(row => row.Value).SingleOrDefault(row => row.Version == package.Version);
+            WorkflowPackageRules.CheckRegistration(existing, package);
+            if (existing == null)
+                await connection.ExecuteAsync(RequiredSql(Statement.CatalogPackageInsert), new
+                { package.Id, package.Version, Digest = package.Digest.Value, MetadataJson = JsonSerializer.Serialize(package) }, transaction);
+            return true;
+        });
+    }
+
     private async Task<IReadOnlyList<WorkflowVersion>> ReadVersionsAsync(DbConnection connection, DbTransaction? transaction) =>
         (await connection.QueryAsync<VersionRow>(RequiredSql(Statement.CatalogVersions), transaction: transaction))
         .Select(row => row.Value).ToArray();
@@ -291,9 +332,9 @@ public abstract partial class RelationalWorkflowStateRepository
         cancellationToken.ThrowIfCancellationRequested();
         return CatalogWriteAsync(async (connection, transaction) =>
         {
-            var references = WorkflowCatalogRules.ArtifactReferences(await ReadVersionsAsync(connection, transaction))
-                .Concat((await connection.QueryAsync<string>(RequiredSql(Statement.CatalogInstanceDigests), transaction: transaction))
-                    .Select(value => new ArtifactDigest(value))).ToHashSet();
+            var references = await WorkflowCatalogRules.RetentionReferencesAsync(await ReadVersionsAsync(connection, transaction),
+                (await connection.QueryAsync<string>(RequiredSql(Statement.CatalogInstanceDigests), transaction: transaction))
+                    .Select(value => new ArtifactDigest(value)).ToArray(), artifacts, cancellationToken);
             var cutoff = await OutboxNowAsync(connection, transaction) - retention;
             return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);
         });

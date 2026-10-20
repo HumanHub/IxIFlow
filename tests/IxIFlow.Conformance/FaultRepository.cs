@@ -8,6 +8,8 @@ namespace IxIFlow.Tests.Conformance;
 /// </summary>
 internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflowStateRepository
 {
+    public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => inner.RegisterPackageAsync(package, artifacts);
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => inner.GetPackagesAsync(id);
     public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
         inner.GetDefinitionAsync(name, version);
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>

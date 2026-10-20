@@ -27,6 +27,8 @@ public sealed record WorkflowDraftId(string Name, int Version, long Revision);
 /// <summary>Durable catalog operations, shared with the instance commit protocol.</summary>
 public interface IWorkflowCatalogStore
 {
+    Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts);
+    Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null);
     Task<WorkflowDraft?> GetDefinitionAsync(string name, int version);
     Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision);
     Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null);
@@ -153,6 +155,8 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
     public Task RetireWorkflowVersionAsync(string name, int version) =>
         SetWorkflowVersionStateAsync(name, version, WorkflowVersionState.Retired);
     public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _store.GetDefinitionAsync(name, version);
+    public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => _store.RegisterPackageAsync(package, artifacts);
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _store.GetPackagesAsync(id);
     public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
         _store.SaveDefinitionAsync(definition, expectedRevision);
     public async Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null)
@@ -288,6 +292,23 @@ internal static class WorkflowCatalogRules
     }
 
     public static IReadOnlySet<ArtifactDigest> ArtifactReferences(IEnumerable<WorkflowVersion> rows) =>
-        rows.SelectMany(row => (row.ArtifactReferences ?? []).Concat(row.ArtifactDigest is { } digest ? [digest] : []))
+        rows.SelectMany(row => (row.ArtifactReferences ?? []).Concat(row.ArtifactDigest is { } digest ? [digest] : [])
+            .Concat(row.ManifestJson == null ? [] : System.Text.Json.JsonSerializer.Deserialize<WorkflowBundleManifest>(row.ManifestJson)!
+                .ActivityPackages.Select(package => package.Digest)))
             .ToHashSet();
+
+    internal static async Task<IReadOnlySet<ArtifactDigest>> RetentionReferencesAsync(IReadOnlyList<WorkflowVersion> versions,
+        IReadOnlyList<ArtifactDigest> instancePins, IArtifactStore artifacts, CancellationToken token)
+    {
+        var references = ArtifactReferences(versions).Concat(instancePins).ToHashSet();
+        var catalogPins = versions.Where(row => row.ArtifactDigest != null).Select(row => row.ArtifactDigest!.Value).ToHashSet();
+        foreach (var digest in instancePins.Distinct().Where(pin => !catalogPins.Contains(pin)))
+        {
+            await using var archive = await artifacts.OpenAsync(digest, token)
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Cannot retain dependencies of unavailable instance bundle {digest}");
+            var bundle = await WorkflowBundleArchive.ReadAsync(archive, digest, token);
+            references.UnionWith(bundle.Manifest.ActivityPackages.Select(package => package.Digest));
+        }
+        return references;
+    }
 }
