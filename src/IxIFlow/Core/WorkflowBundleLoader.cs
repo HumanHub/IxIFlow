@@ -1,5 +1,7 @@
 using System.Reflection;
 using System.Runtime.Loader;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using System.Security.Cryptography;
 using System.Text.Json;
 using IxIFlow.Core.Runtime;
@@ -83,7 +85,8 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
             if (!expected.Contains(Path.GetFileName(entry))) RemoveNativeEntry(entry);
         // Temporary names are under the digest lock, so every leftover belongs to a crashed writer.
         var opened = new Dictionary<string, FileStream>(comparer);
-        string? privateRoot = null;
+        using var privateImages = !OperatingSystem.IsWindows() && !OperatingSystem.IsLinux()
+            ? NativeImageDirectory.Create() : null;
         try
         {
             foreach (var (name, asset) in native)
@@ -118,18 +121,13 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
                 }
             }
             var paths = new Dictionary<string, string>(comparer);
-            if (!OperatingSystem.IsWindows() && !OperatingSystem.IsLinux())
-            {
-                privateRoot = Directory.CreateTempSubdirectory("IxIFlow.Native.").FullName;
-                File.SetUnixFileMode(privateRoot, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            }
             foreach (var (name, stream) in opened)
             {
                 if (OperatingSystem.IsLinux()) paths.Add(name, "/proc/self/fd/" + stream.SafeFileHandle.DangerousGetHandle());
                 else if (OperatingSystem.IsWindows()) paths.Add(name, stream.Name);
                 else
                 {
-                    var path = Path.Combine(privateRoot!, name);
+                    var path = Path.Combine(privateImages!.Root, name);
                     await File.WriteAllBytesAsync(path, native[name].Bytes.ToArray(), token);
                     using var verified = File.OpenRead(path);
                     if (!await VerifyNativeAsync(verified, native[name].Bytes.Length, native[name].Hash, limits.MaxEntryBytes, token))
@@ -137,14 +135,15 @@ internal sealed class BundleCache(IArtifactStore artifacts, string directory, Wo
                     paths.Add(name, path);
                 }
             }
-            context.OwnNativeFiles(opened.Values.ToArray(), privateRoot);
-            opened.Clear(); privateRoot = null;
+            context.OwnNativeFiles(opened.Values.ToArray());
+            opened.Clear();
             context.LoadNative(paths, native.ToDictionary(pair => pair.Key, pair => pair.Value.Bytes, comparer));
+            // POSIX retains each loaded mapping after unlink. All later imports use
+            // the owned handles, so even a partial load never needs these paths again.
         }
         finally
         {
             foreach (var stream in opened.Values) stream.Dispose();
-            if (privateRoot != null) Directory.Delete(privateRoot, true);
         }
     }
 
@@ -387,23 +386,23 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
         }
     }
 
-    internal void OwnNativeFiles(IEnumerable<FileStream> files, string? privateRoot)
-    { _nativeLifetime.Files.AddRange(files); _nativeLifetime.PrivateRoot = privateRoot; }
+    internal void OwnNativeFiles(IEnumerable<FileStream> files) => _nativeLifetime.OwnFiles(files);
 
     // Unloading is only a request: delegates, objects and even their finalizers may
     // still call P/Invoke. The runtime retains the context until its loader allocator
-    // dies. A long weak reference also covers resurrection/finalizer ordering.
+    // dies. The raw long weak handle survives eager finalization of managed weak
+    // wrappers and still sees f-reachable/resurrected contexts. Release is safe only
+    // after that handle clears, including when nobody explicitly requests Unload().
     private sealed class NativeLifetime(BundleLoadContext context, ILogger? logger)
     {
-        private readonly WeakReference<BundleLoadContext> _context = new(context, trackResurrection: true);
+        private GCHandle _context = GCHandle.Alloc(context, GCHandleType.WeakTrackResurrection);
         internal readonly List<nint> Handles = [];
-        internal readonly List<FileStream> Files = [];
-        internal string? PrivateRoot;
+        private readonly List<(FileStream Stream, SafeFileHandle Handle)> _files = [];
         private int _released;
 
         ~NativeLifetime()
         {
-            if (_context.TryGetTarget(out _))
+            if (_context.Target != null)
             {
                 GC.ReRegisterForFinalize(this);
                 return;
@@ -411,28 +410,43 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
             Release();
         }
 
+        internal void OwnFiles(IEnumerable<FileStream> files)
+        {
+            foreach (var file in files)
+            {
+                var handle = file.SafeFileHandle;
+                var acquired = false;
+                // SafeFileHandle can be finalized independently while this owner is
+                // re-registered. Keep its OS handle open until our eventual Release.
+                handle.DangerousAddRef(ref acquired);
+                _files.Add((file, handle));
+            }
+        }
+
         private void Release()
         {
             if (Interlocked.Exchange(ref _released, 1) != 0) return;
+            _context.Free();
             for (var i = Handles.Count - 1; i >= 0; i--)
                 try { System.Runtime.InteropServices.NativeLibrary.Free(Handles[i]); }
                 catch (Exception error) { LogCleanupFailure(logger, error, "native module release"); }
             Handles.Clear();
-            foreach (var file in Files)
+            foreach (var (file, handle) in _files)
+            {
                 try { file.Dispose(); }
                 catch (Exception error) { LogCleanupFailure(logger, error, "native file release"); }
-            Files.Clear();
-            if (PrivateRoot != null)
-                try { Directory.Delete(PrivateRoot, true); }
-                catch (Exception error) { LogCleanupFailure(logger, error, "private native directory release"); }
-            PrivateRoot = null;
+                try { handle.DangerousRelease(); }
+                catch (Exception error) { LogCleanupFailure(logger, error, "native file handle release"); }
+            }
+            _files.Clear();
         }
     }
 
     internal static void LogCleanupFailure(ILogger? logger, Exception error, string phase)
     {
         // Cleanup, including finalizer cleanup, must also survive a failing logger.
-        try { logger?.LogWarning("Bundle cleanup failed during {Phase} ({ErrorType})", phase, error.GetType().FullName); }
+        try { logger?.LogWarning("Bundle cleanup failed during {Phase} ({ErrorType}): {ErrorMessage}\n{ErrorStack}",
+            phase, error.GetType().FullName, error.Message, error.StackTrace ?? ""); }
         catch (Exception) { }
     }
 

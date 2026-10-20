@@ -165,7 +165,7 @@ public sealed class ActivityPackageMergeTests
         using var compiler = new BreakpointConditionCompiler(logs);
         using var secondCompiler = new BreakpointConditionCompiler(logs);
         var references = RetainPackageObjectAfterRetirement(catalog, compiler, secondCompiler, cache, throwing);
-        cache = new DirectoryInfo(cache).ResolveLinkTarget(true)?.FullName ?? cache;
+        cache = IxIFlow.TestSupport.ExistingPath.Canonicalize(cache);
         for (var index = 0; index < 100 && references.Any(reference => reference.IsAlive); index++)
         {
             GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
@@ -184,7 +184,13 @@ public sealed class ActivityPackageMergeTests
             File.Delete(native);
         }
         Assert.Equal(throwing == "none" ? 0 : 1, logs.Messages.Count);
-        if (throwing != "none") Assert.Contains("InvalidOperationException", Assert.Single(logs.Messages));
+        if (throwing != "none")
+        {
+            var message = Assert.Single(logs.Messages);
+            Assert.Contains("InvalidOperationException", message);
+            Assert.Contains(throwing == "public" ? "public handler failed" : throwing + " failed", message);
+            Assert.Contains(nameof(CompileAndRetire), message); // Stack text, not an exception object.
+        }
         GC.KeepAlive(catalog);
         GC.KeepAlive(compiler);
         GC.KeepAlive(secondCompiler);
@@ -234,7 +240,7 @@ public sealed class ActivityPackageMergeTests
         var profile = WorkflowJson.Options(type: type);
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
         Assert.Same(compiled.Evaluate, compiler.Compile(request).Evaluate);
-        cache = new DirectoryInfo(cache).ResolveLinkTarget(true)?.FullName ?? cache;
+        cache = IxIFlow.TestSupport.ExistingPath.Canonicalize(cache);
         var native = Assert.Single(Directory.GetFiles(Path.Combine(cache, "native"), "*", SearchOption.AllDirectories));
         if (OperatingSystem.IsWindows())
             Assert.Throws<IOException>(() => { using var locked = File.Open(native, FileMode.Open, FileAccess.ReadWrite, FileShare.None); });
@@ -275,7 +281,7 @@ public sealed class ActivityPackageMergeTests
 
     private static void AssertNativeMapped(string cache, bool expected)
     {
-        cache = new DirectoryInfo(cache).ResolveLinkTarget(true)?.FullName ?? cache;
+        cache = IxIFlow.TestSupport.ExistingPath.Canonicalize(cache);
         if (OperatingSystem.IsWindows())
         {
             using var process = System.Diagnostics.Process.GetCurrentProcess();
@@ -291,6 +297,11 @@ public sealed class ActivityPackageMergeTests
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel level) => true;
         public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> format)
-        { lock (Messages) Messages.Add(format(state, error)); }
+        {
+            Assert.Null(error);
+            if (state is IEnumerable<KeyValuePair<string, object?>> values)
+                Assert.All(values, value => Assert.True(value.Value is null or string));
+            lock (Messages) Messages.Add(format(state, error));
+        }
     }
 }

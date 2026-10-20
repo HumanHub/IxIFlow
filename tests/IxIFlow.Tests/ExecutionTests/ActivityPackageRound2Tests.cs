@@ -27,6 +27,7 @@ public sealed class NativePackageIsolation;
 public sealed class ActivityPackageRound2Tests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "IxIFlow.PackageR2", Guid.NewGuid().ToString("N"));
+    private readonly List<WeakReference> _contexts = [];
     private static readonly Lazy<Task<(WorkflowBundle Bundle, ArtifactDigest Digest)>> Bundle = new(async () =>
     {
         var store = new InMemoryWorkflowStateRepository();
@@ -35,10 +36,12 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         return (await WorkflowBundleArchive.ReadAsync(stream, row.ArtifactDigest.Value), row.ArtifactDigest.Value);
     });
 
-    private static async Task<BundleLoadContext> Context()
+    private async Task<BundleLoadContext> Context()
     {
         var (bundle, digest) = await Bundle.Value;
-        return new(bundle, digest, [], new Dictionary<string, string>());
+        var context = new BundleLoadContext(bundle, digest, [], new Dictionary<string, string>());
+        _contexts.Add(new(context, true));
+        return context;
     }
 
     private string Folder(string name = "cache") { var path = Path.Combine(_root, name); Directory.CreateDirectory(path); return path; }
@@ -71,11 +74,11 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         await Collected(retired.Context);
         Assert.Empty(retired.Handles);
         foreach (var path in retired.Paths) File.Delete(path); // Windows module and verification handles must both be closed.
-        if (OperatingSystem.IsLinux()) Assert.DoesNotContain(cache, await File.ReadAllTextAsync("/proc/self/maps"));
+        if (OperatingSystem.IsLinux()) Assert.DoesNotContain(IxIFlow.TestSupport.ExistingPath.Canonicalize(cache), await File.ReadAllTextAsync("/proc/self/maps"));
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static (WeakReference Context, List<nint> Handles, string[] Paths) LoadAndRetire(string cache)
+    private (WeakReference Context, List<nint> Handles, string[] Paths) LoadAndRetire(string cache)
     {
         var context = Context().GetAwaiter().GetResult();
         try
@@ -145,7 +148,7 @@ public sealed class ActivityPackageRound2Tests : IDisposable
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
-    private static (WeakReference Context, List<nint> Handles) FailAndRetire(string cache)
+    private (WeakReference Context, List<nint> Handles) FailAndRetire(string cache)
     {
         var context = Context().GetAwaiter().GetResult();
         try
@@ -189,7 +192,7 @@ public sealed class ActivityPackageRound2Tests : IDisposable
             File.Move(replacement, path, true);
             context.LoadNative(new Dictionary<string, string> { ["fixture_native.so"] = "/proc/self/fd/" + verified.SafeFileHandle.DangerousGetHandle() },
                 new Dictionary<string, ReadOnlyMemory<byte>> { ["fixture_native.so"] = bytes });
-            context.OwnNativeFiles([verified], null);
+            context.OwnNativeFiles([verified]);
             Assert.Equal(42, Call(context, "fixture_native", "fixture_value"));
         }
         finally { context.Unload(); verified.Dispose(); }
@@ -513,7 +516,14 @@ public sealed class ActivityPackageRound2Tests : IDisposable
     void IDisposable.Dispose()
     {
         // Retired native contexts release their file ownership through collection.
-        for (var index = 0; index < 4; index++) { GC.Collect(); GC.WaitForPendingFinalizers(); }
+        for (var index = 0; index < 100 && _contexts.Any(context => context.IsAlive); index++)
+        {
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            Thread.Sleep(20);
+        }
+        Assert.All(_contexts, context => Assert.False(context.IsAlive));
+        // The owner may have re-registered in the round that cleared the context.
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
         if (Directory.Exists(_root)) Directory.Delete(_root, true);
     }
 }

@@ -28,3 +28,12 @@ public sealed class LinuxNativeFactAttribute : FactAttribute
             Skip = "The verified-descriptor and Unix link tests require linux-x64";
     }
 }
+
+public sealed class PosixNativeFactAttribute : FactAttribute
+{
+    public PosixNativeFactAttribute()
+    {
+        if (RuntimeInformation.RuntimeIdentifier is not ("linux-x64" or "osx-arm64"))
+            Skip = "Private-copy unlink and Unix ownership tests require the linux-x64 or osx-arm64 fixture; Windows uses no private copies";
+    }
+}
