@@ -655,8 +655,6 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
             ON ixiflow_workflow_instances (correlation_id);
         CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_parent
             ON ixiflow_workflow_instances (parent_instance_id) WHERE parent_instance_id IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS ix_ixiflow_workflow_instances_runnable
-            ON ixiflow_workflow_instances (runnable_at_utc, instance_id) WHERE runnable_at_utc IS NOT NULL;
         CREATE INDEX ix_ixiflow_instances_demand_set ON ixiflow_workflow_instances (demand_set_id);
         CREATE INDEX ix_ixiflow_instances_set_runnable
             ON ixiflow_workflow_instances (demand_set_id, runnable_at_utc, instance_id, last_host_id, pinned_host, pin_expires_at_utc) WHERE runnable_at_utc IS NOT NULL;

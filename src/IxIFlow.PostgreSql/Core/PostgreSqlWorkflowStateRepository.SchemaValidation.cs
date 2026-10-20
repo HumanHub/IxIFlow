@@ -99,7 +99,6 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 "ix_ixiflow_workflow_events_pending",
                 "ix_ixiflow_workflow_instances_correlation_id",
                 "ix_ixiflow_workflow_instances_parent",
-                "ix_ixiflow_workflow_instances_runnable",
                 "ix_ixiflow_workflow_instances_status",
                 "ix_ixiflow_workflow_instances_unfinished_workflow",
                 "ix_ixiflow_workflow_instances_workflow_name",

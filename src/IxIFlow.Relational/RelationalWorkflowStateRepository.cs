@@ -973,6 +973,9 @@ public abstract partial class RelationalWorkflowStateRepository :
                 if (appended.Status == EventAppendStatus.Stored)
                     inbox.InboxSequence = appended.Sequence;
                 woken |= appended.MadeRunnable;
+                // This arrival changes the committing instance's own schedule. Waking a child or
+                // the parent below only changes that other instance, never this receipt's due time.
+                if (appended.MadeRunnable) runnableAt = now;
             }
         }
         // The child's completion goes to its parent's inbox; whatever the parent's state, the child's
@@ -1023,7 +1026,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         }
         await transaction.CommitAsync();
         return new WorkflowCommitResult(WorkflowCommitStatus.Applied, revision,
-            ReadReason(current?.CancellationJson), parked, unread, notices, woken ? now : runnableAt, now)
+            ReadReason(current?.CancellationJson), parked, unread, notices, runnableAt, now)
             { Admission = admitted, Notice = ownNotice };
     }
 
