@@ -14,5 +14,13 @@ IXIF0006 | IxIFlow.Contracts | Error | MappingAnalyzer
 IXIF0007 | IxIFlow.Contracts | Error | MappingAnalyzer
 IXIF0008 | IxIFlow.Contracts | Error | MappingAnalyzer
 IXIF0009 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0010 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0011 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0012 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0013 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0014 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0015 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0016 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0017 | IxIFlow.Contracts | Error | MappingAnalyzer
 IXIF0101 | IxIFlow.Purity | Error | PurityAnalyzer
 IXIF0102 | IxIFlow.Purity | Error | PurityAnalyzer

@@ -15,9 +15,9 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
 {
     private readonly WorkflowBuilder<TWorkflowData, TPreviousStepData> _workflowBuilder;
 
-    public SagaContainerBuilder(List<WorkflowStep> steps, string workflowName, int workflowVersion, List<WorkflowDemand>? demands = null)
+    public SagaContainerBuilder(List<WorkflowStep> steps, string workflowName, int workflowVersion, List<WorkflowDemand>? demands = null, IReadOnlyList<string>? declaredInputs = null, IReadOnlyList<string>? declaredOutputs = null)
     {
-        _workflowBuilder = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, workflowName, workflowVersion, demands);
+        _workflowBuilder = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, workflowName, workflowVersion, demands, declaredInputs, declaredOutputs);
     }
 
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Demand(string key, string? value = null, bool inherit = false) =>
@@ -90,6 +90,13 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         where TInvokedData : class
     {
         return _workflowBuilder.Invoke(workflowName, version, configure, sourcePath: sourcePath, sourceLine: sourceLine);
+    }
+
+    public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version, WorkflowContract contract,
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TInvokedData : class
+    {
+        return _workflowBuilder.Invoke(workflowName, version, contract, configure, sourcePath: sourcePath, sourceLine: sourceLine);
     }
 
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Sequence(

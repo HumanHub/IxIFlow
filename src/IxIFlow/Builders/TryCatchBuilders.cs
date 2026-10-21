@@ -8,7 +8,7 @@ namespace IxIFlow.Builders;
 
 /// <summary>Builds a try block and its typed fault handlers.</summary>
 public sealed class TryBuilder<TWorkflowData, TPreviousStepData>(
-    List<WorkflowStep> steps, WorkflowStep tryStep, string name, int workflowVersion, List<WorkflowDemand> demands)
+    List<WorkflowStep> steps, WorkflowStep tryStep, string name, int workflowVersion, List<WorkflowDemand> demands, IReadOnlyList<string>? declaredInputs = null, IReadOnlyList<string>? declaredOutputs = null)
     : ITryBuilder<TWorkflowData, TPreviousStepData>
     where TWorkflowData : class
     where TPreviousStepData : class
@@ -46,21 +46,21 @@ public sealed class TryBuilder<TWorkflowData, TPreviousStepData>(
         configure(new CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>(
             catchBlock.SequenceSteps, typeof(TException)));
         tryStep.CatchBlocks.Add(catchBlock);
-        return new CatchBuilder<TWorkflowData, TPreviousStepData>(steps, tryStep, name, workflowVersion, demands);
+        return new CatchBuilder<TWorkflowData, TPreviousStepData>(steps, tryStep, name, workflowVersion, demands, declaredInputs, declaredOutputs);
     }
 
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Finally(
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         configure(new WorkflowBuilder<TWorkflowData, TPreviousStepData>(tryStep.FinallySteps, string.Empty, demands: demands));
-        return new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, name, workflowVersion, demands);
+        return new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, name, workflowVersion, demands, declaredInputs, declaredOutputs);
     }
 }
 
 /// <summary>Adds another catch or a finally block to a try structure.</summary>
 public sealed class CatchBuilder<TWorkflowData, TPreviousStepData>(
-    List<WorkflowStep> steps, WorkflowStep tryStep, string name, int workflowVersion, List<WorkflowDemand> demands)
-    : WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, name, workflowVersion, demands),
+    List<WorkflowStep> steps, WorkflowStep tryStep, string name, int workflowVersion, List<WorkflowDemand> demands, IReadOnlyList<string>? declaredInputs = null, IReadOnlyList<string>? declaredOutputs = null)
+    : WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, name, workflowVersion, demands, declaredInputs, declaredOutputs),
         ICatchBuilder<TWorkflowData, TPreviousStepData>
     where TWorkflowData : class
     where TPreviousStepData : class
@@ -231,6 +231,18 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
     {
         new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
             .Invoke(workflowName, version, configure, sourcePath: sourcePath, sourceLine: sourceLine);
+        CaptureFaults(steps[^1]);
+        return new CatchWorkflowBuilder<TWorkflowData, TFault, TInvokedData>(steps, exceptionType);
+    }
+
+    /// <summary>Invokes a workflow using an explicit pinned input and output contract.</summary>
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TInvokedData> Invoke<TInvokedData>(
+        string workflowName, int version, WorkflowContract contract,
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TInvokedData : class
+    {
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
+            .Invoke(workflowName, version, contract, configure, sourcePath: sourcePath, sourceLine: sourceLine);
         CaptureFaults(steps[^1]);
         return new CatchWorkflowBuilder<TWorkflowData, TFault, TInvokedData>(steps, exceptionType);
     }

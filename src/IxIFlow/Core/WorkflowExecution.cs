@@ -2,6 +2,15 @@ using IxIFlow.Builders;
 
 namespace IxIFlow.Core;
 
+/// <summary>How an invocation checks its contract against the resolved child.</summary>
+public enum WorkflowInvocationContractKind
+{
+    /// <summary>Check mapped names and required inputs against the callee, allowing value conversions.</summary>
+    CallerView,
+    /// <summary>Require the callee's effective contract to match the explicit pin exactly.</summary>
+    ExactPin
+}
+
 /// <summary>
 ///     Represents the current status of a workflow execution
 /// </summary>
@@ -640,6 +649,10 @@ public enum TraceEntryType
 /// </summary>
 public class WorkflowDefinition
 {
+    /// <summary>Declared root inputs; null means no list, empty explicitly declares no inputs.</summary>
+    public IReadOnlyList<string>? DeclaredInputs { get; set; }
+    /// <summary>Declared root outputs; null means no list, empty explicitly declares no outputs.</summary>
+    public IReadOnlyList<string>? DeclaredOutputs { get; set; }
     internal ArtifactDigest? BundleDigest { get; set; }
     internal System.Runtime.Loader.AssemblyLoadContext? BundleContext { get; set; }
     internal IReadOnlyDictionary<string, string>? BundleSources { get; set; }
@@ -749,6 +762,13 @@ public class WorkflowStep
     /// <summary>For a workflow invocation step, the child's data type its mappings name, checked when built.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Type? InvokedDataType { get; set; }
+
+    /// <summary>The caller's immutable view or exact child input and output contract.</summary>
+    public WorkflowContract? InvokedContract { get; set; }
+    /// <summary>The hash of the caller's view or exact contract.</summary>
+    public string? InvokedContractHash { get; set; }
+    /// <summary>Whether the invocation requires an exact contract or checks its mappings against the callee.</summary>
+    public WorkflowInvocationContractKind InvokedContractKind { get; set; }
 
     /// <summary>
     ///     Workflow name (for name-based workflow invocation)
@@ -990,6 +1010,9 @@ public class WorkflowStep
             ActivityType = ActivityType,
             WorkflowType = WorkflowType,
             InvokedDataType = InvokedDataType,
+            InvokedContract = InvokedContract,
+            InvokedContractHash = InvokedContractHash,
+            InvokedContractKind = InvokedContractKind,
             WorkflowName = WorkflowName,
             WorkflowVersion = WorkflowVersion,
             CancelWithParent = CancelWithParent,

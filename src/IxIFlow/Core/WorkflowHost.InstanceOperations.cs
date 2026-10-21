@@ -487,6 +487,8 @@ public sealed partial class WorkflowHost
             bool versionOmitted = false)
             where TData : class
         {
+            ArgumentNullException.ThrowIfNull(workflowData);
+            WorkflowDefinitionValidator.CheckRootDataType(definition, workflowData);
             if (options.InstanceId != null) InstanceIds.Validate(options.InstanceId);
             if (options.ExecutionTimeout is { } executionTimeout && executionTimeout <= TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(options),
@@ -501,6 +503,8 @@ public sealed partial class WorkflowHost
                 ? await registry.AcquireWorkflowDefinitionAsync(definition.Name, definition.Version, digest, cancellationToken) : null;
             using var types = definitionLease?.EnterTypes();
             var registration = definitionLease?.Definition ?? await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
+            if ((registration ?? definition).WorkflowDataType is { } dataType && WorkflowDefinitionValidator.AcceptsRootData(dataType, workflowData))
+                WorkflowDefinitionValidator.GetContract(registration ?? definition).ValidateRequired(workflowData, dataType);
             var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, workflowData, options, Now,
                 (services.GetService(typeof(DemandSettings)) as DemandSettings)?.HostPinLifetime,
                 registration?.RegistrationDemands);
@@ -1236,11 +1240,12 @@ public sealed partial class WorkflowHost
             using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(child.WorkflowName, child.WorkflowVersion, child.BundleDigest, cancellationToken);
             using var types = definitionLease.EnterTypes();
             var definition = definitionLease.Definition;
+            WorkflowVersion? row;
             try
             {
                 // A child start is refused like a client start when its version is a draft or retired.
-                WorkflowCatalogRules.CheckStartable(await registry.GetWorkflowVersionAsync(child.WorkflowName, child.WorkflowVersion),
-                    child.WorkflowName, child.WorkflowVersion);
+                row = await registry.GetWorkflowVersionAsync(child.WorkflowName, child.WorkflowVersion);
+                WorkflowCatalogRules.CheckStartable(row, child.WorkflowName, child.WorkflowVersion);
             }
             catch (WorkflowEngineException error)
             {
@@ -1262,6 +1267,9 @@ public sealed partial class WorkflowHost
                     Message: $"Workflow {definition.Name} v{definition.Version} differs from its registered definition: " +
                         $"registered structure hash '{hash}', loaded structure hash " +
                         $"'{(hash != request.StructureHash ? request.StructureHash : checkpoint.StructureHash)}'");
+            if (row!.ContractHash != request.ContractHash)
+                return new(request.AssignmentId, Refusal: WorkflowErrorKind.ArtifactMismatch,
+                    Message: $"Workflow {definition.Name} v{definition.Version} contract hash differs: registered '{row.ContractHash}', invoked '{request.ContractHash}'");
             var size = StoredCheckpoint.Of(child).Bytes;
             if (size > _limits.MaxCheckpointBytes)
                 return new(request.AssignmentId, Refusal: WorkflowErrorKind.ResourceExhausted,

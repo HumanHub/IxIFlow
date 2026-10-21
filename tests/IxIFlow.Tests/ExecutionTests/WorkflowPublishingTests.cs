@@ -315,7 +315,7 @@ public sealed class WorkflowPublishingTests
         Assert.True(second.Success);
         Assert.Equal(first.Assembly, second.Assembly);
         Assert.Equal(first.Pdb, second.Pdb);
-        var manifest = new WorkflowBundleManifest(1, "Test", 1, "hash", "data", "entry", "1.0", 4, "",
+        var manifest = new WorkflowBundleManifest(2, "Test", 1, "hash", "data", "entry", "1.0", 4, "", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash,
             WorkflowCompilation.Settings, new Dictionary<string, string>(), new Dictionary<string, ArtifactDigest>());
         var entries = new Dictionary<string, byte[]> { ["workflow.dll"] = first.Assembly, ["workflow.pdb"] = first.Pdb,
             ["workflow.yaml"] = Encoding.UTF8.GetBytes(Yaml), ["workflow.g.cs"] = Encoding.UTF8.GetBytes(source) };
@@ -338,7 +338,7 @@ public sealed class WorkflowPublishingTests
         {
             ["workflow.dll"] = [1], ["workflow.pdb"] = [2], ["workflow.yaml"] = [3], ["workflow.g.cs"] = [4]
         };
-        var manifest = new WorkflowBundleManifest(1, "Test", 1, "hash", "data", "entry", "1.0", 4, "",
+        var manifest = new WorkflowBundleManifest(2, "Test", 1, "hash", "data", "entry", "1.0", 4, "", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash,
             WorkflowCompilation.Settings, new Dictionary<string, string>(), new Dictionary<string, ArtifactDigest>());
         var bytes = WorkflowBundleArchive.Create(manifest, entries);
         var expected = ArtifactDigest.Of(bytes);

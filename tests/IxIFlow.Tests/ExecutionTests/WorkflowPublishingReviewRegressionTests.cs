@@ -143,7 +143,7 @@ public sealed class WorkflowPublishingReviewRegressionTests
             var source = await store.SaveDefinitionAsync(new(name, 1, "workflow", Yaml(name)), 0);
             var bytes = Encoding.UTF8.GetBytes(name);
             var digest = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream(bytes));
-            var version = new WorkflowVersion(name, 1, "hash", ArtifactDigest: digest,
+            var version = new WorkflowVersion(name, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
                 PublishedDraftRevision: source.Revision, ManifestJson: "{}");
             if (scenario == Scenario.MissingBundle) await artifacts.DeleteAsync(digest);
             if (scenario == Scenario.MissingReference)
@@ -151,7 +151,7 @@ public sealed class WorkflowPublishingReviewRegressionTests
             if (scenario is Scenario.DraftChild or Scenario.RetiredChild)
             {
                 var child = name + "Child";
-                await store.RegisterWorkflowVersionAsync(new(child, 1, "child", State: scenario == Scenario.DraftChild
+                await store.RegisterWorkflowVersionAsync(new(child, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, State: scenario == Scenario.DraftChild
                     ? WorkflowVersionState.Draft : WorkflowVersionState.Retired));
                 version = version with { Dependencies = [new(child, 1)] };
             }

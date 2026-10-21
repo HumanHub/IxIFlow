@@ -17,12 +17,17 @@ internal sealed class EngineSymbols
         Input = compilation.GetTypeByMetadataName("IxIFlow.ActivitySdk.ActivityInputAttribute");
         Output = compilation.GetTypeByMetadataName("IxIFlow.ActivitySdk.ActivityOutputAttribute");
         InputOutput = compilation.GetTypeByMetadataName("IxIFlow.ActivitySdk.ActivityInputOutputAttribute");
+        WorkflowInput = compilation.GetTypeByMetadataName("IxIFlow.ActivitySdk.WorkflowInputAttribute");
+        WorkflowOutput = compilation.GetTypeByMetadataName("IxIFlow.ActivitySdk.WorkflowOutputAttribute");
+        WorkflowInputOutput = compilation.GetTypeByMetadataName("IxIFlow.ActivitySdk.WorkflowInputOutputAttribute");
         Required = compilation.GetTypeByMetadataName("System.ComponentModel.DataAnnotations.RequiredAttribute");
         DefaultValue = compilation.GetTypeByMetadataName("System.ComponentModel.DefaultValueAttribute");
         Combiner = compilation.GetTypeByMetadataName("IxIFlow.Core.ICombiner`1");
         Context = compilation.GetTypeByMetadataName("IxIFlow.Core.WorkflowContext`1");
         Expression = compilation.GetTypeByMetadataName("System.Linq.Expressions.Expression`1");
         Builders = compilation.GetTypeByMetadataName("IxIFlow.Builders.Workflow")?.ContainingAssembly;
+        WorkflowBuilder = compilation.GetTypeByMetadataName("IxIFlow.Builders.Interfaces.IWorkflowBuilder`2");
+        CatchWorkflowBuilder = compilation.GetTypeByMetadataName("IxIFlow.Builders.Interfaces.ICatchWorkflowBuilder`3");
     }
 
     public Compilation Compilation { get; }
@@ -30,6 +35,9 @@ internal sealed class EngineSymbols
     public INamedTypeSymbol? Input { get; }
     public INamedTypeSymbol? Output { get; }
     public INamedTypeSymbol? InputOutput { get; }
+    public INamedTypeSymbol? WorkflowInput { get; }
+    public INamedTypeSymbol? WorkflowOutput { get; }
+    public INamedTypeSymbol? WorkflowInputOutput { get; }
     public INamedTypeSymbol? Required { get; }
     public INamedTypeSymbol? DefaultValue { get; }
     public INamedTypeSymbol? Combiner { get; }
@@ -38,6 +46,8 @@ internal sealed class EngineSymbols
 
     // The assembly of the fluent builders, the engine as the compilation references it.
     private IAssemblySymbol? Builders { get; }
+    private INamedTypeSymbol? WorkflowBuilder { get; }
+    private INamedTypeSymbol? CatchWorkflowBuilder { get; }
 
     /// <summary>The engine's symbols, or none when the compilation does not reference IxIFlow.</summary>
     public static EngineSymbols? For(Compilation compilation) =>
@@ -50,6 +60,13 @@ internal sealed class EngineSymbols
         Builders != null && SymbolEqualityComparer.Default.Equals(method.ContainingAssembly, Builders) &&
         !SymbolEqualityComparer.Default.Equals(Builders, Compilation.Assembly) &&
         InNamespace(method.ContainingType, "IxIFlow.Builders");
+
+    public bool IsWorkflowInvoke(IInvocationOperation invocation) =>
+        invocation.TargetMethod.Name == "Invoke" && IsBuilderMethod(invocation.TargetMethod) &&
+        invocation.Instance?.Type is INamedTypeSymbol receiver &&
+        new[] { receiver }.Concat(receiver.AllInterfaces).Any(type =>
+            SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, WorkflowBuilder) ||
+            SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, CatchWorkflowBuilder));
 
     public static bool InNamespace(ITypeSymbol type, string name)
     {
@@ -80,7 +97,8 @@ internal sealed class EngineSymbols
         return false;
     }
 
-    // The locals each operation tree writes after declaring them, found once per tree.
+    // The locals each operation tree writes after declaring them, found once per tree. Used for
+    // purity, completed-mapping lookup, and activity/event receiver tracing, not workflow-contract provenance.
     private static readonly ConditionalWeakTable<IOperation, HashSet<ILocalSymbol>> Written = new();
 
     /// <summary>The value a local is declared with, when nothing writes it afterwards; none otherwise.</summary>
