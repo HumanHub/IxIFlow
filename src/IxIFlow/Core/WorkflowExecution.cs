@@ -977,12 +977,29 @@ public class WorkflowStep
     /// </summary>
     public Dictionary<string, object> StepMetadata { get; set; } = new();
 
+    /// <summary>Child bodies in catalog order, including empty bodies; a key is an ordinal index or an authored key.</summary>
+    public IEnumerable<(string Kind, string? Key, List<WorkflowStep> Steps)> ChildScopes()
+    {
+        yield return ("sequence", null, SequenceSteps);
+        yield return ("then", null, ThenSteps);
+        yield return ("else", null, ElseSteps);
+        yield return ("loop", null, LoopBodySteps);
+        yield return ("foreach", null, ForEachBodySteps);
+        yield return ("finally", null, FinallySteps);
+        yield return ("timeout", null, TimeoutSteps);
+        yield return ("catch", null, CatchBlocks);
+        for (var index = 0; index < ParallelBranches.Count; index++)
+            yield return ("branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), ParallelBranches[index]);
+        for (var index = 0; index < OutcomeBranches.Count; index++)
+            yield return ("outcome", index.ToString(System.Globalization.CultureInfo.InvariantCulture), OutcomeBranches[index].Steps);
+    }
+
     /// <summary>
     ///     Creates a copy of this step for execution tracking
     /// </summary>
     public WorkflowStep Clone()
     {
-        return new WorkflowStep
+        var clone = new WorkflowStep
         {
             Id = Id,
             Name = Name,
@@ -1007,24 +1024,15 @@ public class WorkflowStep
             {
                 Value = branch.Value,
                 IsDefault = branch.IsDefault,
-                Steps = branch.Steps.Select(step => step.Clone()).ToList(),
                 SagaSteps = new List<IxIFlow.Builders.SagaStepInfo>(branch.SagaSteps)
             }).ToList(),
-            ThenSteps = ThenSteps.Select(s => s.Clone()).ToList(),
-            ElseSteps = ElseSteps.Select(s => s.Clone()).ToList(),
-            SequenceSteps = SequenceSteps.Select(s => s.Clone()).ToList(),
-            ParallelBranches = ParallelBranches.Select(branch => branch.Select(s => s.Clone()).ToList()).ToList(),
+            ParallelBranches = ParallelBranches.Select(_ => new List<WorkflowStep>()).ToList(),
             ParallelJoinMode = ParallelJoinMode,
             ParallelCompletionCondition = ParallelCompletionCondition,
             ParallelCombiners = new Dictionary<string, Type>(ParallelCombiners, StringComparer.Ordinal),
-            CatchBlocks = CatchBlocks.Select(s => s.Clone()).ToList(),
-            FinallySteps = FinallySteps.Select(s => s.Clone()).ToList(),
             WaitTimeout = WaitTimeout,
             DelayDuration = DelayDuration,
-            TimeoutSteps = TimeoutSteps.Select(s => s.Clone()).ToList(),
-            LoopBodySteps = LoopBodySteps.Select(s => s.Clone()).ToList(),
             LoopType = LoopType,
-            ForEachBodySteps = ForEachBodySteps.Select(s => s.Clone()).ToList(),
             ForEachItem = ForEachItem,
             ForEachItems = ForEachItems,
             ForEachItemsExpression = ForEachItemsExpression,
@@ -1053,6 +1061,9 @@ public class WorkflowStep
             Order = Order,
             StepMetadata = new Dictionary<string, object>(StepMetadata)
         };
+        foreach (var (source, target) in ChildScopes().Zip(clone.ChildScopes()))
+            target.Steps.AddRange(source.Steps.Select(step => step.Clone()));
+        return clone;
     }
 }
 

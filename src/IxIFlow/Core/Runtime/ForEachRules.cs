@@ -62,14 +62,15 @@ internal static class ForEachRules
                 ValidateForEach(step, inScope, enclosing);
             foreach (var nested in Bodies(step))
                 ValidateBody(nested, inScope, enclosing, leavesItem: false);
-            ValidateBody(step.TimeoutSteps, inScope, enclosing, leavesItem);
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind == "timeout"))
+                ValidateBody(scope.Steps, inScope, enclosing, leavesItem);
         }
     }
 
     // The bodies that end an item: the ForEach body and every timeout branch that leaves it.
     private static IEnumerable<IReadOnlyList<WorkflowStep>> Exits(IReadOnlyList<WorkflowStep> body) =>
-        body.Where(step => step.TimeoutSteps.Count > 0)
-            .SelectMany(step => Exits(step.TimeoutSteps))
+        body.SelectMany(step => step.ChildScopes().Where(scope => scope.Kind == "timeout" && scope.Steps.Count > 0))
+            .SelectMany(scope => Exits(scope.Steps))
             .Prepend(body);
 
     private static void ValidateForEach(WorkflowStep step, HashSet<ItemScope> inScope,
@@ -121,13 +122,8 @@ internal static class ForEachRules
             ]);
 
     private static IEnumerable<IReadOnlyList<WorkflowStep>> Bodies(WorkflowStep step) =>
-        new IReadOnlyList<WorkflowStep>[]
-            {
-                step.SequenceSteps, step.ThenSteps, step.ElseSteps, step.LoopBodySteps, step.FinallySteps,
-                step.CatchBlocks
-            }
-            .Concat(step.ParallelBranches)
-            .Concat(step.OutcomeBranches.Select(branch => branch.Steps));
+        step.ChildScopes().Where(scope => scope.Kind is not ("foreach" or "timeout"))
+            .Select(scope => scope.Steps);
 
 }
 

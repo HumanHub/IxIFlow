@@ -97,8 +97,8 @@ internal static class SagaRules
             if (step.RequestName is { } name &&
                 body.FindIndex(index + 1, candidate => candidate.ReplyToRequest == name) is var wait and >= 0)
                 yield return (body, step, index, body[wait], wait);
-            foreach (var branch in step.OutcomeBranches)
-            foreach (var nested in Requests(branch.Steps))
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind == "outcome"))
+            foreach (var nested in Requests(scope.Steps))
                 yield return nested;
         }
     }
@@ -108,8 +108,8 @@ internal static class SagaRules
         foreach (var step in body)
         {
             order.Add(step);
-            foreach (var branch in step.OutcomeBranches)
-                Flatten(branch.Steps, order);
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind == "outcome"))
+                Flatten(scope.Steps, order);
         }
     }
 
@@ -119,15 +119,11 @@ internal static class SagaRules
         {
             if (step.StepType == WorkflowStepType.Saga)
                 yield return step;
-            var nested = new[]
-                {
-                    step.SequenceSteps, step.ThenSteps, step.ElseSteps, step.LoopBodySteps, step.FinallySteps,
-                    step.TimeoutSteps, step.CatchBlocks, step.ForEachBodySteps
-                }
-                .Concat(step.ParallelBranches)
-                .Concat(step.OutcomeBranches.Select(branch => branch.Steps));
-            foreach (var steps in nested)
-            foreach (var saga in Sagas(steps))
+            foreach (var scope in step.ChildScopes().OrderBy(scope => scope.Kind switch
+                     {
+                         "foreach" => 1, "branch" or "outcome" => 2, _ => 0
+                     }))
+            foreach (var saga in Sagas(scope.Steps))
                 yield return saga;
         }
     }
