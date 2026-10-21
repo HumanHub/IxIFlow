@@ -620,9 +620,10 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
             if (step is ActivityStepDocument activity) yield return activity.Activity;
             if (step is ActivityReferenceStepDocument reference && document.Activities.TryGetValue(reference.Ref, out var template))
                 yield return template.Activity;
-            foreach (var child in step.ChildScopes().Where(child => child.Kind == "outcome"))
-                foreach (var activityType in SagaActivities(child.Steps, document))
-                    yield return activityType;
+            if (step is OutcomeStepDocument outcome)
+                foreach (var child in outcome.ChildScopes())
+                    foreach (var activityType in SagaActivities(child.Steps, document))
+                        yield return activityType;
         }
     }
 }

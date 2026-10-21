@@ -69,7 +69,8 @@ internal static class ForEachRules
 
     // The bodies that end an item: the ForEach body and every timeout branch that leaves it.
     private static IEnumerable<IReadOnlyList<WorkflowStep>> Exits(IReadOnlyList<WorkflowStep> body) =>
-        body.SelectMany(step => step.ChildScopes().Where(scope => scope.Kind == "timeout" && scope.Steps.Count > 0))
+        body.Where(step => step.TimeoutSteps.Count > 0)
+            .SelectMany(step => step.ChildScopes().Where(scope => scope.Kind == "timeout"))
             .SelectMany(scope => Exits(scope.Steps))
             .Prepend(body);
 

@@ -1,4 +1,5 @@
 using System.Collections;
+using IxIFlow.Dsl.Compilation;
 using IxIFlow.Dsl.Documents;
 using IxIFlow.Generators;
 
@@ -77,6 +78,42 @@ public sealed class DocumentChildScopeTests
         Assert.Empty(new WaitForStepDocument().ChildScopes());
         Assert.Empty(new TryStepDocument().ChildScopes().Where(scope => scope.Kind == "finally"));
         Assert.Empty(new OutcomeStepDocument().ChildScopes());
+    }
+
+    [Fact]
+    public async Task MalformedSagaChildReturnsTheCompleteOrderedMainDiagnostics()
+    {
+        var document = new WorkflowDocument
+        {
+            Workflow = new() { Name = "MalformedSaga", DataType = "Data" },
+            Definitions = [new SagaStepDocument
+            {
+                Kind = "saga",
+                Steps = [new ParallelStepDocument { Kind = "parallel", Branches = null! }],
+                OnError = [new() { CompensateUpTo = "MissingActivity", Then = "continue" }]
+            }]
+        };
+
+        var result = await new WorkflowDocumentValidator().ValidateAsync(document, new Contracts());
+
+        Assert.False(result.IsValid);
+        Assert.Equal(new WorkflowDiagnostic[]
+        {
+            new("MEMBER001", "Missing 'branches'", WorkflowDiagnosticSeverity.Error, "definitions[0].steps[0].branches"),
+            new("SCOPE001", "parallel is not offered by the Saga fluent builder", WorkflowDiagnosticSeverity.Error, "definitions[0].steps[0]"),
+            new("SAGA011", "Compensation target 'MissingActivity' must occur exactly once in this saga (found 0)",
+                WorkflowDiagnosticSeverity.Error, "definitions[0].onError[0].compensateUpTo")
+        }, result.Diagnostics);
+    }
+
+    private sealed class Contracts : IWorkflowValidationContext
+    {
+        public Task<ActivityDocumentContract?> FindActivityAsync(string key, CancellationToken token) =>
+            Task.FromResult<ActivityDocumentContract?>(new(key, "1"));
+        public Task<bool> HasDataTypeAsync(string key, CancellationToken token) => Task.FromResult(true);
+        public Task<bool> HasEventAsync(string key, CancellationToken token) => Task.FromResult(true);
+        public Task<bool> HasWorkflowAsync(string name, int? version, CancellationToken token) => Task.FromResult(true);
+        public Task<bool> HasStepTemplateAsync(string key, CancellationToken token) => Task.FromResult(true);
     }
 
     private static bool ContainsSteps(Type type) => type == typeof(WorkflowStepDocument) ||
