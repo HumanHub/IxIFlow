@@ -38,6 +38,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         AdmissionLock, AdmissionRead, AdmissionDelete, AdmissionInsert, OwnershipRead, OwnershipInsert, OwnershipDelete, AdmissionExpire, OwnershipExpire,
         RegistryLock, RegisterMember, MemberHeartbeat, UnregisterMember, PruneMembers,
         Members, MemberCapabilities, DeleteCapabilities, InsertCapability,
+        InstalledPackages, HostPackages, InsertInstalledPackage, DeleteHostPackages, InsertHostPackage,
         RetentionLock, RetentionCandidates, RetentionBlockedPublishers, RetentionEligible, StampEnd, Tombstone, WriteTombstone, ExpireTombstones,
         OutboxClock, PublisherLock, PublisherSharedLock, UnregisterPublisher, PublisherUpsert, Publishers, PublisherRead, BackfillDeliveries,
         EnablePublisher, RetryDisabledDeliveries,

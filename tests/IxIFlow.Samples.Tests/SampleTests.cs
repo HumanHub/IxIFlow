@@ -156,18 +156,19 @@ public sealed class SampleTests
         var result = await Client(services).RunAsync(Contracts.ValidateQuote(), new QuoteData());
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var catalog = Contracts.Catalog();
-        var activity = Assert.Single(Assert.Single(catalog.Packages).Activities, entry => entry.Key == "samples.add-fee");
-        Assert.Equal(2.5m, Assert.IsType<decimal>(activity.Defaults["Fee"]));
-        var customer = Assert.Single(activity.Fields, field => field.Key == "Customer");
+        Assert.Single(catalog.Packages);
+        var activity = Assert.Single(catalog.Activities, entry => entry.Key == "samples.add-fee");
+        Assert.Equal(2.5m, JsonDocument.Parse(Assert.Single(activity.Inputs, field => field.Name == "Fee").DefaultJson!).RootElement.GetDecimal());
+        var customer = Assert.Single(activity.Inputs, field => field.Name == "Customer");
         Assert.True(customer.Required);
-        Assert.Equal("Customer", customer.Label);
-        Assert.Equal("text", customer.Control);
-        Assert.Equal("The customer receiving the quote", customer.Help);
-        Assert.Contains(activity.Fields, field => field.Key == "Amount");
-        Assert.Contains("Amount", activity.Outputs.Keys);
-        Assert.DoesNotContain(activity.Fields, field => field.Key == "Receipt");
-        Assert.Contains("Receipt", activity.Outputs.Keys);
-        Assert.Equal(typeof(AddFee), (await catalog.FindAsync("samples.add-fee"))!.ActivityType);
+        Assert.Equal("Customer", customer.DisplayName);
+        Assert.Equal("text", customer.UIHint);
+        Assert.Equal("The customer receiving the quote", customer.Description);
+        Assert.Contains(activity.Inputs, field => field.Name == "Amount");
+        Assert.Contains(activity.Outputs, field => field.Name == "Amount");
+        Assert.DoesNotContain(activity.Inputs, field => field.Name == "Receipt");
+        Assert.Contains(activity.Outputs, field => field.Name == "Receipt");
+        Assert.Equal(typeof(AddFee), catalog.Find("samples.add-fee")!.ActivityType);
     }
 
     [Fact]

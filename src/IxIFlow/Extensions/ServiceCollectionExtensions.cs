@@ -24,6 +24,7 @@ public static class ServiceCollectionExtensions
     public static IIxIFlowBuilder AddIxIFlow(this IServiceCollection services)
     {
         services.AddLogging();
+        ActivityBuilderExtensions.Registrations(services);
         services.TryAddSingleton(InspectionRedactionPolicy.Default);
         services.AddScoped<IWorkflowDiagnostics, WorkflowDiagnostics>();
         // Core workflow services

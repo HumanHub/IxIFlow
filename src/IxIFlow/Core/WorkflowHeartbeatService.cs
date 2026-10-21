@@ -11,8 +11,8 @@ namespace IxIFlow.Core;
 
 /// <summary>Publishes this process and a fresh capability snapshot for as long as its host runs.</summary>
 internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository repository, IWorkflowCatalog registry,
-    HostSettings settings, TimeProvider time, ILogger<WorkflowHeartbeatService> logger, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
-    InspectionRedactionPolicy? inspectionPolicy = null) : BackgroundService
+    HostSettings settings, TimeProvider time, ILogger<WorkflowHeartbeatService> logger, IActivityRegistry activities,
+    ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null, InspectionRedactionPolicy? inspectionPolicy = null) : BackgroundService
 {
     internal static bool IsAutomaticCapability(string key) =>
         key is "os" or "arch" or "runtime" or "host" or "bundle-host" || key.StartsWith("workflow:", StringComparison.Ordinal);
@@ -90,7 +90,7 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
         repository.RegisterMemberAsync(new MemberRegistration(settings.Id, MemberKind.Host, settings.Name, null,
             settings.Slots, typeof(WorkflowHost).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
                 .InformationalVersion ?? typeof(WorkflowHost).Assembly.GetName().Version!.ToString(),
-            settings.HeartbeatInterval, capabilities), token);
+            settings.HeartbeatInterval, capabilities) { InstalledPackages = activities.Packages }, token);
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {

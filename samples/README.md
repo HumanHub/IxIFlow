@@ -61,7 +61,7 @@ The [root roadmap](../README.md#status-and-roadmap) marks the remaining 1.0 work
 
 ## Demo activities
 
-`IxIFlow.DemoActivities` contains sample activities. The classes define inputs, outputs, display metadata, and designer IDs in C#. A host can register the installed assembly with `ActivityPackageRegistry.AddAssembly` using its package ID and version.
+`IxIFlow.DemoActivities` contains sample activities. The classes define inputs, outputs, display metadata, and designer IDs in C#. A host registers the installed assembly with `services.AddIxIFlow().AddActivities(assembly)`, or selects one type with `AddActivity<T>()`. Package identity comes from the assembly; constructor dependencies are registered in DI.
 
 The file activities execute without additional services. `QueryCustomerActivity` requires the host to register `IDemoConnectionFactory`; the workflow contains a connection reference, not credentials.
 

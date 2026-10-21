@@ -4,12 +4,11 @@ using System.Data.Common;
 using System.Text.Json;
 using IxIFlow.ActivitySdk;
 using IxIFlow.Core;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.DemoActivities;
 
 [WorkflowActivity("demo.postgres.query-customer", Name = "Query customer", Category = "Database", Icon = "database", Designer = "query-customer")]
-public sealed class QueryCustomerActivity : IAsyncActivity
+public sealed class QueryCustomerActivity(IDemoConnectionFactory factory) : IAsyncActivity
 {
     [ActivityInput, UIHint("connection"), Required, DefaultValue("customer-db"), Display(Name = "Connection", Description = "A named connection. Credentials stay outside the workflow.")]
     public string ConnectionRef { get; set; } = string.Empty;
@@ -25,7 +24,6 @@ public sealed class QueryCustomerActivity : IAsyncActivity
 
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
-        var factory = context.Services.GetRequiredService<IDemoConnectionFactory>();
         await using var connection = await factory.OpenAsync(ConnectionRef, cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = Sql;

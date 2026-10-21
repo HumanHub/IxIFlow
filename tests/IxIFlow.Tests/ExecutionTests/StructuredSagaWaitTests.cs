@@ -1777,6 +1777,7 @@ public class StructuredSagaWaitTests
     public sealed class HandlerStartCrashStore : IWorkflowStateRepository
     {
         public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => _inner.RegisterPackageAsync(package, artifacts);
+        public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) => _inner.GetInstalledPackagesAsync(id);
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _inner.GetPackagesAsync(id);
         public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _inner.GetPackageAsync(id, version);
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _inner.GetPackagePageAsync(id, afterVersion, limit);

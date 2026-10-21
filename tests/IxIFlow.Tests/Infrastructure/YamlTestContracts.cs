@@ -1,3 +1,4 @@
+using IxIFlow.Core;
 using IxIFlow.Dsl.Compilation;
 using IxIFlow.Dsl.Documents;
 using IxIFlow.Generators;
@@ -23,9 +24,9 @@ internal static class YamlTestContracts
     public static void AddActivity(WorkflowSourceOptions options, ActivityDescriptor activity)
     {
         AddType(options, activity.Key, activity.ActivityType);
-        options.Activities[activity.Key] = new(activity.Key, activity.Version, activity.PackageName, activity.PackageVersion);
-        if (activity.PackageName.Length != 0 && activity.PackageVersion.Length != 0)
-            options.ResolvedImports.Add(activity.PackageName + "@" + activity.PackageVersion);
+        options.Activities[activity.Key] = new(activity.Key, activity.Version, activity.PackageId, activity.PackageVersion);
+        if (activity.PackageId.Length != 0 && activity.PackageVersion.Length != 0)
+            options.ResolvedImports.Add(activity.PackageId + "@" + activity.PackageVersion);
     }
 
     public static Task<WorkflowValidationResult> ValidateAsync(WorkflowDocument document, WorkflowSourceOptions options) =>
