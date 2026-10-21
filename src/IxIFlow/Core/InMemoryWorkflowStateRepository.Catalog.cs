@@ -7,6 +7,8 @@ public partial class InMemoryWorkflowStateRepository
     private readonly SemaphoreSlim _catalogLock = new(1, 1);
     private readonly Dictionary<(string, int), WorkflowDraft> _definitions = new();
     private readonly Dictionary<(string, int), WorkflowVersion> _versions = new();
+    private readonly Dictionary<(string, int), long> _versionRevisions = new();
+    private long _catalogRevision;
     private readonly Dictionary<(string, string), WorkflowPackage> _packages = new();
     private readonly Dictionary<ArtifactDigest, (ArtifactKind Kind, byte[] Content, DateTime Created)> _artifacts = new();
 
@@ -94,7 +96,10 @@ public partial class InMemoryWorkflowStateRepository
                 WorkflowCatalogRules.CheckPublication(draftId, version, _definitions.GetValueOrDefault(key), null);
                 foreach (var dependency in version.Dependencies ?? [])
                     WorkflowCatalogRules.CheckStartable(_versions.GetValueOrDefault((dependency.Name, dependency.Version)), dependency.Name, dependency.Version);
-                _versions.Add(key, CopyVersion(version));
+                var copy = CopyVersion(version);
+                var revision = checked(_catalogRevision + 1);
+                _versions.Add(key, copy);
+                _versionRevisions[key] = _catalogRevision = revision;
                 _definitions.Remove(key);
                 return CopyVersion(version);
             }
@@ -119,7 +124,10 @@ public partial class InMemoryWorkflowStateRepository
                         foreach (var dependency in version.Dependencies ?? [])
                             if (_versions.TryGetValue((dependency.Name, dependency.Version), out var child))
                                 WorkflowCatalogRules.CheckStartable(child, child.Name, child.Version);
-                    _versions.Add((version.Name, version.Version), CopyVersion(version));
+                    var copy = CopyVersion(version);
+                    var revision = checked(_catalogRevision + 1);
+                    _versions.Add((version.Name, version.Version), copy);
+                    _versionRevisions[(version.Name, version.Version)] = _catalogRevision = revision;
                 }
             }
         }
@@ -137,6 +145,20 @@ public partial class InMemoryWorkflowStateRepository
         if (name != null) WorkflowCatalogRules.ValidateName(name);
         lock (_claimLock) return Task.FromResult<IReadOnlyList<WorkflowVersion>>(_versions.Values
             .Where(row => name == null || row.Name == name).Select(CopyVersion).ToArray());
+    }
+
+    public Task<long> GetCatalogRevisionAsync()
+    {
+        lock (_claimLock) return Task.FromResult(_catalogRevision);
+    }
+
+    public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(afterRevision);
+        // Copy rows and capture the watermark under the same monitor as every version mutation.
+        lock (_claimLock) return Task.FromResult(new WorkflowCatalogChanges(_catalogRevision,
+            _versionRevisions.Where(pair => pair.Value > afterRevision)
+                .Select(pair => CopyVersion(_versions[pair.Key])).ToArray()));
     }
 
     public async Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null)
@@ -167,7 +189,9 @@ public partial class InMemoryWorkflowStateRepository
                     foreach (var dependency in row.Dependencies ?? [])
                         if ((dependency.Name, dependency.Version) != (name, version))
                             WorkflowCatalogRules.CheckStartable(_versions.GetValueOrDefault((dependency.Name, dependency.Version)), dependency.Name, dependency.Version);
+                var revision = checked(_catalogRevision + 1);
                 _versions[(name, version)] = row with { State = state };
+                _versionRevisions[(name, version)] = _catalogRevision = revision;
             }
         }
         finally { _catalogLock.Release(); }

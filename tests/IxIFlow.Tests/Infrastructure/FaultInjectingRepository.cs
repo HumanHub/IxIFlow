@@ -21,6 +21,8 @@ public class FaultInjectingRepository : IWorkflowStateRepository
         _inner.RegisterWorkflowVersionAsync(version, artifacts);
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
         _inner.GetWorkflowVersionAsync(name, version);
+    public Task<long> GetCatalogRevisionAsync() => _inner.GetCatalogRevisionAsync();
+    public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => _inner.GetWorkflowVersionChangesAsync(afterRevision);
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
         _inner.GetWorkflowVersionsAsync(name);
     public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>

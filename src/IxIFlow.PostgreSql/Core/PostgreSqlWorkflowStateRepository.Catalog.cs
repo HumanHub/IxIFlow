@@ -12,15 +12,22 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             state TEXT NOT NULL CHECK (state = 'Draft'),
             PRIMARY KEY (name, version)
         );
+        CREATE TABLE ixiflow_catalog_revision (
+            id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+            revision BIGINT NOT NULL CHECK (revision >= 0)
+        );
+        INSERT INTO ixiflow_catalog_revision (id, revision) VALUES (1, 0);
         CREATE TABLE ixiflow_workflow_versions (
             name text COLLATE "C" NOT NULL,
             version integer NOT NULL,
             structure_hash text NOT NULL,
             state TEXT NOT NULL CHECK (state IN ('Draft','Published','Deprecated','Retired')),
+            catalog_revision BIGINT NOT NULL,
             artifact_digest text COLLATE "C" NULL,
             metadata_json text NOT NULL,
             PRIMARY KEY (name, version)
         );
+        CREATE INDEX ix_workflow_versions_revision ON ixiflow_workflow_versions (catalog_revision);
         CREATE TABLE ixiflow_packages (
             id text COLLATE "C" NOT NULL,
             version text COLLATE "C" NOT NULL,
@@ -54,6 +61,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             SELECT pg_advisory_xact_lock_shared(hashtext('IxIFlow.Catalog'))
             """,
         Statement.CatalogInstanceDigests => "SELECT DISTINCT bundle_digest FROM ixiflow_workflow_instances WHERE bundle_digest IS NOT NULL",
+        Statement.CatalogRevision => "SELECT revision FROM ixiflow_catalog_revision WHERE id=1",
+        Statement.CatalogRevisionAdvance => "UPDATE ixiflow_catalog_revision SET revision=revision+1 WHERE id=1",
+        Statement.CatalogVersionChanges => "SELECT metadata_json AS MetadataJson, state AS State FROM ixiflow_workflow_versions WHERE catalog_revision>@AfterRevision",
         Statement.CatalogVersions => """
             SELECT metadata_json AS MetadataJson, state AS State FROM ixiflow_workflow_versions
             """,
@@ -74,10 +84,10 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             LIMIT 1
             """,
         Statement.CatalogVersionInsert => """
-            INSERT INTO ixiflow_workflow_versions (name, version, structure_hash, state, artifact_digest, metadata_json) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson)
+            INSERT INTO ixiflow_workflow_versions (name, version, structure_hash, state, artifact_digest, metadata_json, catalog_revision) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision)
             """,
         Statement.CatalogVersionState => """
-            UPDATE ixiflow_workflow_versions SET state=@State WHERE name=@Name AND version=@Version
+            UPDATE ixiflow_workflow_versions SET state=@State, catalog_revision=@CatalogRevision WHERE name=@Name AND version=@Version
             """,
         Statement.CatalogDefinition => """
             SELECT name AS Name, version AS Version, kind AS Kind, source AS Source, revision AS Revision FROM ixiflow_definitions WHERE name=@Name AND version=@Version

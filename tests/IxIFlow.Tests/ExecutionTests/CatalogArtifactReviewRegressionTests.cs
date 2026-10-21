@@ -548,6 +548,8 @@ public sealed class CatalogArtifactReviewRegressionTests
             Interlocked.Increment(ref VersionReads);
             return inner.GetWorkflowVersionAsync(name, version);
         }
+        public Task<long> GetCatalogRevisionAsync() => inner.GetCatalogRevisionAsync();
+        public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => inner.GetWorkflowVersionChangesAsync(afterRevision);
         public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => inner.GetWorkflowVersionsAsync(name);
         public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) => inner.SetWorkflowVersionStateAsync(name, version, state, artifacts);
         public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) => inner.PublishDefinitionAsync(draftId, version, artifacts);

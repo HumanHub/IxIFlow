@@ -149,11 +149,15 @@ public sealed class BundleRound2Tests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ARemotePublicationRefreshesPlacementOnlyWhenWorkflowDemandsAreTheOnlyMismatch(bool otherDemand)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task ARemotePublicationRefreshesPlacementOnlyWhenWorkflowDemandsAreTheOnlyMismatch(bool otherDemand, bool sqlite)
     {
-        var store = new InMemoryWorkflowStateRepository();
+        await using var sqliteStore = sqlite ? new SqliteWorkflowStateRepository(new SqliteConnectionStringBuilder
+        { DataSource = Path.Combine(Folder("db"), "state.db"), Pooling = false }.ConnectionString) : null;
+        IWorkflowStateRepository store = sqliteStore ?? (IWorkflowStateRepository)new InMemoryWorkflowStateRepository();
         using var catalog = new WorkflowCatalog(store, artifacts: store, bundles: new(Folder("catalog")));
         var counted = DispatchProxy.Create<IWorkflowCatalog, BundleReviewFixTests.CatalogReads>();
         var proxy = (BundleReviewFixTests.CatalogReads)(object)counted;
@@ -174,6 +178,7 @@ public sealed class BundleRound2Tests
         Assert.Equal(otherDemand ? WorkflowStatus.Running : WorkflowStatus.Suspended,
             (await store.GetWorkflowInstanceAsync(id))!.Status);
         Assert.Equal(otherDemand ? 1 : 2, proxy.Reads);
+        Assert.Equal(otherDemand ? 1 : 2, proxy.RevisionReads);
     }
 
     [Fact]

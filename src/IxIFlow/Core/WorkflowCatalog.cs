@@ -15,6 +15,11 @@ public sealed record WorkflowVersion(string Name, int Version, string StructureH
     IReadOnlyList<ArtifactDigest>? ArtifactReferences = null,
     long? PublishedDraftRevision = null, string? ManifestJson = null);
 
+/// <summary>Current rows changed after a revision, and the catalog revision observed atomically with them.
+/// Rows may have changed more than once; the latest row is returned once. Versions are never deleted.
+/// </summary>
+public sealed record WorkflowCatalogChanges(long Revision, IReadOnlyList<WorkflowVersion> Versions);
+
 /// <summary>Editable source, independently revisioned from immutable workflow versions.</summary>
 public sealed record WorkflowDraft(string Name, int Version, string Kind, string Source, long Revision = 0)
 {
@@ -37,6 +42,13 @@ public interface IWorkflowCatalogStore
     Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null);
     Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version);
     Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null);
+    /// <summary>Reads the committed store-wide version revision without reading version metadata.</summary>
+    Task<long> GetCatalogRevisionAsync();
+    /// <summary>Returns current rows changed after <paramref name="afterRevision"/> and a consistent revision watermark.
+    /// Every version mutation must stamp its row and advance the revision in the same transaction.
+    /// A concurrent write is included or remains visible to a subsequent read from the returned revision.
+    /// </summary>
+    Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision);
     Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null);
     /// <summary>Publishes a version atomically against the draft's revision and deletes the draft.</summary>
     Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null);
@@ -178,6 +190,8 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
     }
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _store.GetWorkflowVersionAsync(name, version);
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _store.GetWorkflowVersionsAsync(name);
+    public Task<long> GetCatalogRevisionAsync() => _store.GetCatalogRevisionAsync();
+    public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => _store.GetWorkflowVersionChangesAsync(afterRevision);
     public async Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null)
     {
         await _store.SetWorkflowVersionStateAsync(name, version, state, artifacts ?? _artifacts);
