@@ -47,14 +47,14 @@ internal static class ExecutionSnapshotFactory
                 var name = owner?.Name ?? frame.ScopeId;
                 if (owner?.StepType == WorkflowStepType.Loop) name += $" (iteration {iteration})";
                 if (frame.ForEachIndex is { } itemIndex) name += $" (item {itemIndex})";
-                var graph = GraphFrameInfo.Of(scopes, continuation, index);
+                var graph = GraphFrameInfo.Of(scopes, continuation, index, checkpoint);
                 snapshot.Frames.Add(new ExecutionFrame
                 {
                     FrameId = frame.ActivationId,
                     Name = graph?.Name ?? name,
                     LoopIteration = iteration,
                     ForEachItemIndex = frame.ForEachIndex,
-                    Kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case
+                    Kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen
                         ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId,
                     StepId = frame.ScopeId,
                     ParentFrameId = parent?.ActivationId,
@@ -64,6 +64,12 @@ internal static class ExecutionSnapshotFactory
                         ["Visit"] = graph?.Visit.ToString() ?? "",
                         ["ArmOccurrence"] = frame.ArmOccurrence.ToString(),
                         ["Via"] = graph?.Via ?? "",
+                        ["GraphId"] = graph?.GraphId ?? "",
+                        ["Node"] = graph?.Node ?? "",
+                        ["PendingVia"] = graph?.Pending?.Via ?? "",
+                        ["PendingTrigger"] = graph?.Pending?.Trigger ?? "",
+                        ["PendingTarget"] = graph?.Pending?.Target ?? "",
+                        ["PendingCause"] = graph?.Pending?.Cause ?? "",
                         ["NextStepIndex"] = frame.NextStepIndex.ToString(),
                         ["LoopIteration"] = iteration.ToString(),
                         ["ForEachItemIndex"] = frame.ForEachIndex?.ToString() ?? "",

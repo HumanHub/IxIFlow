@@ -43,13 +43,16 @@ public sealed partial class DebugAdapterSession
         return new { stackFrames = frames.Skip(start).Take(Math.Min(levels, 1000)).Select(f =>
         {
             var step = _steps.FirstOrDefault(s => s.CatalogId == $"{f.ScopeId}/{f.NextStepIndex}");
+            // Finished graph frames still belong at their last pick (Edge, Trigger, Arm, ...).
+            if (step == null && f.Phase != null) step = _steps.LastOrDefault(s => s.ScopePath == f.ScopeId);
             // At the end of a scope, locate the owning step rather than inventing a location.
             step ??= _steps.Where(s => f.ScopeId.StartsWith(s.CatalogId + "/", StringComparison.Ordinal))
                 .OrderByDescending(s => s.CatalogId.Length).FirstOrDefault();
             var location = Location(step?.SourceLocation);
             var id = checked(++_nextId);
             _frames[id] = new(thread.ContinuationId, f, Revision, Generation, Cursor);
-            return new { id, name = step?.Name ?? f.Name, line = location == null ? _lineBase : location.Line - 1 + _lineBase,
+            return new { id, name = f.Phase != null ? f.Name : step?.Name ?? f.Name,
+                line = location == null ? _lineBase : location.Line - 1 + _lineBase,
                 column = _columnBase, source = location == null ? null : Source(location.Path),
                 presentationHint = location == null ? "subtle" : "normal" };
         }).ToArray(), totalFrames = frames.Length };
@@ -68,9 +71,7 @@ public sealed partial class DebugAdapterSession
             var line = (request.Value<int?>("line") ?? _lineBase) + 1 - _lineBase;
             var step = functions
                 ? _steps.FirstOrDefault(s => s.CatalogId == request.Value<string>("name") || s.AuthorId == request.Value<string>("name"))
-                : _steps.Select(s => (Step: s, Source: Location(s.SourceLocation)))
-                    .Where(s => s.Source != null && SamePath(s.Source.Path, path) && s.Source.Line >= line)
-                    .OrderBy(s => s.Source!.Line).Select(s => s.Step).FirstOrDefault();
+                : BreakpointResolver.AtSource(_steps, path, line);
             if (step == null) { results.Add(new { verified = false, message = "No executable step at this address" }); continue; }
             var id = Guid.NewGuid().ToString("N");
             var breakpoint = new Core.Breakpoint(id, step.CatalogId,
