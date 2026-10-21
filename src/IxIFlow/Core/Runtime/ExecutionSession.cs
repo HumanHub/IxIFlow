@@ -66,6 +66,8 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
         for (var index = 0; index < continuation.Stack.Count; index++)
         {
             var frame = continuation.Stack[index];
+            if (frame.Kind is FrameKind.Node or FrameKind.Edge)
+                await Reader.HydrateAsync(frame.EntryPrevious);
             if (frame.ForEachIndex is { } item && index > 0 && continuation.Stack[index - 1].ForEach is { } owner)
                 await Reader.ReadAsync(owner.Items[item]);
             if (restoreInputs && index == continuation.Stack.Count - 1 && frame.ForEach is { } list &&

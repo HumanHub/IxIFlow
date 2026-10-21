@@ -107,6 +107,8 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The branch limit must be positive");
         if (options.MaxActivitiesPerRun <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The activity limit must be positive");
+        if (options.MaxGraphTransitionsPerPass <= 0)
+            throw new ArgumentOutOfRangeException(nameof(options.MaxGraphTransitionsPerPass));
         if (options.MaxForEachItems <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The ForEach item limit must be positive");
         if (options.ParkRetriesLongerThan < TimeSpan.Zero)
@@ -135,6 +137,7 @@ public static class ServiceCollectionExtensions
             MaxActiveBranches = options.MaxActiveBranches,
             MaxActivitiesPerRun = options.MaxActivitiesPerRun,
             MaxForEachItems = options.MaxForEachItems,
+            MaxGraphTransitionsPerPass = options.MaxGraphTransitionsPerPass,
             ParkRetriesLongerThan = options.ParkRetriesLongerThan,
             VerifyCheckpointParts = options.VerifyCheckpointParts
         }));
@@ -376,6 +379,9 @@ public class IxIFlowOptions
     /// any item runs; raise the limit and release the instance to continue, or split the list.
     /// </summary>
     public int MaxForEachItems { get; set; } = ExecutionLimits.DefaultMaxForEachItems;
+
+    /// <summary>Maximum node entries of one graph between prepared commits; excess stops for an operator.</summary>
+    public int MaxGraphTransitionsPerPass { get; set; } = ExecutionLimits.DefaultMaxGraphTransitionsPerPass;
 
     /// <summary>
     /// A run with nothing else to do whose next retry is further away than this gives its slot back

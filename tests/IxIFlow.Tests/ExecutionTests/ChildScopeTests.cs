@@ -21,7 +21,10 @@ public sealed class ChildScopeTests
         Assert.Equal(["sequence", "then", "else", "loop", "foreach", "finally", "timeout", "catch"],
             scopes.Take(8).Select(scope => scope.Kind));
         Assert.All(scopes.Take(8), scope => Assert.Null(scope.Key));
-        Assert.Equal([("branch", "0"), ("branch", "1"), ("outcome", "0"), ("outcome", "1")],
+        Assert.Equal([("branch", "0"), ("branch", "1"),
+                ("node", ""), ("node", "/to/0"), ("node", "/to/1"),
+                ("node", ""), ("node", "/to/0"), ("node", "/to/1"),
+                ("outcome", "0"), ("outcome", "1")],
             scopes.Skip(8).Select(scope => (scope.Kind, scope.Key)));
         Assert.All(new WorkflowStep().ChildScopes(), scope => Assert.Empty(scope.Steps));
     }
@@ -155,7 +158,9 @@ public sealed class ChildScopeTests
             foreach (var child in scope.Steps)
                 child.Id = scope.Kind + scope.Key;
 
-        Assert.Equal([step.Id, "sequence", "then", "else", "loop", "finally", "catch", "timeout", "foreach", "branch0", "outcome0", "outcome1"],
+        Assert.Equal([step.Id, "sequence", "then", "else", "loop", "finally", "catch",
+                "node", "node/to/0", "node", "node/to/0",
+                "timeout", "foreach", "branch0", "outcome0", "outcome1"],
             ParallelRules.Flatten([step]).Select(child => child.Id));
     }
 

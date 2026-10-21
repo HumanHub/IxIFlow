@@ -22,6 +22,10 @@ public interface IWorkflowBuilder<TWorkflowData>
     /// <summary>Names the preceding step.</summary>
     IWorkflowBuilder<TWorkflowData> Named(string name);
 
+    /// <summary>Runs a flowchart and retains its incoming previous value.</summary>
+    IWorkflowBuilder<TWorkflowData, object> Flowchart(Action<FlowchartBuilder<TWorkflowData, object>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     /// <summary>Wait for a duration without requiring a resume event.</summary>
     IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
@@ -83,6 +87,15 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
 
     /// <summary>Names the preceding step.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name);
+
+    /// <summary>Runs a flowchart and retains its incoming previous value.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Flowchart(
+        Action<FlowchartBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
+    /// <summary>Ends a timeout path leaving a node with an explicit destination; null ends the chart.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Transition(string? to,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Wait for a duration and retain the previous step value.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);

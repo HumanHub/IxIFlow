@@ -5,6 +5,16 @@ description: Checkpoints, ownership, inboxes, parallel state and recovery.
 
 A definition is a validated graph and data contract. An instance adds saved data, continuations, scope frames, activity attempts and waits. `IWorkflowClient` submits execution to the core host; the current executor runs inside that host process.
 
+## Flowcharts
+
+A flowchart is a compound step with string-keyed node bodies and ordered edges. Each visit starts a fresh node activation with the graph's incoming previous value. The body's last value is available to its trailing `Decision` and selected `Edge`; after the node leaves, the incoming value is restored before the next node enters. Parallel joins, saga completion and nested scopes finish before a transition is taken.
+
+Guards use first-match order. A switch evaluates its selector once and compares case labels with `Equals`; a fallback edge is last. If no edge matches and there is no fallback, the graph completes with `NoTransition`. Node keys and edge destinations affect definition identity. Node display names, source locations and node declaration order do not.
+
+A timeout branch directly leaving a node must end with `.Transition(key)` (or `.Transition(null)` to end the chart). It lands on the trailing decision with a null previous value; the saved choice bypasses guard evaluation. A timeout in a nested sequence leaves that sequence and continues the node normally.
+
+Cycles are allowed. `MaxGraphTransitionsPerPass` defaults to 1,000 node entries per graph activation between prepared commits. Exceeding it stops for an operator with the source frame and pending transition intact. `ReleaseAsync` takes that transition with a fresh budget. Effects that commit also reset the budget; pure control flow adds no independent commit.
+
 ## Checkpoints and commits
 
 Checkpoints save workflow data, branch state, loop/exception frames, saga and compensation progress, previous-step values, retries and waits. History is stored separately in the trace store.
