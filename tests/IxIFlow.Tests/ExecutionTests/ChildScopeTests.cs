@@ -26,13 +26,40 @@ public sealed class ChildScopeTests
         Assert.All(new WorkflowStep().ChildScopes(), scope => Assert.Empty(scope.Steps));
     }
 
-    [Fact]
-    public void CloneCopiesAllChildBodiesAndRetainsScopeSegments()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CloneCopiesAllChildBodiesAndRetainsScopeSegments(bool nullableMetadata)
     {
         var step = PopulatedStep([]);
-        var original = step.ChildScopes().ToArray();
-        var copied = step.Clone().ChildScopes().ToArray();
+        var shared = step.SequenceSteps;
+        shared[0].ThenSteps = [new WorkflowStep()];
+        step.ThenSteps = shared;
+        step.ParallelBranches = [shared, shared, []];
+        var value = nullableMetadata ? null : new List<string> { "outcome" };
+        var sagaStep = new SagaStepInfo { StepId = shared[0].Id, ActivityType = typeof(object), Order = 3 };
+        var sagaSteps = new List<SagaStepInfo> { sagaStep };
+        step.OutcomeBranches =
+        [
+            new() { Value = value, IsDefault = false, Steps = shared, SagaSteps = sagaSteps },
+            new() { Value = value, IsDefault = true, Steps = shared, SagaSteps = sagaSteps }
+        ];
+        var metadata = new List<string> { "shared metadata" };
+        step.StepMetadata["shared"] = metadata;
+        step.SourceLocation = nullableMetadata ? null : "clone.yaml:3";
+        step.WorkflowName = nullableMetadata ? null : "child";
+        step.DefaultPayload = nullableMetadata ? null : metadata;
+        step.CompiledCondition = nullableMetadata ? null : _ => true;
+        step.ParallelCombiners["Total"] = typeof(object);
+        var mapping = new PropertyMapping { TargetProperty = "Total", SourceFunction = _ => metadata };
+        step.InputMappings = [mapping];
+        step.OutputMappings = [mapping];
 
+        var original = step.ChildScopes().ToArray();
+        var clone = step.Clone();
+        var copied = clone.ChildScopes().ToArray();
+
+        Assert.NotSame(step, clone);
         Assert.Equal(original.Length, copied.Length);
         for (var index = 0; index < original.Length; index++)
         {
@@ -43,6 +70,81 @@ public sealed class ChildScopeTests
             foreach (var (source, target) in original[index].Steps.Zip(copied[index].Steps))
                 Assert.NotSame(source, target);
         }
+
+        // Main clones each occurrence independently, even when the source body is shared.
+        for (var index = 0; index < copied.Length; index++)
+            for (var other = index + 1; other < copied.Length; other++)
+            {
+                Assert.NotSame(copied[index].Steps, copied[other].Steps);
+                foreach (var child in copied[index].Steps)
+                    Assert.DoesNotContain(copied[other].Steps, candidate => ReferenceEquals(child, candidate));
+            }
+        foreach (var scope in copied.Where(scope => scope.Steps.Count > 0 && scope.Steps[0].Id == shared[0].Id))
+        {
+            Assert.NotSame(shared[0].ThenSteps, scope.Steps[0].ThenSteps);
+            Assert.NotSame(shared[0].ThenSteps[0], Assert.Single(scope.Steps[0].ThenSteps));
+        }
+
+        Assert.NotSame(step.ParallelBranches, clone.ParallelBranches);
+        Assert.NotSame(step.OutcomeBranches, clone.OutcomeBranches);
+        for (var index = 0; index < step.OutcomeBranches.Count; index++)
+        {
+            var source = step.OutcomeBranches[index];
+            var target = clone.OutcomeBranches[index];
+            Assert.NotSame(source, target);
+            Assert.Same(source.Value, target.Value);
+            Assert.Equal(source.IsDefault, target.IsDefault);
+            Assert.NotSame(source.SagaSteps, target.SagaSteps);
+            Assert.Same(sagaStep, Assert.Single(target.SagaSteps));
+        }
+        Assert.NotSame(clone.OutcomeBranches[0].SagaSteps, clone.OutcomeBranches[1].SagaSteps);
+        Assert.NotSame(step.StepMetadata, clone.StepMetadata);
+        Assert.Same(metadata, clone.StepMetadata["shared"]);
+        Assert.Equal(step.SourceLocation, clone.SourceLocation);
+        Assert.Equal(step.WorkflowName, clone.WorkflowName);
+        Assert.Same(step.DefaultPayload, clone.DefaultPayload);
+        Assert.Same(step.CompiledCondition, clone.CompiledCondition);
+        Assert.NotSame(step.ParallelCombiners, clone.ParallelCombiners);
+        Assert.Equal(typeof(object), clone.ParallelCombiners["Total"]);
+        Assert.NotSame(step.InputMappings, clone.InputMappings);
+        Assert.NotSame(step.OutputMappings, clone.OutputMappings);
+        var input = Assert.Single(clone.InputMappings);
+        var output = Assert.Single(clone.OutputMappings);
+        Assert.NotSame(mapping, input);
+        Assert.NotSame(mapping, output);
+        Assert.NotSame(input, output);
+        Assert.Equal(mapping.TargetProperty, input.TargetProperty);
+        Assert.Equal(mapping.TargetProperty, output.TargetProperty);
+        Assert.Same(mapping.SourceFunction, input.SourceFunction);
+        Assert.Same(mapping.SourceFunction, output.SourceFunction);
+    }
+
+    [Theory]
+    [InlineData(nameof(WorkflowStep.SequenceSteps))]
+    [InlineData(nameof(WorkflowStep.ThenSteps))]
+    [InlineData(nameof(WorkflowStep.ElseSteps))]
+    [InlineData(nameof(WorkflowStep.LoopBodySteps))]
+    [InlineData(nameof(WorkflowStep.ForEachBodySteps))]
+    [InlineData(nameof(WorkflowStep.FinallySteps))]
+    [InlineData(nameof(WorkflowStep.TimeoutSteps))]
+    [InlineData(nameof(WorkflowStep.CatchBlocks))]
+    [InlineData(nameof(WorkflowStep.ParallelBranches))]
+    [InlineData(nameof(WorkflowStep.OutcomeBranches))]
+    public void CloneRejectsNullChildCollectionsLikeMain(string property)
+    {
+        var step = new WorkflowStep();
+        typeof(WorkflowStep).GetProperty(property)!.SetValue(step, null);
+
+        Assert.Throws<ArgumentNullException>(() => step.Clone());
+    }
+
+    [Fact]
+    public void CloneRejectsNullBranchBodiesAndSagaMetadataLikeMain()
+    {
+        Assert.Throws<ArgumentNullException>(() => new WorkflowStep { ParallelBranches = [null!] }.Clone());
+        Assert.Throws<ArgumentNullException>(() => new WorkflowStep { OutcomeBranches = [new() { Steps = null! }] }.Clone());
+        Assert.Throws<ArgumentNullException>(() => new WorkflowStep { OutcomeBranches = [new() { SagaSteps = null! }] }.Clone());
+        Assert.Throws<NullReferenceException>(() => new WorkflowStep { OutcomeBranches = [null!] }.Clone());
     }
 
     [Fact]
