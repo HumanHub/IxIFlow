@@ -108,6 +108,19 @@ internal static class GraphRules
                 if (transition.Steps is not [{ StepType: WorkflowStepType.Trigger } trigger] || transition.Cases.Count == 0)
                     throw WorkflowBuildError.Invalid(graph, "A transition requires one trigger and at least one alternative");
                 trigger.Id = author + "/on/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (trigger.TriggerKind == TriggerKind.Activity)
+                {
+                    if (trigger.ActivityType == null || !typeof(IAsyncActivity).IsAssignableFrom(trigger.ActivityType) ||
+                        trigger.ActivityType.GetInterfaces().Any(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IRequestActivity<>)) ||
+                        transition.RunSteps is not [{ StepType: WorkflowStepType.Activity } activity, { StepType: WorkflowStepType.Fire } fire] ||
+                        activity.ActivityType != trigger.ActivityType)
+                        throw WorkflowBuildError.Invalid(trigger, "An activity trigger requires one code activity, cannot be a request, and ends with Fire");
+                    activity.Id = trigger.Id + "/run";
+                    fire.Id = trigger.Id + "/run/fire";
+                    Body(transition.RunSteps, null, false);
+                }
+                else if (transition.RunSteps.Count != 0 || trigger.ActivityType != null)
+                    throw WorkflowBuildError.Invalid(trigger, "Only activity triggers have a run branch");
                 if (!Enum.IsDefined(trigger.TriggerKind) || trigger.WaitTimeout != null || trigger.TimeoutSteps.Count > 0)
                     throw WorkflowBuildError.Invalid(trigger, "A trigger has one native form and no timeout branch; use After");
                 if (trigger.TriggerKind is TriggerKind.Event or TriggerKind.Reply &&
@@ -119,7 +132,7 @@ internal static class GraphRules
                         $"Duplicate trigger key '{trigger.StepMetadata["WaitKey"]}' in state '{state.Key}'; use ordered cases under one trigger");
                 if (trigger.TriggerKind is not (TriggerKind.Event or TriggerKind.Reply) &&
                     (trigger.ResumeEventType != null || trigger.StepMetadata.ContainsKey("WaitKey") ||
-                     trigger.InputMappings.Count > 0 || trigger.OutputMappings.Count > 0 ||
+                     trigger.TriggerKind != TriggerKind.Activity && (trigger.InputMappings.Count > 0 || trigger.OutputMappings.Count > 0) ||
                      trigger.DefaultPayload != null || trigger.CompiledCondition != null))
                     throw WorkflowBuildError.Invalid(trigger, "Only event and reply triggers have intake predicates, suggestions and mappings");
                 if (trigger.TriggerKind != TriggerKind.Timer &&
@@ -151,8 +164,19 @@ internal static class GraphRules
                 if (trigger.TriggerKind == TriggerKind.Immediate && transition.Cases.Any(c => c[0].CompiledCondition == null) &&
                     state.Transitions.Any(t => t.Steps[0].TriggerKind != TriggerKind.Immediate))
                     throw WorkflowBuildError.Invalid(trigger,
-                        "An unconditional immediate transition cannot be combined with event, reply or timer triggers");
+                        "An unconditional immediate transition cannot be combined with event, reply or timer triggers, or an activity trigger");
             }
+            var listener = state.Transitions.Any(t => t.Steps[0].TriggerKind == TriggerKind.Activity) &&
+                state.Transitions.Any(t => t.Steps[0].TriggerKind is TriggerKind.Event or TriggerKind.Reply or TriggerKind.Timer);
+            if (listener)
+            {
+                if (state.ListenSteps is not [{ StepType: WorkflowStepType.Listen } listen, { StepType: WorkflowStepType.Fire } fire])
+                    throw WorkflowBuildError.Invalid(graph, "A mixed activity-trigger state requires Listen and Fire");
+                listen.Id = author + "/listen";
+                fire.Id = author + "/listen/fire";
+            }
+            else if (state.ListenSteps.Count != 0)
+                throw WorkflowBuildError.Invalid(graph, "A listener requires both activity and wait triggers");
             foreach (var exit in Exits(state.Steps))
             {
                 if (!state.Final && exit.LastOrDefault() is not { StepType: WorkflowStepType.Edge, Explicit: true })

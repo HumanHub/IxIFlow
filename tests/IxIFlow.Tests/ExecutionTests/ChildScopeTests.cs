@@ -24,10 +24,10 @@ public sealed class ChildScopeTests
         Assert.Equal([("branch", "0"), ("branch", "1"),
                 ("node", ""), ("node", "/to/0"), ("node", "/to/1"),
                 ("node", ""), ("node", "/to/0"), ("node", "/to/1"),
-                ("state", ""), ("state", "/exit"), ("state", "/on/0"), ("state", "/on/0/case/0"), ("state", "/on/0/case/1"),
-                ("state", "/on/1"), ("state", "/on/1/case/0"), ("state", "/on/1/case/1"),
-                ("state", ""), ("state", "/exit"), ("state", "/on/0"), ("state", "/on/0/case/0"), ("state", "/on/0/case/1"),
-                ("state", "/on/1"), ("state", "/on/1/case/0"), ("state", "/on/1/case/1"),
+                ("state", ""), ("state", "/exit"), ("state", "/on/0"), ("state", "/on/0/case/0"), ("state", "/on/0/case/1"), ("state", "/on/0/run"),
+                ("state", "/on/1"), ("state", "/on/1/case/0"), ("state", "/on/1/case/1"), ("state", "/on/1/run"), ("state", "/listen"),
+                ("state", ""), ("state", "/exit"), ("state", "/on/0"), ("state", "/on/0/case/0"), ("state", "/on/0/case/1"), ("state", "/on/0/run"),
+                ("state", "/on/1"), ("state", "/on/1/case/0"), ("state", "/on/1/case/1"), ("state", "/on/1/run"), ("state", "/listen"),
                 ("outcome", "0"), ("outcome", "1")],
             scopes.Skip(8).Select(scope => (scope.Kind, scope.Key)));
         Assert.All(new WorkflowStep().ChildScopes(), scope => Assert.Empty(scope.Steps));
@@ -164,8 +164,8 @@ public sealed class ChildScopeTests
 
         Assert.Equal([step.Id, "sequence", "then", "else", "loop", "finally", "catch",
                 "node", "node/to/0", "node", "node/to/0",
-                "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/1", "state/on/1/case/0",
-                "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/1", "state/on/1/case/0",
+                "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/0/run", "state/on/1", "state/on/1/case/0", "state/on/1/run", "state/listen",
+                "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/0/run", "state/on/1", "state/on/1/case/0", "state/on/1/run", "state/listen",
                 "timeout", "foreach", "branch0", "outcome0", "outcome1"],
             ParallelRules.Flatten([step]).Select(child => child.Id));
     }

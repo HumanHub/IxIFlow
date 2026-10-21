@@ -423,7 +423,11 @@ public sealed class WorkflowExecutor
                 if (checkpoint.Debug.Evaluation == null)
                     uncommitted.NoteIf(_transitions.ProcessDeferredFailures(scopes, checkpoint), instance);
                 var conflicts = new List<(ContinuationState Parent, JoinConflictException Conflict)>();
-                foreach (var join in checkpoint.Joins.Where(j => host.NeedsHydration && j.Mode == ParallelJoinMode.WaitConditionally &&
+                // Arbitration and reply-receipt transfers move saved references without reading their values.
+                // PrepareReadAsync hydrates the selected fire when its parent eventually dispatches Arm.
+                foreach (var join in checkpoint.Joins.Where(j => checkpoint.Debug.Evaluation == null &&
+                             host.NeedsHydration && !j.IsCompleting && SteppingPolicy.AllowsJoin(checkpoint, j) &&
+                             j.Mode == ParallelJoinMode.WaitConditionally &&
                              checkpoint.BranchesOf(j).Any(c => c.PendingJoinFrame != null)))
                 {
                     foreach (var child in checkpoint.BranchesOf(join).Where(c => c.Status == ContinuationStatus.Completed))
@@ -439,10 +443,14 @@ public sealed class WorkflowExecutor
                     uncommitted.NoteIf(ContinuationTransitions.NotifyCompletedBranches(scopes, checkpoint), instance);
                 if (checkpoint.Joins.Any(j => j.IsCompleting && checkpoint.ContinuationById(j.ParentContinuationId)?.ParentJoinId == null))
                     checkpoint.RootDataChanged = true;
-                foreach (var join in checkpoint.Joins.Where(j => host.NeedsHydration && j.IsCompleting))
+                foreach (var join in checkpoint.Joins.Where(j => checkpoint.Debug.Evaluation == null &&
+                             host.NeedsHydration && j.IsCompleting && SteppingPolicy.AllowsJoin(checkpoint, j) &&
+                             checkpoint.BranchesOf(j).All(c => c.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled) &&
+                             ContinuationTransitions.Merges(checkpoint, j)))
                 {
                     await host.PrepareDataReadAsync(checkpoint, checkpoint.ContinuationById(join.ParentContinuationId)!);
-                    foreach (var child in checkpoint.BranchesOf(join).Where(c => c.Status == ContinuationStatus.Completed))
+                    foreach (var child in checkpoint.BranchesOf(join).Where(c => c.Status == ContinuationStatus.Completed &&
+                                 (scopes.Step(join.StepId).StepType != WorkflowStepType.Arm || c.Id == join.WinningChildId)))
                         await host.PrepareDataReadAsync(checkpoint, child);
                 }
                 if (checkpoint.Debug.Evaluation == null)

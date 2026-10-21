@@ -280,7 +280,9 @@ public class ActivityExecutor : IActivityExecutor
                 _logger.LogTrace("Executing mapping.SourceFunction with context type: {ContextType}", evaluationContext.GetType().FullName);
 
                 // Execute the compiled source function
-                var sourceValue = mapping.SourceFunction(evaluationContext);
+                object? sourceValue;
+                try { sourceValue = mapping.SourceFunction(evaluationContext); }
+                catch (Exception error) { WorkflowEngineException.FromWorkflowCode(error); throw; }
 
                 // Set target property on activity
                 var targetProperty = activity.GetType().GetProperty(mapping.TargetProperty);
@@ -337,7 +339,8 @@ public class ActivityExecutor : IActivityExecutor
                     // Use the compiled target assignment function
                     if (mapping.TargetAssignmentFunction != null)
                     {
-                        mapping.TargetAssignmentFunction(evaluationContext, sourceValue);
+                        try { mapping.TargetAssignmentFunction(evaluationContext, sourceValue); }
+                        catch (Exception error) { WorkflowEngineException.FromWorkflowCode(error); throw; }
 
                         _logger.LogTrace("Applied typed output mapping: {Property}", mapping.TargetProperty);
                     }

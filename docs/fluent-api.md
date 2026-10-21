@@ -120,7 +120,32 @@ Use `Start(key)` and `State(key, configure)`. Keys are required, ordinal-unique,
 
 Entry, exit and action bodies use ordinary fluent steps. Entry's last result is not available to `Arm` or exit; map required results to workflow data. Exit, immediate/timer guards and their actions use the incoming previous type. Event/reply guards and actions use the event type. A timeout directly leaving non-final entry must end with `Transition(key)`; its saved choice runs exit and bypasses trigger actions. Cancellation uses normal `Finally`/compensation and does not execute exit.
 
-Activity triggers, YAML state machines and `GraphTable` are planned separately. See the [execution model](execution-model.md#state-machines) for arbitration, recovery and the remaining WWF capability boundaries.
+`OnActivity<TActivity>(to:)` races one code activity against the other triggers. Its configuration overload takes the same ordered `When`/`Otherwise` alternatives, with activity `Input` and `Output` mappings. Inputs read the machine's incoming previous value; guards and actions read the completed activity. The activity cannot be a request. Only the winning branch's data merges, and losing activities settle before guards run. A false guard re-arms every trigger without repeating entry.
+
+<!-- snippet: samples/IxIFlow.Samples/ActivityTriggers.cs#activity-trigger-state-machine -->
+```csharp
+public static WorkflowDefinition Definition() =>
+    Workflow.Create<Review>("AutomatedReview")
+        .StateMachine(m => m.Start("pending")
+            .State("pending", s => s
+                .OnActivity<CheckRisk>(t => t
+                    .Input(a => a.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                    .Output(a => a.Approved).To(ctx => ctx.WorkflowData.Approved)
+                    .When(ctx => ctx.PreviousStep.Approved, to: "approved")
+                    .Otherwise(to: "manual"))
+                .On<Decision>("decision", t => t
+                    .Output(d => d.Approved).To(ctx => ctx.WorkflowData.Approved)
+                    .When(ctx => ctx.PreviousStep.Approved, to: "approved")
+                    .Otherwise(to: "manual"))
+                .After(TimeSpan.FromDays(1), to: "manual"))
+            .State("approved", s => s.Final())
+            .State("manual", s => s.Final()))
+        .Build();
+```
+
+[ActivityTriggers.cs](../samples/IxIFlow.Samples/ActivityTriggers.cs) supplies the compiled activities; [ActivityTriggerExamples.cs](../tests/IxIFlow.Samples.Tests/ActivityTriggerExamples.cs) executes this sample. Such a state uses one branch per activity plus one shared listener when event, reply or timer triggers exist. This counts against `MaxActiveBranches` and requires copyable workflow data and mergeable named output paths. Alternatives may write the same property. All armed machines in one instance share event keys; an event matching two waits is refused as ambiguous. Reply tokens keep their original state activation and remain usable after a losing listener or failed activity guards.
+
+Code-activity triggers are included; composed workflow triggers are not yet specified. YAML state machines and `GraphTable` remain planned. See the [execution model](execution-model.md#state-machines) for arbitration and recovery.
 
 ## Faults and recovery
 

@@ -2,7 +2,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public sealed partial class ChildScopeBaselineTests
 {
-    // Recaptured by running the fixture after checkpoint contract 6 / structure hash format 3.
+    // Recaptured from the built fixture after checkpoint contract 7 / structure hash format 3.
     private const string MainBaseline = """
         [
           {
@@ -15,7 +15,7 @@ public sealed partial class ChildScopeBaselineTests
           },
           {
             "Name": "Every step",
-            "Hash": "92751B43A16D8C57A8BACB2EE23D9E01B1FDF21F368427D59221162BF245096E",
+            "Hash": "448B6F5DD2C54CF375C9BC967BE86ACA611EEA8C6E8B554EAD521FE91CCC23CB",
             "ScopeIds": [
               "root",
               "root/0/sequence",
@@ -177,7 +177,23 @@ public sealed partial class ChildScopeBaselineTests
               "root/19/foreach",
               "root/19/finally",
               "root/19/timeout",
-              "root/19/catch"
+              "root/19/catch",
+              "root/20/sequence",
+              "root/20/then",
+              "root/20/else",
+              "root/20/loop",
+              "root/20/foreach",
+              "root/20/finally",
+              "root/20/timeout",
+              "root/20/catch",
+              "root/21/sequence",
+              "root/21/then",
+              "root/21/else",
+              "root/21/loop",
+              "root/21/foreach",
+              "root/21/finally",
+              "root/21/timeout",
+              "root/21/catch"
             ],
             "StepIds": [
               "root/0",
@@ -199,7 +215,9 @@ public sealed partial class ChildScopeBaselineTests
               "root/16",
               "root/17",
               "root/18",
-              "root/19"
+              "root/19",
+              "root/20",
+              "root/21"
             ]
           },
           {

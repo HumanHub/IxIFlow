@@ -1053,7 +1053,9 @@ public class WorkflowStep
                 yield return ("state", key, transition.Steps);
                 for (var alternative = 0; alternative < transition.Cases.Count; alternative++)
                     yield return ("state", key + "/case/" + alternative.ToString(System.Globalization.CultureInfo.InvariantCulture), transition.Cases[alternative]);
+                if (transition.RunSteps.Count > 0) yield return ("state", key + "/run", transition.RunSteps);
             }
+            if (state.ListenSteps.Count > 0) yield return ("state", state.Key + "/listen", state.ListenSteps);
         }
         for (var index = 0; index < OutcomeBranches.Count; index++)
             yield return ("outcome", index.ToString(System.Globalization.CultureInfo.InvariantCulture), OutcomeBranches[index].Steps);
@@ -1090,8 +1092,10 @@ public class WorkflowStep
                 Key = state.Key, Name = state.Name, Final = state.Final,
                 // Keep the optional exit scope present until ChildScopes copies its contents.
                 ExitSteps = state.ExitSteps.Take(1).ToList(),
+                ListenSteps = state.ListenSteps.Take(1).ToList(),
                 Transitions = state.Transitions.Select(transition => new StateMachineTransition
                 {
+                    RunSteps = transition.RunSteps.Take(1).ToList(),
                     Cases = transition.Cases.Select(_ => new List<WorkflowStep>()).ToList()
                 }).ToList()
             }).ToList(),
@@ -1238,7 +1242,11 @@ public enum WorkflowStepType
     /// <summary>The repeated arbitration and arming pick of a state.</summary>
     Arm,
     /// <summary>The selected transition pick, after state exit.</summary>
-    Trigger
+    Trigger,
+    /// <summary>The shared wait pick of an activity-trigger fork.</summary>
+    Listen,
+    /// <summary>Records a fired trigger before its branch completes.</summary>
+    Fire
 }
 
 /// <summary>

@@ -382,17 +382,17 @@ public sealed class DeclaredStructureHashTests
     public void OldCheckpointSchemaIsRefusedWithoutMigration()
     {
         var current = JsonSerializer.Serialize(new ExecutionCheckpoint { StructureHash = "current" });
-        var old = current.Replace("\"SchemaVersion\":6", "\"SchemaVersion\":5")
+        var old = current.Replace("\"SchemaVersion\":7", "\"SchemaVersion\":6")
             .Replace("\"StructureHash\"", "\"DefinitionFingerprint\"");
         foreach (var read in new Func<string, ExecutionCheckpoint>[] { ExecutionCheckpoint.ReadTrunk, ExecutionCheckpoint.Read })
         {
             var error = Assert.Throws<WorkflowEngineException>(() => read(old));
             Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, error.Kind);
-            Assert.Contains("version '5'", error.Message);
-            Assert.Contains("expected 6", error.Message);
+            Assert.Contains("version '6'", error.Message);
+            Assert.Contains("expected 7", error.Message);
             Assert.Contains("no migration", error.Message);
         }
-        Assert.Equal(6, ExecutionCheckpoint.ReadTrunk(current).SchemaVersion);
+        Assert.Equal(7, ExecutionCheckpoint.ReadTrunk(current).SchemaVersion);
     }
 
     private static WorkflowDefinition Waiting(bool insert = false, bool reverse = false)

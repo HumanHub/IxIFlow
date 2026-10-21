@@ -205,6 +205,8 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             EventId = stored.EventId,
             WaitId = wait.Id
         };
+        if (wait.IsReply)
+            GraphTransitions.RetainReply(continuation, wait, continuation.AcceptedWait.Event!, stored.EventId);
         continuation.Status = ContinuationStatus.Active;
         checkpoint.RemoveWaits(item => item.Id == wait.Id, WaitCloseReason.Answered);
         if (scopes.Step(wait.StepId).StepType == WorkflowStepType.Trigger)

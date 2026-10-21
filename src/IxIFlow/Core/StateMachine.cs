@@ -15,6 +15,8 @@ public sealed class StateMachineState
     public List<WorkflowStep> ExitSteps { get; set; } = [];
     /// <summary>Triggers in arbitration order.</summary>
     public List<StateMachineTransition> Transitions { get; set; } = [];
+    /// <summary>The shared wait branch of an activity-trigger state, when it also has waits.</summary>
+    public List<WorkflowStep> ListenSteps { get; set; } = [];
 }
 
 /// <summary>One trigger pick and its first-match action scopes.</summary>
@@ -24,7 +26,9 @@ public sealed class StateMachineTransition
     public List<WorkflowStep> Steps { get; set; } = [];
     /// <summary>One scope per alternative: Edge followed by authored actions.</summary>
     public List<List<WorkflowStep>> Cases { get; set; } = [];
+    /// <summary>The code activity and its Fire pick, for an activity trigger.</summary>
+    public List<WorkflowStep> RunSteps { get; set; } = [];
 }
 
 /// <summary>The native ways a state can be woken.</summary>
-public enum TriggerKind { Event, Reply, Timer, Immediate }
+public enum TriggerKind { Event, Reply, Timer, Immediate, Activity }

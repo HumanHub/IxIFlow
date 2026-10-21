@@ -26,6 +26,11 @@ public sealed class StateMachineBuilder<TData, TPrevious> where TPrevious : clas
         var state = new StateMachineState { Key = key, Name = key };
         state.Steps.Add(StatePicks.Create<TData, TPrevious>(WorkflowStepType.Enter, sourcePath, sourceLine));
         configure(new(state, _body));
+        if (state.Transitions.Any(t => t.Steps[0].TriggerKind == TriggerKind.Activity) &&
+            state.Transitions.Any(t => t.Steps[0].TriggerKind is TriggerKind.Event or TriggerKind.Reply or TriggerKind.Timer))
+            state.ListenSteps = [
+                StatePicks.Create<TData, TPrevious>(WorkflowStepType.Listen, sourcePath, sourceLine),
+                StatePicks.Create<TData, object>(WorkflowStepType.Fire, sourcePath, sourceLine)];
         if (!state.Final)
             state.Steps.Add(StatePicks.Create<TData, TPrevious>(WorkflowStepType.Arm, sourcePath, sourceLine));
         _graph.GraphStates.Add(state);
@@ -33,7 +38,7 @@ public sealed class StateMachineBuilder<TData, TPrevious> where TPrevious : clas
     }
 }
 
-/// <summary>Declares entry, exit and ordered native triggers for one state.</summary>
+/// <summary>Declares entry, exit and ordered triggers for one state.</summary>
 public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
 {
     private readonly StateMachineState _state;
@@ -88,6 +93,32 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
     public StateBuilder<TData, TPrevious> OnReply<TEvent>(string name, string? to,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TEvent : class =>
         OnReply<TEvent>(name, t => t.Otherwise(to, sourcePath: sourcePath, sourceLine: sourceLine), sourcePath, sourceLine);
+
+    /// <summary>Races one code activity against the state's other triggers.</summary>
+    public StateBuilder<TData, TPrevious> OnActivity<TActivity>(
+        Action<StateTransitionBuilder<TData, TPrevious, TActivity>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TActivity : class, IAsyncActivity
+    {
+        var trigger = StatePicks.Create<TData, TActivity>(WorkflowStepType.Trigger, sourcePath, sourceLine);
+        trigger.TriggerKind = TriggerKind.Activity;
+        trigger.ActivityType = typeof(TActivity);
+        var transition = new StateMachineTransition { Steps = [trigger] };
+        configure(new(transition, _body));
+        var activity = StatePicks.Create<TData, TPrevious>(WorkflowStepType.Activity, sourcePath, sourceLine);
+        activity.ActivityType = typeof(TActivity);
+        activity.Name = typeof(TActivity).Name;
+        activity.InputMappings = trigger.InputMappings;
+        activity.OutputMappings = trigger.OutputMappings;
+        transition.RunSteps = [activity, StatePicks.Create<TData, TActivity>(WorkflowStepType.Fire, sourcePath, sourceLine)];
+        _state.Transitions.Add(transition);
+        return this;
+    }
+
+    public StateBuilder<TData, TPrevious> OnActivity<TActivity>(string? to,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TActivity : class, IAsyncActivity =>
+        OnActivity<TActivity>(t => t.Otherwise(to, sourcePath: sourcePath, sourceLine: sourceLine), sourcePath, sourceLine);
 
     private StateBuilder<TData, TPrevious> Event<TEvent>(TriggerKind kind, string key,
         Action<StateTransitionBuilder<TData, TPrevious, TEvent>> configure, string path, int line) where TEvent : class

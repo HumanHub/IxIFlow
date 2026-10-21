@@ -37,5 +37,7 @@ public enum TransitionCause
     /// <summary>An immediate guard matched.</summary>
     Immediate,
     /// <summary>A final state's entry completed.</summary>
-    Final
+    Final,
+    /// <summary>A code activity trigger completed.</summary>
+    Activity
 }
