@@ -48,15 +48,16 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
         var revision = catalog.DefinitionRevision;
         var previous = _capabilitySnapshot;
         if (previous != null && !ReferenceEquals(previous.Catalog, catalog)) previous = null;
-        var catalogRevision = await catalog.GetCatalogRevisionAsync();
+        var bundleHosting = BundleHostingEnabled && WorkflowSharedAssemblies.IsUsable;
+        if (BundleHostingEnabled && !bundleHosting) Compatibility.WarnUnusableProfile(CapabilityLogger);
+        // Only bundle hosts advertise durable versions; other hosts never read version rows.
+        var catalogRevision = bundleHosting ? await catalog.GetCatalogRevisionAsync() : 0;
         if (previous != null && previous.Revision == revision && previous.CatalogRevision == catalogRevision)
             return previous.Values;
 
-        var bundleHosting = BundleHostingEnabled && WorkflowSharedAssemblies.IsUsable;
-        if (BundleHostingEnabled && !bundleHosting) Compatibility.WarnUnusableProfile(CapabilityLogger);
         IReadOnlyDictionary<(string Name, int Version), VersionCapability> versions = previous?.Versions
             ?? new Dictionary<(string, int), VersionCapability>();
-        if (previous == null || previous.CatalogRevision != catalogRevision)
+        if (bundleHosting && (previous == null || previous.CatalogRevision != catalogRevision))
         {
             var changes = await catalog.GetWorkflowVersionChangesAsync(previous?.CatalogRevision ?? 0);
             // Use the delta's watermark, never the earlier scalar read (a writer may race it).
