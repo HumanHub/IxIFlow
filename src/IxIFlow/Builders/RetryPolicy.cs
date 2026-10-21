@@ -21,6 +21,7 @@ public class RetryPolicy
 
     public TimeSpan InitialInterval { get; set; } = TimeSpan.FromSeconds(1);
     public TimeSpan MaximumInterval { get; set; } = TimeSpan.FromSeconds(10);
+    /// <summary>Additional retries after the original attempt; zero disables retries.</summary>
     public int MaximumAttempts { get; set; } = 3;
     public double BackoffCoefficient { get; set; } = 2.0; // Exponential backoff coefficient
 }

@@ -3,7 +3,7 @@ title: YAML authoring
 description: Every workflow document construct, strict validation and editor schema.
 ---
 
-YAML has a form for every fluent workflow construct. The source generator translates documents into the fluent API; generated and handwritten definitions use the same build rules and executor. Workflow names are required, and identity is the declared `(name, version)`. The parsed document model lowers to the same executable structure as fluent C#, so equivalent definitions have equal `StructureHash` values. Whitespace, comments, mapping key order, descriptions, display names and step labels do not affect the hash. Changed executable structure or expression shape does. Delegate bodies and captured values are excluded; bump the version when behavior changes. Checkpoint contract 7 refuses instances saved by earlier builds without migration.
+YAML has a form for every fluent workflow construct. The source generator translates documents into the fluent API; generated and handwritten definitions use the same build rules and executor. Workflow names are required, and identity is the declared `(name, version)`. The parsed document model lowers to the same executable structure as fluent C#, so equivalent definitions have equal `StructureHash` values. Whitespace, comments, mapping key order, descriptions, display names and step labels do not affect the hash. Changed executable structure or expression shape does. Delegate bodies and captured values are excluded; bump the version when behavior changes. Checkpoint contract 10 refuses instances saved by earlier builds without migration.
 
 The `IxIFlow` package automatically includes `*.workflow.yaml` and `*.workflow.yml` as compiler additional files. A file such as `reminder.workflow.yaml` generates `<RootNamespace>.Generated.Workflow_reminder_workflow.Build()`. Punctuation in filenames becomes underscores; use distinct filenames. Project-reference applications need analyzer references and package props explicitly, as in [the samples project](../samples/IxIFlow.Samples/IxIFlow.Samples.csproj).
 
@@ -74,7 +74,7 @@ All steps accept `id`; `name` is accepted only in workflow-scope bodies. A name 
 | `request` | Activity members plus required `key` and optional `subject`; opens a request reply slot |
 | `waitFor` | Required `key` and `event`; plain event wait or the paired request's reply wait |
 | `suspend` | Required `event`, optional `reason` key (step ID fallback) |
-| `invokeWorkflow` | `workflow: { name, version? }`, `input`, `output`, optional `cancelWithParent` (true by default); publishing resolves catalog versions and contracts; local source generation requires an explicit version of another document in the compilation |
+| `invokeWorkflow` | `workflow: { name, version? }`, `input`, `output`, ordered `onError`, optional `cancelWithParent` (true by default); publishing resolves catalog versions and contracts; local source generation requires an explicit version of another document in the compilation |
 | `invokeWorkflowType` | `workflowType`, optional `dataType` fallback, mappings and `cancelWithParent`; the generator reads the class's `[Workflow("Name", Version = n)]` identity; register the class with `services.RegisterWorkflow<TWorkflow>()` before building the service provider |
 
 The schema describes possible nodes; shared builder rules also enforce where constructs are legal. Saga bodies accept activities/references, requests, waits and switches. Saga handlers accept ordinary activities/references, `waitFor` and switches; catch bodies retain a lexical fault binding through their nested callbacks. Timeout paths and result-producing lists retain the fluent API's scope restrictions. Use `name` for a step label; descriptions belong to the workflow.
@@ -138,6 +138,27 @@ Event and reply triggers accept `matches`, `defaultPayload`, `input` and `output
 See the compiled [approval YAML](../samples/IxIFlow.Samples/Definitions/approval-state-machine.yaml) and [activity race YAML](../samples/IxIFlow.Samples/Definitions/activity-trigger-state-machine.yaml), with their [fluent twins](fluent-api.md#native-state-machines). These explicitly named `.yaml` examples compile in the generator parity project. Default automatic discovery uses `.workflow.yaml`/`.workflow.yml`; other names use `IxIFlowWorkflow` items as described in the generator guide. Nested CLR types use `+` in YAML catalog lookup names.
 
 A direct timeout path leaving a flowchart node or a non-final state entry must end with `{kind: transition, to: destination}`. Explicit transitions cannot appear in exit/action bodies or arbitrary nested scopes. There is no trigger `timeout`; use an `after` transition. Invalid graph forms produce located `GRAPH0xx` validator diagnostics; the build reports them through `IXIYAML001`.
+
+## Invocation error policies
+
+Both `invokeWorkflow` and `invokeWorkflowType` accept the same ordered step `onError` list as saga activities and requests. Omitted `exception` matches `Exception`. Each entry selects `then: retry`, `terminate` or `ignore`; only retry accepts a `retry` object.
+
+<!-- snippet: samples/IxIFlow.Samples/Definitions/invocation-retries.workflow.yaml -->
+```yaml
+workflow: {name: RetryLookup, dataType: IxIFlow.Samples.LookupRequest}
+definitions:
+  - kind: invokeWorkflow
+    id: lookup
+    workflow: {name: RetryLookupChild, version: 1}
+    input: [{target: Query, from: {path: workflow.Query}}]
+    output: [{source: Response, to: {path: workflow.Response}}]
+    onError:
+      - exception: System.InvalidOperationException
+        then: retry
+        retry: {maximumAttempts: 2, initialInterval: '00:00:05', maximumInterval: '00:00:30', backoffCoefficient: 2}
+```
+
+`maximumAttempts` counts additional retries. The first matching policy wins, including when its budget is exhausted. Each retry evaluates fresh mappings and required values against the pinned contract and starts a different child; a pre-start input failure has no child. Ignore leaves outputs untouched and makes `previousStep` null. Step terminate propagates the failure to enclosing handlers. Successful-child output mapping failures never start replacements. Reachable retry delays over 36,500 days fail positioned validation; the exact limit is accepted. See [invocation retries](fluent-api.md) for failure boundaries and cancellation, and the [sample twin](../samples/IxIFlow.Samples/Definitions/invocation-retries.workflow.yaml).
 
 ## Mappings and expressions
 

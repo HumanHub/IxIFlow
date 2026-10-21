@@ -183,7 +183,7 @@ contributes its expression and Combine its property/combiner type, including com
 Whitespace, comments, key order, descriptions, display names, tags and step names do not contribute.
 Registration retains the first metadata when an equivalent definition is registered again.
 A structure mismatch refuses registration and saved-instance execution, naming identity and both hashes.
-Bump the version for behavior changes. Checkpoint schema 4 refuses earlier saved instances without
+Bump the version for behavior changes. Checkpoint schema 8 refuses earlier saved instances without
 migration; reset development state and coordinate host restarts.
 
 Publishing orchestration, dependency resolution, package pinning, inline `use`, code activities,

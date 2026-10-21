@@ -2002,6 +2002,13 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
+        "onError": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/stepErrorPolicy"
+          },
+          "description": "Ordered invocation error policies; the first assignable exception match wins."
+        },
         "cancelWithParent": {
           "type": "boolean",
           "description": "Whether cancelling the invoking branch cancels the child and waits for it to finish.",
@@ -2698,6 +2705,13 @@
             "null"
           ],
           "description": "The explicit step name used by the fluent definition."
+        },
+        "onError": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/stepErrorPolicy"
+          },
+          "description": "Ordered invocation error policies; the first assignable exception match wins."
         },
         "workflowType": {
           "type": "string",

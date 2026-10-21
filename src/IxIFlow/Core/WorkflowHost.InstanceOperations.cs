@@ -254,10 +254,20 @@ public sealed partial class WorkflowHost
                     ErrorMessage = stop.Describe(), Diagnostic = stop.Diagnostic };
             var continuation = checkpoint.Continuations.SingleOrDefault(item =>
                 item.PendingActivity?.Id == invocationId && item.Status == ContinuationStatus.WaitingResolution)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Activity invocation '{invocationId}' is not awaiting resolution");
             var pending = continuation.PendingActivity!;
             var step = scopes.Step(pending.StepId);
+            if (step.StepType == WorkflowStepType.WorkflowInvocation)
+            {
+                if (string.IsNullOrWhiteSpace(resolution.ExpectedPolicyAttemptId))
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "ExpectedPolicyAttemptId is required for an invocation resolution");
+                var attempt = InvocationRecords.Active(checkpoint, continuation)?.Attempts.LastOrDefault();
+                if (resolution.ExpectedPolicyAttemptId != pending.PolicyAttemptId || attempt?.Id != pending.PolicyAttemptId ||
+                    attempt.Phase != "NeedsResolution" || pending.Resolution != null)
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The invocation policy attempt changed before resolution");
+            }
+
             if (step.StepType is not (WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     "This step cannot be resolved by an operator");
@@ -286,13 +296,23 @@ public sealed partial class WorkflowHost
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
             if (current?.Incarnation != instance.Incarnation || current.Revision != instance.Revision ||
                 current.Status != instance.Status)
+            {
+                if (step.StepType == WorkflowStepType.WorkflowInvocation)
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                        "The invocation attempt changed before resolution could be saved");
                 return current?.Status == WorkflowStatus.Running
                     ? Busy(instanceId)
                     : Rejected(instanceId, "The activity changed before resolution could be saved");
+            }
 
             checkpoint.Trace.Configure(instance, checkpoint, _limits, _time, scopes);
             OperatorTrace.Resolved(checkpoint, pending, decision, Now);
             pending.Resolution = decision;
+            if (InvocationRecords.Active(checkpoint, continuation) is { } record)
+            {
+                checkpoint.TouchInvocation(record.Id);
+                record.Attempts[^1].Decision = decision;
+            }
             pending.ResolutionReason = null;
             continuation.Status = ContinuationStatus.Active;
             instance.Status = WorkflowStatus.Running;
@@ -334,7 +354,8 @@ public sealed partial class WorkflowHost
                     step.OutputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Output)
                         .Select(mapping => mapping.TargetProperty).Distinct().ToArray(),
                     step.StepType == WorkflowStepType.Activity ||
-                    step.StepType == WorkflowStepType.WorkflowInvocation && !ChildIsActive(child)));
+                    step.StepType == WorkflowStepType.WorkflowInvocation && !ChildIsActive(child))
+                    { PolicyAttemptId = pending.PolicyAttemptId });
             }
             return pendingActivities;
         }
@@ -412,6 +433,7 @@ public sealed partial class WorkflowHost
         {
             var decision = new ActivityResolutionState
             {
+                PolicyAttemptId = step.StepType == WorkflowStepType.WorkflowInvocation ? resolution.ExpectedPolicyAttemptId : null,
                 Kind = resolution.Kind,
                 Note = resolution.Note,
                 DecidedBy = resolution.DecidedBy ?? defaultActor

@@ -23,8 +23,57 @@ public sealed class YamlSampleTests
             ["retry"] = Workflow_retry_quote_workflow.Build,
             ["reminder"] = Workflow_reminder_workflow.Build,
             ["approval"] = Workflow_approval_workflow.Build,
-            ["payment"] = Workflow_saga_payment_workflow.Build
+            ["payment"] = Workflow_saga_payment_workflow.Build,
+            ["invocation-retries"] = Workflow_invocation_retries_workflow.Build,
+            ["invocation-retries-child"] = Workflow_invocation_retries_child_workflow.Build
         };
+
+    [Theory]
+    [InlineData("invocation-retries", false)]
+    [InlineData("invocation-retries", true)]
+    [InlineData("invocation-retries-child", false)]
+    public async Task InvocationRetrySamplesMatchFluent(string sample, bool retry)
+    {
+        var parent = sample == "invocation-retries";
+        var first = await Execute(parent ? InvocationRetries.Definition() : InvocationRetries.Child(),
+            InvocationRetries.Child());
+        var second = await Execute(YamlDefinitions[sample](), YamlDefinitions["invocation-retries-child"]());
+        Assert.Equal(first, second);
+
+        async Task<(string Data, string StructureHash)> Execute(WorkflowDefinition definition, WorkflowDefinition child)
+        {
+            var time = new FakeTimeProvider();
+            var lookup = new Lookup { FailFirst = retry };
+            var collection = Hosting.Services();
+            collection.AddSingleton<TimeProvider>(time);
+            collection.AddSingleton<ILookup>(lookup);
+            await using var services = collection.BuildServiceProvider();
+            if (parent)
+                await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
+            var client = SampleTests.Client(services);
+            object data = parent ? new LookupRequest { Query = "customer" } : new LookupData { Query = "customer" };
+            var result = await client.RunAsync(definition, data);
+            if (retry)
+            {
+                var store = services.GetRequiredService<IWorkflowStateRepository>();
+                var deadline = time.GetUtcNow().UtcDateTime.AddSeconds(5);
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                while ((await store.GetWorkflowInstanceAsync(result.InstanceId))!.RunnableAtUtc != deadline)
+                    await Task.Delay(10, timeout.Token);
+                Assert.Equal(1, lookup.Calls);
+                time.Advance(TimeSpan.FromSeconds(5));
+            }
+            if (result.Status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended)
+                result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished)
+                    .WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
+            Assert.Equal(retry ? 2 : 1, lookup.Calls);
+            var response = parent ? Assert.IsType<LookupRequest>(result.WorkflowData).Response
+                : Assert.IsType<LookupData>(result.WorkflowData).Response;
+            Assert.Equal("found:customer", response);
+            return (JsonSerializer.Serialize(result.WorkflowData), await StructureHash(services, result.InstanceId));
+        }
+    }
 
     [Theory]
     [InlineData("restock", 0)]
@@ -223,6 +272,20 @@ public sealed class YamlSampleTests
         services.AddSingleton<IPaymentRefunds>(gateway);
         services.AddSingleton<IStock>(gateway);
         return services.BuildServiceProvider();
+    }
+
+    private sealed class Lookup : ILookup
+    {
+        public bool FailFirst { get; init; }
+        public int Calls { get; private set; }
+
+        public Task<string> FetchAsync(string query, CancellationToken cancellationToken)
+        {
+            Calls++;
+            if (FailFirst && Calls == 1)
+                throw new InvalidOperationException("Lookup temporarily unavailable");
+            return Task.FromResult("found:" + query);
+        }
     }
 
     private sealed class Gateway : IApprovalMailer, IPaymentProvider, IPaymentRefunds, IStock

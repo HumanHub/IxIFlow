@@ -10,6 +10,8 @@ public sealed record ReplayPosition(long Sequence, DateTime? Timestamp, TraceClo
 {
     /// <summary>Only an explicitly attached checkpoint at this exact revision can supply values.</summary>
     public IReadOnlyList<InspectionData>? Data { get; init; }
+    public IReadOnlyList<InvocationTrace> Invocations { get; init; } = [];
+    public IReadOnlyList<ActivityResolutionTrace> Resolutions { get; init; } = [];
 }
 
 /// <summary>Folds recorded positions without invoking activities, expressions or data combiners.</summary>
@@ -85,6 +87,8 @@ public sealed class TraceReplay
         var history = InspectionPrivacy.Clean(entries.ToArray(), []);
         var reasons = new HashSet<string>(StringComparer.Ordinal);
         var threads = new Dictionary<string, InspectionThread>(StringComparer.Ordinal);
+        var invocations = new Dictionary<string, InvocationTrace>(StringComparer.Ordinal);
+        var resolutions = new List<ActivityResolutionTrace>();
         var positions = new List<ReplayPosition>(); var stops = new List<string?>();
         long previous = 0; long? revision = null; WorkflowStatus? status = null;
         var origin = false; string? instanceId = null;
@@ -124,6 +128,20 @@ public sealed class TraceReplay
                     if (start.Detail != TraceDetail.Full) reasons.Add("Control flow detail was omitted");
                     origin = true;
                     break;
+                case InvocationTrace invocation:
+                    // Hard termination reads only the trunk index. Its closure changes the current
+                    // disposition/deadline, not the child outcome or policy already recorded.
+                    invocations[invocation.PolicyAttemptId] = invocation.Disposition == "Terminated" &&
+                        invocations.TryGetValue(invocation.PolicyAttemptId, out var previousInvocation)
+                        ? previousInvocation with { Disposition = invocation.Disposition, RetryAfterUtc = null }
+                        : invocation;
+                    break;
+                case RetryTrace { Invocation: { } invocation }:
+                    invocations[invocation.PolicyAttemptId] = invocation;
+                    break;
+                case ActivityResolutionTrace resolution:
+                    resolutions.Add(resolution);
+                    break;
                 case ThreadPositionTrace position:
                     if (position.Thread == null) threads.Remove(position.ContinuationId);
                     else threads[position.ContinuationId] = position.Thread;
@@ -138,7 +156,8 @@ public sealed class TraceReplay
                 reasons.Add("Trace recording limit omitted history");
             var problems = reasons.Concat(origin ? [] : new[] { "Replay origin is missing" }).ToArray();
             positions.Add(new(stored.Sequence, entry.Timestamp, entry.Clock, revision, status,
-                problems.Length == 0, problems, threads.Values.OrderBy(t => t.Sequence).ToArray(), checkpoint));
+                problems.Length == 0, problems, threads.Values.OrderBy(t => t.Sequence).ToArray(), checkpoint)
+                { Invocations = invocations.Values.ToArray(), Resolutions = resolutions.ToArray() });
             stops.Add(entry.EntryType is TraceEntryType.StepEntered or TraceEntryType.ActivityStarted or TraceEntryType.ConditionTaken or
                 TraceEntryType.InlineEntered or TraceEntryType.LoopIteration or TraceEntryType.ForEachItemStarted or TraceEntryType.NodeEntered or
                 TraceEntryType.StateEntered or TraceEntryType.ExitEntered or TraceEntryType.ActionEntered ? entry.StepId : null);

@@ -8,4 +8,7 @@ public sealed record PendingActivityInfo(
     string? Reason,
     DateTime StartedAtUtc,
     IReadOnlyList<string> RequiredOutputProperties,
-    bool CanResolve);
+    bool CanResolve)
+{
+    public string? PolicyAttemptId { get; init; }
+}

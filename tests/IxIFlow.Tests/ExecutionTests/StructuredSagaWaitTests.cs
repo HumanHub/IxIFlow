@@ -35,8 +35,9 @@ public class StructuredSagaWaitTests
             new NonRestorableSagaException("private constructor value"));
         Assert.False(saved.IsRestorable);
 
-        Assert.True(SagaScopeTransitions.HandleStepFailure(scopes, continuation,
-            saved.ForPropagation(), DateTime.UtcNow, null));
+        var decision = StepErrorPolicies.Handle(scopes, new ExecutionCheckpoint(), continuation,
+            saved.ForPropagation(), DateTime.UtcNow, null);
+        Assert.Equal(StepFailureAction.Ignore, decision.Action);
         Assert.Equal(1, continuation.Stack[^1].NextStepIndex);
     }
 

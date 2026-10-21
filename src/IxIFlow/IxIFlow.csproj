@@ -63,4 +63,7 @@
     </ItemGroup>
   </Target>
 
+  <ItemGroup>
+    <Compile Include="../Shared/RetryDelayRules.cs" Link="Authoring/RetryDelayRules.cs" />
+  </ItemGroup>
 </Project>

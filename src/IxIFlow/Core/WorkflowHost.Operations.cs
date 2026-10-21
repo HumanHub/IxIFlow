@@ -129,6 +129,7 @@ public sealed partial class WorkflowHost
             instance.LastErrorStackTrace = null;
             var state = JsonNode.Parse(instance.ExecutionStateJson)!;
             state["OperatorStop"] = null;
+            state["InvocationClosure"] = JsonSerializer.SerializeToNode(new InvocationClosure(Now, "Terminated"));
             state.AsObject().Remove(nameof(ExecutionCheckpoint.Demands));
             // Termination closes activities, preserving operator-authored records and the latest failure.
             var prior = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
@@ -145,8 +146,19 @@ public sealed partial class WorkflowHost
                 Payload = new CancellationTrace(reason.RequestedBy, reason.RequestedAt, reason.ReasonCode)
             };
             var checkpoint = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
+            checkpoint.Trace.ConfigureMetadata(instance, checkpoint, _limits, _time);
+            foreach (var entry in checkpoint.InvocationIndex.Where(entry => entry.Open && entry.PolicyAttemptId != null))
+                checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.InvocationPolicyApplied,
+                    StepId = entry.StepId, ContinuationId = entry.ContinuationId,
+                    Payload = new InvocationTrace(entry.Id, entry.StepId, entry.ContinuationId,
+                        entry.PolicyAttemptId!, entry.AttemptNumber, entry.ChildInstanceId, null,
+                        "Terminated", null, null, null) });
+            state[nameof(ExecutionCheckpoint.TraceEntriesRecorded)] = checkpoint.TraceEntriesRecorded;
+            state[nameof(ExecutionCheckpoint.TraceBudgetExhausted)] = checkpoint.TraceBudgetExhausted;
+            instance.ExecutionStateJson = state.ToJsonString();
+            var traces = checkpoint.Trace.Pending.Append(trace).ToArray();
             return new(saved, epoch => CheckpointCommit.Terminate(saved, instance, epoch,
-                children, ChildCompleted.NoticeOf(instance, checkpoint), trace,
+                children, ChildCompleted.NoticeOf(instance, checkpoint), traces,
                 retained.Select(item => item.DiagnosticId).ToArray()));
         }
     }

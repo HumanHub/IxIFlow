@@ -316,11 +316,19 @@ internal sealed class ActivityAttempts(
         RunningActivity Settles(ActivityRunResult outcome) =>
             new(continuation, step, Task.FromResult(outcome), cancellation, null, stepNumber);
         var pending = continuation.PendingActivity;
+        if (pending != null && (pending.StepId != scopes.Id(step) || continuation.InvocationRecordId != pending.Id ||
+            InvocationRecords.Active(checkpoint, continuation)?.Attempts.LastOrDefault()?.Id != pending.PolicyAttemptId))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The saved invocation does not match its active policy attempt");
         if (pending?.Resolution is { } decision)
         {
-            Attempt(instance, checkpoint, continuation, step, pending, $"Operator{decision.Kind}");
+            var decidedRecord = InvocationRecords.Active(checkpoint, continuation)
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Invocation resolution has no record");
+            if (decision.PolicyAttemptId != pending.PolicyAttemptId || decision.PolicyAttemptId != decidedRecord.Attempts[^1].Id)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved resolution targets another invocation attempt");
+            checkpoint.TouchInvocation(decidedRecord.Id);
+            decidedRecord.Attempts[^1].Decision = decision;
             using var childLease = pending.ChildBundleDigest == null ? null
-                : await definitions.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest, acquisition.Token);
+                : await ReadInvocationDefinitionAsync(() => definitions.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest, acquisition.Token));
             object? output;
             using (WorkflowTypeIdentity.Enter(childLease?.Definition.BundleContext))
                 output = decision.InvocationResult?.Read(services);
@@ -337,12 +345,17 @@ internal sealed class ActivityAttempts(
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Child invocation step '{step.Name}' took an event that is not its child's completion");
             using var childLease = pending.ChildBundleDigest == null ? null
-                : await definitions.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest, acquisition.Token);
+                : await ReadInvocationDefinitionAsync(() => definitions.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest, acquisition.Token));
             Type dataType;
             using (WorkflowTypeIdentity.Enter(childLease?.Definition.BundleContext))
                 dataType = WorkflowTypeIdentity.Resolve(pending.ChildDataType ?? "")
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                         $"Child data type '{pending.ChildDataType}' is unavailable");
+            if (completed.ChildInstanceId != pending.ChildWorkflowId)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Completion targets another invocation child");
+            var completedRecord = InvocationRecords.Active(checkpoint, continuation)!;
+            checkpoint.TouchInvocation(completedRecord.Id);
+            completedRecord.Attempts[^1].ChildStatus = completed.Status;
             continuation.AcceptedWait = null;
             await host.Reader.ReadAsync(completed.DataJson);
             // Failures belong to the parent's catch contract, just as outputs belong to its
@@ -363,14 +376,34 @@ internal sealed class ActivityAttempts(
                 $"Child invocation step '{step.Name}' has neither its child's wait nor its completion");
         }
 
-        pending = new ActivityInvocationState { StepId = scopes.Id(step), StartedAtUtc = Now };
-        pending.ChildWorkflowId = pending.Id;
+        var record = InvocationRecords.Active(checkpoint, continuation);
+        if (record == null)
+        {
+            var id = InvocationRecords.LogicalId(instance, continuation, scopes.Id(step));
+            record = new InvocationRecordState { Id = id, StepId = scopes.Id(step),
+                ContinuationId = continuation.Id, FrameActivationId = continuation.Stack[^1].ActivationId,
+                WorkflowName = step.WorkflowName!, WorkflowVersion = step.WorkflowVersion!.Value, StartedAtUtc = Now, StepNumber = stepNumber };
+            checkpoint.InvocationRecords.Add(id, record);
+            continuation.InvocationRecordId = id;
+        }
+        checkpoint.TouchInvocation(record.Id);
+        record.RetryAfterUtc = null;
+        var number = record.Attempts.Count + 1;
+        var ordinal = number.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var policyAttempt = new InvocationAttemptState { Id = InvocationRecords.Identity("policy-attempt", record.Id, ordinal),
+            Number = number, ProposedChildInstanceId = InvocationRecords.Identity("child-instance", record.Id, ordinal),
+            PreparedAtUtc = Now, Host = _hostName };
+        record.Attempts.Add(policyAttempt);
+        pending = new ActivityInvocationState { Id = record.Id, StepId = scopes.Id(step), StartedAtUtc = record.StartedAtUtc,
+            PolicyAttemptId = policyAttempt.Id, ChildWorkflowId = policyAttempt.ProposedChildInstanceId };
+        continuation.PendingActivity = pending;
         using var startScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), pending.Id));
-        using var childDefinitionLease = step.WorkflowType == null
-            ? await definitions.ResolveWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, acquisition.Token) : null;
-        var childDefinition = step.WorkflowType != null
-            ? step.Runtime.ChildDefinition!(services)
-            : childDefinitionLease!.Definition;
+        using var childDefinitionLease = await ReadInvocationDefinitionAsync(() => step.WorkflowType == null
+            ? record.BundleDigest is { } digest
+                ? definitions.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, digest, acquisition.Token)
+                : definitions.ResolveWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, acquisition.Token)
+            : Task.FromResult(new WorkflowDefinitionLease(step.Runtime.ChildDefinition!(services))));
+        var childDefinition = childDefinitionLease.Definition;
         if (childDefinition.Name != step.WorkflowName || childDefinition.Version != step.WorkflowVersion)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 step.WorkflowType != null
@@ -383,15 +416,33 @@ internal sealed class ActivityAttempts(
             ChildInputs.CheckContract(childDefinition, step, childContract);
         pending.ChildDataType = WorkflowTypeIdentity.SavedName(childDefinition.WorkflowDataType!);
         pending.ChildBundleDigest = childDefinition.BundleDigest;
-        ChildStart start;
+        if (record.StructureHash != null && (record.StructureHash != childScopes.StructureHash || record.ContractHash != childContract.Hash))
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "The pinned invocation artifact changed between attempts");
+        record.DataType = pending.ChildDataType;
+        record.BundleDigest = pending.ChildBundleDigest;
+        record.StructureHash = childScopes.StructureHash;
+        record.ContractHash = childContract.Hash;
+        object data;
         try
         {
             var context = WorkflowValueBinding.EvaluationContext(step, checkpoint.DataOf(continuation),
                 continuation.GetPrevious(services),
                 ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes));
             using var childTypeScope = childDefinitionLease?.EnterTypes();
-            var data = ChildInputs.NewData(childDefinition, step, context);
-            var prepared = WorkflowInstances.Start(childDefinition, data, instance, pending.Id,
+            data = ChildInputs.NewData(childDefinition, step, context);
+        }
+        catch (Exception error) when (error is not ExecutionOwnershipLostException &&
+                                      error is not OperationCanceledException &&
+                                      !WorkflowEngineException.IsEngineFailure(error))
+        {
+            InvocationPreparationTrace(checkpoint, record, policyAttempt);
+            return Settles(ActivityRunResult.Threw(error));
+        }
+        ChildStart start;
+        try
+        {
+            using var childTypeScope = childDefinitionLease?.EnterTypes();
+            var prepared = WorkflowInstances.Start(childDefinition, data, instance, pending.ChildWorkflowId!,
                 Guid.NewGuid().ToString("N"), Now);
             var child = prepared.Child!;
             child.WorkflowDataJson = host.Payloads.Store(child.WorkflowDataJson);
@@ -401,7 +452,7 @@ internal sealed class ActivityAttempts(
             if (reply.Refusal == WorkflowErrorKind.ResourceExhausted)
             {
                 continuation.PendingActivity = pending;
-                Attempt(instance, checkpoint, continuation, step, pending, "InvokeWorkflow");
+                InvocationPreparationTrace(checkpoint, record, policyAttempt);
                 return Settles(ActivityRunResult.Unresolved($"The child workflow could not start: {reply.Message}"));
             }
             if (reply.Refusal is { } refusal)
@@ -411,55 +462,50 @@ internal sealed class ActivityAttempts(
         catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidRequest && !error.RaisedByWorkflowCode)
         {
             continuation.PendingActivity = pending;
-            Attempt(instance, checkpoint, continuation, step, pending, "InvokeWorkflow");
+            InvocationPreparationTrace(checkpoint, record, policyAttempt);
             return Settles(ActivityRunResult.Unresolved($"The child workflow could not start: {error.Message}"));
         }
         catch (CheckpointLimitExceededException error)
         {
             // The same child would be refused again, so an operator decides (A-08, D-28).
             continuation.PendingActivity = pending;
-            Attempt(instance, checkpoint, continuation, step, pending, "InvokeWorkflow");
+            InvocationPreparationTrace(checkpoint, record, policyAttempt);
             return Settles(ActivityRunResult.Unresolved($"The child workflow could not start: {error.Message}"));
         }
         catch (Exception error) when (error is not ExecutionOwnershipLostException &&
                                       error is not OperationCanceledException &&
                                       !WorkflowEngineException.IsEngineFailure(error))
         {
-            return Settles(ActivityRunResult.Threw(error));
+            // Validation, payload storage and transport belong to the engine. An interrupted
+            // start must recover its committed occurrence without consulting workflow policy.
+            throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure,
+                "The child start was interrupted", error);
         }
+        policyAttempt.Phase = "WaitingChild";
+        policyAttempt.ChildIncarnation = start.Incarnation;
         continuation.PendingActivity = pending;
-        Attempt(instance, checkpoint, continuation, step, pending, "InvokeWorkflow");
         transitions.AwaitChild(checkpoint, continuation, scopes.Id(step), start, detached: !step.CancelWithParent);
         return null;
     }
 
-    // Records an invocation attempt and its start in the trace.
-    private void Attempt(WorkflowInstance instance, ExecutionCheckpoint checkpoint, ContinuationState continuation, WorkflowStep step,
-        ActivityInvocationState pending, string kind)
+    private static async Task<WorkflowDefinitionLease> ReadInvocationDefinitionAsync(Func<Task<WorkflowDefinitionLease>> read)
     {
-        var attempt = new ActivityAttemptState { StartedAtUtc = Now, Kind = kind, Host = _hostName };
-        pending.Attempts.Add(attempt);
-        if (!checkpoint.Trace.Accepts(TraceEntryType.ActivityStarted, Now))
-            return;
-        var startTrace = new ExecutionTraceEntry
+        try { return await read(); }
+        catch (Exception error) when (error is not ExecutionOwnershipLostException &&
+                                      error is not OperationCanceledException &&
+                                      !WorkflowEngineException.IsEngineFailure(error))
         {
-            Timestamp = Now,
-            EntryType = TraceEntryType.ActivityStarted,
-            StepId = pending.StepId,
-            ContinuationId = continuation.Id,
-            FrameActivationId = continuation.Stack[^1].ActivationId,
-            ActivityName = step.Name,
-            StepNumber = continuation.Stack[^1].NextStepIndex,
-            Metadata = new Dictionary<string, object>
-            {
-                ["InvocationId"] = pending.Id,
-                ["AttemptId"] = attempt.Id,
-                ["Kind"] = attempt.Kind
-            }
-        };
-        if (pending.Resolution != null)
-            startTrace.Metadata!["DecisionNote"] = InspectionRedactionPolicy.Default.Note(pending.Resolution.Note, services);
-        checkpoint.Trace.Add(startTrace);
+            throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure,
+                "The child definition lookup was interrupted", error);
+        }
+    }
+
+    private void InvocationPreparationTrace(ExecutionCheckpoint checkpoint, InvocationRecordState record, InvocationAttemptState attempt)
+    {
+        if (checkpoint.Trace.Accepts(TraceEntryType.ActivityStarted, Now))
+            checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.ActivityStarted,
+                StepId = record.StepId, ContinuationId = record.ContinuationId, FrameActivationId = record.FrameActivationId,
+                ActivityName = record.WorkflowName, StepNumber = record.StepNumber, Payload = InvocationRecords.Facts(record, attempt) });
     }
 
     public async Task SettleAsync(
@@ -497,7 +543,7 @@ internal sealed class ActivityAttempts(
                 if (activity.Continuation.PendingActivity is { Attempts.Count: > 0 } ending)
                     RecordFailure(ending.Attempts[^1], outcome.Error, activity.Prepared?.Context.Attempt.Note);
                 // Kept until the failure is handled, for a retry of the step (D-14).
-                if (activity.Continuation.PendingActivity is { } failed)
+                if (activity.Step.StepType == WorkflowStepType.Activity && activity.Continuation.PendingActivity is { } failed)
                     activity.Continuation.RetryInputs = new KeptActivityInputs
                     {
                         InvocationId = failed.Id,
@@ -592,8 +638,17 @@ internal sealed class ActivityAttempts(
             : reason == null ? null : checkpoint.RecordDiagnostic("ActivityUnresolved", reason);
         if (error != null)
             _inspectionPolicy.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
-        pending.Attempts[^1].EndedAtUtc = Now;
-        pending.Attempts[^1].Observation = "Unresolved";
+        if (InvocationRecords.Active(checkpoint, activity.Continuation) is { } record)
+        {
+            checkpoint.TouchInvocation(record.Id);
+            record.Attempts[^1].Phase = "NeedsResolution";
+            record.Attempts[^1].Diagnostic = pending.ResolutionDiagnostic;
+        }
+        else
+        {
+            pending.Attempts[^1].EndedAtUtc = Now;
+            pending.Attempts[^1].Observation = "Unresolved";
+        }
         activity.Continuation.Status = ContinuationStatus.WaitingResolution;
     }
 
@@ -636,6 +691,29 @@ internal sealed class ActivityAttempts(
         var pending = running.Continuation.PendingActivity;
         if (pending == null)
             return;
+        if (running.Step.StepType == WorkflowStepType.WorkflowInvocation)
+        {
+            var record = InvocationRecords.Active(checkpoint, running.Continuation)!;
+            checkpoint.TouchInvocation(record.Id);
+            var policyAttempt = record.Attempts[^1];
+            policyAttempt.EndedAtUtc = Now;
+            policyAttempt.Phase = "Ended";
+            policyAttempt.Disposition = observation;
+            policyAttempt.Failure = error == null ? null : SerializedException.From(error);
+            policyAttempt.Diagnostic = diagnostic;
+            running.Continuation.PendingActivity = null;
+            if (error == null || running.ActivityReturned || Unwinding(running.Continuation))
+                InvocationRecords.Close(checkpoint, running.Continuation,
+                    Unwinding(running.Continuation) ? "Cancelled" : observation, Now);
+            if (checkpoint.Trace.Accepts(error == null ? TraceEntryType.ActivityCompleted : TraceEntryType.ActivityFailed, Now))
+                checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now,
+                    EntryType = error == null ? TraceEntryType.ActivityCompleted : TraceEntryType.ActivityFailed,
+                    StepId = record.StepId, ContinuationId = record.ContinuationId, FrameActivationId = record.FrameActivationId,
+                    ActivityName = running.Step.Name, StepNumber = running.StepNumber,
+                    Duration = Now - policyAttempt.PreparedAtUtc, Error = diagnostic,
+                    Payload = InvocationRecords.Facts(record, policyAttempt) });
+            return;
+        }
         var attempt = pending.Attempts[^1];
         attempt.EndedAtUtc = Now;
         attempt.Observation = observation;

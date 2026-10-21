@@ -527,7 +527,7 @@ public sealed class ActivityRecoveryTests
             ActivityResolution.CompletedInvocation(new WorkflowInvocationTests.ChildWorkflowData
             {
                 ProcessedResult = "observed-child-result"
-            }));
+            }, expectedPolicyAttemptId: pending.PolicyAttemptId));
 
         Assert.Equal(WorkflowExecutionStatus.Success, resolved.Status);
         Assert.Equal("observed-child-result", ((ChargeData)resolved.WorkflowData!).ChildResult);
@@ -554,7 +554,7 @@ public sealed class ActivityRecoveryTests
         var pending = Assert.Single(await engine.GetPendingActivitiesAsync(stopped.InstanceId));
 
         var resolved = await engine.ResolveAsync(stopped.InstanceId, pending.InvocationId,
-            ActivityResolution.Failed(new OperatorFaultException(42)));
+            ActivityResolution.Failed(new OperatorFaultException(42), expectedPolicyAttemptId: pending.PolicyAttemptId));
 
         Assert.Equal(WorkflowExecutionStatus.Success, resolved.Status);
         Assert.Equal(42, ((ChargeData)resolved.WorkflowData!).FaultCode);

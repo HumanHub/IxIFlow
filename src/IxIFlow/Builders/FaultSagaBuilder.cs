@@ -116,9 +116,9 @@ public class FaultSagaActivitySetup<TData, TFault, TActivity, TPrevious>(
 {
     public FaultSagaInput<TData, TFault, TActivity, TPrevious, TValue> Input<TValue>(Expression<Func<TActivity, TValue>> property) => new(this, step, property);
     public FaultSagaOutput<TData, TFault, TActivity, TPrevious, TValue> Output<TValue>(Expression<Func<TActivity, TValue>> property) => new(this, inner.Output(property));
-    public FaultSagaActivitySetup<TData, TFault, TActivity, TPrevious> OnError<TException>(Action<ISagaStepErrorHandler<TException>> configure) where TException : Exception
+    public FaultSagaActivitySetup<TData, TFault, TActivity, TPrevious> OnError<TException>(Action<IStepErrorHandler<TException>> configure) where TException : Exception
     { inner.OnError(configure); return this; }
-    public FaultSagaActivitySetup<TData, TFault, TActivity, TPrevious> OnError(Action<ISagaStepErrorHandler> configure)
+    public FaultSagaActivitySetup<TData, TFault, TActivity, TPrevious> OnError(Action<IStepErrorHandler> configure)
     { inner.OnError(configure); return this; }
     public FaultSagaActivitySetup<TData, TFault, TActivity, TPrevious> CompensateWith<TUndo>(
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TUndo : IAsyncActivity

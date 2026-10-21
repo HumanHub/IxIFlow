@@ -46,6 +46,7 @@ internal sealed class StoredCheckpoint
     public long Bytes => Encoding.UTF8.GetByteCount(UpdateTrunk) +
                          Parts.Values.Sum(part => part.CheckpointBytes);
 
+    public static string InvocationKey(string invocationId) => $"v/{invocationId}";
     public static string BranchKey(string continuationId) => $"c/{continuationId}";
     public static string FrameKey(string activationId) => $"i/{activationId}";
     public static string ListKey(string forEachId) => $"f/{forEachId}";
@@ -86,6 +87,9 @@ internal sealed class StoredCheckpoint
         {
             [CheckpointParts.DataKey] = Store(dataJson)
         };
+        foreach (var (id, record) in checkpoint.InvocationRecords)
+            parts[InvocationKey(id)] = saved != null && !marks.Has(InvocationKey(id)) && saved.TryGetValue(InvocationKey(id), out var keptRecord)
+                ? keptRecord : Store(Serialize(record, Stored));
         var branchIds = BranchIds(checkpoint);
         if (branchIds.Count > 0)
         {
@@ -174,20 +178,34 @@ internal sealed class StoredCheckpoint
                 trunk.ValueKind != JsonValueKind.True) return instance.ExecutionStateJson;
         }
         var parts = instance.PartsAt(instance.Revision) ?? throw new InvalidOperationException("Missing checkpoint parts");
+        // Assembly needs structural envelopes and invocation records. Inline frame bodies stay
+        // behind their StoredJson references until ExecutionSession.PrepareDataReadAsync needs them.
         foreach (var (key, value) in parts)
             if (key.StartsWith("c/", StringComparison.Ordinal) || key.StartsWith("f/", StringComparison.Ordinal) ||
-                key.StartsWith("b/", StringComparison.Ordinal)) await reader.ReadAsync(value);
+                key.StartsWith("b/", StringComparison.Ordinal) ||
+                key.StartsWith("v/", StringComparison.Ordinal)) await reader.ReadAsync(value);
         return AssembleState(instance.ExecutionStateJson, parts);
     }
 
     /// <summary>
-    /// The whole checkpoint from its trunk and parts. A whole schema-4 checkpoint is returned as it is.
+    /// The whole checkpoint from its trunk and parts. A whole checkpoint is returned as it is.
     /// </summary>
     public static string AssembleState(string trunkJson, IReadOnlyDictionary<string, StoredJson> parts)
     {
         if (!IsTrunk(trunkJson))
             return trunkJson;
         var checkpoint = JsonSerializer.Deserialize<ExecutionCheckpoint>(trunkJson, Stored)!;
+        foreach (var entry in checkpoint.InvocationIndex)
+        {
+            if (!parts.TryGetValue(InvocationKey(entry.Id), out var part))
+                throw new WorkflowEngineException(WorkflowErrorKind.PayloadUnavailable, $"Invocation record '{entry.Id}' is missing");
+            var record = JsonSerializer.Deserialize<InvocationRecordState>(part.InlineText)!;
+            if (record.Id != entry.Id)
+                throw new WorkflowEngineException(WorkflowErrorKind.PayloadUnavailable, $"Invocation record '{entry.Id}' does not match its checkpoint index");
+            record.StepId = entry.StepId;
+            record.ContinuationId = entry.ContinuationId;
+            checkpoint.InvocationRecords.Add(entry.Id, record);
+        }
         // Branches take their places in the order they started, which is the order they were saved in.
         var branches = parts.Where(part => part.Key.StartsWith("c/", StringComparison.Ordinal))
             .Select(part => JsonSerializer.Deserialize<BranchPart>(part.Value.InlineText, Stored)!)
@@ -204,6 +222,22 @@ internal sealed class StoredCheckpoint
         foreach (var (id, frame) in checkpoint.InlineFrames)
             frame.Data = parts.GetValueOrDefault(FrameKey(id))
                 ?? throw new InvalidOperationException($"The saved data of inline frame '{id}' is missing");
+        // Invocation parts own identity, pins and operator decisions. Rebuild the dispatch view only
+        // after root and branch records are available; the hot checkpoint never stores these twice.
+        foreach (var continuation in checkpoint.Continuations)
+        {
+            if (continuation.PendingActivity is not { } pending ||
+                InvocationRecords.Active(checkpoint, continuation) is not { } record) continue;
+            var attempt = record.Attempts[^1];
+            pending.Id = record.Id;
+            pending.StepId = record.StepId;
+            pending.StartedAtUtc = record.StartedAtUtc;
+            pending.ChildWorkflowId = attempt.ProposedChildInstanceId;
+            pending.PolicyAttemptId = attempt.Id;
+            pending.ChildDataType = record.DataType;
+            pending.ChildBundleDigest = record.BundleDigest;
+            pending.Resolution = attempt.Decision;
+        }
         // Finished-item chunks by their ForEach, found in one pass over the parts.
         var chunks = parts.Where(part => part.Key.StartsWith("b/", StringComparison.Ordinal))
             .Select(part => (Key: part.Key.Split('/'), part.Value))
@@ -262,6 +296,12 @@ internal sealed class StoredCheckpoint
             foreach (var property in type.Properties)
                 switch (property.Name)
                 {
+                    case nameof(ExecutionCheckpoint.InlineFrames):
+                        property.ShouldSerialize = (value, _) => ((ExecutionCheckpoint)value).InlineFrames.Count > 0;
+                        break;
+                    case nameof(ExecutionCheckpoint.InvocationRecords):
+                        property.ShouldSerialize = (_, _) => false;
+                        break;
                     case nameof(ExecutionCheckpoint.Demands):
                         property.Order = int.MaxValue;
                         break;
@@ -294,6 +334,23 @@ internal sealed class StoredCheckpoint
         }
         else if (type.Type == typeof(InlineFrameState))
             type.Properties.Remove(type.Properties.Single(property => property.Name == nameof(InlineFrameState.Data)));
+        else if (type.Type == typeof(InvocationRecordState))
+        {
+            // The metadata index owns the step and continuation, including after their frames leave.
+            foreach (var property in type.Properties.Where(property => property.Name is "s" or "c"))
+                property.ShouldSerialize = (_, _) => false;
+        }
+        else if (type.Type == typeof(ActivityInvocationState))
+        {
+            foreach (var property in type.Properties)
+            {
+                if (property.Name is nameof(ActivityInvocationState.ResolutionReason) or
+                    nameof(ActivityInvocationState.ResolutionDiagnostic))
+                    property.ShouldSerialize = (owner, value) => ((ActivityInvocationState)owner).PolicyAttemptId == null || value != null;
+                else
+                    property.ShouldSerialize = (value, _) => ((ActivityInvocationState)value).PolicyAttemptId == null;
+            }
+        }
         else if (type.Type == typeof(WaitState))
         {
             // A wait's deadline is the store's (D-35): a run reads it with its inbox before it looks at it, so a

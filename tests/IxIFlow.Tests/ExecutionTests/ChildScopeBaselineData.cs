@@ -2,7 +2,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public sealed partial class ChildScopeBaselineTests
 {
-    // Recaptured from the built fixture after checkpoint contract 9 / structure hash format 5.
+    // Recaptured from the combined fixture after checkpoint contract 10 / structure hash format 5.
     private const string MainBaseline = """
         [
           {

@@ -344,6 +344,8 @@ public sealed record SuspendStepDocument : WaitStepDocument
 [DocumentKind("invokeWorkflow")]
 public sealed record InvokeWorkflowStepDocument : WorkflowStepDocument
 {
+    [Description("Ordered invocation error policies; the first assignable exception match wins.")]
+    public List<StepErrorPolicyDocument> OnError { get; init; } = [];
     [Description("Whether cancelling the invoking branch cancels the child and waits for it to finish.")]
     public bool CancelWithParent { get; init; } = true;
     [Description("The child workflow reference resolved before translation.")]
@@ -661,6 +663,8 @@ public sealed record ResultStepDocument : WorkflowStepDocument
 [DocumentKind("invokeWorkflowType")]
 public sealed record InvokeWorkflowTypeStepDocument : WorkflowStepDocument
 {
+    [Description("Ordered invocation error policies; the first assignable exception match wins.")]
+    public List<StepErrorPolicyDocument> OnError { get; init; } = [];
     [Description("The CLR type implementing IWorkflow of dataType.")]
     [DocumentRequired]
     public string WorkflowType { get; init; } = string.Empty;

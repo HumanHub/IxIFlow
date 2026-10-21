@@ -127,7 +127,8 @@ public sealed partial class WorkflowHost
                 {
                     var p = c.PendingActivity!; var a = p.Attempts.LastOrDefault();
                     return new InspectionAttempt(c.Id, p.Id, p.StepId, a?.Id, a?.Kind, a?.Host,
-                        p.StartedAtUtc, InspectionRedactionPolicy.Default.Reason(p.ResolutionDiagnostic));
+                        p.StartedAtUtc, InspectionRedactionPolicy.Default.Reason(p.ResolutionDiagnostic))
+                        { PolicyAttemptId = p.PolicyAttemptId };
                 }).ToArray(),
                 checkpoint.Waits.Select(w => new InspectionWait(WaitReference.Of(instanceId, w.Id), w.ContinuationId,
                     w.StepId, w.TableKind, w.Key, w.DeadlineUtc, w.ChildWorkflowId)).ToArray(),
@@ -141,7 +142,8 @@ public sealed partial class WorkflowHost
                         { DataType = WorkflowTypeIdentity.SavedName(data.GetType()) };
                 }).Concat(checkpoint.InlineFrames.Where(pair => liveFrames.Contains(pair.Key)).Select(pair => new InspectionData(pair.Value.OwnerContinuationId,
                     InspectionRedactionPolicy.Default.Value(pair.Value.Value, services))
-                    { FrameId = pair.Key, DataType = pair.Value.DataType })).ToArray());
+                    { FrameId = pair.Key, DataType = pair.Value.DataType })).ToArray())
+                { Invocations = InvocationRecords.Inspect(checkpoint) };
             return InspectionPrivacy.Clean(result, WaitIds(instance, checkpoint));
         }
 

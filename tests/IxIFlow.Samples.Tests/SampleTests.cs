@@ -76,7 +76,7 @@ public sealed class SampleTests
             .Select(definition => definition.Name)
             .Concat(YamlSampleTests.YamlDefinitions.Values.Select(build => build().Name))
             .Append(SwitchSampleTests.GeneratedDefinition().Name).Distinct().Count();
-        Assert.Equal(19, generated.Length);
+        Assert.Equal(21, generated.Length);
         Assert.Equal(generated.Length, covered);
     }
 

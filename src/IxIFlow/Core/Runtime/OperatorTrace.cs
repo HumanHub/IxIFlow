@@ -75,7 +75,8 @@ internal static class OperatorTrace
         if (checkpoint.Trace.Accepts(TraceEntryType.ActivityResolved, now))
             checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now, EntryType = TraceEntryType.ActivityResolved,
                 Error = diagnostic,
-                Payload = new ActivityResolutionTrace(pending.Id, pending.StepId, decision.Kind, decision.DecidedBy) });
+                Payload = new ActivityResolutionTrace(pending.Id, pending.StepId, decision.Kind, decision.DecidedBy)
+                { PolicyAttemptId = decision.PolicyAttemptId } });
     }
 
     public static void Released(ExecutionCheckpoint checkpoint, string? actor, DateTime now)

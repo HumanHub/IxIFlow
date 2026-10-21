@@ -12,6 +12,7 @@ namespace IxIFlow.Core;
 [JsonDerivedType(typeof(ItemEndTrace), "itemEnd")]
 [JsonDerivedType(typeof(TimeoutTrace), "timeout")]
 [JsonDerivedType(typeof(RetryTrace), "retry")]
+[JsonDerivedType(typeof(InvocationTrace), "invocation")]
 [JsonDerivedType(typeof(ReceivedEventTrace), "event")]
 [JsonDerivedType(typeof(ActivityResolutionTrace), "resolution")]
 [JsonDerivedType(typeof(CancellationTrace), "cancellation")]
@@ -55,7 +56,15 @@ public sealed record TimeoutTrace(string StepId, WorkflowStepType StepKind, stri
     string WaitRef, string? ScopeId, bool Replayed = false) : TracePayload;
 
 public sealed record RetryTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,
-    int Attempt, string? RestartStepId, string? ScopeId, DateTime? RetryAfterUtc) : TracePayload;
+    int Attempt, string? RestartStepId, string? ScopeId, DateTime? RetryAfterUtc) : TracePayload
+{
+    public InvocationTrace? Invocation { get; init; }
+}
+
+/// <summary>Value-free facts for one durable invocation policy attempt.</summary>
+public sealed record InvocationTrace(string InvocationId, string StepId, string ContinuationId,
+    string PolicyAttemptId, int AttemptNumber, string? ChildInstanceId, WorkflowStatus? ChildStatus,
+    string Disposition, int? PolicyIndex, StepErrorAction? Action, DateTime? RetryAfterUtc) : TracePayload;
 
 /// <summary>An inbox decision, without the event payload.</summary>
 public sealed record ReceivedEventTrace(string EventId, string? Key, string EventType, string? WaitRef,
@@ -63,7 +72,10 @@ public sealed record ReceivedEventTrace(string EventId, string? Key, string Even
 
 /// <summary>An operator decision, without outputs, notes or error contents.</summary>
 public sealed record ActivityResolutionTrace(string InvocationId, string StepId, ActivityResolutionKind Decision,
-    string? DecidedBy) : TracePayload;
+    string? DecidedBy) : TracePayload
+{
+    public string? PolicyAttemptId { get; init; }
+}
 
 /// <summary>The entry timestamp is when the cancellation was observed or completed.</summary>
 public sealed record CancellationTrace(string? Actor, DateTime RequestedAt, string ReasonCode,

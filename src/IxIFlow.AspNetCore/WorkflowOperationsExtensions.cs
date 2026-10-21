@@ -97,9 +97,9 @@ public static class WorkflowOperationsExtensions
             var kind = ParseEnum<ActivityResolutionKind>(request.Kind);
             var resolution = kind == ActivityResolutionKind.Completed
                 ? request.InvocationResult is { } result
-                    ? ActivityResolution.CompletedInvocation(result, request.Note, Actor(http))
-                    : ActivityResolution.Completed(new Dictionary<string, object?>(request.Outputs ?? [], StringComparer.OrdinalIgnoreCase), request.Note, Actor(http))
-                : ActivityResolution.Failed(request.ErrorMessage ?? request.Note, Actor(http));
+                    ? ActivityResolution.CompletedInvocation(result, request.Note, Actor(http), request.ExpectedPolicyAttemptId)
+                    : ActivityResolution.Completed(new Dictionary<string, object?>(request.Outputs ?? [], StringComparer.OrdinalIgnoreCase), request.Note, Actor(http), request.ExpectedPolicyAttemptId)
+                : ActivityResolution.Failed(request.ErrorMessage ?? request.Note, Actor(http), request.ExpectedPolicyAttemptId);
             try
             {
                 return await MutateAsync(http, summary.InstanceId, options,
@@ -312,7 +312,7 @@ public static class WorkflowOperationsExtensions
     private static IResult Removed() => Results.Problem(statusCode: 410, title: "Workflow removed");
     private static IResult Conflict() => Results.Problem(statusCode: 409, title: "Invalid workflow state");
     private sealed record ReasonRequest(string ReasonCode, string? Description);
-    private sealed record ResolutionRequest(string InvocationId, string Kind, Dictionary<string, object?>? Outputs, string Note, string? ErrorMessage, JsonElement? InvocationResult);
+    private sealed record ResolutionRequest(string InvocationId, string Kind, Dictionary<string, object?>? Outputs, string Note, string? ErrorMessage, JsonElement? InvocationResult, string? ExpectedPolicyAttemptId);
     private static T ParseEnum<T>(string value) where T : struct, Enum =>
         System.Enum.TryParse<T>(value, true, out var parsed) && System.Enum.IsDefined(parsed) ? parsed : throw new ArgumentException("Invalid enum value");
     private sealed class Query(HttpContext http)

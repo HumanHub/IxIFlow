@@ -287,29 +287,15 @@ public class SagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDat
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> OnError<TException>(
-        Action<ISagaStepErrorHandler<TException>> handler)
+        Action<IStepErrorHandler<TException>> handler)
         where TException : Exception
     {
-        // Store step-level error handling configuration in metadata
-        if (!_workflowStep.StepMetadata.ContainsKey("StepErrorHandlers"))
-            _workflowStep.StepMetadata["StepErrorHandlers"] = new List<StepErrorHandlerInfo>();
-
-        var errorHandlers = (List<StepErrorHandlerInfo>)_workflowStep.StepMetadata["StepErrorHandlers"];
-        var errorHandler = new StepErrorHandlerInfo
-        {
-            ExceptionType = typeof(TException),
-            HandlerAction = StepErrorAction.Terminate
-        };
-
-        var handlerImpl = new SagaStepErrorHandler<TException>(errorHandler);
-        handler(handlerImpl);
-
-        errorHandlers.Add(errorHandler);
+        StepErrorHandler.Add(_workflowStep, handler);
         return this;
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> OnError(
-        Action<ISagaStepErrorHandler> handler)
+        Action<IStepErrorHandler> handler)
     {
         return OnError<Exception>(h => handler(h));
     }
@@ -480,13 +466,13 @@ public class SagaActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, 
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> OnError<TException>(
-        Action<ISagaStepErrorHandler<TException>> handler) where TException : Exception
+        Action<IStepErrorHandler<TException>> handler) where TException : Exception
     {
         return _setupBuilder.OnError(handler);
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> OnError(
-        Action<ISagaStepErrorHandler> handler)
+        Action<IStepErrorHandler> handler)
     {
         return _setupBuilder.OnError(handler);
     }
@@ -600,13 +586,13 @@ public class SagaActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty,
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> OnError<TException>(
-        Action<ISagaStepErrorHandler<TException>> handler) where TException : Exception
+        Action<IStepErrorHandler<TException>> handler) where TException : Exception
     {
         return _setupBuilder.OnError(handler);
     }
 
     public ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> OnError(
-        Action<ISagaStepErrorHandler> handler)
+        Action<IStepErrorHandler> handler)
     {
         return _setupBuilder.OnError(handler);
     }

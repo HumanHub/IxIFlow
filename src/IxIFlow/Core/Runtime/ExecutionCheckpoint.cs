@@ -28,7 +28,7 @@ internal sealed class ExecutionCheckpoint
     [JsonRequired]
     public string Runtime { get; set; } = "structured-v2";
     /// <summary>
-    /// The form the checkpoint is saved in; 3 stores the trunk and separate state parts. A checkpoint in another form is refused
+    /// The checkpoint contract includes retained invocation parts. A checkpoint in another form is refused
     /// as unsupported rather than read wrongly.
     /// </summary>
     [JsonRequired]
@@ -39,6 +39,11 @@ internal sealed class ExecutionCheckpoint
     public List<ParallelJoinState> Joins { get; set; } = [];
     public Dictionary<string, InlineFrameState> InlineFrames { get; set; } = new(StringComparer.Ordinal);
     public List<WaitState> Waits { get; set; } = [];
+    public Dictionary<string, InvocationRecordState> InvocationRecords { get; set; } = new(StringComparer.Ordinal);
+    public List<InvocationIndexEntry> InvocationIndex { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public InvocationClosure? InvocationClosure { get; set; }
+
 
     /// <summary>How many branches the instance has started; the next one's <see cref="ContinuationState.Sequence"/>.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -310,6 +315,8 @@ internal sealed class ExecutionCheckpoint
     public void Touch(ContinuationState continuation) => _marked?.Add(continuation.Id);
 
     /// <summary>Marks the stored part of the continuation with <paramref name="continuationId"/> as changed.</summary>
+    public void TouchInvocation(string id) => _marked?.Add(StoredCheckpoint.InvocationKey(id));
+
     public void TouchOwner(string continuationId) => _marked?.Add(continuationId);
 
     /// <summary>Marks every branch as changed.</summary>
@@ -524,6 +531,7 @@ internal sealed class ContinuationState
     public List<ScopePosition> Stack { get; set; } = [];
     public SerializedValue? Previous { get; set; }
     public ActivityInvocationState? PendingActivity { get; set; }
+    public string? InvocationRecordId { get; set; }
 
     /// <summary>
     /// The inputs a failed attempt saved, kept while its step waits to be retried: a step retry is another attempt of
@@ -582,6 +590,7 @@ internal sealed class ActivityInvocationState
     public ActivityInputSnapshot Inputs { get; set; } = new();
     public SerializedValue? RecoveryState { get; set; }
     public string? ChildWorkflowId { get; set; }
+    public string? PolicyAttemptId { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ChildDataType { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -605,6 +614,7 @@ internal sealed class KeptActivityInputs
 
 internal sealed class ActivityResolutionState
 {
+    public string? PolicyAttemptId { get; set; }
     public ActivityResolutionKind Kind { get; set; }
     public string Note { get; set; } = "";
     public string? DecidedBy { get; set; }

@@ -99,7 +99,7 @@ internal sealed class CheckpointPayloads(ExecutionLimits limits, PayloadBudget b
     {
         if (trunk.HasDependencyMetadata && trunk.Dependencies.Count == 0 && parts.All(part =>
                 part.Value.IsInline && part.Value.Dependencies.Count == 0 &&
-                (!(part.Key.StartsWith("c/", StringComparison.Ordinal) || part.Key.StartsWith("f/", StringComparison.Ordinal)) ||
+                (!(part.Key.StartsWith("c/", StringComparison.Ordinal) || part.Key.StartsWith("f/", StringComparison.Ordinal) || part.Key.StartsWith("v/", StringComparison.Ordinal)) ||
                  part.Value.HasDependencyMetadata))) return [];
         var found = new HashSet<PayloadReference>();
         if (trunk.HasDependencyMetadata) found.UnionWith(trunk.Dependencies);
@@ -112,12 +112,13 @@ internal sealed class CheckpointPayloads(ExecutionLimits limits, PayloadBudget b
                 found.Add(reference);
                 continue;
             }
-            else if ((key.StartsWith("c/", StringComparison.Ordinal) || key.StartsWith("f/", StringComparison.Ordinal)) &&
+            else if ((key.StartsWith("c/", StringComparison.Ordinal) || key.StartsWith("f/", StringComparison.Ordinal) || key.StartsWith("v/", StringComparison.Ordinal)) &&
                      !value.HasDependencyMetadata)
             {
                 var dependencies = new HashSet<PayloadReference>();
                 ReadReferences(value.InlineText, key.StartsWith("c/", StringComparison.Ordinal)
-                    ? typeof(StoredCheckpoint.BranchPart) : typeof(List<StoredJson>), dependencies);
+                    ? typeof(StoredCheckpoint.BranchPart) : key.StartsWith("v/", StringComparison.Ordinal)
+                        ? typeof(InvocationRecordState) : typeof(List<StoredJson>), dependencies);
                 value.WithDependencies(dependencies.ToArray());
             }
             foreach (var dependency in value.Dependencies) found.Add(dependency);

@@ -480,8 +480,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     }
 
     /// <summary>
-    /// Waits for the child an invocation step starts: the step's invocation, whose ID is the
-    /// child's, the child's start for the next commit, and a wait only the child's completion answers.
+    /// Waits for the invocation's current child, carrying its start in the next commit with a wait
+    /// only that child's completion can answer.
     /// </summary>
     public void AwaitChild(ExecutionCheckpoint checkpoint, ContinuationState continuation, string stepId,
         ChildStart start, bool detached = false)
@@ -724,9 +724,14 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             foreach (var frame in continuation.Stack) if (frame.Graph != null) frame.Graph.Fired = null;
         continuation.ItemUnwindCause ??= cause;
         var first = !continuation.CancellationUnwind;
+        var cancelledInvocationRetry = continuation.PendingActivity == null &&
+            InvocationRecords.Active(checkpoint, continuation) is { Disposition: null } invocation &&
+            invocation.Attempts.LastOrDefault() is { Phase: "Ended", Action: StepErrorAction.Retry };
         continuation.CancellationUnwind = true;
         continuation.RetryAfterUtc = null;
         continuation.RetryInputs = null;
+        if (continuation.PendingActivity == null)
+            InvocationRecords.Abandon(checkpoint, continuation, "Cancelled");
         if (continuation.PendingActivity != null &&
             continuation.Status == ContinuationStatus.WaitingResolution)
         {
@@ -744,6 +749,15 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (TryScopeTransitions.IsInsideFinally(continuation) ||
             SagaScopeTransitions.IsInsideCompensation(continuation))
         {
+            if (cancelledInvocationRetry)
+            {
+                // The failed call has already settled. Cancel its scheduled replacement and
+                // continue cleanup after this occurrence, retaining its original identity/history.
+                var position = continuation.Stack[^1];
+                position.StepRetryCounts.Remove(position.NextStepIndex);
+                position.NextStepIndex++;
+                continuation.SetPrevious(null);
+            }
             TryScopeTransitions.PreserveExistingFinally(continuation);
             SagaScopeTransitions.PreserveCompensation(continuation);
             return;
@@ -760,7 +774,10 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         {
             checkpoint.ChildStarts.RemoveAll(start => start.ChildInstanceId == detached.ChildWorkflowId);
             if (continuation.PendingActivity?.ChildWorkflowId == detached.ChildWorkflowId)
+            {
+                InvocationRecords.Abandon(checkpoint, continuation, "Detached");
                 continuation.PendingActivity = null;
+            }
         }
         var childFinished = child == null && continuation.AcceptedWait != null &&
                             continuation.PendingActivity?.ChildWorkflowId != null;
@@ -1007,18 +1024,21 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         // A failed attempt's inputs are kept only for a retry of its step.
         var retryInputs = continuation.RetryInputs;
         continuation.RetryInputs = null;
-        if (allowStepRetry && !continuation.CancellationUnwind &&
-            SagaScopeTransitions.HandleStepFailure(scopes, continuation, error, StoreNow(checkpoint), retryInputs))
+        if (allowStepRetry && !continuation.CancellationUnwind)
         {
-            var position = continuation.Stack[^1];
-            if (position.StepRetryCounts.TryGetValue(position.NextStepIndex, out var attempt))
+            var decision = StepErrorPolicies.Handle(scopes, checkpoint, continuation, error, StoreNow(checkpoint), retryInputs);
+            if (decision.Action == StepFailureAction.Retry)
             {
+                var position = continuation.Stack[^1];
                 var step = scopes.Steps(position.ScopeId)[position.NextStepIndex];
-                checkpoint.Trace.Retry(TraceEntryType.StepRetryScheduled, step, continuation, attempt,
-                    scopes.Id(step), position.ScopeId);
+                checkpoint.Trace.Retry(TraceEntryType.StepRetryScheduled, step, continuation, decision.RetryNumber,
+                    scopes.Id(step), position.ScopeId, InvocationRecords.Active(checkpoint, continuation));
+                return true;
             }
-            return true;
+            if (decision.Action == StepFailureAction.Ignore) return true;
         }
+        else if (InvocationRecords.Active(checkpoint, continuation) != null)
+            InvocationRecords.Close(checkpoint, continuation, "Propagate", Now);
         if (continuation.CancellationUnwind)
         {
             if (SagaScopeTransitions.SkipFailedCompensation(scopes, checkpoint, continuation, error))

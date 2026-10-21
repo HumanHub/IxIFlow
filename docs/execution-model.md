@@ -33,7 +33,7 @@ The join records one durable `WinningChildId` and the corresponding fired trigge
 
 Entry requests retain their state activation and original reply token. Their waits and bound answers temporarily move to the listener, then atomically return to the parent before listener completion or speculative cancellation. Both storage owners are marked for the commit. A reply consumed by a listener that loses remains answered and its event consumed; a saved receipt returns to the parent as a bound answer, even if the listener has not yet dispatched that acceptance. Choosing or unwinding the state closes its outstanding replies and drops its receipts.
 
-State keys, final flags, trigger kinds, event keys/types, duration expressions, ordered alternatives and destinations participate in structure hash format 3. State declaration order and display names do not. State frames, fired values and receipts, pending event values, join winners and `ArmOccurrence` use checkpoint contract 7 in existing trunk and continuation parts. Claim-checked entry snapshots and pending trigger payloads are hydrated before synchronous restoration, including when the current step finishes a nested entry body. `MaxGraphTransitionsPerPass` applies to state entries as it does to nodes; native trigger waits do not consume the branch limit.
+State keys, final flags, trigger kinds, event keys/types, duration expressions, ordered alternatives and destinations participate in structure hash format 5. State declaration order and display names do not. State frames, fired values and receipts, pending event values, join winners and `ArmOccurrence` use checkpoint contract 10 in existing trunk and continuation parts. Claim-checked entry snapshots and pending trigger payloads are hydrated before synchronous restoration, including when the current step finishes a nested entry body. `MaxGraphTransitionsPerPass` applies to state entries as it does to nodes; native trigger waits do not consume the branch limit.
 
 YAML and fluent definitions lower to these same graph scopes, executable picks and structure hash. YAML adds no execution phase or checkpoint field. `GraphTable` describes the static topology; it contains no saved visit, accepted payload or branch winner. A code-activity trigger is one activity. Composed durable-step and workflow-call triggers remain unspecified, so state-machine support does not yet cover every Windows Workflow Foundation trigger composition.
 
@@ -41,7 +41,7 @@ The fluent API supports event, reply, timer, immediate and single code-activity 
 
 ## Checkpoints and commits
 
-Checkpoints save workflow data, branch state, loop/exception frames, saga and compensation progress, previous-step values, retries and waits. History is stored separately in the trace store.
+Checkpoints save workflow data, branch state, loop/exception frames, saga and compensation progress, previous-step values, retries and waits. Invocation attempt records are retained in checkpoint parts; execution traces are stored separately.
 
 The runner commits at effect boundaries: instance start, activity start and outcome, child start/outcome, opening or closing waits, retry scheduling, completed joins, cancellation/unwinding boundaries and stopping. Ordinary control flow between boundaries can be re-derived after a crash. A condition or mapping may therefore execute more than once.
 
@@ -173,3 +173,11 @@ The typed item handle supplies a separate item copy per evaluation context and a
 | `MaxCrashes` | 3 | Quarantine after consecutive owner losses without progress |
 
 Limit stops preserve the last checkpoint at `NeedsResolution`. Raise the relevant limit and call `ReleaseAsync`, or cancel. Oversized start and resolution checkpoints are refused with `WorkflowErrorKind.ResourceExhausted`. Inbox payloads have no separate byte limit; consuming an event that makes a checkpoint too large can stop the instance. `RecoverAsync` does not release operator stops. Trace limits bound diagnostics separately; see [observability](observability.md).
+
+## Invocation retry durability
+
+An invocation occurrence has a stable logical ID, a distinct policy-attempt ID for each preparation, and a different child ID for every started attempt. The occurrence includes the parent incarnation and saved frame/loop context. Recovery of a committed start waits for that same child and input snapshot. Scheduling another attempt commits the old outcome, closed wait, attempt record and absolute store-clock deadline together, including zero-delay retries. Long backoffs release the execution slot and lease through parking. Recovery keeps the accepted deadline rather than calculating a new delay.
+
+Retained invocation parts survive completed branches and trace limits. A resource limit still stops against the last good checkpoint. Metadata-only termination adds a closure marker to open records without reading their payload bodies. Checkpoint contract 10 refuses older checkpoints; the host/executor message contract is 13. There are no migration or compatibility paths.
+
+Operator resolution of a workflow invocation requires the observed `PendingActivityInfo.PolicyAttemptId`, passed unchanged as `expectedPolicyAttemptId` to `ActivityResolution.Failed` or `CompletedInvocation`. Missing targets are `InvalidRequest`; stale or already settled targets are `InvalidState`. A saved decision retains its target across recovery. Ordinary activity/request resolution retains its existing identity semantics.

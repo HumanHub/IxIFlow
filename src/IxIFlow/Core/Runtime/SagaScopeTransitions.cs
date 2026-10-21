@@ -201,7 +201,7 @@ internal static class SagaScopeTransitions
             state.PreviousCompensation = SerializedValue.From(output);
     }
 
-    private static ScopePosition? ForwardOwner(WorkflowScopeCatalog scopes,
+    internal static ScopePosition? ForwardOwner(WorkflowScopeCatalog scopes,
         ContinuationState continuation, WorkflowStep activity)
     {
         if (!activity.StepMetadata.ContainsKey("IsSagaStep"))
@@ -228,39 +228,6 @@ internal static class SagaScopeTransitions
             return null;
         // The step's own attempts are in IActivityContext.Attempt (D-37); a saga retry is a new invocation.
         return new Dictionary<string, object> { ["Saga:CurrentAttempt"] = owner.SagaState!.RetryCount };
-    }
-
-    public static bool HandleStepFailure(WorkflowScopeCatalog scopes,
-        ContinuationState continuation, Exception error, DateTime now, KeptActivityInputs? failedInputs)
-    {
-        var position = continuation.Stack[^1];
-        var step = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
-        if (step?.StepType != WorkflowStepType.Activity ||
-            ForwardOwner(scopes, continuation, step) == null ||
-            !step.StepMetadata.TryGetValue("StepErrorHandlers", out var value) ||
-            value is not List<StepErrorHandlerInfo> handlers)
-            return false;
-        var handler = handlers.FirstOrDefault(candidate =>
-            candidate.ExceptionType.IsAssignableFrom(SerializedException.CatchType(error)));
-        if (handler == null)
-            return false;
-        if (handler.HandlerAction == StepErrorAction.Ignore)
-        {
-            position.StepRetryCounts.Remove(position.NextStepIndex);
-            position.NextStepIndex++;
-            continuation.SetPrevious(null);
-            return true;
-        }
-        if (handler.HandlerAction != StepErrorAction.Retry)
-            return false;
-        position.StepRetryCounts.TryGetValue(position.NextStepIndex, out var attempts);
-        if (attempts >= (handler.RetryPolicy?.MaximumAttempts ?? 0))
-            return false;
-        position.StepRetryCounts[position.NextStepIndex] = attempts + 1;
-        continuation.RetryAfterUtc = RetrySchedule.NextAttemptUtc(
-            handler.RetryPolicy, attempts + 1, now);
-        continuation.RetryInputs = failedInputs;
-        return true;
     }
 
     public static void RecordAcceptedWait(ContinuationState continuation, string stepId,

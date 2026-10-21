@@ -100,7 +100,13 @@ public static partial class WorkflowSourceTranslator
                 break;
             case WaitStepDocument wait: yield return wait.Event; break;
             case SwitchStepDocument { ValueType: { } valueType }: yield return valueType; break;
+            case InvokeWorkflowStepDocument namedInvocation:
+                foreach (var policy in namedInvocation.OnError)
+                    if (policy.Exception != null) yield return policy.Exception;
+                break;
             case InvokeWorkflowTypeStepDocument invocation:
+                foreach (var policy in invocation.OnError)
+                    if (policy.Exception != null) yield return policy.Exception;
                 yield return invocation.WorkflowType;
                 if (invocation.DataType != null) yield return invocation.DataType;
                 break;
@@ -350,6 +356,7 @@ public static partial class WorkflowSourceTranslator
                         Locate(typedInvocation, "workflowType");
                         Line($"var {next} = {builder}.Invoke<{workflowType}, {childData}>(setup => {{");
                         Mappings(typedInvocation.Input, typedInvocation.Output);
+                        StepPolicies(typedInvocation.OnError);
                         if (!typedInvocation.CancelWithParent)
                         {
                             Locate(typedInvocation, "cancelWithParent");
@@ -367,6 +374,7 @@ public static partial class WorkflowSourceTranslator
                             $"WorkflowDefinitionValidator.GetContract(new WorkflowDefinition {{ WorkflowDataType = typeof({Type(child.DataType, childReference)}), DeclaredInputs = {Names(child.Inputs)}, DeclaredOutputs = {Names(child.Outputs)} }})";
                         Line($"var {next} = {builder}.Invoke<{Type(child.DataType, childReference)}>({Quote(childName)}, {child.Version}, {pin}, setup => {{");
                         Mappings(invocation.Input, invocation.Output);
+                        StepPolicies(invocation.OnError);
                         if (!invocation.CancelWithParent)
                         {
                             Locate(invocation, "cancelWithParent");
@@ -820,7 +828,12 @@ public static partial class WorkflowSourceTranslator
                 }
                 Line("});");
             }
-            foreach (var policy in step.OnError)
+            StepPolicies(step.OnError);
+        }
+
+        private void StepPolicies(IEnumerable<StepErrorPolicyDocument> policies)
+        {
+            foreach (var policy in policies)
             {
                 Locate(policy, "then");
                 var exception = policy.Exception == null ? "" : "<" + Type(policy.Exception!, policy, "exception") + ">";

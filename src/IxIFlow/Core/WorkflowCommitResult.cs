@@ -143,7 +143,7 @@ public sealed class CheckpointCommit
     }
 
     /// <summary>The longest timeout, delay or park a commit may carry.</summary>
-    public static readonly TimeSpan MaxDuration = TimeSpan.FromDays(36500);
+    public static readonly TimeSpan MaxDuration = IxIFlow.Authoring.RetryDelayRules.MaximumDuration;
 
     private readonly byte[] _contentHash;
     private readonly Lazy<WorkflowInstance> _trunk;
@@ -535,11 +535,11 @@ public sealed class CheckpointCommit
 
     // Hard termination needs only readable metadata, even when saved branch or data bodies are unavailable.
     internal static CheckpointCommit Terminate(WorkflowInstance saved, WorkflowInstance terminated, long epoch,
-        IReadOnlyList<ChildCancellation> children, ParentNotice? parentNotice, ExecutionTraceEntry trace,
+        IReadOnlyList<ChildCancellation> children, ParentNotice? parentNotice, IReadOnlyList<ExecutionTraceEntry> traces,
         IReadOnlyList<string> retainedDiagnosticIds) =>
         FromFields(CommittedInstance.Of(terminated), JsonSerializer.Serialize(terminated), [], [], false,
             saved.Incarnation, epoch, Guid.NewGuid().ToString("N"), saved.Revision, true, false, [], null,
-            [], [], [], null, true, [], children, parentNotice, [WorkflowStoreRules.SerializeTrace(trace)],
+            [], [], [], null, true, [], children, parentNotice, traces.Select(WorkflowStoreRules.SerializeTrace).ToArray(),
             [], retainedDiagnosticIds,
             preservesPayloadPins: true);
 

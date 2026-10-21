@@ -179,6 +179,23 @@ Code-activity triggers are included; composed workflow triggers are not yet spec
 
 A typed `Catch<TException,TFault>` or saga handler saves a projection of the exception. Public fault properties must match readable exception properties by name and type. Handler mappings use `ctx.Fault`. The live exception is not the durable contract. `Catch` covers its preceding `Try` body, and `Finally` runs during normal completion and unwinding. Saved handler waits continue from their saved position.
 
+Invocation setups expose typed `OnError<TException>` and general `OnError` with `IStepErrorHandler<TException>` and `IStepErrorHandler`, shared with saga activities and requests. Policies run in declaration order; the first assignable exception match wins. `ThenRetry(3)` permits three additional attempts after the original, using one-second initial delay, a ten-second cap and coefficient two. `ThenRetry(new RetryPolicy(3))` permits the same count with zero delay. An exhausted matching policy propagates the original failure without trying a later handler. `ThenIgnore()` advances with null `Previous` and applies no child outputs. Step `ThenTerminate()` propagates to enclosing handlers; it does not issue a management termination.
+
+<!-- snippet: samples/IxIFlow.Samples/InvocationRetries.cs#invocation-retries -->
+```csharp
+.Invoke<LookupData>("RetryLookupChild", 1, setup => setup
+    .Input(child => child.Query).From(ctx => ctx.WorkflowData.Query!)
+    .OnError<InvalidOperationException>(error => error.ThenRetry(new RetryPolicy(
+        TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), 2, 2)))
+    .Output(child => child.Response).To(ctx => ctx.WorkflowData.Response))
+```
+
+Every policy attempt constructs and maps fresh child data from the invoking branch, its previous result and item context. Defaults and the required-value check run again against the same pinned artifact and contract. Required null/empty values and ordinary preparation exceptions can match a policy before a child exists. Every started retry has a new child identity and a new completion wait; failed children remain terminal. Child-side external effects may therefore repeat. Activities and requests still retry their saved inputs.
+
+A successful child followed by a failing parent output mapping propagates the mapping failure without creating another child. Host start refusals, resource limits, unavailable artifacts and lost ownership retain their interruption/operator semantics and do not automatically spend retries. Each reachable capped delay must fit the inclusive 36,500-day parking limit; validation checks the largest reachable delay, allowing an unreachable larger cap. Zero retries, zero delay and a zero maximum interval (cap at the initial interval) are supported.
+
+Graceful cancellation during backoff prevents another attempt. An attached active child is cancelled and awaited; `CancelWithParent(false)` leaves it running. Management termination stops the subtree, including detached descendants, without evaluating policies. Breakpoints can stop before each new attempt; stepping remains at the same logical step. Invocation policies do not wrap an inline `use` boundary. See the [fluent sample](../samples/IxIFlow.Samples/InvocationRetries.cs) and its [YAML twin](../samples/IxIFlow.Samples/Definitions/invocation-retries.workflow.yaml).
+
 Saga step retries and saga retries are different scopes. See [sagas](sagas.md), and use [recoverable activities](execution-model.md#interrupted-activities) when an effect may have happened before its result was committed.
 
 ## Identity and expressions
@@ -187,7 +204,7 @@ Saga step retries and saga retries are different scopes. See [sagas](sagas.md), 
 
 The checkpoint stores a SHA-256 `StructureHash` of the executable structure. Step kinds and order, scope topology, activity/data/previous types, mapping contracts, wait keys and event/reply types, durations, join modes and combiner types (including attributes on data types), loop/result contracts, exception/fault types, handler policies and child identities with versions change it. Expression trees contribute node shape, literal nodes and referenced members, with parameter names and closure receivers normalized. Delegate bodies, helper implementations, captured values, descriptions, display names, tags and step names do not contribute. Changing behavior still requires a new workflow version.
 
-Registration refuses the same `(name, version)` with a different structure hash. Equal structure with different descriptions is accepted; the first registered definition supplies metadata. Start, resume, recovery and child resolution refuse incompatible saved state and report the workflow, version and both hashes. Checkpoint schema 6 refuses older saved instances without migration. Reset development state and coordinate host restarts for this one-time break.
+Registration refuses the same `(name, version)` with a different structure hash. Equal structure with different descriptions is accepted; the first registered definition supplies metadata. Start, resume, recovery and child resolution refuse incompatible saved state and report the workflow, version and both hashes. Checkpoint schema 8 refuses older saved instances without migration. Reset development state and coordinate host restarts for this one-time break.
 
 Conditions, mappings, result selectors, wait predicates and combiners can run again after recovery. Keep them pure. Use `ctx.UtcNow` for workflow time, not a system-clock call or external I/O.
 

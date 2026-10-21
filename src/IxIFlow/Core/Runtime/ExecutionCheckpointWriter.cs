@@ -170,6 +170,7 @@ internal static class ExecutionCheckpointWriter
             // An operator stop retains saved positions even if their definition is unavailable.
             if (!preserveContinuationState)
                 ContinuationTransitions.PrepareCheckpoint(checkpoint, scopes);
+            InvocationRecords.PrepareCommit(checkpoint, instance, now);
             checkpoint.RetainDiagnostics();
             checkpoint.RecordBranchChanges();
             checkpoint.RecordInlineFrames(payloads);

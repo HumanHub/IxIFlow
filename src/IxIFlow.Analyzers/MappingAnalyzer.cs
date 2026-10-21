@@ -62,7 +62,7 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         var input = completion.TargetMethod.Name == "From";
         if (!input && completion.TargetMethod.Name != "To" || completion.Instance == null ||
-            Resolved(completion.Instance) is not IInvocationOperation mapping ||
+            MappingReceiver(engine, completion.Instance) is not IInvocationOperation mapping ||
             mapping.TargetMethod.Name != (input ? "Input" : "Output") || !engine.IsBuilderMethod(mapping.TargetMethod) ||
             Selected(mapping) is not ({ } owner, { } name, { } location) ||
             Kind(engine, owner, mapping.TargetMethod.ContainingType) is not { } kind)
@@ -207,7 +207,7 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
                     return null;
                 case IInvocationOperation { TargetMethod.Name: "From", Instance: { } instance } completion
                     when engine.IsBuilderMethod(completion.TargetMethod):
-                    if (Resolved(instance) is not IInvocationOperation { TargetMethod.Name: "Input", Instance: { } receiver } input ||
+                    if (MappingReceiver(engine, instance) is not IInvocationOperation { TargetMethod.Name: "Input", Instance: { } receiver } input ||
                         !engine.IsBuilderMethod(input.TargetMethod) || Selected(input) is not ({ } owner, { } name, _))
                         return null;
                     if (!SymbolEqualityComparer.Default.Equals(owner, activity))
@@ -268,6 +268,22 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     private static bool IsBuilder(ITypeSymbol? type) =>
         type is INamedTypeSymbol named && EngineSymbols.InNamespace(named, "IxIFlow.Builders");
 
+    // Invocation mapping sub-builders retain their unfinished Input/Output through OnError.
+    // Follow that receiver only; the policy callback cannot supply a mapping for the invocation.
+    private static IOperation MappingReceiver(EngineSymbols engine, IOperation operation)
+    {
+        for (var depth = 0; depth < 64; depth++)
+        {
+            operation = Resolved(operation);
+            if (operation is not IInvocationOperation { TargetMethod.Name: "OnError", Instance: { } receiver } call ||
+                !engine.IsBuilderMethod(call.TargetMethod) ||
+                !IsInvocationBuilder(call.TargetMethod.ContainingType))
+                return operation;
+            operation = receiver;
+        }
+        return operation;
+    }
+
     // The owner type, the member name and its location in Input(x => x.Member) or Output(x => x.Member). The engine
     // takes the member's name and looks it up on the owner, so that is what is checked.
     private static (INamedTypeSymbol? Owner, string? Name, Location? Location) Selected(IInvocationOperation mapping)
@@ -287,12 +303,16 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     // implements, and otherwise an activity when it is one.
     private static string? Kind(EngineSymbols engine, INamedTypeSymbol owner, INamedTypeSymbol builder)
     {
-        if (builder.Name.Contains("WorkflowInvocationSetup") || builder.Name.StartsWith("FaultInvocation", System.StringComparison.Ordinal))
+        if (IsInvocationBuilder(builder))
             return WorkflowKind;
         if (builder.Name.Contains("Suspend"))
             return "Event";
         return engine.IsActivity(owner) ? ActivityKind : null;
     }
+
+    private static bool IsInvocationBuilder(INamedTypeSymbol builder) =>
+        builder.Name.Contains("WorkflowInvocationSetup") ||
+        builder.Name.StartsWith("FaultInvocation", System.StringComparison.Ordinal);
 
     // The value an operation stands for, through locals that are set once where they are declared.
     private static IOperation Resolved(IOperation operation)

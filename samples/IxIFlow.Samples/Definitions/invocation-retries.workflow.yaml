@@ -1,0 +1,11 @@
+workflow: {name: RetryLookup, dataType: IxIFlow.Samples.LookupRequest}
+definitions:
+  - kind: invokeWorkflow
+    id: lookup
+    workflow: {name: RetryLookupChild, version: 1}
+    input: [{target: Query, from: {path: workflow.Query}}]
+    output: [{source: Response, to: {path: workflow.Response}}]
+    onError:
+      - exception: System.InvalidOperationException
+        then: retry
+        retry: {maximumAttempts: 2, initialInterval: '00:00:05', maximumInterval: '00:00:30', backoffCoefficient: 2}

@@ -21,7 +21,7 @@ There are no incoming webhook endpoints in this package; incoming HTTP triggers 
 
 The schedule and signing format follow [Standard Webhooks](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md). The body follows [CloudEvents JSON format 1.0.2](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/formats/json-format.md).
 
-Workflow identity is the declared `(name, version)`, with names required. Checkpoint schema 4
+Workflow identity is the declared `(name, version)`, with names required. Checkpoint schema 8
 stores a compiler-free `StructureHash` and refuses incompatible definitions. Earlier saved instances
 are unreadable without migration; reset development state and restart hosts together. See the
 [identity and structure-hash contract](../../docs/fluent-api.md#identity-and-expressions).

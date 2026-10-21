@@ -666,7 +666,9 @@ public enum TraceEntryType
     InlineEntered,
     InlineExited,
     /// <summary>A switch selected a case, default or no-match path.</summary>
-    SwitchSelected
+    SwitchSelected,
+    /// <summary>An invocation policy selected retry, ignore or propagation.</summary>
+    InvocationPolicyApplied
 }
 
 /// <summary>

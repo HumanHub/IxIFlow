@@ -55,13 +55,14 @@ internal sealed partial class TraceBuffer
     }
 
     public void Retry(TraceEntryType kind, WorkflowStep step, ContinuationState continuation, int attempt,
-        string? restartStepId = null, string? scopeId = null)
+        string? restartStepId = null, string? scopeId = null, InvocationRecordState? invocation = null)
     {
         var now = _time.GetUtcNow().UtcDateTime;
         if (Accepts(kind, now))
             Add(new ExecutionTraceEntry { Timestamp = now, EntryType = kind,
                 Payload = new RetryTrace(_scopes!.Id(step), step.StepType, continuation.Id, attempt,
-                    restartStepId, scopeId, continuation.RetryAfterUtc) });
+                    restartStepId, scopeId, continuation.RetryAfterUtc)
+                { Invocation = invocation == null ? null : InvocationRecords.Facts(invocation, invocation.Attempts[^1]) } });
     }
 
     public void ItemStarted(WorkflowStep step, ContinuationState continuation, ScopePosition frame) =>

@@ -44,7 +44,7 @@ public static class WorkflowDefinitionValidator
         WorkflowTypeIdentity.SavedName(dataType) == WorkflowTypeIdentity.SavedName(workflowData.GetType());
 
     /// <summary>The persisted execution contract version; other versions require a separate migration.</summary>
-    public const int CheckpointContractVersion = 9;
+    public const int CheckpointContractVersion = 10;
 
     public static IReadOnlyList<WorkflowVersionDependency> GetDependencies(WorkflowDefinition definition)
     {
@@ -113,6 +113,7 @@ public static class WorkflowDefinitionValidator
                 ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(steps))))));
             foreach (var step in ParallelRules.Flatten(steps))
             {
+                ValidateStepPolicies(step);
                 if (step.Runtime == null)
                     throw WorkflowBuildError.Invalid(step,
                         $"Step '{step.Id}' has no runtime delegates; construct steps through the workflow builders");
@@ -210,6 +211,31 @@ public static class WorkflowDefinitionValidator
                     throw WorkflowBuildError.Invalid(step,
                         $"Activity '{step.ActivityType.Name}' has a getter-only property '{properties[0]}' " +
                         "that cannot be restored from a checkpoint");
+            }
+        }
+    }
+
+    private static void ValidateStepPolicies(WorkflowStep step)
+    {
+        if (step.StepMetadata.TryGetValue("StepErrorHandlers", out var policies))
+        {
+            if (policies is not List<StepErrorHandlerInfo> handlers)
+                throw WorkflowBuildError.Invalid(step, "Step error policies have an invalid representation");
+            if (step.StepType != WorkflowStepType.WorkflowInvocation &&
+                (step.StepType != WorkflowStepType.Activity || !step.StepMetadata.ContainsKey("IsSagaStep")))
+                throw WorkflowBuildError.Invalid(step, "Step error policies require a saga activity, request or workflow invocation");
+            foreach (var handler in handlers)
+            {
+                if (handler.ExceptionType == null || !typeof(Exception).IsAssignableFrom(handler.ExceptionType) ||
+                    !Enum.IsDefined(handler.HandlerAction))
+                    throw WorkflowBuildError.Invalid(step, "A step error policy requires an exception type and a valid action");
+                if (handler.HandlerAction == StepErrorAction.Retry && handler.RetryPolicy == null)
+                    throw WorkflowBuildError.Invalid(step, "Retry requires retry settings");
+                if (handler.RetryPolicy != null && handler.HandlerAction != StepErrorAction.Retry)
+                    throw WorkflowBuildError.Invalid(step, "Only retry accepts retry settings");
+                if (handler.RetryPolicy is { } retry && IxIFlow.Authoring.RetryDelayRules.Validate(
+                        retry.MaximumAttempts, retry.InitialInterval, retry.MaximumInterval, retry.BackoffCoefficient) is { } problem)
+                    throw WorkflowBuildError.Invalid(step, problem);
             }
         }
     }

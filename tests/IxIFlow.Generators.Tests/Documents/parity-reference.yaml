@@ -80,5 +80,6 @@ definitions:
     workflowType: IxIFlow.Generators.Tests.ParityChildWorkflow
     dataType: IxIFlow.Generators.Tests.FlowData
     cancelWithParent: false
+    onError: [{exception: System.InvalidOperationException, then: retry, retry: {maximumAttempts: 2}}]
     input: [{target: Value, from: {kind: constant, value: 5}}]
     output: [{source: Result, to: {path: workflow.Result}}]

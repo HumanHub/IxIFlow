@@ -30,7 +30,7 @@ internal sealed partial class TraceBuffer
     }
 
     public void Configure(WorkflowInstance instance, ExecutionCheckpoint checkpoint, ExecutionLimits limits,
-        TimeProvider? time, WorkflowScopeCatalog scopes)
+        TimeProvider? time, WorkflowScopeCatalog? scopes)
     {
         Configure(limits.MaxTraceEntriesPerCommit);
         _instanceId = instance.InstanceId;
@@ -44,7 +44,7 @@ internal sealed partial class TraceBuffer
             _acknowledgedBudget = checkpoint.TraceBudgetExhausted;
             _acknowledgedReplayInitialized = checkpoint.TraceReplayInitialized;
             _acknowledgedDebug = checkpoint.Debug;
-            if (!_origin && checkpoint.TraceReplayInitialized && checkpoint.StructureHash == scopes.StructureHash &&
+            if (scopes != null && !_origin && checkpoint.TraceReplayInitialized && checkpoint.StructureHash == scopes.StructureHash &&
                 _enabled && _detail == TraceDetail.Full && !checkpoint.TraceBudgetExhausted)
             {
                 // Establish the saved baseline before recovery reactivates continuations.
@@ -59,6 +59,10 @@ internal sealed partial class TraceBuffer
         if (time != null)
             _time = time;
     }
+
+    // Management closure needs tracing switches and budgets, but cannot load definitions or payloads.
+    public void ConfigureMetadata(WorkflowInstance instance, ExecutionCheckpoint checkpoint, ExecutionLimits limits,
+        TimeProvider time) => Configure(instance, checkpoint, limits, time, null);
 
     public bool Accepts(TraceEntryType kind, DateTime timestamp)
     {
@@ -135,6 +139,7 @@ internal sealed partial class TraceBuffer
             ItemEndTrace p => (p.StepId, p.ContinuationId),
             TimeoutTrace p => (p.StepId, p.ContinuationId),
             RetryTrace p => (p.StepId, p.ContinuationId),
+            InvocationTrace p => (p.StepId, p.ContinuationId),
             _ => (entry.StepId, entry.ContinuationId)
         };
         entry.StepId ??= stepId;

@@ -242,9 +242,9 @@ public sealed class ManagementApiReviewTests
         var pending = Assert.Single((await http.GetFromJsonAsync<PendingActivityInfo[]>($"/ops/instances/{stopped.InstanceId}/pending-activities"))!);
         foreach (var body in new object[]
         {
-            new { invocationId = pending.InvocationId, kind = "Completed", note = "observed" },
-            new { invocationId = pending.InvocationId, kind = "Completed", note = "observed", invocationResult = new { number = "invalid" } },
-            new { invocationId = pending.InvocationId, kind = "Completed", note = "observed", invocationResult = (object?)null }
+            new { invocationId = pending.InvocationId, expectedPolicyAttemptId = pending.PolicyAttemptId, kind = "Completed", note = "observed" },
+            new { invocationId = pending.InvocationId, expectedPolicyAttemptId = pending.PolicyAttemptId, kind = "Completed", note = "observed", invocationResult = new { number = "invalid" } },
+            new { invocationId = pending.InvocationId, expectedPolicyAttemptId = pending.PolicyAttemptId, kind = "Completed", note = "observed", invocationResult = (object?)null }
         })
         {
             using var invalid = await http.PostAsJsonAsync($"/ops/instances/{stopped.InstanceId}/resolutions", body);
@@ -253,7 +253,7 @@ public sealed class ManagementApiReviewTests
             Assert.Contains("invocationResult", problem.RootElement.GetProperty("detail").GetString());
         }
         using var resolved = await http.PostAsJsonAsync($"/ops/instances/{stopped.InstanceId}/resolutions", new
-        { invocationId = pending.InvocationId, kind = "Completed", note = "observed", invocationResult = new { number = 42 } });
+        { invocationId = pending.InvocationId, expectedPolicyAttemptId = pending.PolicyAttemptId, kind = "Completed", note = "observed", invocationResult = new { number = 42 } });
         Assert.Contains(resolved.StatusCode, new[] { HttpStatusCode.OK, HttpStatusCode.Accepted });
         Assert.Equal(WorkflowExecutionStatus.Success, (await factory.Engine.AwaitAsync(stopped.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(Patience)).Status);
         Assert.Equal(42, JsonSerializer.Deserialize<Data>((await store.GetWorkflowInstanceAsync(stopped.InstanceId))!.WorkflowDataJson.InlineText)!.Number);

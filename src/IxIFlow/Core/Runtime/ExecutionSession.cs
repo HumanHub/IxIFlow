@@ -59,6 +59,7 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
         if (restoreInputs)
         {
             await Reader.HydrateAsync(continuation.PendingActivity);
+            await Reader.HydrateAsync(InvocationRecords.Active(checkpoint, continuation)?.Attempts.LastOrDefault()?.Decision);
             await Reader.HydrateAsync(continuation.RetryInputs);
             await Reader.HydrateAsync(continuation.AcceptedWait);
         }

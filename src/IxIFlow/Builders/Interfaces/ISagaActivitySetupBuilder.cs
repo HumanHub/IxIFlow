@@ -33,13 +33,13 @@ public interface ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousSt
     /// <typeparam name="TException">Type of exception to handle</typeparam>
     /// <param name="handler">Configuration for the error handler</param>
     ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> OnError<TException>(
-        Action<ISagaStepErrorHandler<TException>> handler) where TException : Exception;
+        Action<IStepErrorHandler<TException>> handler) where TException : Exception;
 
     /// <summary>
     /// Configures general error handling for the activity
     /// </summary>
     /// <param name="handler">Configuration for the error handler</param>
-    ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> OnError(Action<ISagaStepErrorHandler> handler);
+    ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> OnError(Action<IStepErrorHandler> handler);
 
     /// <summary>
     /// Configures a compensation activity for this step

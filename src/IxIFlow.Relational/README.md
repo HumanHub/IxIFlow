@@ -77,7 +77,7 @@ Completion materialization takes the publisher lock shared; registration, unregi
 
 ClaimDeliveries takes delivery row locks, then the core samples OutboxClock and stamps the lease and the first-attempt time while incrementing attempts. DeliveryUpdate persists a row only under that transaction and lock. Renewal and settlement lock the delivery, read the store clock, and reject an expired or replaced token. A retry sends only a duration; the core stamps its next attempt from store time. Disabling is atomic with the fenced settlement and gives up all other pending deliveries for that publisher. Acknowledgments after disablement cannot revive a delivery.
 
-Workflow identity is the declared `(name, version)`, with names required. Checkpoint schema 4
+Workflow identity is the declared `(name, version)`, with names required. Checkpoint schema 8
 stores a compiler-free `StructureHash` and refuses incompatible definitions. Earlier saved instances
 are unreadable without migration; reset development state and restart hosts together. See the
 [identity and structure-hash contract](../../docs/fluent-api.md#identity-and-expressions).

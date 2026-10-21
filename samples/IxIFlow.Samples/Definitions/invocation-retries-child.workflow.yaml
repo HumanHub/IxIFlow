@@ -1,0 +1,7 @@
+workflow: {name: RetryLookupChild, dataType: IxIFlow.Samples.LookupData}
+definitions:
+  - kind: activity
+    id: fetch
+    activity: IxIFlow.Samples.FetchLookup
+    input: [{target: Query, from: {path: workflow.Query}}]
+    output: [{source: Response, to: {path: workflow.Response}}]

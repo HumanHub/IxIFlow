@@ -248,6 +248,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                 }
                 case InvokeWorkflowTypeStepDocument invocation:
                 {
+                    ValidateStepPolicies(invocation.OnError, stepPath, diagnostics);
                     RequiredType(invocation.WorkflowType, stepPath + ".workflowType", diagnostics);
                     if (invocation.DataType != null) RequiredType(invocation.DataType, stepPath + ".dataType", diagnostics);
                     ValidateInputMappings(invocation.Input, diagnostics, stepPath + ".input", false, aliases, document.Code);
@@ -326,6 +327,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     break;
 
                 case InvokeWorkflowStepDocument invokeWorkflowStep:
+                    ValidateStepPolicies(invokeWorkflowStep.OnError, stepPath, diagnostics);
                     if (!HasMissingMember(stepPath + ".workflow", diagnostics) && !string.IsNullOrWhiteSpace(invokeWorkflowStep.Workflow.Name) && !await context.HasWorkflowAsync(invokeWorkflowStep.Workflow.Name, invokeWorkflowStep.Workflow.Version, cancellationToken))
                     {
                         diagnostics.Add(new WorkflowDiagnostic("STEP011", $"Workflow '{invokeWorkflowStep.Workflow.Name}' needs a resolved workflow contract and pinned version", WorkflowDiagnosticSeverity.Error, $"{stepPath}.workflow.name"));
@@ -617,15 +619,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             ValidateContextMappings(undo.PreviousCompensationInput, undoPath + ".previousCompensationInput", ["previousCompensation"]);
             ValidateOutputMappings(undo.Output, diagnostics, undoPath + ".output");
         }
-        for (var index = 0; index < step.OnError.Count; index++)
-        {
-            var policy = step.OnError[index];
-            var policyPath = $"{path}.onError[{index}]";
-            if (policy.Exception != null) RequiredType(policy.Exception, policyPath + ".exception", diagnostics);
-            if (policy.Retry != null && policy.Then != "retry")
-                Invalid("SAGA010", "Only retry accepts a retry policy", policyPath + ".retry", diagnostics);
-            if (policy.Retry != null) ValidateRetry(policy.Retry, policyPath + ".retry", diagnostics);
-        }
+        ValidateStepPolicies(step.OnError, path, diagnostics);
 
         void ValidateContextMappings(IReadOnlyList<InputMappingDocument> mappings, string prefix, IReadOnlyCollection<string> roots)
         {
@@ -635,6 +629,20 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     Invalid("MAP001", "Input mapping target is required", $"{prefix}[{index}].target", diagnostics);
                 ValidateExpression(mappings[index].From, diagnostics, $"{prefix}[{index}].from", roots, document.Code);
             }
+        }
+    }
+
+    private static void ValidateStepPolicies(IReadOnlyList<StepErrorPolicyDocument> policies, string path,
+        List<WorkflowDiagnostic> diagnostics)
+    {
+        for (var index = 0; index < policies.Count; index++)
+        {
+            var policy = policies[index];
+            var policyPath = $"{path}.onError[{index}]";
+            if (policy.Exception != null) RequiredType(policy.Exception, policyPath + ".exception", diagnostics);
+            if (policy.Retry != null && policy.Then != "retry")
+                Invalid("SAGA010", "Only retry accepts a retry policy", policyPath + ".retry", diagnostics);
+            if (policy.Retry != null) ValidateRetry(policy.Retry, policyPath + ".retry", diagnostics);
         }
     }
 
@@ -671,6 +679,10 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
     {
         Duration(policy.InitialInterval, false, path + ".initialInterval", diagnostics);
         Duration(policy.MaximumInterval, false, path + ".maximumInterval", diagnostics);
+        if (TimeSpan.TryParseExact(policy.InitialInterval, "c", System.Globalization.CultureInfo.InvariantCulture, out var initial) &&
+            TimeSpan.TryParseExact(policy.MaximumInterval, "c", System.Globalization.CultureInfo.InvariantCulture, out var maximum) &&
+            IxIFlow.Authoring.RetryDelayRules.Validate(policy.MaximumAttempts, initial, maximum, policy.BackoffCoefficient) is { } problem)
+            Invalid("RETRY001", problem, path, diagnostics);
     }
 
     private static void Fault(string? exception, string? fault, string path, List<WorkflowDiagnostic> diagnostics)

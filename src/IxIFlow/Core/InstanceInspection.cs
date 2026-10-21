@@ -6,7 +6,20 @@ namespace IxIFlow.Core;
 public sealed record InstanceInspection(InspectionSummary Summary, long Revision, string StructureHash,
     InspectionDebugState DebugState, IReadOnlyList<Breakpoint> Breakpoints,
     IReadOnlyList<InspectionThread> Threads, IReadOnlyList<InspectionAttempt> PendingAttempts,
-    IReadOnlyList<InspectionWait> Waits, IReadOnlyList<InspectionData> Data);
+    IReadOnlyList<InspectionWait> Waits, IReadOnlyList<InspectionData> Data)
+{
+    public IReadOnlyList<InspectionInvocation> Invocations { get; init; } = [];
+}
+
+public sealed record InspectionInvocation(string InvocationId, string StepId, string ContinuationId,
+    string WorkflowName, int WorkflowVersion, string? DataType, ArtifactDigest? BundleDigest,
+    string? StructureHash, string? ContractHash, string? Disposition, int ScheduledRetries,
+    DateTime? RetryAfterUtc, IReadOnlyList<InspectionInvocationAttempt> Attempts);
+public sealed record InspectionInvocationAttempt(string PolicyAttemptId, int Number, string Phase,
+    DateTime PreparedAtUtc, DateTime? StartedAtUtc, DateTime? EndedAtUtc, string Host,
+    string? ChildInstanceId, Guid? ChildIncarnation, WorkflowStatus? ChildStatus,
+    string? Disposition, InspectionError? Error, int? PolicyIndex, StepErrorAction? Action,
+    DateTime? RetryAfterUtc, ActivityResolutionKind? OperatorDecision);
 
 public sealed record InspectionSummary(string InstanceId, string WorkflowName, int WorkflowVersion,
     WorkflowStatus Status, string? ParentInstanceId, DateTime CreatedAt, DateTime? CompletedAt, string? Error)
@@ -43,7 +56,10 @@ public sealed record InspectionFrame(string ActivationId, string Name, string Ki
 }
 public sealed record InspectionGraphChoice(string Via, string? Trigger, string? Target, string Cause);
 public sealed record InspectionAttempt(string ContinuationId, string InvocationId, string StepId,
-    string? AttemptId, string? Kind, string? Host, DateTime StartedAtUtc, string? Reason);
+    string? AttemptId, string? Kind, string? Host, DateTime StartedAtUtc, string? Reason)
+{
+    public string? PolicyAttemptId { get; init; }
+}
 public sealed record InspectionWait(string WaitRef, string ContinuationId, string StepId, WaitKind Kind,
     string? Key, DateTime? DeadlineUtc, string? ChildInstanceId);
 public sealed record InspectionData(string ContinuationId, JsonElement Value)

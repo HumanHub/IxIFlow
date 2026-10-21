@@ -1,9 +1,9 @@
 namespace IxIFlow.Builders.Interfaces;
 
 /// <summary>
-/// Handles errors at the saga step level
+/// Handles errors at the step level
 /// </summary>
-public interface ISagaStepErrorHandler
+public interface IStepErrorHandler
 {
     /// <summary>
     /// Configures retry behavior for the failed step
@@ -16,7 +16,7 @@ public interface ISagaStepErrorHandler
     /// <param name="retryPolicy">The retry policy configuration</param>
     void ThenRetry(RetryPolicy retryPolicy);
     /// <summary>
-    /// Terminates the saga execution on error
+    /// Propagates the original failure to enclosing handlers
     /// </summary>
     void ThenTerminate();
     /// <summary>
@@ -26,10 +26,10 @@ public interface ISagaStepErrorHandler
 }
 
 /// <summary>
-/// Handles specific exception types at the saga step level
+/// Handles specific exception types at the step level
 /// </summary>
 /// <typeparam name="TException">Type of exception to handle</typeparam>
-public interface ISagaStepErrorHandler<TException> : ISagaStepErrorHandler
+public interface IStepErrorHandler<TException> : IStepErrorHandler
     where TException : Exception
 {
 }
