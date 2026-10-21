@@ -21,6 +21,58 @@ internal static class ActivityContract
         ? property.IsDefined(typeof(ActivityOutputAttribute)) || property.IsDefined(typeof(ActivityInputOutputAttribute))
         : property.GetMethod is { IsPublic: true };
 
+    public static void Check(Type activity)
+    {
+        var properties = activity.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        var marked = properties.Any(IsMarked);
+        foreach (var property in properties)
+        {
+            if (IsMarked(property))
+            {
+                if (IsInput(property, true) && property.SetMethod is not { IsPublic: true })
+                    throw Refused(activity, property, "is marked as an input but has no public setter");
+                if (IsOutput(property, true) && property.GetMethod is not { IsPublic: true })
+                    throw Refused(activity, property, "is marked as an output but has no public getter");
+            }
+            if (property.IsDefined(typeof(RequiredAttribute)) && IsOutput(property, marked) && !IsInput(property, marked))
+                throw Refused(activity, property, "has [Required] but is output-only");
+            if (property.IsDefined(typeof(DefaultValueAttribute)))
+            {
+                if (property.SetMethod is not { IsPublic: true })
+                    throw Refused(activity, property, "has [DefaultValue] but has no public setter");
+                _ = Default(property, activity);
+            }
+        }
+    }
+
+    public static (IReadOnlyList<ContractMember> Inputs, IReadOnlyList<ContractMember> Outputs) Describe(Type activity)
+    {
+        Check(activity);
+        var properties = activity.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+        var marked = properties.Any(IsMarked);
+        foreach (var property in properties)
+            if (property.GetCustomAttribute<UIHintAttribute>() is { UIHint: var hint } &&
+                hint is not ("text" or "code" or "binding" or "connection"))
+                throw Refused(activity, property, $"has unsupported [UIHint] '{hint}'");
+        ContractMember Member(PropertyInfo property)
+        {
+            var display = property.GetCustomAttribute<DisplayAttribute>();
+            var hasDefault = property.IsDefined(typeof(DefaultValueAttribute));
+            return new(property.Name, WorkflowTypeIdentity.SavedName(property.PropertyType),
+                property.IsDefined(typeof(RequiredAttribute)), hasDefault,
+                hasDefault ? ActivityInputValue.Serialize(property, Default(property, activity)) : null,
+                display?.GetName() ?? property.Name, display?.GetDescription(),
+                property.GetCustomAttribute<UIHintAttribute>()?.UIHint ?? "text");
+        }
+        var visible = activity.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .OrderBy(property => property.Name, StringComparer.Ordinal).ToArray();
+        return (Array.AsReadOnly(visible.Where(property => IsInput(property, marked)).Select(Member).ToArray()),
+            Array.AsReadOnly(visible.Where(property => IsOutput(property, marked)).Select(Member).ToArray()));
+    }
+
+    private static WorkflowEngineException Refused(Type activity, PropertyInfo property, string reason) =>
+        new(WorkflowErrorKind.InvalidDefinition, $"Activity property '{activity.Name}.{property.Name}' {reason}");
+
     public static object? Default(PropertyInfo property, Type? activityType = null)
     {
         var value = property.GetCustomAttribute<DefaultValueAttribute>()!.Value;

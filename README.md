@@ -29,9 +29,9 @@ These are the package projects in `src/`. All runtime packages target .NET 10.
 
 | Package | Purpose |
 | --- | --- |
-| `IxIFlow` | Engine, fluent builders, client, host, memory store; bundles the YAML generator, analyzers and code fixes |
+| `IxIFlow` | Engine, fluent builders, client, host, memory store and local activity registration; bundles the YAML generator, analyzers and code fixes |
 | `IxIFlow.Abstractions` | Activity interfaces, recovery contracts, contract/metadata attributes and combiners |
-| `IxIFlow.Authoring` | Document serialization and validation, YAML translation and publishing, and installed activity package catalog |
+| `IxIFlow.Authoring` | Document serialization and validation, YAML translation and publishing |
 | `IxIFlow.Sqlite` | SQLite file store for one host with in-process execution |
 | `IxIFlow.SqlServer` | SQL Server instance state, inbox, waits, traces, leases and completion outbox |
 | `IxIFlow.PostgreSql` | PostgreSQL instance state and `LISTEN`/`NOTIFY` wake-ups |
@@ -54,7 +54,7 @@ dotnet add package IxIFlow.Sqlite
 dotnet add package IxIFlow.Templates.Liquid
 ```
 
-Activity libraries can reference only `IxIFlow.Abstractions`. Add `IxIFlow.Authoring` when the application needs document serialization or the installed activity catalog.
+Activity libraries can reference only `IxIFlow.Abstractions`. Register installed activities through the core `AddActivity<T>()` or `AddActivities(assembly)` builder extensions. Add `IxIFlow.Authoring` when the application needs document serialization or publishing.
 
 ## Quick start
 

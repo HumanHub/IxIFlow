@@ -2,6 +2,8 @@ using IxIFlow.ActivitySdk;
 using IxIFlow.DemoActivities;
 using IxIFlow.Core;
 using Moq;
+using IxIFlow.Extensions;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -11,17 +13,19 @@ public sealed class DemoActivityTests
     [Fact]
     public async Task AssemblyCatalog_UsesActivityCodeForFieldsAndDesignerIds()
     {
-        var registry = new ActivityPackageRegistry();
-        registry.AddAssembly(typeof(ReadJsonActivity).Assembly, "IxIFlow.DemoActivities", "1.0.0");
+        var services = new ServiceCollection();
+        services.AddIxIFlow().AddActivities(typeof(ReadJsonActivity).Assembly);
+        using var provider = services.BuildServiceProvider();
+        var registry = provider.GetRequiredService<IActivityRegistry>();
 
-        var package = Assert.Single(registry.Packages);
-        Assert.Equal(3, package.Activities.Count);
-        var read = Assert.Single(package.Activities, activity => activity.Key == "demo.json.read");
+        Assert.Single(registry.Packages);
+        Assert.Equal(3, registry.Activities.Count);
+        var read = Assert.Single(registry.Activities, activity => activity.Key == "demo.json.read");
         Assert.Equal("read-json", read.Designer);
         Assert.Equal("file-input", read.Icon);
-        Assert.Equal("Path", Assert.Single(read.Fields).Key);
-        Assert.Contains("Content", read.Outputs);
-        Assert.Equal(typeof(ReadJsonActivity), (await registry.FindAsync(read.Key))!.ActivityType);
+        Assert.Equal("Path", Assert.Single(read.Inputs).Name);
+        Assert.Contains(read.Outputs, member => member.Name == "Content");
+        Assert.Equal(typeof(ReadJsonActivity), registry.Find(read.Key)!.ActivityType);
     }
 
     [Fact]

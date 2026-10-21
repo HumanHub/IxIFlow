@@ -9,6 +9,8 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
     public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) =>
         Guard(() => _store.RegisterPackageAsync(package, artifacts), "Registering package artifact");
+    public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) =>
+        Guard(() => _store.GetInstalledPackagesAsync(id), "Reading installed activity packages");
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) =>
         Guard(() => _store.GetPackagesAsync(id), "Reading package catalog");
     public Task<WorkflowPackage?> GetPackageAsync(string id, string version) =>

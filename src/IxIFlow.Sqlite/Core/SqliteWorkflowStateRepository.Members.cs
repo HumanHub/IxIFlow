@@ -23,6 +23,21 @@ public sealed partial class SqliteWorkflowStateRepository
             capability_value TEXT NOT NULL,
             PRIMARY KEY (member_id, capability_key)
         );
+        CREATE TABLE ixiflow_installed_packages (
+            id TEXT COLLATE BINARY NOT NULL,
+            version TEXT COLLATE BINARY NOT NULL,
+            fingerprint TEXT COLLATE BINARY NOT NULL,
+            activities_json TEXT NOT NULL,
+            PRIMARY KEY (id, version, fingerprint)
+        );
+        CREATE TABLE ixiflow_host_packages (
+            member_id TEXT COLLATE BINARY NOT NULL REFERENCES ixiflow_hosts(member_id),
+            package_id TEXT COLLATE BINARY NOT NULL,
+            package_version TEXT COLLATE BINARY NOT NULL,
+            fingerprint TEXT COLLATE BINARY NOT NULL,
+            PRIMARY KEY (member_id, package_id, package_version, fingerprint),
+            FOREIGN KEY (package_id, package_version, fingerprint) REFERENCES ixiflow_installed_packages(id, version, fingerprint)
+        );
         """;
 
     private static string? RegistrySql(Statement statement) => statement switch
@@ -30,6 +45,7 @@ public sealed partial class SqliteWorkflowStateRepository
         // The immediate transaction already owns the writer lock.
         Statement.RegistryLock => null,
         Statement.RegisterMember => """
+            DELETE FROM ixiflow_host_packages WHERE member_id <> @MemberId;
             DELETE FROM ixiflow_host_capabilities WHERE member_id <> @MemberId;
             DELETE FROM ixiflow_hosts WHERE member_id <> @MemberId;
             INSERT INTO ixiflow_hosts (member_id, kind, name, endpoint, slots, engine_version,
@@ -40,10 +56,13 @@ public sealed partial class SqliteWorkflowStateRepository
             """,
         Statement.MemberHeartbeat => "UPDATE ixiflow_hosts SET heartbeat_at_utc=@Now WHERE member_id=@MemberId",
         Statement.UnregisterMember => """
+            DELETE FROM ixiflow_host_packages WHERE member_id=@MemberId;
             DELETE FROM ixiflow_host_capabilities WHERE member_id=@MemberId;
             DELETE FROM ixiflow_hosts WHERE member_id=@MemberId;
             """,
         Statement.PruneMembers => """
+            DELETE FROM ixiflow_host_packages WHERE member_id IN
+                (SELECT member_id FROM ixiflow_hosts WHERE heartbeat_at_utc < @PruneBefore);
             DELETE FROM ixiflow_host_capabilities WHERE member_id IN
                 (SELECT member_id FROM ixiflow_hosts WHERE heartbeat_at_utc < @PruneBefore);
             DELETE FROM ixiflow_hosts WHERE heartbeat_at_utc < @PruneBefore;
@@ -60,6 +79,14 @@ public sealed partial class SqliteWorkflowStateRepository
         Statement.InsertCapability => """
             INSERT INTO ixiflow_host_capabilities (member_id, capability_key, capability_value) VALUES (@MemberId, @Key, @Value)
             """,
+        Statement.InstalledPackages => "SELECT id AS Id, version AS Version, fingerprint AS Fingerprint, activities_json AS ActivitiesJson FROM ixiflow_installed_packages WHERE @Id IS NULL OR id=@Id",
+        Statement.HostPackages => "SELECT member_id AS MemberId, package_id AS Id, package_version AS Version, fingerprint AS Fingerprint FROM ixiflow_host_packages",
+        Statement.InsertInstalledPackage => """
+            INSERT INTO ixiflow_installed_packages (id, version, fingerprint, activities_json) VALUES (@Id, @Version, @Fingerprint, @ActivitiesJson)
+            ON CONFLICT (id, version, fingerprint) DO NOTHING;
+            """,
+        Statement.DeleteHostPackages => "DELETE FROM ixiflow_host_packages WHERE member_id=@MemberId",
+        Statement.InsertHostPackage => "INSERT INTO ixiflow_host_packages (member_id, package_id, package_version, fingerprint) VALUES (@MemberId, @Id, @Version, @Fingerprint)",
         _ => null
     };
 }

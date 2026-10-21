@@ -60,11 +60,25 @@ The bundled analyzers check mapping direction, required mappings, accessors and 
 
 ## Register installed activities
 
-`[WorkflowActivity]` supplies the key plus optional `Version`, `Name`, `Category`, `Icon` and `Designer`. The `IxIFlow.Authoring` package provides `ActivityPackageRegistry` in the `IxIFlow.ActivitySdk` namespace. Its `AddAssembly(assembly, packageName, packageVersion)` method scans exported attributed types. `RegisterActivities(services)` registers resolved implementations with DI.
+`[WorkflowActivity]` supplies the key plus optional `Version`, `Name`, `Category`, `Icon` and `Designer`. Register installed activities through the core builder, using `IxIFlow.Extensions`:
 
-[Contracts.Catalog](../samples/IxIFlow.Samples/Contracts.cs) compiles installed-assembly catalog registration. Its manifest's `Fields` describe input controls, labels, help and required flags; `Defaults` holds declared attribute values, and `Outputs` describes output labels/help. In-out properties appear on both sides. `AddPackage(manifestYaml, assembly)` and `AddEmbeddedPackage` accept installed package manifests too. This registry does not fetch or isolate assemblies; the application installs dependencies.
+<!-- snippet: samples/IxIFlow.Samples/Contracts.cs#register-activities -->
+```csharp
+services.AddIxIFlow()
+    .AddActivities(typeof(AddFee).Assembly);
+// To select one activity instead:
+// services.AddIxIFlow().AddActivity<AddFee>();
+```
 
-Initial execution and restoration create fresh activity objects through the same constructor-injection policy. Register constructor dependencies in DI; direct fluent activity types can be constructed without registering the activity itself. Saved properties are applied after construction during restoration. [Demo activities](../samples/IxIFlow.DemoActivities) include a database activity that consumes a host-provided connection factory and a connection reference instead of embedding credentials.
+Register constructor dependencies, such as `IDemoConnectionFactory`, in the same service collection. Activities must be visible, concrete, non-generic types in the default assembly load context. Registration checks their declarations and refuses invalid attributed types. Repeating a type is harmless; duplicate activity keys or package ids from different assemblies are errors.
+
+The package id comes from the normalized assembly name. Its version comes from the informational version with build metadata removed, falling back to the assembly version. `IActivityRegistry` exposes descriptors with typed inputs, outputs, converted JSON defaults, labels, help and controls. In-out members appear on both sides. [Contracts.Catalog](../samples/IxIFlow.Samples/Contracts.cs) shows this registration.
+
+Each registered activity has exactly one unkeyed transient DI registration. Register an application factory before `AddActivity` or `AddActivities`: these methods use `TryAddTransient`, preserving an existing registration. Adding a factory afterwards leaves two descriptors and is refused at startup. Factories are honoured on first execution and restoration and must return a fresh object every time. Disposable transient activities are disposed when the run scope ends. Fluent activity types that were never registered and bundle activities are constructed directly with constructor dependencies; saved properties are restored after construction.
+
+Every store records the selected package metadata and the host that registered it. Canonical activity JSON includes member types, and its SHA-256 fingerprint identifies that metadata. Different selections or metadata for one package version coexist. Listings retain packages without live hosts and filter host marks using the store clock. These records do not advertise capabilities or supply publishing dependencies; published workflows use packages pinned by artifact digest.
+
+[Demo activities](../samples/IxIFlow.DemoActivities) include a database activity that receives a host-provided connection factory through its constructor and uses a connection reference instead of credentials.
 
 ## Execution context and external effects
 

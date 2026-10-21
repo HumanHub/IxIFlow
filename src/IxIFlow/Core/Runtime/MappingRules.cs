@@ -58,27 +58,9 @@ internal static class MappingRules
         IEnumerable<PropertyMapping> outputs)
     {
         var properties = activity.GetProperties(BindingFlags.Public | BindingFlags.Instance);
-        var contractProperties = activity.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-        var marked = contractProperties.Any(ActivityContract.IsMarked);
-        foreach (var property in contractProperties)
-        {
-            if (ActivityContract.IsMarked(property))
-            {
-                if (ActivityContract.IsInput(property, true) && property.SetMethod is not { IsPublic: true })
-                    throw Refused("Activity", activity, property, "is marked as an input but has no public setter");
-                if (ActivityContract.IsOutput(property, true) && property.GetMethod is not { IsPublic: true })
-                    throw Refused("Activity", activity, property, "is marked as an output but has no public getter");
-            }
-            if (property.IsDefined(typeof(RequiredAttribute)) && ActivityContract.IsOutput(property, marked) &&
-                !ActivityContract.IsInput(property, marked))
-                throw Refused("Activity", activity, property, "has [Required] but is output-only");
-            if (property.GetCustomAttribute<DefaultValueAttribute>() != null)
-            {
-                if (property.SetMethod is not { IsPublic: true })
-                    throw Refused("Activity", activity, property, "has [DefaultValue] but has no public setter");
-                _ = ActivityContract.Default(property, activity);
-            }
-        }
+        ActivityContract.Check(activity);
+        var marked = activity.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .Any(ActivityContract.IsMarked);
         var mappedInputs = new HashSet<string>(StringComparer.Ordinal);
         foreach (var mapping in inputs.Where(item => item.Direction == PropertyMappingDirection.Input))
         {

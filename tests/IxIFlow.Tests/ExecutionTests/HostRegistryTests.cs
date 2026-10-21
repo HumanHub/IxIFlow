@@ -95,7 +95,7 @@ public sealed class HostRegistryTests
         await store.RegisterMemberAsync(abandoned);
         var settings = HostSettings.Default;
         using var service = new WorkflowHeartbeatService(store, new WorkflowCatalog(), settings, time,
-            NullLogger<WorkflowHeartbeatService>.Instance);
+            NullLogger<WorkflowHeartbeatService>.Instance, new ActivityRegistry([]));
         await service.StartAsync(default);
         var initial = await store.Registrations.Reader.ReadAsync().AsTask().WaitAsync(Patience);
         await time.WaitForTimerAsync(timer => timer.Period == settings.HeartbeatInterval && timer.Pending);

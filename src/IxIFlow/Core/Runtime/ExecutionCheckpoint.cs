@@ -677,7 +677,7 @@ internal sealed class ActivityInputValue
             if (value == null && !HasConverter(input))
                 return (new ActivityInputValue(), null);
             var type = SavedType(input, value);
-            var json = JsonSerializer.Serialize(value, type, OptionsFor(input));
+            var json = Serialize(input, value);
             var saved = new ActivityInputValue { Value = new SerializedValue { Type = WorkflowTypeIdentity.SavedName(type), Json = StoredJson.Inline(json) } };
             return (saved, saved.ReadAs(type, input, services));
         }
@@ -726,6 +726,10 @@ internal sealed class ActivityInputValue
             ? runtime
             : input.PropertyType;
     }
+
+    /// <summary>Serializes a value with the input's saved type and property-level JSON settings.</summary>
+    internal static string Serialize(PropertyInfo input, object? value) =>
+        JsonSerializer.Serialize(value, SavedType(input, value), OptionsFor(input));
 
     private static bool HasConverter(PropertyInfo input) => input.IsDefined(typeof(JsonConverterAttribute));
 
@@ -1131,7 +1135,7 @@ internal sealed class SerializedValue
     /// <summary>An activity created through the container, with each saved property set as its own attributes read it.</summary>
     public static object ReadActivity(Type type, string json, IServiceProvider services)
     {
-        var activity = ActivityActivation.Create(type, services);
+        var activity = ActivityActivation.Create(type, services, services.GetRequiredService<IActivityRegistry>());
         var properties = ActivityProperties.GetValue(type, SettableProperties);
         using var document = JsonDocument.Parse(json);
         foreach (var value in document.RootElement.EnumerateObject())
