@@ -48,6 +48,12 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
         return this;
     }
 
+    /// <summary>Runs a flowchart with no incoming activity value.</summary>
+    public IWorkflowBuilder<TWorkflowData, object> Flowchart(Action<FlowchartBuilder<TWorkflowData, object>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands)
+            .Flowchart(configure, sourcePath, sourceLine);
+
     public IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
@@ -193,6 +199,38 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name)
     {
         Core.Runtime.WorkflowStepIdentity.Name(_steps, name);
+        return this;
+    }
+
+    /// <summary>Runs a flowchart and retains the incoming previous value.</summary>
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Flowchart(
+        Action<FlowchartBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        var step = new WorkflowStep
+        {
+            Name = "Flowchart", StepType = WorkflowStepType.Flowchart,
+            WorkflowDataType = typeof(TWorkflowData), PreviousStepDataType = typeof(TPreviousStepData),
+            Runtime = WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
+            SourceLocation = sourcePath + ":" + sourceLine, Order = _steps.Count
+        };
+        configure(new(step, body => new SequenceBuilder<TWorkflowData, TPreviousStepData>(body)));
+        _steps.Add(step);
+        return this;
+    }
+
+    /// <summary>Selects a destination at the end of a timeout path leaving a node.</summary>
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Transition(string? to,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        _steps.Add(new WorkflowStep
+        {
+            Name = "Transition", StepType = WorkflowStepType.Edge, Explicit = true,
+            Target = to == "end" ? null : to, WorkflowDataType = typeof(TWorkflowData),
+            PreviousStepDataType = typeof(TPreviousStepData),
+            Runtime = WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
+            SourceLocation = sourcePath + ":" + sourceLine, Order = _steps.Count
+        });
         return this;
     }
 

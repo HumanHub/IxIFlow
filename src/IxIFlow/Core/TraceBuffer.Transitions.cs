@@ -74,10 +74,33 @@ internal sealed partial class TraceBuffer
         }
     }
 
+    public void Graph(TraceEntryType kind, WorkflowStep step, ContinuationState continuation,
+        string graphId, string node, long visit, string? via = null, string? target = null,
+        TransitionCause? cause = null, string? activationId = null, ItemEndCause? exitCause = null)
+    {
+        var now = _time.GetUtcNow().UtcDateTime;
+        if (Accepts(kind, now))
+            Add(new ExecutionTraceEntry
+            {
+                Timestamp = now, EntryType = kind, FrameActivationId = activationId,
+                Payload = new GraphTrace(_scopes!.Id(step), continuation.Id, graphId, node, visit, via, target, cause, exitCause)
+            });
+    }
+
     public void DropFrames(ContinuationState continuation, int start, ItemEndCause cause)
     {
         for (var index = continuation.Stack.Count - 1; index >= start; index--)
-            ItemEnded(continuation, continuation.Stack[index], cause);
+        {
+            var frame = continuation.Stack[index];
+            ItemEnded(continuation, frame, cause);
+            if (frame.Kind == FrameKind.Node && index > 0)
+            {
+                var owner = continuation.Stack[index - 1];
+                var graph = _scopes!.Steps(owner.ScopeId)[owner.NextStepIndex];
+                Graph(TraceEntryType.NodeExited, graph, continuation, _scopes.Id(graph), frame.Node!,
+                    owner.Graph!.Visits, owner.Graph.Via, activationId: frame.ActivationId, exitCause: cause);
+            }
+        }
         continuation.Stack.RemoveRange(start, continuation.Stack.Count - start);
     }
 }

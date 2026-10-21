@@ -35,6 +35,12 @@ Events for existing waits are appended while paused and remain pending until con
 
 ## Stepping
 
+Flowcharts expose executable `Enter`, `Decision` and `Edge` picks. A node breakpoint resolves to its generated `graph-id/node-key/enter` author ID. Decisions and edges use `/decision` and `/to/index`. Their breakpoint conditions read the node body's last previous type. On an explicit timeout landing the decision's previous is null, so a condition reading its members reports `BPC002`.
+
+Into at a decision stops at its selected edge, then at the target node's entry. Over originating inside a graph follows those same picks across node activations; Over on the graph step runs the whole graph. Out inside a node stops after that node activation is gone, at the next node entry or the step after the graph.
+
+Inspection frames report `Kind`, derived graph `Phase`, `Visit` and the incoming edge `Via`; snapshots use the same names and include the graph visit. `NodeEntered` records the executable entry with its frame already pushed. `TransitionTaken` records only selection and never creates a replay stop. A decision with no matching edge therefore has one replay stop, followed by selection and graph completion records. Full tracing includes these graph records; activity-only tracing omits them.
+
 Choose a live continuation from `IWorkflowClient.GetSnapshotAsync`: its `ExecutionPointer.PointerId` is the continuation ID. A committed pause is required. The application authorizes the instance and operation before issuing the command.
 
 <!-- snippet: samples/IxIFlow.Samples/DebuggingExamples.cs#step -->

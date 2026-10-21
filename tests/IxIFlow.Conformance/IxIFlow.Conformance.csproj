@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\IxIFlow\IxIFlow.csproj" />
     <ProjectReference Include="../../src/IxIFlow.AspNetCore/IxIFlow.AspNetCore.csproj" />
+    <ProjectReference Include="../../src/IxIFlow.Debugging/IxIFlow.Debugging.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.SqlServer\IxIFlow.SqlServer.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.PostgreSql\IxIFlow.PostgreSql.csproj" />
     <ProjectReference Include="..\..\src\IxIFlow.Sqlite\IxIFlow.Sqlite.csproj" />

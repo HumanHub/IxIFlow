@@ -21,7 +21,8 @@ public static class WorkflowDefinitionValidator
         return BranchData.CombinerSignature(definition.WorkflowDataType);
     }
 
-    public const int CheckpointContractVersion = 4;
+    /// <summary>The persisted execution contract version; other versions require a separate migration.</summary>
+    public const int CheckpointContractVersion = 5;
 
     public static IReadOnlyList<WorkflowVersionReference> GetDependencies(WorkflowDefinition definition)
     {
@@ -75,6 +76,7 @@ public static class WorkflowDefinitionValidator
                          step.ResumeEventType, step.ReplyType, step.InvokedDataType, step.ResultType })
                          .Prepend(definition.WorkflowDataType).OfType<Type>().Distinct())
                 _ = RedactingJson.ClassifiedPaths(type);
+            GraphRules.Validate(steps);
             var ids = new HashSet<string>(StringComparer.Ordinal);
             foreach (var step in ParallelRules.Flatten(steps))
                 if (!ids.Add(step.Id))
@@ -121,7 +123,8 @@ public static class WorkflowDefinitionValidator
                 WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.Sequence or
                     WorkflowStepType.Conditional or WorkflowStepType.Parallel or WorkflowStepType.Loop or
                     WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
-                    WorkflowStepType.ForEach or WorkflowStepType.ForEachResult => true,
+                    WorkflowStepType.ForEach or WorkflowStepType.ForEachResult or WorkflowStepType.Flowchart or
+                    WorkflowStepType.Enter or WorkflowStepType.Decision or WorkflowStepType.Edge => true,
                 WorkflowStepType.SuspendResume => step.StepMetadata.ContainsKey("WaitKey"),
                 WorkflowStepType.Delay => step.DelayDuration > TimeSpan.Zero,
                 _ => false
