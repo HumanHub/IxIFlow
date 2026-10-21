@@ -12,7 +12,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Feature", "host")]
 public sealed class CatalogHeartbeatRevisionTests
 {
-    public enum Scenario { Refresh, Demand, RacingPublication, ConcurrentWriters, NoOps, MemoRetention, DraftPublication, UnadvertisableDelta, DemandFailure, InflightDemand, RacingUnchangedRevision, CoalescedChanges, WithoutBundleHosting }
+    public enum Scenario { Refresh, Demand, RacingPublication, ConcurrentWriters, NoOps, MemoRetention, DraftPublication, UnadvertisableDelta, DemandFailure, InflightDemand, RacingUnchangedRevision, CoalescedChanges, WithoutBundleHosting, RevisionMovedBack }
     public static TheoryData<Scenario> Scenarios => new(Enum.GetValues<Scenario>());
 
     [Theory, MemberData(nameof(Scenarios))]
@@ -288,6 +288,23 @@ public sealed class CatalogHeartbeatRevisionTests
                 Assert.Equal(0, reads.RevisionReads);
                 break;
             }
+            case Scenario.RevisionMovedBack:
+            {
+                // A store restored from a backup reports a revision below the host's cursor; the host
+                // must reread every version rather than wait for the counter to pass its old cursor.
+                var row = await Publish(prefix);
+                Assert.Contains(Key(row), (await Refresh()).Keys);
+                reads.Reset();
+                reads.RevisionMap = revision => revision - 1;
+                Assert.Contains(Key(row), (await Refresh()).Keys);
+                Assert.Equal(1, reads.VersionReads);
+                Assert.Equal(0, reads.LastAfter);
+                Assert.Contains(row.Name, reads.Rows.Select(version => version.Name));
+                reads.Reset();
+                await Refresh();
+                Assert.Equal(0, reads.VersionReads);
+                break;
+            }
             case Scenario.DraftPublication:
             {
                 var row = new WorkflowVersion(prefix, 1, "hash", WorkflowVersionState.Draft,
@@ -340,6 +357,8 @@ public sealed class CatalogHeartbeatRevisionTests
         public IWorkflowCatalog Inner = null!;
         public int VersionReads;
         public int RevisionReads;
+        public long LastAfter = -1;
+        public Func<long, long>? RevisionMap;
         public IReadOnlyList<WorkflowVersion> Rows = [];
         public Func<Task>? AfterDelta;
         public Func<Task>? BeforeDelta;
@@ -366,14 +385,17 @@ public sealed class CatalogHeartbeatRevisionTests
         {
             RevisionReads++;
             var revision = await Inner.GetCatalogRevisionAsync();
+            if (RevisionMap != null) revision = RevisionMap(revision);
             if (AfterRevision != null) await AfterRevision();
             return revision;
         }
         private async Task<WorkflowCatalogChanges> ReadDelta(long after)
         {
             VersionReads++;
+            LastAfter = after;
             if (BeforeDelta != null) await BeforeDelta();
             var changes = await Inner.GetWorkflowVersionChangesAsync(after);
+            if (RevisionMap != null) changes = changes with { Revision = RevisionMap(changes.Revision) };
             if (Transform != null) changes = changes with { Versions = changes.Versions.Select(Transform).ToArray() };
             Rows = changes.Versions;
             if (AfterDelta != null) await AfterDelta();

@@ -242,16 +242,20 @@ public abstract partial class RelationalWorkflowStateRepository
 
     private async Task<long> AdvanceCatalogRevisionAsync(DbConnection connection, DbTransaction transaction)
     {
-        await connection.ExecuteAsync(RequiredSql(Statement.CatalogRevisionAdvance), transaction: transaction);
+        if (await connection.ExecuteAsync(RequiredSql(Statement.CatalogRevisionAdvance), transaction: transaction) != 1)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The catalog revision row is missing; recreate the catalog schema");
         return await connection.QuerySingleAsync<long>(RequiredSql(Statement.CatalogRevision), transaction: transaction);
     }
 
     public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(afterRevision);
-        // The catalog lock excludes writers until both the watermark and rows have been read.
-        // SQLite's immediate transaction supplies that lock; server providers use transaction locks.
-        return CatalogWriteAsync(async (connection, transaction) =>
+        // Heartbeats must not wait for catalog writers, so this read takes no catalog lock.
+        // Writers advance the counter and stamp their row in one transaction and serialize on the
+        // counter row, so revisions commit in order: once the watermark is read, every row stamped
+        // at or below it is visible. Rows committed after the watermark may also be returned; they
+        // are read again after the next revision, which is harmless.
+        return CatalogConnectionAsync(async (connection, transaction) =>
         {
             var revision = await connection.QuerySingleAsync<long>(RequiredSql(Statement.CatalogRevision), transaction: transaction);
             var rows = await connection.QueryAsync<VersionRow>(RequiredSql(Statement.CatalogVersionChanges),

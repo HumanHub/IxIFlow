@@ -114,9 +114,9 @@ public sealed class CoordinatorCapabilityReviewTests : IClassFixture<SqliteTestD
                 var until = DateTime.UtcNow.AddSeconds(5);
                 while (calls.Count("HeartbeatAsync") == before && DateTime.UtcNow < until) await Task.Delay(10);
                 Assert.True(calls.Count("HeartbeatAsync") > before);
-                // The unchanged heartbeat reuses definitions and version results; only the scalar is read.
+                // This host does not host bundles: the unchanged heartbeat makes no catalog read at all.
                 Assert.Equal(3, definitions.Count("GetWorkflowDefinitionsAsync"));
-                Assert.Equal(revisionReads + 1, definitions.Count("GetCatalogRevisionAsync"));
+                Assert.Equal(revisionReads, definitions.Count("GetCatalogRevisionAsync"));
                 Assert.Equal(deltaReads, definitions.Count("GetWorkflowVersionChangesAsync"));
                 Assert.Equal(0, definitions.Count("GetWorkflowVersionsAsync"));
                 Assert.Same(snapshot, await host.GetRequiredService<HostSettings>().GetCapabilitiesAsync(countedCatalog));
