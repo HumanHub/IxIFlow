@@ -60,17 +60,29 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     {
         var due = checkpoint.Waits.Where(wait => wait.ChildWorkflowId == null &&
             SteppingPolicy.Allows(checkpoint, wait.ContinuationId) && checkpoint.Inbox.IsDue(wait.Id)).ToArray();
-        foreach (var wait in due)
+        var processed = false;
+        foreach (var wait in due.OrderBy(wait => wait.ContinuationId, StringComparer.Ordinal)
+                     .ThenBy(wait => scopes.Step(wait.StepId).StepType == WorkflowStepType.Trigger
+                         ? int.Parse(wait.StepId.Split('/')[^2], System.Globalization.CultureInfo.InvariantCulture) : -1))
         {
+            if (!checkpoint.Waits.Contains(wait)) continue;
+            processed = true;
             var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
             checkpoint.Touch(continuation);
             var step = scopes.Step(wait.StepId);
             if (continuation.Status != ContinuationStatus.Waiting ||
-                step.StepType != WorkflowStepType.Delay && step.TimeoutSteps.Count == 0)
+                step.StepType is not (WorkflowStepType.Delay or WorkflowStepType.Trigger) && step.TimeoutSteps.Count == 0)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "A due wait has no active timeout branch");
             checkpoint.RemoveWaits(item => item == wait, WaitCloseReason.TimedOut);
             continuation.Status = ContinuationStatus.Active;
+            if (step.StepType == WorkflowStepType.Trigger)
+            {
+                GraphTransitions.TriggerFired(checkpoint, continuation);
+                continuation.AcceptedWait = new AcceptedWaitState { StepId = wait.StepId, WaitId = wait.Id };
+                checkpoint.Trace.Timeout(step, continuation, wait.Id, null);
+                continue;
+            }
             if (step.StepType == WorkflowStepType.Delay)
             {
                 checkpoint.Trace.Timeout(step, continuation, wait.Id, null);
@@ -82,7 +94,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             checkpoint.Trace.Timeout(step, continuation, wait.Id, scopes.TimeoutScope(step));
             EnterTimeoutPath(scopes, continuation, step);
         }
-        return due.Length != 0;
+        return processed;
     }
 
     private static void EnterTimeoutPath(WorkflowScopeCatalog scopes, ContinuationState continuation,
@@ -117,11 +129,16 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         {
             var acceptedPosition = continuation.Stack[^1];
             var acceptedStep = scopes.Steps(acceptedPosition.ScopeId)[acceptedPosition.NextStepIndex];
+            if (acceptedStep.StepType == WorkflowStepType.Arm && GraphTransitions.Accepts(scopes, continuation, accepted.StepId))
+            {
+                GraphTransitions.Arm(scopes, checkpoint, continuation, acceptedStep, services, Now, StoreNow(checkpoint));
+                return;
+            }
             if (scopes.Id(acceptedStep) != accepted.StepId)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "The accepted event does not match its saved wait");
             continuation.AcceptedWait = null;
-            var @event = accepted.Event.Read(services)
+            var @event = accepted.Event?.Read(services)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "The accepted event could not be restored");
             // A saga retry asks again, so a request's answer is not kept for replay.
@@ -161,7 +178,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 if (position.ExitParentScopeOnExit)
                 {
                     parent.NextStepIndex = scopes.Steps(parent.ScopeId).Count;
-                    if (parent.Kind == FrameKind.Node)
+                    if (parent.Kind == FrameKind.Node || parent.Kind == FrameKind.State &&
+                        scopes.Steps(parent.ScopeId)[^1].StepType == WorkflowStepType.Arm)
                     {
                         parent.NextStepIndex--;
                         continuation.SetPrevious(null);
@@ -191,15 +209,13 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         switch (step.StepType)
         {
             case WorkflowStepType.Flowchart:
+            case WorkflowStepType.StateMachine:
                 checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 GraphTransitions.Enter(scopes, checkpoint, continuation, position, step);
                 break;
 
             case WorkflowStepType.Enter:
-                var owner = continuation.Stack[^2];
-                var graph = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
-                checkpoint.Trace.Graph(TraceEntryType.NodeEntered, step, continuation, scopes.Id(graph),
-                    position.Node!, owner.Graph!.Visits, owner.Graph.Via);
+                GraphTransitions.TraceEntry(scopes, checkpoint, continuation, step);
                 position.NextStepIndex++;
                 break;
 
@@ -208,8 +224,15 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 GraphTransitions.Decide(scopes, checkpoint, continuation, step, services);
                 break;
 
+            case WorkflowStepType.Arm:
+                GraphTransitions.Arm(scopes, checkpoint, continuation, step, services, Now, StoreNow(checkpoint));
+                break;
+
+            case WorkflowStepType.Trigger:
+                GraphTransitions.Trigger(scopes, checkpoint, continuation, step);
+                break;
+
             case WorkflowStepType.Edge:
-                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 GraphTransitions.Edge(scopes, checkpoint, continuation, step);
                 break;
 

@@ -160,7 +160,8 @@ internal sealed partial class TraceBuffer
         TraceEntryType.SagaRetryStarted or TraceEntryType.StepRetryScheduled or
         TraceEntryType.ReplayOrigin or TraceEntryType.ThreadPosition or TraceEntryType.NodeEntered or
         TraceEntryType.NodeExited or TraceEntryType.TransitionTaken or TraceEntryType.GraphCompleted or
-        TraceEntryType.StateEntered or TraceEntryType.ExitEntered or TraceEntryType.ActionEntered;
+        TraceEntryType.StateEntered or TraceEntryType.ExitEntered or TraceEntryType.ActionEntered or
+        TraceEntryType.StateArmed or TraceEntryType.StateExited or TraceEntryType.TimerFired;
 
     public void Committed()
     {

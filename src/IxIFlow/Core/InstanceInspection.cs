@@ -29,6 +29,7 @@ public sealed record InspectionFrame(string ActivationId, string Name, string Ki
 {
     /// <summary>The derived graph phase, when this frame belongs to a graph.</summary>
     public string? Phase { get; init; }
+    public long ArmOccurrence { get; init; }
     /// <summary>The entry count of the enclosing graph activation.</summary>
     public long? Visit { get; init; }
     /// <summary>The edge that entered the current node; null for the start.</summary>

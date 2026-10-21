@@ -66,8 +66,9 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
         for (var index = 0; index < continuation.Stack.Count; index++)
         {
             var frame = continuation.Stack[index];
-            if (frame.Kind is FrameKind.Node or FrameKind.Edge)
+            if (frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case)
                 await Reader.HydrateAsync(frame.EntryPrevious);
+            await Reader.HydrateAsync(frame.Graph?.Pending?.Event);
             if (frame.ForEachIndex is { } item && index > 0 && continuation.Stack[index - 1].ForEach is { } owner)
                 await Reader.ReadAsync(owner.Items[item]);
             if (restoreInputs && index == continuation.Stack.Count - 1 && frame.ForEach is { } list &&

@@ -28,6 +28,8 @@ public sealed class DebugStepLocationTests
             .WaitFor<Go>("go")
             .ForEach(c => c.WorkflowData.Items, (b, item) => b.Result(c => c.Item(item)))
             .Flowchart(f => f.Start("start").Node("start", edges => edges.Always("done")).Node("done"))
+            .StateMachine(m => m.Start("waiting").State("waiting", s => s
+                .On<Go>("go", "done")).State("done", s => s.Final()))
             .Build();
         var table = definition.StepTable;
         Assert.Same(table, definition.StepTable);

@@ -524,6 +524,7 @@ public sealed class WorkflowExecutor
                     checkpoint.Touch(runnable);
                     runnable.RetryAfterUtc = null;
 
+                    GraphTransitions.PreparePick(scopes, runnable);
                     var position = runnable.Stack[^1];
                     var next = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
                     if (next != null && SteppingPolicy.StopAtPick(checkpoint, runnable, scopes.Id(next), Now))

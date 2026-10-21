@@ -773,7 +773,7 @@ internal sealed class ActivityInputValue
         problem.GetBaseException().Message, problem);
 }
 
-internal enum FrameKind { Body, Item, Node, Edge }
+internal enum FrameKind { Body, Item, Node, Edge, State, StateExit, Transition, Case }
 
 internal sealed class GraphState
 {
@@ -787,6 +787,8 @@ internal sealed class GraphState
 
 internal sealed class GraphPending
 {
+    public string? Trigger { get; set; }
+    public SerializedValue? Event { get; set; }
     public string Via { get; set; } = "";
     public string? Target { get; set; }
     public TransitionCause Cause { get; set; }
@@ -798,6 +800,8 @@ internal sealed class ScopePosition
     public FrameKind Kind { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public GraphState? Graph { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public long ArmOccurrence { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Node { get; set; }
 
@@ -1122,7 +1126,7 @@ internal sealed class BoundReplyState
 internal sealed class AcceptedWaitState
 {
     public string StepId { get; set; } = "";
-    public SerializedValue Event { get; set; } = new();
+    public SerializedValue? Event { get; set; }
 
     /// <summary>The inbox event this is.</summary>
     public string EventId { get; set; } = "";

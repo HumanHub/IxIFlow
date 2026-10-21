@@ -646,7 +646,13 @@ public enum TraceEntryType
     /// <summary>A state exit-body entry pick.</summary>
     ExitEntered,
     /// <summary>A transition action's edge pick.</summary>
-    ActionEntered
+    ActionEntered,
+    /// <summary>A native state's trigger waits were saved.</summary>
+    StateArmed,
+    /// <summary>A state activation left normally or unwound.</summary>
+    StateExited,
+    /// <summary>A timer trigger became due.</summary>
+    TimerFired
 }
 
 /// <summary>
@@ -997,6 +1003,14 @@ public class WorkflowStep
     /// <summary>The keyed bodies and ordered edges of a flowchart.</summary>
     public List<FlowchartNode> GraphNodes { get; set; } = [];
 
+    /// <summary>The keyed states of a state machine.</summary>
+    public List<StateMachineState> GraphStates { get; set; } = [];
+    public TriggerKind TriggerKind { get; set; }
+    public System.Linq.Expressions.LambdaExpression? AfterExpression { get; set; }
+    public Func<object, TimeSpan>? After { get; set; }
+    /// <summary>The request's paired wait or reply trigger, resolved at build.</summary>
+    internal WorkflowStep? ReplyWait { get; set; }
+
     /// <summary>An edge's destination key, or null to end the graph.</summary>
     public string? Target { get; set; }
 
@@ -1028,6 +1042,19 @@ public class WorkflowStep
             for (var index = 0; index < node.Edges.Count; index++)
                 yield return ("node", node.Key + "/to/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture), node.Edges[index]);
         }
+        foreach (var state in GraphStates)
+        {
+            yield return ("state", state.Key, state.Steps);
+            if (state.ExitSteps.Count > 0) yield return ("state", state.Key + "/exit", state.ExitSteps);
+            for (var index = 0; index < state.Transitions.Count; index++)
+            {
+                var key = state.Key + "/on/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var transition = state.Transitions[index];
+                yield return ("state", key, transition.Steps);
+                for (var alternative = 0; alternative < transition.Cases.Count; alternative++)
+                    yield return ("state", key + "/case/" + alternative.ToString(System.Globalization.CultureInfo.InvariantCulture), transition.Cases[alternative]);
+            }
+        }
         for (var index = 0; index < OutcomeBranches.Count; index++)
             yield return ("outcome", index.ToString(System.Globalization.CultureInfo.InvariantCulture), OutcomeBranches[index].Steps);
     }
@@ -1058,6 +1085,17 @@ public class WorkflowStep
                 Key = node.Key, Name = node.Name,
                 Edges = node.Edges.Select(_ => new List<WorkflowStep>()).ToList()
             }).ToList(),
+            GraphStates = GraphStates.Select(state => new StateMachineState
+            {
+                Key = state.Key, Name = state.Name, Final = state.Final,
+                // Keep the optional exit scope present until ChildScopes copies its contents.
+                ExitSteps = state.ExitSteps.Take(1).ToList(),
+                Transitions = state.Transitions.Select(transition => new StateMachineTransition
+                {
+                    Cases = transition.Cases.Select(_ => new List<WorkflowStep>()).ToList()
+                }).ToList()
+            }).ToList(),
+            TriggerKind = TriggerKind, AfterExpression = AfterExpression, After = After,
             Target = Target, EdgeLabel = EdgeLabel, IsDefault = IsDefault, Explicit = Explicit,
             OutcomeExpression = OutcomeExpression,
             CompiledCondition = CompiledCondition,
@@ -1107,7 +1145,10 @@ public class WorkflowStep
             StepMetadata = new Dictionary<string, object>(StepMetadata)
         };
         foreach (var (source, target) in ChildScopes().Zip(clone.ChildScopes()))
+        {
+            target.Steps.Clear();
             target.Steps.AddRange(source.Steps.Select(step => step.Clone()));
+        }
         return clone;
     }
 }
@@ -1191,7 +1232,13 @@ public enum WorkflowStepType
     /// <summary>The trailing selection pick of a flowchart node.</summary>
     Decision,
     /// <summary>A selected edge or an explicit timeout transition.</summary>
-    Edge
+    Edge,
+    /// <summary>A graph of keyed states armed with native waits.</summary>
+    StateMachine,
+    /// <summary>The repeated arbitration and arming pick of a state.</summary>
+    Arm,
+    /// <summary>The selected transition pick, after state exit.</summary>
+    Trigger
 }
 
 /// <summary>

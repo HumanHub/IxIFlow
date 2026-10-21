@@ -54,7 +54,7 @@ internal static class ExecutionSnapshotFactory
                     Name = graph?.Name ?? name,
                     LoopIteration = iteration,
                     ForEachItemIndex = frame.ForEachIndex,
-                    Kind = frame.Kind is FrameKind.Node or FrameKind.Edge
+                    Kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case
                         ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId,
                     StepId = frame.ScopeId,
                     ParentFrameId = parent?.ActivationId,
@@ -62,6 +62,7 @@ internal static class ExecutionSnapshotFactory
                     {
                         ["Phase"] = graph?.Phase ?? "",
                         ["Visit"] = graph?.Visit.ToString() ?? "",
+                        ["ArmOccurrence"] = frame.ArmOccurrence.ToString(),
                         ["Via"] = graph?.Via ?? "",
                         ["NextStepIndex"] = frame.NextStepIndex.ToString(),
                         ["LoopIteration"] = iteration.ToString(),

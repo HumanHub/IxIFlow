@@ -1,6 +1,6 @@
 namespace IxIFlow.Core.Runtime;
 
-internal static class GraphTransitions
+internal static partial class GraphTransitions
 {
     public static void Enter(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, ScopePosition owner, WorkflowStep graph)
@@ -14,7 +14,9 @@ internal static class GraphTransitions
     {
         var frame = new ScopePosition
         {
-            ScopeId = scopes.NodeScope(graph, owner.Graph!.Node), Kind = FrameKind.Node, Node = owner.Graph.Node,
+            ScopeId = graph.StepType == WorkflowStepType.Flowchart
+                ? scopes.NodeScope(graph, owner.Graph!.Node) : scopes.StateScope(graph, owner.Graph!.Node),
+            Kind = graph.StepType == WorkflowStepType.Flowchart ? FrameKind.Node : FrameKind.State, Node = owner.Graph.Node,
             EntryPrevious = continuation.Previous, RuntimeEntryPrevious = continuation.RuntimePrevious,
             RestorePreviousOnExit = true
         };
@@ -60,6 +62,13 @@ internal static class GraphTransitions
     public static void Edge(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, WorkflowStep edge)
     {
+        if (continuation.Stack[^1].Kind == FrameKind.Case)
+        {
+            TraceEntry(scopes, checkpoint, continuation, edge, TraceEntryType.ActionEntered);
+            continuation.Stack[^1].NextStepIndex++;
+            return;
+        }
+        checkpoint.Trace.Record(TraceEntryType.StepEntered, edge, continuation);
         var cause = edge.Explicit ? TransitionCause.Explicit : edge.IsDefault ? TransitionCause.Default :
             edge.CompiledCondition != null ? TransitionCause.When :
             continuation.Stack.Count >= 3 && scopes.Steps(continuation.Stack[^2].ScopeId)[^1].OutcomeSelector != null
@@ -69,18 +78,29 @@ internal static class GraphTransitions
     }
 
     private static void Choose(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
-        ContinuationState continuation, WorkflowStep via, string? target, TransitionCause cause)
+        ContinuationState continuation, WorkflowStep via, string? target, TransitionCause cause, WorkflowStep? trigger = null, SerializedValue? value = null)
     {
         var owner = continuation.Stack.Last(frame => frame.Graph != null);
         var graph = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
-        owner.Graph!.Pending = new GraphPending { Via = scopes.Id(via), Target = target, Cause = cause };
+        owner.Graph!.Pending = new GraphPending
+        {
+            Via = scopes.Id(via), Target = target, Cause = cause,
+            Trigger = trigger == null ? null : scopes.Id(trigger), Event = value
+        };
+        if (graph.StepType == WorkflowStepType.StateMachine)
+        {
+            var state = continuation.Stack[continuation.Stack.IndexOf(owner) + 1];
+            CloseState(checkpoint, continuation, state);
+            Restore(continuation, state);
+        }
         checkpoint.Trace.Graph(TraceEntryType.TransitionTaken, via, continuation, scopes.Id(graph),
-            owner.Graph.Node, owner.Graph.Visits, scopes.Id(via), target, cause);
+            owner.Graph.Node, owner.Graph.Visits, scopes.Id(via), target, cause,
+            triggerId: trigger == null ? null : scopes.Id(trigger));
     }
 
     public static void CheckExit(ContinuationState continuation, ScopePosition popped, int limit)
     {
-        if (popped.Kind != FrameKind.Node) return;
+        if (popped.Kind is not (FrameKind.Node or FrameKind.State)) return;
         var graph = continuation.Stack[^2].Graph!;
         if (graph.Pending?.Target != null && graph.PassEntries >= limit)
             throw new GraphTransitionLimitExceededException(limit);
@@ -94,12 +114,31 @@ internal static class GraphTransitions
             parent.NextStepIndex++;
             return true;
         }
-        if (popped.Kind != FrameKind.Node) return false;
+        if (popped.Kind == FrameKind.StateExit)
+        {
+            Transition(scopes, checkpoint, continuation, parent);
+            return true;
+        }
+        if (popped.Kind == FrameKind.Case)
+        {
+            parent.NextStepIndex++;
+            return true;
+        }
+        if (popped.Kind == FrameKind.Transition)
+        {
+            parent.NextStepIndex = scopes.Steps(parent.ScopeId).Count;
+            return true;
+        }
+        if (popped.Kind is not (FrameKind.Node or FrameKind.State)) return false;
         var state = parent.Graph!;
-        var pending = state.Pending!;
-        checkpoint.Trace.Graph(TraceEntryType.NodeExited, current, continuation, scopes.Id(current),
-            popped.Node!, state.Visits, pending.Via, pending.Target, pending.Cause, popped.ActivationId);
-        if (pending.Target != null)
+        var pending = state.Pending;
+        if (pending == null && !(popped.Kind == FrameKind.State && current.GraphStates.Single(s => s.Key == popped.Node).Final))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A non-final graph body left without choosing a transition");
+        var cause = pending?.Cause ?? TransitionCause.Final;
+        checkpoint.Trace.Graph(popped.Kind == FrameKind.Node ? TraceEntryType.NodeExited : TraceEntryType.StateExited,
+            current, continuation, scopes.Id(current), popped.Node!, state.Visits,
+            pending?.Via, pending?.Target, cause, popped.ActivationId);
+        if (pending?.Target != null)
         {
             state.Node = pending.Target;
             state.Visits++;
@@ -111,7 +150,7 @@ internal static class GraphTransitions
         else
         {
             checkpoint.Trace.Graph(TraceEntryType.GraphCompleted, current, continuation, scopes.Id(current),
-                popped.Node!, state.Visits, pending.Via, null, pending.Cause);
+                popped.Node!, state.Visits, pending?.Via, null, cause);
             parent.Graph = null;
             parent.NextStepIndex++;
         }

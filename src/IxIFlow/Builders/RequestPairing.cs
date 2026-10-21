@@ -4,9 +4,8 @@ using IxIFlow.Core;
 namespace IxIFlow.Builders;
 
 /// <summary>
-/// Pairs each request step with the one <c>WaitFor</c> that takes its answer: it has the
-/// request's name and answer type and follows the request in the same body, so both belong to the same
-/// loop iteration or branch occurrence. Anything else fails when the workflow is built.
+/// Pairs requests with their answer waits in the same body, or with a reply trigger of the
+/// state whose entry directly owns the request. Both keep the request's scope activation.
 /// </summary>
 internal static class RequestPairing
 {
@@ -35,6 +34,9 @@ internal static class RequestPairing
     {
         var bodies = new List<IReadOnlyList<WorkflowStep>>();
         Collect(root, bodies);
+        var stateEntries = ParallelRules.Flatten(root).SelectMany(step => step.GraphStates)
+            .ToDictionary(state => (IReadOnlyList<WorkflowStep>)state.Steps, state => state);
+        var pairedTriggers = new HashSet<WorkflowStep>();
         var requestNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var body in bodies)
         {
@@ -46,16 +48,26 @@ internal static class RequestPairing
                 if (body.Take(index).Any(earlier => earlier.RequestName == name))
                     throw WorkflowBuildError.Invalid(request, $"Two requests named '{name}' are in the same body");
                 requestNames.Add(name);
-                var waits = body.Skip(index + 1).Where(step => WaitKey(step) == name).ToArray();
+                var waits = body.Skip(index + 1).Where(step => WaitKey(step) == name)
+                    .Concat(stateEntries.TryGetValue(body, out var state)
+                        ? state.Transitions.Select(t => t.Steps[0]).Where(t =>
+                            t.TriggerKind == TriggerKind.Reply && t.ReplyToRequest == name)
+                        : []).ToArray();
                 if (waits.Length != 1)
                     throw WorkflowBuildError.Invalid(request, $"Request '{name}' needs exactly one WaitFor<{request.ReplyType?.Name}>(\"{name}\") " +
-                        "after it in the same body");
+                        "after it in the same body, or one reply trigger of its state");
                 if (waits[0].ResumeEventType != request.ReplyType)
                     throw WorkflowBuildError.Invalid(waits[0], $"WaitFor(\"{name}\") waits for {waits[0].ResumeEventType?.Name}, but request " +
                         $"'{name}' is answered with {request.ReplyType?.Name}");
                 waits[0].ReplyToRequest = name;
+                request.ReplyWait = waits[0];
+                pairedTriggers.Add(waits[0]);
             }
         }
+        foreach (var trigger in bodies.SelectMany(body => body).Where(step =>
+                     step.StepType == WorkflowStepType.Trigger && step.TriggerKind == TriggerKind.Reply))
+            if (!pairedTriggers.Contains(trigger))
+                throw WorkflowBuildError.Invalid(trigger, "A reply trigger needs exactly one request directly in its state's entry body");
         // A wait with a request's name anywhere else would take the answer to another occurrence.
         foreach (var step in bodies.SelectMany(body => body))
             if (WaitKey(step) is { } key && requestNames.Contains(key) && step.ReplyToRequest == null)

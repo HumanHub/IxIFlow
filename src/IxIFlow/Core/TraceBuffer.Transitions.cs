@@ -37,7 +37,8 @@ internal sealed partial class TraceBuffer
     public void Timeout(WorkflowStep step, ContinuationState continuation, string waitId, string? scopeId,
         bool replayed = false)
     {
-        var kind = step.StepType == WorkflowStepType.Delay ? TraceEntryType.DelayFired : TraceEntryType.WaitTimedOut;
+        var kind = step.StepType == WorkflowStepType.Trigger ? TraceEntryType.TimerFired :
+            step.StepType == WorkflowStepType.Delay ? TraceEntryType.DelayFired : TraceEntryType.WaitTimedOut;
         var now = _time.GetUtcNow().UtcDateTime;
         if (Accepts(kind, now))
             Add(new ExecutionTraceEntry { Timestamp = now, EntryType = kind,
@@ -76,14 +77,14 @@ internal sealed partial class TraceBuffer
 
     public void Graph(TraceEntryType kind, WorkflowStep step, ContinuationState continuation,
         string graphId, string node, long visit, string? via = null, string? target = null,
-        TransitionCause? cause = null, string? activationId = null, ItemEndCause? exitCause = null)
+        TransitionCause? cause = null, string? activationId = null, ItemEndCause? exitCause = null, string? triggerId = null, int? count = null)
     {
         var now = _time.GetUtcNow().UtcDateTime;
         if (Accepts(kind, now))
             Add(new ExecutionTraceEntry
             {
                 Timestamp = now, EntryType = kind, FrameActivationId = activationId,
-                Payload = new GraphTrace(_scopes!.Id(step), continuation.Id, graphId, node, visit, via, target, cause, exitCause)
+                Payload = new GraphTrace(_scopes!.Id(step), continuation.Id, graphId, node, visit, via, target, cause, exitCause) { Trigger = triggerId, Count = count }
             });
     }
 
@@ -93,11 +94,12 @@ internal sealed partial class TraceBuffer
         {
             var frame = continuation.Stack[index];
             ItemEnded(continuation, frame, cause);
-            if (frame.Kind == FrameKind.Node && index > 0)
+            if (frame.Kind is FrameKind.Node or FrameKind.State && index > 0)
             {
                 var owner = continuation.Stack[index - 1];
                 var graph = _scopes!.Steps(owner.ScopeId)[owner.NextStepIndex];
-                Graph(TraceEntryType.NodeExited, graph, continuation, _scopes.Id(graph), frame.Node!,
+                if (frame.Kind == FrameKind.State) GraphTransitions.CloseState(_checkpoint!, continuation, frame);
+                Graph(frame.Kind == FrameKind.Node ? TraceEntryType.NodeExited : TraceEntryType.StateExited, graph, continuation, _scopes.Id(graph), frame.Node!,
                     owner.Graph!.Visits, owner.Graph.Via, activationId: frame.ActivationId, exitCause: cause);
             }
         }

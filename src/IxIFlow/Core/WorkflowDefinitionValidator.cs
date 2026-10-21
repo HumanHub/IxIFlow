@@ -22,7 +22,7 @@ public static class WorkflowDefinitionValidator
     }
 
     /// <summary>The persisted execution contract version; other versions require a separate migration.</summary>
-    public const int CheckpointContractVersion = 5;
+    public const int CheckpointContractVersion = 6;
 
     public static IReadOnlyList<WorkflowVersionReference> GetDependencies(WorkflowDefinition definition)
     {
@@ -124,7 +124,8 @@ public static class WorkflowDefinitionValidator
                     WorkflowStepType.Conditional or WorkflowStepType.Parallel or WorkflowStepType.Loop or
                     WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
                     WorkflowStepType.ForEach or WorkflowStepType.ForEachResult or WorkflowStepType.Flowchart or
-                    WorkflowStepType.Enter or WorkflowStepType.Decision or WorkflowStepType.Edge => true,
+                    WorkflowStepType.Enter or WorkflowStepType.Decision or WorkflowStepType.Edge or
+                    WorkflowStepType.StateMachine or WorkflowStepType.Arm or WorkflowStepType.Trigger => true,
                 WorkflowStepType.SuspendResume => step.StepMetadata.ContainsKey("WaitKey"),
                 WorkflowStepType.Delay => step.DelayDuration > TimeSpan.Zero,
                 _ => false

@@ -46,6 +46,8 @@ internal sealed class WorkflowScopeCatalog
     public string NodeScope(WorkflowStep graph, string key) => ScopeId(graph, "node", key);
     public string EdgeScope(WorkflowStep graph, string key, int index) =>
         ScopeId(graph, "node", key + "/to/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    public string StateScope(WorkflowStep graph, string key) => ScopeId(graph, "state", key);
+    public string StateExitScope(WorkflowStep graph, string key) => ScopeId(graph, "state", key + "/exit");
     public string SequenceScope(WorkflowStep step) => ScopeId(step, "sequence");
     public string ThenScope(WorkflowStep step) => ScopeId(step, "then");
     public string ElseScope(WorkflowStep step) => ScopeId(step, "else");
@@ -141,7 +143,7 @@ internal sealed class WorkflowScopeCatalog
         // adding an empty branch changes the topology even when it adds no steps.
         var manifest = new
         {
-            Format = 2,
+            Format = 3,
             Data = WorkflowTypeIdentity.StableName(definition.WorkflowDataType),
             Combiners = ParallelRules.CombinerSignature(definition.WorkflowDataType),
             Scopes = _scopes.OrderBy(pair => pair.Key, StringComparer.Ordinal)
@@ -163,13 +165,15 @@ internal sealed class WorkflowScopeCatalog
                     WaitKey = step.StepMetadata.GetValueOrDefault("WaitKey") as string,
                     Timeout = step.WaitTimeout?.Ticks, Delay = step.DelayDuration?.Ticks,
                     step.ParallelJoinMode, step.LoopType,
-                    step.Target, step.IsDefault, step.Explicit,
+                    step.Target, step.IsDefault, step.Explicit, step.TriggerKind,
+                    After = Shape(step.AfterExpression),
                     EdgeLabel = OutcomeBranchSignature(new WorkflowOutcomeBranch { Value = step.EdgeLabel }),
-                    Graph = step.StepType == WorkflowStepType.Flowchart ? new
+                    Graph = step.StepType is WorkflowStepType.Flowchart or WorkflowStepType.StateMachine ? new
                     {
                         Kind = step.StepType, Start = step.GraphStart,
-                        Nodes = step.GraphNodes.OrderBy(node => node.Key, StringComparer.Ordinal)
-                            .Select(node => new { node.Key, Final = false })
+                        Nodes = step.GraphNodes.Select(node => new { node.Key, Final = false })
+                            .Concat(step.GraphStates.Select(state => new { state.Key, state.Final }))
+                            .OrderBy(node => node.Key, StringComparer.Ordinal)
                     } : null,
                     Exception = WorkflowTypeIdentity.StableName(step.ExceptionType),
                     Fault = WorkflowTypeIdentity.StableName(step.FaultType),

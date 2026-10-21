@@ -94,4 +94,8 @@ public sealed record BreakpointHitTrace(string BranchId, string StepId, string B
 /// <summary>Value-free graph entry, selection and completion facts; selections are not replay stops.</summary>
 public sealed record GraphTrace(string StepId, string ContinuationId, string GraphId, string Node,
     long Visit, string? Via = null, string? Target = null, TransitionCause? Cause = null,
-    ItemEndCause? ExitCause = null) : TracePayload;
+    ItemEndCause? ExitCause = null) : TracePayload
+{
+    public string? Trigger { get; init; }
+    public int? Count { get; init; }
+}

@@ -258,8 +258,8 @@ internal sealed class ActivityAttempts(
         if (checkpoint.BoundReplies.FirstOrDefault(reply => reply.InvocationId == pending.Id) is { } answered)
             return new ReplyAddress(ReplyToken.Create(instance.InstanceId, answered.WaitId, answered.Subject));
         var position = continuation.Stack[^1];
-        var waitFor = scopes.Steps(position.ScopeId).Skip(position.NextStepIndex + 1)
-            .First(candidate => candidate.ReplyToRequest == step.RequestName);
+        var waitFor = step.ReplyWait
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "The request has no paired wait");
         var subject = step.RequestSubject is { } describe
             ? ReplyToken.Digest(describe(WorkflowValueBinding.EvaluationContext(step, checkpoint.DataOf(continuation),
                 continuation.GetPrevious(services),
@@ -333,7 +333,7 @@ internal sealed class ActivityAttempts(
         }
         if (continuation.AcceptedWait is { } accepted && accepted.StepId == scopes.Id(step) && pending != null)
         {
-            var completed = accepted.Event.Read(services) as ChildCompleted
+            var completed = accepted.Event?.Read(services) as ChildCompleted
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Child invocation step '{step.Name}' took an event that is not its child's completion");
             using var childLease = pending.ChildBundleDigest == null ? null

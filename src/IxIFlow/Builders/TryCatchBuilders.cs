@@ -253,6 +253,17 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         return this;
     }
 
+    /// <summary>Runs a native state machine, retaining the incoming previous value.</summary>
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> StateMachine(
+        Action<StateMachineBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
+            .StateMachine(configure, sourcePath: sourcePath, sourceLine: sourceLine);
+        CaptureFaults(steps[^1]);
+        return this;
+    }
+
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> If(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> condition,
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> then,

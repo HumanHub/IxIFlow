@@ -26,6 +26,10 @@ public interface IWorkflowBuilder<TWorkflowData>
     IWorkflowBuilder<TWorkflowData, object> Flowchart(Action<FlowchartBuilder<TWorkflowData, object>> configure,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
+    /// <summary>Runs a native state machine, retaining the incoming previous value.</summary>
+    IWorkflowBuilder<TWorkflowData, object> StateMachine(Action<StateMachineBuilder<TWorkflowData, object>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     /// <summary>Wait for a duration without requiring a resume event.</summary>
     IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
@@ -91,6 +95,11 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <summary>Runs a flowchart and retains its incoming previous value.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Flowchart(
         Action<FlowchartBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
+    /// <summary>Runs a native state machine, retaining the incoming previous value.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> StateMachine(
+        Action<StateMachineBuilder<TWorkflowData, TPreviousStepData>> configure,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Ends a timeout path leaving a node with an explicit destination; null ends the chart.</summary>

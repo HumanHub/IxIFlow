@@ -12,7 +12,7 @@ internal static class SteppingPolicy
         checkpoint.BranchesOf(join).All(c => Allows(checkpoint, c.Id));
 
     public static DebugStepPosition Position(ScopePosition frame) => new(frame.ActivationId,
-        frame.NextStepIndex, frame.LoopIterationCount, frame.ForEach?.Next ?? 0, frame.ForEach?.Joined ?? false);
+        frame.NextStepIndex, frame.LoopIterationCount, frame.ForEach?.Next ?? 0, frame.ForEach?.Joined ?? false, frame.ArmOccurrence);
 
     public static DebugStepping Start(ExecutionCheckpoint checkpoint, DebugCommand command)
     {
@@ -20,9 +20,9 @@ internal static class SteppingPolicy
         if (branch == null || branch.Stack.Count == 0 ||
             branch.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "The selected continuation is not live");
-        // Out leaves the enclosing node activation, including any nested body or timeout frame.
+        // Out leaves the enclosing node or state activation, including nested body and timeout frames.
         var origin = command.StepKind == DebugStepKind.Out
-            ? branch.Stack.LastOrDefault(frame => frame.Kind == FrameKind.Node) ?? branch.Stack[^1]
+            ? branch.Stack.LastOrDefault(frame => frame.Kind is FrameKind.Node or FrameKind.State) ?? branch.Stack[^1]
             : branch.Stack[^1];
         return new(branch.Id, command.StepKind!.Value, Position(origin),
             branch.Stack.Select(f => f.ActivationId).ToArray(), [branch.Id], command.Id, command.Actor)
@@ -68,7 +68,7 @@ internal static class SteppingPolicy
         {
             DebugStepKind.Into => !sameOccurrence,
             DebugStepKind.Over => selected && (position.ActivationId != step.Origin.ActivationId ||
-                position.NextStepIndex != step.Origin.StepIndex) && step.OriginScopes.Contains(position.ActivationId),
+                position.NextStepIndex != step.Origin.StepIndex || position.ArmOccurrence != step.Origin.ArmOccurrence) && step.OriginScopes.Contains(position.ActivationId),
             DebugStepKind.Out => selected && branch.Stack.All(f => f.ActivationId != step.Origin.ActivationId),
             _ => false
         };
@@ -80,6 +80,6 @@ internal static class SteppingPolicy
     {
         var position = branch.Stack.LastOrDefault();
         checkpoint.Debug = checkpoint.Debug with { Stop = new(branch.Id, stepId, "",
-            position?.ActivationId ?? "", position?.LoopIterationCount ?? 0, 0, now) { Reason = reason } };
+            position?.ActivationId ?? "", position?.LoopIterationCount ?? 0, 0, now) { Reason = reason, ArmOccurrence = position?.ArmOccurrence ?? 0 } };
     }
 }

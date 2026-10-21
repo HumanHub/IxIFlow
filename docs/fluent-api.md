@@ -57,7 +57,7 @@ The activity context also exposes live `WorkflowData` and `PreviousStepData` obj
 
 ## Control-flow reference
 
-The continuation builder exposes these families. The root builder exposes initial activities, requests, delays and flowcharts; samples that begin with another construct use `new WorkflowBuilder<TData, object>([], name)`.
+The continuation builder exposes these families. The root builder exposes initial activities, requests, delays, flowcharts and state machines; samples that begin with another construct use `new WorkflowBuilder<TData, object>([], name)`.
 
 | Method | Behavior and compiled example |
 | --- | --- |
@@ -84,6 +84,44 @@ General parallel joins wait for all branches by default. `WaitAny()` selects the
 
 End result-producing paths with `Result`; `Into` writes a `List<ItemResult<T>>` in input order. Setup can select `Parallel(maxConcurrency: ...)`, `WaitAny`, `WaitConditionally<T>` and combiner overrides. [Batch.cs](../samples/IxIFlow.Samples/Batch.cs) demonstrates all modes, including expression-preserving overloads. Use named arguments such as `itemsExpression`, `valueExpression` and `completeWhenExpression` when matching a YAML twin's structure hash; expression overloads retain tree shape and member references, while delegate bodies are ignored.
 
+## Native state machines
+
+`StateMachine` is available wherever `Flowchart` is offered: root and continuation builders, sequences, branches, loops, items, catches, timeout paths, graph entry/exit and action bodies. Saga bodies retain their existing activity/request shape.
+
+<!-- snippet: samples/IxIFlow.Samples/StateMachines.cs#approval-state-machine -->
+```csharp
+public static WorkflowDefinition Definition() =>
+    Workflow.Create<Approval>("ApproveOrder")
+        .StateMachine(m => m.Start("pending")
+            .State("pending", s => s
+                .Entry(e => e.Request<SendApprovalMail>("decision"))
+                .Exit(e => e.Step<LogExit>())
+                .OnReply<Decision>("decision", t => t
+                    .Output(d => d.Approved).To(ctx => ctx.WorkflowData.Approved)
+                    .When(ctx => ctx.PreviousStep.Approved, to: "approved",
+                        a => a.Step<RecordDecision>())
+                    .Otherwise(to: "rejected"))
+                .After(TimeSpan.FromDays(3), to: "escalated")
+                .On<CancelRequested>("cancel", to: "cancelled"))
+            .State("approved", s => s.Final().Entry(e => e.Step<Notify>()))
+            .State("rejected", s => s.Final())
+            .State("escalated", s => s.Final())
+            .State("cancelled", s => s.Final()))
+        .Build();
+```
+
+[StateMachines.cs](../samples/IxIFlow.Samples/StateMachines.cs) supplies the compiled activities; [StateMachineExamples.cs](../tests/IxIFlow.Samples.Tests/StateMachineExamples.cs) executes the reply, exit, action and final entry.
+
+Use `Start(key)` and `State(key, configure)`. Keys are required, ordinal-unique, non-empty, cannot contain `/`, and cannot be `end`. A null destination or `"end"` completes the machine. `Final()` permits entry only. `Named(name)` names a state without changing its structural identity. A machine may have no final state.
+
+`On<TEvent>(key, to:)`, `OnReply<TReply>(requestName, to:)` and `After(duration, to:)` are single-alternative shorthands. Their configuration overloads expose ordered `When(whenExpression, to, action?)` and last `Otherwise(to, action?)` alternatives. `On` and `OnReply` also expose `Matches(matchesExpression)`, `Input(...).From(...)`, `Output(...).To(...)` and `DefaultPayload(...)`. Input suggestions read the machine's incoming value; output mappings are applied once when the event is dispatched, before its guards. `Matches` is an intake filter, and a false guard consumes the event and reschedules the state. A reply trigger must have a final unguarded alternative and pair with a request directly in entry; the request cannot also pair with `WaitFor`.
+
+`When(whenExpression, to, action?)` on a state adds a guarded immediate trigger; `Otherwise(to, action?)` adds an unconditional immediate trigger and must be last. Already-bound replies and immediates compete in declaration order. A state containing only guarded immediate triggers is refused at build. `After(afterExpression, to:)` and its configuration overload accept a pure expression returning a positive `TimeSpan`. There is no trigger timeout branch: add another `After` transition. Failed guards re-arm timers with full durations.
+
+Entry, exit and action bodies use ordinary fluent steps. Entry's last result is not available to `Arm` or exit; map required results to workflow data. Exit, immediate/timer guards and their actions use the incoming previous type. Event/reply guards and actions use the event type. A timeout directly leaving non-final entry must end with `Transition(key)`; its saved choice runs exit and bypasses trigger actions. Cancellation uses normal `Finally`/compensation and does not execute exit.
+
+Activity triggers, YAML state machines and `GraphTable` are planned separately. See the [execution model](execution-model.md#state-machines) for arbitration, recovery and the remaining WWF capability boundaries.
+
 ## Faults and recovery
 
 A typed `Catch<TException,TFault>` or saga handler saves a projection of the exception. Public fault properties must match readable exception properties by name and type. Handler mappings use `ctx.Fault`. The live exception is not the durable contract. `Catch` covers its preceding `Try` body, and `Finally` runs during normal completion and unwinding. Saved handler waits continue from their saved position.
@@ -96,7 +134,7 @@ Saga step retries and saga retries are different scopes. See [sagas](sagas.md), 
 
 The checkpoint stores a SHA-256 `StructureHash` of the executable structure. Step kinds and order, scope topology, activity/data/previous types, mapping contracts, wait keys and event/reply types, durations, join modes and combiner types (including attributes on data types), loop/result contracts, exception/fault types, handler policies and child identities with versions change it. Expression trees contribute node shape, literal nodes and referenced members, with parameter names and closure receivers normalized. Delegate bodies, helper implementations, captured values, descriptions, display names, tags and step names do not contribute. Changing behavior still requires a new workflow version.
 
-Registration refuses the same `(name, version)` with a different structure hash. Equal structure with different descriptions is accepted; the first registered definition supplies metadata. Start, resume, recovery and child resolution refuse incompatible saved state and report the workflow, version and both hashes. Checkpoint schema 4 refuses older saved instances without migration. Reset development state and coordinate host restarts for this one-time break.
+Registration refuses the same `(name, version)` with a different structure hash. Equal structure with different descriptions is accepted; the first registered definition supplies metadata. Start, resume, recovery and child resolution refuse incompatible saved state and report the workflow, version and both hashes. Checkpoint schema 6 refuses older saved instances without migration. Reset development state and coordinate host restarts for this one-time break.
 
 Conditions, mappings, result selectors, wait predicates and combiners can run again after recovery. Keep them pure. Use `ctx.UtcNow` for workflow time, not a system-clock call or external I/O.
 

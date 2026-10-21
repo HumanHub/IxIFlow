@@ -71,6 +71,11 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
         Action<FlowchartBuilder<TWorkflowData, TPreviousStepData>> configure,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
+    /// <summary>Runs a native state machine, retaining the incoming previous value.</summary>
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> StateMachine(
+        Action<StateMachineBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> If(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> condition,
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> then,

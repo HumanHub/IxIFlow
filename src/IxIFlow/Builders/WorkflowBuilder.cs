@@ -54,6 +54,12 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
         new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands)
             .Flowchart(configure, sourcePath, sourceLine);
 
+    /// <summary>Runs a native state machine, retaining the incoming previous value.</summary>
+    public IWorkflowBuilder<TWorkflowData, object> StateMachine(Action<StateMachineBuilder<TWorkflowData, object>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands)
+            .StateMachine(configure, sourcePath, sourceLine);
+
     public IWorkflowBuilder<TWorkflowData> Delay(TimeSpan duration, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(duration, TimeSpan.Zero);
@@ -215,6 +221,23 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             SourceLocation = sourcePath + ":" + sourceLine, Order = _steps.Count
         };
         configure(new(step, body => new SequenceBuilder<TWorkflowData, TPreviousStepData>(body)));
+        _steps.Add(step);
+        return this;
+    }
+
+    /// <summary>Runs a native state machine, retaining the incoming previous value.</summary>
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> StateMachine(
+        Action<StateMachineBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        var step = new WorkflowStep
+        {
+            Name = "StateMachine", StepType = WorkflowStepType.StateMachine,
+            WorkflowDataType = typeof(TWorkflowData), PreviousStepDataType = typeof(TPreviousStepData),
+            Runtime = WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
+            SourceLocation = sourcePath + ":" + sourceLine, Order = _steps.Count
+        };
+        configure(new(step, new StateBodies<TWorkflowData, TPreviousStepData>()));
         _steps.Add(step);
         return this;
     }

@@ -193,3 +193,16 @@ Each edit atomically records a `DataEdited` trace entry with the caller-supplied
 ## Inspection and replay
 
 See [Inspection and replay](inspection-and-replay.md) for saved checkpoint projections, sequence-paged trace reads, forward and backward navigation, cursor breakpoints and access requirements.
+
+
+## Native state-machine picks
+
+Each state has real catalog steps: `state/{key}/0` is entry `Enter`; non-final entry ends at `Arm`. Optional exit is `state/{key}/exit`, transition `i` is `state/{key}/on/{i}/0`, and alternative `j` starts at `state/{key}/on/{i}/case/{j}/0`. These paths sit under the machine's catalog ID. Generated author IDs under a machine named with `WithId("approval")` include `approval/pending/enter`, `approval/pending/arm`, `approval/pending/exit/enter`, `approval/pending/on/0` and `approval/pending/on/0/case/0`. A transition's `Trigger` breakpoint stops after exit; the case `Edge` breakpoint stops before its action.
+
+Every exposed `Arm` pick has the machine's hydrated incoming previous value, even after an entry activity of a different type, event acceptance, timer fire, recovery or false guards. Conditional breakpoints compile against that incoming type. The accepted event is available at the later `Trigger` and case picks; timer and immediate picks retain the incoming type. Exit always reads the incoming value.
+
+A state activation persists while armed. Its durable `ArmOccurrence` starts at 1, advances at native fire or bound-reply acceptance, and advances again if guards fail and the state returns to arbitration. Preparation, condition-evaluation commits and recovery preserve the generation. Stops, pending evaluations, command-created skip-once records, stepping origins and inspection/replay positions all carry it. Continuing skips only the stopped generation; a later arrival at the same activation and index is counted and can stop again. Recovery of an acknowledged conditional evaluation retains its original hit count and time.
+
+Into and Over at native `Arm` report `Blocked` while waiting. When a trigger fires, stepping stops at the new guard-ready `Arm` before guard evaluation. The next step reaches exit `Enter`, the chosen `Trigger`, or the next re-arm occurrence. Over originating on the machine step runs the whole machine; Over originating inside it follows the real graph picks. Out from entry leaves the state activation, including its exit and action, and stops at the next state's entry or the step after the machine.
+
+Inspection names the state and visit and shows `State`, `StateExit`, `Transition` and `Case` frame kinds with derived phases. An armed thread points at `Arm`; open waits point at their trigger steps. Replay stops use `StateEntered`, `ExitEntered`, `ActionEntered` and ordinary `StepEntered` records for `Arm` and `Trigger`. `TransitionTaken` records selection only, before exit, and never creates an early edge stop. `StateArmed`, `StateExited`, `TimerFired` and `GraphCompleted` likewise provide history without executable stops. Trace position snapshots retain each repeated `Arm` generation.

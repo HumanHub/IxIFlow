@@ -2,12 +2,12 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public sealed partial class ChildScopeBaselineTests
 {
-    // Captured against main 6228b366b2eee7a657a77c0e7c6afdf3709dbc43 before changing production code.
+    // Recaptured by running the fixture after checkpoint contract 6 / structure hash format 3.
     private const string MainBaseline = """
         [
           {
             "Name": "Empty",
-            "Hash": "C37F1ABD33AFF833F45DD256D8165F583BA3EF849A17A4A72357EADB41231C97",
+            "Hash": "818C7F632F256A9D655F98C312DC31D539F3A464771A8BBB3F282CC6892711C2",
             "ScopeIds": [
               "root"
             ],
@@ -15,7 +15,7 @@ public sealed partial class ChildScopeBaselineTests
           },
           {
             "Name": "Every step",
-            "Hash": "FBF4A68557A22B79EC599AF90D0C3B9FDEF15D4CCEF447C0237947BD82FFAB2F",
+            "Hash": "92751B43A16D8C57A8BACB2EE23D9E01B1FDF21F368427D59221162BF245096E",
             "ScopeIds": [
               "root",
               "root/0/sequence",
@@ -153,7 +153,31 @@ public sealed partial class ChildScopeBaselineTests
               "root/16/foreach",
               "root/16/finally",
               "root/16/timeout",
-              "root/16/catch"
+              "root/16/catch",
+              "root/17/sequence",
+              "root/17/then",
+              "root/17/else",
+              "root/17/loop",
+              "root/17/foreach",
+              "root/17/finally",
+              "root/17/timeout",
+              "root/17/catch",
+              "root/18/sequence",
+              "root/18/then",
+              "root/18/else",
+              "root/18/loop",
+              "root/18/foreach",
+              "root/18/finally",
+              "root/18/timeout",
+              "root/18/catch",
+              "root/19/sequence",
+              "root/19/then",
+              "root/19/else",
+              "root/19/loop",
+              "root/19/foreach",
+              "root/19/finally",
+              "root/19/timeout",
+              "root/19/catch"
             ],
             "StepIds": [
               "root/0",
@@ -172,12 +196,15 @@ public sealed partial class ChildScopeBaselineTests
               "root/13",
               "root/14",
               "root/15",
-              "root/16"
+              "root/16",
+              "root/17",
+              "root/18",
+              "root/19"
             ]
           },
           {
             "Name": "Nested bodies",
-            "Hash": "5BF26DAE1EE0075977B974ED09956966726AC86FE50971AE14F88D451CD284E0",
+            "Hash": "36AE3A3FDFD468E4E4C8A117AEDBCE38CC58CF611E1E325D189E2BCB2858F85A",
             "ScopeIds": [
               "root",
               "root/0/sequence",

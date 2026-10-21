@@ -27,5 +27,15 @@ public enum TransitionCause
     /// <summary>No edge matched, so the graph ended.</summary>
     NoTransition,
     /// <summary>A timeout path explicitly selected its destination.</summary>
-    Explicit
+    Explicit,
+    /// <summary>An event trigger fired.</summary>
+    Event,
+    /// <summary>A request's answer fired.</summary>
+    Reply,
+    /// <summary>A duration elapsed.</summary>
+    Timer,
+    /// <summary>An immediate guard matched.</summary>
+    Immediate,
+    /// <summary>A final state's entry completed.</summary>
+    Final
 }

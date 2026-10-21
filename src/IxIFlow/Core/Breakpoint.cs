@@ -77,14 +77,18 @@ public static class BreakpointResolver
         left.Replace('\\', '/'), right.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase);
 }
 
-/// <summary>A stopped occurrence; activation and iteration distinguish repeated visits to a step.</summary>
+/// <summary>A stopped occurrence; activation, iteration and Arm generation distinguish repeated visits.</summary>
 public sealed record BreakpointStop(string BranchId, string StepId, string BreakpointId,
     string ActivationId, int Iteration, long HitCount, DateTime HitAtUtc)
 {
+    public long ArmOccurrence { get; init; }
     public string? Reason { get; init; }
     public IReadOnlyList<BreakpointConditionDiagnostic> Diagnostics { get; init; } = [];
 }
 
 /// <summary>A counted occurrence awaiting condition evaluation, committed before evaluation starts.</summary>
 public sealed record BreakpointEvaluation(string BranchId, string StepId, string ActivationId,
-    int Iteration, DateTime HitAtUtc);
+    int Iteration, DateTime HitAtUtc)
+{
+    public long ArmOccurrence { get; init; }
+}
