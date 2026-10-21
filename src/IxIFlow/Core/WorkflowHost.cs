@@ -16,7 +16,15 @@ namespace IxIFlow.Core;
 /// it accepts nothing new, cancels queued work, lets running instances reach their next commit,
 /// and cancels them after the drain timeout.
 /// </summary>
-public sealed partial class WorkflowHost : IHostedService, IDisposable
+/// <remarks>
+/// Await <see cref="StopAsync"/> (called by the generic host) or asynchronous disposal before
+/// disposing the stores used by runs, including the repository, catalog, artifact and payload
+/// stores. Container disposal alone does not ensure this order. Both shutdown paths wait for
+/// admitted runs and then their lingering scopes, with a ten-second release bound after
+/// cancellation and a warning if it expires; resources can remain in use after that timeout.
+/// Synchronous <see cref="Dispose"/> only requests cancellation and does not wait for release.
+/// </remarks>
+public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDisposable
 {
     private static readonly AsyncLocal<RunContext?> CurrentRun = new();
 
@@ -31,7 +39,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     private readonly HashSet<WorkItem> _admitted = [];
     // Runs that ended while inline calls were still using their scope; each holds its slot until
     // the last of those calls ends.
-    private readonly HashSet<Task> _lingering = [];
+    private readonly Dictionary<WorkItem, Task> _lingering = [];
     // Callers waiting for work on an instance to finish, by instance.
     private readonly Dictionary<string, SettledSignal> _settled = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _awaiters = new(StringComparer.Ordinal);
@@ -68,6 +76,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     }
     private readonly CancellationTokenSource _draining = new();
     private readonly CancellationTokenSource _stopped = new();
+    private readonly Lazy<Task> _disposal;
     private bool _accepting = true;
     // Instances this host saved with a later runnable time, earliest first, and one timer for the
     // earliest (C-12). Work saved by other hosts, and anything lost here, is found by the poll.
@@ -83,6 +92,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     // Resumes that found the instance owned or failed, by instance, for their backoff.
     private readonly Dictionary<string, int> _resumeRetries = new(StringComparer.Ordinal);
     private const int MaxResumeRetries = 6;
+    private static readonly TimeSpan ReleaseTimeout = TimeSpan.FromSeconds(10);
     private ITimer? _timer;
     private DateTime? _armedFor;
 
@@ -97,6 +107,9 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         _logger = logger ?? NullLogger<WorkflowHost>.Instance;
         _sensitiveDiagnostics = sensitiveDiagnostics;
         _inspectionPolicy = inspectionPolicy ?? InspectionRedactionPolicy.Default;
+        // DI captures this instance as both WorkflowHost and IHostedService. Share the entire
+        // operation, including its release bound and warning, across concurrent/repeated disposal.
+        _disposal = new Lazy<Task>(DisposeAsyncCore);
         // The timer must not carry the context of whoever first scheduled something: its callbacks
         // would then look like calls from inside that run.
         using (ExecutionContextFlow.SuppressIfNeeded())
@@ -410,7 +423,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
                     // scope and the slot until the last of them ends; a stopping host waits for them.
                     var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                     lock (_lock)
-                        _lingering.Add(released.Task);
+                        _lingering.Add(item, released.Task);
                     slotTaken = false;
                     await context.CloseAsync(async () =>
                     {
@@ -424,7 +437,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
                             _slots.Release();
                             FreeSlotsChanged?.Invoke(executionCapacityAvailable);
                             lock (_lock)
-                                _lingering.Remove(released.Task);
+                                _lingering.Remove(item);
                             released.TrySetResult();
                         }
                     });
@@ -500,11 +513,11 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
     /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        var running = StopAccepting();
+        var cleanup = WaitForCleanupAsync(StopAccepting());
         _draining.Cancel();
         try
         {
-            await Task.WhenAll(running).WaitAsync(_settings.DrainTimeout, cancellationToken);
+            await cleanup.WaitAsync(_settings.DrainTimeout, cancellationToken).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
@@ -513,15 +526,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         {
         }
         _stopped.Cancel();
-        try
-        {
-            await Task.WhenAll(running).WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
-        }
-        catch (TimeoutException)
-        {
-            // The executor stops waiting for activities that ignore cancellation and releases the
-            // lease; their instances continue on recovery.
-        }
+        await WaitForReleaseAsync(cleanup).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -535,6 +540,45 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
         _stopped.Cancel();
     }
 
+    ValueTask IAsyncDisposable.DisposeAsync() => new(_disposal.Value);
+
+    private async Task DisposeAsyncCore()
+    {
+        var cleanup = WaitForCleanupAsync(StopAccepting());
+        _draining.Cancel();
+        _stopped.Cancel();
+        // Cancellation only requests shutdown. Wait for scopes and store connections to release,
+        // bounded as in StopAsync so work that ignores cancellation cannot hold disposal forever.
+        await WaitForReleaseAsync(cleanup).ConfigureAwait(false);
+    }
+
+    private async Task WaitForCleanupAsync(Task[] admitted)
+    {
+        await Task.WhenAll(admitted).ConfigureAwait(false);
+        // A run can become lingering after StopAccepting's snapshot. All admitted runs have now
+        // closed their contexts, so no more scopes can enter _lingering after this snapshot.
+        Task[] lingering;
+        lock (_lock)
+            lingering = _lingering.Values.ToArray();
+        await Task.WhenAll(lingering).ConfigureAwait(false);
+    }
+
+    private async Task WaitForReleaseAsync(Task cleanup)
+    {
+        try
+        {
+            await cleanup.WaitAsync(ReleaseTimeout, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            int remaining;
+            lock (_lock)
+                remaining = _admitted.Union(_lingering.Keys).Count();
+            _logger.LogWarning("Workflow host {HostName} has {RunCount} runs still releasing scopes after {Timeout}",
+                _settings.Name, remaining, ReleaseTimeout);
+        }
+    }
+
     private Task[] StopAccepting()
     {
         var cancelled = new List<WorkItem>();
@@ -545,7 +589,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable
             foreach (var queue in _instances.Values)
                 while (queue.Count > 0)
                     cancelled.Add(queue.Dequeue());
-            running = _admitted.Select(item => item.Done.Task).Concat(_lingering).ToArray();
+            running = _admitted.Select(item => item.Done.Task).ToArray();
             // Due instances stay runnable in the store for the next host.
             _due.Clear();
             _dueOf.Clear();
