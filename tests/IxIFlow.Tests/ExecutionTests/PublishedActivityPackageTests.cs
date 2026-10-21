@@ -157,7 +157,7 @@ public sealed class PublishedActivityPackageTests
 
     [Theory]
     [InlineData("target: Text", "target: Unmarked")]
-    [InlineData("source: Result\n", "source: Text\n")]
+    [InlineData("source: Result", "source: Text")]
     [InlineData("target: Text", "target: Missing")]
     public async Task PackageMetadataValidatesMarkersAndMembers(string from, string to)
     {
