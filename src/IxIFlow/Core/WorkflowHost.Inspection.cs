@@ -26,6 +26,14 @@ public sealed partial class WorkflowHost
             return InspectionPrivacy.Clean(definition.StepTable.ToArray(), await DurableWaitIdsAsync(instanceId, cancellationToken));
         }
 
+        public async Task<IReadOnlyList<GraphTableEntry>> GetGraphTableAsync(string instanceId, CancellationToken cancellationToken)
+        {
+            using var definitionLease = await DebugDefinitionAsync(instanceId, cancellationToken);
+            using var types = definitionLease.EnterTypes();
+            return InspectionPrivacy.Clean(definitionLease.Definition.GraphTable.ToArray(),
+                await DurableWaitIdsAsync(instanceId, cancellationToken));
+        }
+
         public async Task<string?> GetSourceAsync(string instanceId, string path, CancellationToken cancellationToken)
         {
             using var definitionLease = await DebugDefinitionAsync(instanceId, cancellationToken);

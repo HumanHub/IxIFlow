@@ -18,12 +18,14 @@ internal sealed class WorkflowScopeCatalog
         AddScope("root", definition.Steps);
         StructureHash = ComputeStructureHash(definition);
         StepTable = new(this);
+        GraphTable = new(this);
     }
 
     internal IEnumerable<KeyValuePair<string, WorkflowStep>> AllSteps => _steps;
 
     public string StructureHash { get; }
     public StepTable StepTable { get; }
+    public GraphTable GraphTable { get; }
 
     public IReadOnlyCollection<PropertyInfo> FaultProperties(Type exceptionType) => _steps.Values
         .Where(step => step.StepType == WorkflowStepType.CatchBlock &&

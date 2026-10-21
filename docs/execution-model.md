@@ -35,7 +35,9 @@ Entry requests retain their state activation and original reply token. Their wai
 
 State keys, final flags, trigger kinds, event keys/types, duration expressions, ordered alternatives and destinations participate in structure hash format 3. State declaration order and display names do not. State frames, fired values and receipts, pending event values, join winners and `ArmOccurrence` use checkpoint contract 7 in existing trunk and continuation parts. Claim-checked entry snapshots and pending trigger payloads are hydrated before synchronous restoration, including when the current step finishes a nested entry body. `MaxGraphTransitionsPerPass` applies to state entries as it does to nodes; native trigger waits do not consume the branch limit.
 
-The fluent API supports event, reply, timer, immediate and single code-activity triggers. Code-activity triggers are included; composed workflow triggers are not yet specified. Activity-valued conditions and YAML state-machine authoring remain unsupported.
+YAML and fluent definitions lower to these same graph scopes, executable picks and structure hash. YAML adds no execution phase or checkpoint field. `GraphTable` describes the static topology; it contains no saved visit, accepted payload or branch winner. A code-activity trigger is one activity. Composed durable-step and workflow-call triggers remain unspecified, so state-machine support does not yet cover every Windows Workflow Foundation trigger composition.
+
+The fluent API supports event, reply, timer, immediate and single code-activity triggers. Code-activity triggers are included; composed workflow triggers are not yet specified. Activity-valued conditions remain unsupported.
 
 ## Checkpoints and commits
 

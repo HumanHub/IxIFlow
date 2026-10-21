@@ -14,7 +14,7 @@ namespace IxIFlow.Generators;
 /// The runtime hashes that structure, rather than YAML text or generated method bodies,
 /// so comments, key order, source positions and presentation metadata cannot affect the hash.
 /// </summary>
-public static class WorkflowSourceTranslator
+public static partial class WorkflowSourceTranslator
 {
     /// <summary>The namespaces generated workflow source imports, so unqualified type names resolve in them.</summary>
     public static IReadOnlyList<string> ImportedNamespaces { get; } =
@@ -80,6 +80,13 @@ public static class WorkflowSourceTranslator
     {
         switch (step)
         {
+            case StateMachineStepDocument machine:
+                foreach (var transition in machine.States.SelectMany(state => state.Transitions))
+                {
+                    if (transition.Event != null) yield return transition.Event;
+                    if (transition.Activity != null) yield return transition.Activity;
+                }
+                break;
             case ActivityStepDocument activity:
                 yield return activity.Activity;
                 foreach (var undo in activity.Compensation)
@@ -128,7 +135,7 @@ public static class WorkflowSourceTranslator
         if (step is ForEachStepDocument { Parallel.ResultType: { } result }) yield return result;
     }
 
-    private sealed class Translation(WorkflowDocument document, string path, WorkflowSourceOptions options)
+    private sealed partial class Translation(WorkflowDocument document, string path, WorkflowSourceOptions options)
     {
         private readonly StringBuilder _source = new();
         private readonly HashSet<string> _ids = new(StringComparer.Ordinal);
@@ -229,6 +236,15 @@ public static class WorkflowSourceTranslator
                 Locate(step);
                 switch (step)
                 {
+                    case FlowchartStepDocument graph:
+                        Flowchart(graph, builder, next, id, previousType);
+                        break;
+                    case StateMachineStepDocument machine:
+                        StateMachine(machine, builder, next, id, previousType);
+                        break;
+                    case TransitionStepDocument transition:
+                        Line($"var {next} = {builder}.Transition({Destination(transition.To)});");
+                        break;
                     case ActivityStepDocument activity:
                         Activity(activity.Activity, activity.Defaults, activity.Input, activity.Output, activity, builder, next, previousType, builderScope);
                         if (HasSetup(activity) || builderScope != WorkflowDocumentScope.SagaHandler)

@@ -37,7 +37,7 @@ public interface IWorkflowDocumentValidator
 
 internal enum WorkflowDocumentScope { Workflow, Catch, Saga, SagaHandler }
 
-public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
+public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidator
 {
     public async Task<WorkflowValidationResult> ValidateAsync(WorkflowDocument document, IWorkflowValidationContext context, CancellationToken cancellationToken = default)
     {
@@ -77,6 +77,7 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
         }
 
         await ValidateStepsAsync(document.Definitions, "definitions", document, diagnostics, context, cancellationToken);
+        ValidateGraphPlacement(document.Definitions, "definitions", document, diagnostics, null, false, false, []);
 
         return new WorkflowValidationResult(diagnostics);
     }
@@ -108,6 +109,14 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
 
             switch (step)
             {
+                case FlowchartStepDocument { Nodes: null } or StateMachineStepDocument { States: null }:
+                    break;
+                case FlowchartStepDocument or StateMachineStepDocument:
+                    await ValidateGraphAsync(step, stepPath, document, diagnostics, context, cancellationToken, aliases);
+                    foreach (var child in step.GraphChildScopes())
+                        await ValidateStepsAsync(child.Steps, stepPath + child.Path, document,
+                            diagnostics, context, cancellationToken, aliases);
+                    break;
                 case ParallelStepDocument parallelStep:
                 {
                     if ((parallelStep.Join == "conditionally") != (parallelStep.Condition != null))

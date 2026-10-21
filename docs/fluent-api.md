@@ -31,7 +31,7 @@ Use `.Node("route", edges => edges.Switch(ctx => ctx.WorkflowData.Region).Case("
 
 `.Named(name)` on the flowchart builder names the preceding node. `.WithId("approval")` on the enclosing workflow builder gives generated picks author IDs such as `approval/pending/enter`, `approval/pending/decision` and `approval/pending/to/0`. Every pick appears in `StepTable`.
 
-A timeout path directly leaving a node must end in `.Transition("destination")`. Explicit transitions elsewhere are build errors. Graphs preserve their incoming previous value after completion. A saga may run inside a node; saga activity bodies retain their existing restricted builder surface. YAML, schema and generator support follow separately.
+A timeout path directly leaving a node must end in `.Transition("destination")`. Explicit transitions elsewhere are build errors. Graphs preserve their incoming previous value after completion. A saga may run inside a node; saga activity bodies retain their existing restricted builder surface. [YAML flowcharts](yaml-authoring.md#flowcharts-and-state-machines) use the same builders and validation.
 
 ## Map activity data
 
@@ -145,7 +145,9 @@ public static WorkflowDefinition Definition() =>
 
 [ActivityTriggers.cs](../samples/IxIFlow.Samples/ActivityTriggers.cs) supplies the compiled activities; [ActivityTriggerExamples.cs](../tests/IxIFlow.Samples.Tests/ActivityTriggerExamples.cs) executes this sample. Such a state uses one branch per activity plus one shared listener when event, reply or timer triggers exist. This counts against `MaxActiveBranches` and requires copyable workflow data and mergeable named output paths. Alternatives may write the same property. All armed machines in one instance share event keys; an event matching two waits is refused as ambiguous. Reply tokens keep their original state activation and remain usable after a losing listener or failed activity guards.
 
-Code-activity triggers are included; composed workflow triggers are not yet specified. YAML state machines and `GraphTable` remain planned. See the [execution model](execution-model.md#state-machines) for arbitration and recovery.
+Code-activity triggers are included; composed workflow triggers are not yet specified. `Immediately(t => ...)` groups several ordered `When`/`Otherwise` cases under one immediate trigger. YAML supports the same entry, exit, trigger, case and action shapes. See the [execution model](execution-model.md#state-machines) for arbitration and recovery.
+
+`definition.GraphTable` describes every nested graph beside `definition.StepTable`: graph catalog id and start; keyed nodes/states, display names, entry ids and body/exit scope ids; ordered transitions with trigger kind, event/key, duration or activity type; and cases with edge ids, destinations, guards, labels, actions and source locations. `IWorkflowOperations.GetGraphTableAsync(instanceId)` reads detached metadata for the instance's registered definition through the same privacy projection as inspection. GraphTable describes topology; inspection and traces provide the live position and taken path.
 
 ## Faults and recovery
 

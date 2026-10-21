@@ -15,10 +15,14 @@
     <ProjectReference Include="../../src/IxIFlow/IxIFlow.csproj" />
     <ProjectReference Include="../../src/IxIFlow.Authoring/IxIFlow.Authoring.csproj" />
     <ProjectReference Include="../../src/IxIFlow.Analyzers/IxIFlow.Analyzers.csproj" />
+    <ProjectReference Include="../../samples/IxIFlow.Samples/IxIFlow.Samples.csproj" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Xunit" />
     <IxIFlowWorkflow Include="Fixtures/*.yaml" />
+    <IxIFlowWorkflow Include="../../samples/IxIFlow.Samples/Definitions/stock-flowchart.yaml" />
+    <IxIFlowWorkflow Include="../../samples/IxIFlow.Samples/Definitions/approval-state-machine.yaml" />
+    <IxIFlowWorkflow Include="../../samples/IxIFlow.Samples/Definitions/activity-trigger-state-machine.yaml" />
   </ItemGroup>
   <Import Project="../../src/IxIFlow/buildTransitive/IxIFlow.props" />
 </Project>

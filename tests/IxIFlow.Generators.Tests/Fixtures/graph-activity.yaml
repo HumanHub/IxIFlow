@@ -1,0 +1,12 @@
+workflow: {name: GraphParity, dataType: IxIFlow.Generators.Tests.ParityData}
+definitions:
+  - kind: stateMachine
+    id: machine
+    start: pending
+    states:
+      - key: pending
+        transitions:
+          - activity: IxIFlow.Generators.Tests.GraphAttempt
+            output: [{source: Value, to: {path: workflow.Result}}]
+            when: {path: previousStep.Value == 2}
+            to: end

@@ -1,0 +1,48 @@
+workflow: {name: Graph coverage, dataType: FlowData}
+definitions:
+  - kind: flowchart
+    start: route
+    nodes:
+      - key: route
+        name: Route
+        switch: {path: workflow.Value}
+        transitions: [{case: 1, to: wait}, {default: true, to: end}]
+      - key: wait
+        steps:
+          - kind: waitFor
+            key: go
+            event: Answer
+            timeout: '00:01:00'
+            onTimeout: [{kind: transition, to: end}]
+        transitions: [{when: {path: previousStep.Value > 0}, to: end}]
+  - kind: stateMachine
+    start: pending
+    states:
+      - key: pending
+        name: Pending
+        entry: [{kind: request, key: answer, activity: ParityRequest}]
+        exit: [{kind: activity, activity: ParityWork}]
+        transitions:
+          - on: go
+            event: Answer
+            matches: {path: event.Value > 0}
+            defaultPayload: {Value: 5}
+            input: [{target: Value, from: {path: workflow.Value}}]
+            output: [{source: Value, to: {path: workflow.Value}}]
+            when: {path: previousStep.Value > 0}
+            to: done
+            steps: [{kind: activity, activity: ParityWork}]
+          - reply: answer
+            event: Answer
+            cases:
+              - when: {path: previousStep.Value > 0}
+                to: done
+                steps: [{kind: activity, activity: ParityWork}]
+              - to: done
+          - after: {path: ctx.UtcNow - ctx.UtcNow + TimeSpan.FromMinutes(1)}
+            to: done
+          - activity: ParityEcho
+            activityVersion: '1.0'
+            to: done
+      - key: done
+        final: true

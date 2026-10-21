@@ -97,6 +97,22 @@ public static class WorkflowJsonSerializer
                 {
                     var property = properties[member.Name];
                     property.Name = key.Name;
+                    if (key.Name is "to" or "when" or "steps")
+                        property.ShouldSerialize = (target, _) => target is not StateTransitionDocument { Cases: not null };
+                    if (key.Name == "to" && (info.Type == typeof(FlowchartEdgeDocument) || typeof(StateCaseDocument).IsAssignableFrom(info.Type) || info.Type == typeof(TransitionStepDocument)))
+                    {
+                        var get = property.Get!;
+                        property.Get = target => get(target) ?? "end";
+                    }
+                    if (key.Name == "case" && info.Type == typeof(FlowchartEdgeDocument))
+                    {
+                        var get = property.Get!;
+                        property.Get = target => get(target) ?? (((DocumentNode)target).Members.ContainsKey("case") ? JsonSerializer.SerializeToElement<object?>(null) : null);
+                    }
+                    if (key.Name == "after" && info.Type == typeof(StateTransitionDocument))
+                        property.CustomConverter = new GraphDurationConverter();
+                    if (key.Name == "case" && info.Type == typeof(FlowchartEdgeDocument))
+                        property.CustomConverter = new GraphCaseConverter();
                     var set = property.Set;
                     var values = DocumentModel.GetValues(info.Type, member.Name);
                     property.Set = (target, value) =>
@@ -195,5 +211,26 @@ public static class WorkflowJsonSerializer
 
         public override void Write(Utf8JsonWriter writer, object value, JsonSerializerOptions options) =>
             JsonSerializer.Serialize(writer, value, value.GetType());
+    }
+
+    private sealed class GraphCaseConverter : JsonConverter<object>
+    {
+        public override object? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.TokenType == JsonTokenType.StartObject
+                ? JsonSerializer.Deserialize<ExpressionDocument>(ref reader, options)
+                : new DocumentValueConverter().Read(ref reader, typeToConvert, options);
+        public override void Write(Utf8JsonWriter writer, object value, JsonSerializerOptions options) =>
+            JsonSerializer.Serialize(writer, value, value.GetType(), options);
+    }
+
+    private sealed class GraphDurationConverter : JsonConverter<object>
+    {
+        public override object? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.TokenType == JsonTokenType.StartObject
+                ? JsonSerializer.Deserialize<ExpressionDocument>(ref reader, options)
+                : reader.TokenType == JsonTokenType.String ? reader.GetString()
+                : throw new JsonException("After must be a duration string or expression");
+        public override void Write(Utf8JsonWriter writer, object value, JsonSerializerOptions options) =>
+            JsonSerializer.Serialize(writer, value, value.GetType(), options);
     }
 }

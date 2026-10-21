@@ -167,6 +167,17 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
         string? to, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
         After(afterExpression, t => t.Otherwise(to, sourcePath: sourcePath, sourceLine: sourceLine), sourcePath, sourceLine);
 
+    /// <summary>Declares ordered alternatives of one immediate trigger.</summary>
+    public StateBuilder<TData, TPrevious> Immediately(
+        Action<StateTransitionBuilder<TData, TPrevious, TPrevious>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        var trigger = StatePicks.Create<TData, TPrevious>(WorkflowStepType.Trigger, sourcePath, sourceLine);
+        trigger.TriggerKind = TriggerKind.Immediate;
+        Add(trigger, configure);
+        return this;
+    }
+
     public StateBuilder<TData, TPrevious> When(Expression<Func<WorkflowContext<TData, TPrevious>, bool>> whenExpression,
         string? to, Action<ISequenceBuilder<TData, TPrevious>>? action = null,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)

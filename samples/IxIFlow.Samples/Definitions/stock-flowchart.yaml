@@ -1,0 +1,18 @@
+workflow: {name: FulfilOrder, dataType: IxIFlow.Samples.Flowcharts+Order}
+definitions:
+  - kind: flowchart
+    id: fulfilment
+    start: check
+    nodes:
+      - key: check
+        name: Check stock
+        steps: [{kind: activity, activity: IxIFlow.Samples.Flowcharts+CheckStock}]
+        transitions:
+          - when: {path: previousStep.InStock}
+            to: ship
+          - to: backorder
+      - key: ship
+        steps: [{kind: activity, activity: IxIFlow.Samples.Flowcharts+Ship}]
+      - key: backorder
+        steps: [{kind: delay, duration: '1.00:00:00'}]
+        transitions: [{to: check}]

@@ -666,6 +666,9 @@ public class WorkflowDefinition
     /// <summary>The executable definition's catalog, including author identities and call sites.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public StepTable StepTable => WorkflowDefinitionValidator.ForExecution(this).StepTable;
+    /// <summary>The definition's graph topology and designer metadata.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public GraphTable GraphTable => WorkflowDefinitionValidator.ForExecution(this).GraphTable;
     /// <summary>Placement declarations, excluded from executable structure identity.</summary>
     public List<WorkflowDemand> Demands { get; set; } = [];
 

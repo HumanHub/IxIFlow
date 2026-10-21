@@ -5,6 +5,8 @@ internal sealed partial class HostedWorkflowOperations
     public IDisposable WatchChanges(string instanceId, Action changed) => host.WatchChanges(instanceId, changed);
     public Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string instanceId, CancellationToken cancellationToken = default) =>
         host.ReadAsync(client => client.GetStepTableAsync(instanceId, cancellationToken));
+    public Task<IReadOnlyList<GraphTableEntry>> GetGraphTableAsync(string instanceId, CancellationToken cancellationToken = default) =>
+        host.ReadAsync(client => client.GetGraphTableAsync(instanceId, cancellationToken));
     public Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries = 10000, CancellationToken cancellationToken = default) =>
         host.ReadAsync(client => client.OpenReplayAsync(instanceId, maxEntries, cancellationToken));
     public Task<string?> GetSourceAsync(string instanceId, string path, CancellationToken cancellationToken = default) =>

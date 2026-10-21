@@ -29,6 +29,8 @@ public interface IWorkflowOperations
     /// <summary>Subscribes to local committed changes. Remote owners require bounded polling until coordinator notices are available.</summary>
     IDisposable WatchChanges(string instanceId, Action changed);
     Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string instanceId, CancellationToken cancellationToken = default);
+    /// <summary>Reads detached graph topology through the instance's definition and privacy projection.</summary>
+    Task<IReadOnlyList<GraphTableEntry>> GetGraphTableAsync(string instanceId, CancellationToken cancellationToken = default);
     /// <summary>Loads bounded, detached replay through the same privacy projection as inspection.</summary>
     Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries = 10000, CancellationToken cancellationToken = default);
     /// <summary>Reads only a source named by the instance's published step table; null when unavailable locally.</summary>

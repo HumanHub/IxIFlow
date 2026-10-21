@@ -3,7 +3,7 @@ title: YAML authoring
 description: Every workflow document construct, strict validation and editor schema.
 ---
 
-YAML has a form for every fluent workflow construct. The source generator translates documents into the fluent API; generated and handwritten definitions use the same build rules and executor. Workflow names are required, and identity is the declared `(name, version)`. The parsed document model lowers to the same executable structure as fluent C#, so equivalent definitions have equal `StructureHash` values. Whitespace, comments, mapping key order, descriptions, display names and step labels do not affect the hash. Changed executable structure or expression shape does. Delegate bodies and captured values are excluded; bump the version when behavior changes. Checkpoint schema 4 refuses instances saved by earlier builds without migration.
+YAML has a form for every fluent workflow construct. The source generator translates documents into the fluent API; generated and handwritten definitions use the same build rules and executor. Workflow names are required, and identity is the declared `(name, version)`. The parsed document model lowers to the same executable structure as fluent C#, so equivalent definitions have equal `StructureHash` values. Whitespace, comments, mapping key order, descriptions, display names and step labels do not affect the hash. Changed executable structure or expression shape does. Delegate bodies and captured values are excluded; bump the version when behavior changes. Checkpoint contract 7 refuses instances saved by earlier builds without migration.
 
 The `IxIFlow` package automatically includes `*.workflow.yaml` and `*.workflow.yml` as compiler additional files. A file such as `reminder.workflow.yaml` generates `<RootNamespace>.Generated.Workflow_reminder_workflow.Build()`. Punctuation in filenames becomes underscores; use distinct filenames. Project-reference applications need analyzer references and package props explicitly, as in [the samples project](../samples/IxIFlow.Samples/IxIFlow.Samples.csproj).
 
@@ -94,6 +94,50 @@ An activity/request's `compensation` is an ordered list. Entries specify `activi
 Activity-level `onError` entries accept optional `exception`, required `then: retry|terminate|ignore`, and optional `retry`. Saga-level handlers accept `exception`, `faultType`, `id`, handler `steps`, `compensate: all|none` or `compensateUpTo`, followed by `then: continue|terminate|retry`. Compensation runs before the handler steps. `ignoreCompensationErrors` applies to continuing. Omitted continuation rethrows after any selected undo.
 
 Retry objects mirror `RetryPolicy`: `maximumAttempts`, `initialInterval`, `maximumInterval`, `backoffCoefficient`. Omission uses the fluent count-based default; supplied objects use the policy's property defaults. See [retry-quote.workflow.yaml](../samples/IxIFlow.Samples/Definitions/retry-quote.workflow.yaml), [saga-payment.workflow.yaml](../samples/IxIFlow.Samples/Definitions/saga-payment.workflow.yaml) and [sagas](sagas.md).
+
+## Flowcharts and state machines
+
+`kind: flowchart` requires `start` and keyed `nodes`. A node has optional `name`, `steps`, `switch` and ordered `transitions`. Each edge has `to` and either a `when` expression or a `case` under `switch`. A case accepts a scalar literal or a build-time expression, such as `{kind: function, function: readyLabel}` referencing a code asset whose source is `MyMode.Ready`, `1.25m` or `1L`. Typed expressions preserve enum, decimal and boxed numeric labels; labels cannot read execution context. A single unguarded edge is unconditional; an unguarded last edge after guards or cases is the fallback. To preserve an explicitly chosen fluent edge flag, `default: true` selects `Otherwise` even for a single edge; `default: false` selects `Always` after guards. This flag cannot accompany `when` or `case`, and switch fallbacks require the default form. `to: end` or `to: null` completes the graph. With no matching edge and no fallback, the flowchart completes. Keys are ordinal, unique, nonempty, contain no `/`, and cannot be `end`. Changing keys or edge order changes structure identity; changing display names, source locations or node/state declaration order does not.
+
+<!-- snippet: samples/IxIFlow.Samples/Definitions/stock-flowchart.yaml -->
+```yaml
+workflow: {name: FulfilOrder, dataType: IxIFlow.Samples.Flowcharts+Order}
+definitions:
+  - kind: flowchart
+    id: fulfilment
+    start: check
+    nodes:
+      - key: check
+        name: Check stock
+        steps: [{kind: activity, activity: IxIFlow.Samples.Flowcharts+CheckStock}]
+        transitions:
+          - when: {path: previousStep.InStock}
+            to: ship
+          - to: backorder
+      - key: ship
+        steps: [{kind: activity, activity: IxIFlow.Samples.Flowcharts+Ship}]
+      - key: backorder
+        steps: [{kind: delay, duration: '1.00:00:00'}]
+        transitions: [{to: check}]
+```
+
+`kind: stateMachine` requires `start` and keyed `states`. A state has optional `name`, `entry`, `exit`, `transitions` and `final`. An explicit `exit: []` creates an executable exit scope and affects structure identity; omitting `exit` creates none. Final states have entry only and cannot declare even an empty exit. Each transition has one trigger form:
+
+| Shape | Trigger |
+| --- | --- |
+| `on: key`, `event: Type` | Keyed event |
+| `reply: requestName`, `event: Type` | Reply to one request directly in this state's entry |
+| `after: '00:05:00'` or `after: {path: previousStep.Timeout}` | Positive duration, literal or pure TimeSpan expression |
+| `activity: Type` | One code activity, with optional `activityVersion` |
+| No trigger member | Immediate guard arbitration |
+
+Use direct `to` with optional `when` and action `steps`, or `cases` with ordered `when`/`to`/`steps` alternatives. An unguarded case is last; reply triggers require one. An unconditional immediate transition is last and cannot accompany waiting triggers. A non-final state with only guarded immediate transitions cannot wait and is rejected. A timer whose cases all fail starts a fresh duration when the state re-arms. Absolute timer dates are not supported.
+
+Event and reply triggers accept `matches`, `defaultPayload`, `input` and `output`. Inputs read workflow data and the graph's incoming previous value; matches reads `event` and workflow data; outputs read the accepted value. Activity triggers accept input/output mappings, and guards and actions read the completed activity. Each activity trigger creates a `run` branch ending in `Fire`; a mixed state also creates one `listen` branch ending in its own `Fire`. These are generated catalog scopes, not authored YAML members. Composed durable-step and workflow-call triggers remain unspecified.
+
+See the compiled [approval YAML](../samples/IxIFlow.Samples/Definitions/approval-state-machine.yaml) and [activity race YAML](../samples/IxIFlow.Samples/Definitions/activity-trigger-state-machine.yaml), with their [fluent twins](fluent-api.md#native-state-machines). These explicitly named `.yaml` examples compile in the generator parity project. Default automatic discovery uses `.workflow.yaml`/`.workflow.yml`; other names use `IxIFlowWorkflow` items as described in the generator guide. Nested CLR types use `+` in YAML catalog lookup names.
+
+A direct timeout path leaving a flowchart node or a non-final state entry must end with `{kind: transition, to: destination}`. Explicit transitions cannot appear in exit/action bodies or arbitrary nested scopes. There is no trigger `timeout`; use an `after` transition. Invalid graph forms produce located `GRAPH0xx` validator diagnostics; the build reports them through `IXIYAML001`.
 
 ## Mappings and expressions
 

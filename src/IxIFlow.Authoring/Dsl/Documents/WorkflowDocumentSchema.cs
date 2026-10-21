@@ -82,7 +82,9 @@ public static class WorkflowDocumentSchema
                     };
                     continue;
                 }
-                var schema = ValueSchema(member.PropertyType, nullability.Create(member));
+                var schema = type == typeof(StateTransitionDocument) && member.Name == nameof(StateTransitionDocument.After)
+                    ? new JsonObject { ["anyOf"] = new JsonArray(new JsonObject { ["type"] = "string" }, Reference(typeof(ExpressionDocument))) }
+                    : ValueSchema(member.PropertyType, nullability.Create(member));
                 schema["description"] = Describe(member);
                 if (member.GetCustomAttribute<DocumentValuesAttribute>() is { } values)
                     schema["enum"] = new JsonArray(values.Values.Select(value => (JsonNode?)JsonValue.Create(value))
@@ -100,7 +102,77 @@ public static class WorkflowDocumentSchema
                 ["properties"] = properties
             };
             if (required.Count > 0) result["required"] = required;
+            GraphRules(type, result);
             return result;
+        }
+
+        void GraphRules(Type type, JsonObject result)
+        {
+            JsonObject Has(params string[] names) => new() { ["required"] = Strings(names) };
+            JsonObject Not(params string[] names) => new() { ["not"] = Has(names) };
+            if (type == typeof(FlowchartEdgeDocument) || type == typeof(StateCaseDocument) || type == typeof(TransitionStepDocument))
+                result["required"] = Strings(["to"]);
+            if (type == typeof(FlowchartEdgeDocument))
+            {
+                result["allOf"] = new JsonArray(Not("when", "case"), Not("default", "when"), Not("default", "case"));
+                ((JsonObject)result["properties"]!["case"]!)["anyOf"] = new JsonArray(
+                    new JsonObject { ["type"] = Strings(["string", "number", "boolean", "null"]) }, Reference(typeof(ExpressionDocument)));
+            }
+            if (type == typeof(FlowchartNodeDocument))
+            {
+                result["allOf"] = new JsonArray(new JsonObject
+                {
+                    ["if"] = Has("switch"),
+                    ["then"] = new JsonObject { ["properties"] = new JsonObject
+                    {
+                        ["transitions"] = new JsonObject { ["items"] = new JsonObject
+                        {
+                            ["not"] = Has("when"),
+                            ["properties"] = new JsonObject { ["default"] = new JsonObject { ["const"] = true } }
+                        } }
+                    } },
+                    ["else"] = new JsonObject { ["properties"] = new JsonObject
+                    {
+                        ["transitions"] = new JsonObject { ["items"] = Not("case") }
+                    } }
+                });
+            }
+            if (type == typeof(StateTransitionDocument))
+            {
+                foreach (var member in new[] { "on", "reply", "event", "activity" })
+                    ((JsonObject)result["properties"]![member]!)["type"] = "string";
+                var rules = new JsonArray
+                {
+                    new JsonObject { ["oneOf"] = new JsonArray(
+                        new JsonObject { ["required"] = Strings(["to"]), ["not"] = Has("cases") },
+                        new JsonObject { ["required"] = Strings(["cases"]), ["not"] = new JsonObject { ["anyOf"] = new JsonArray(Has("to"), Has("when"), Has("steps")) } }) },
+                    new JsonObject { ["if"] = new JsonObject { ["anyOf"] = new JsonArray(Has("on"), Has("reply")) },
+                        ["then"] = Has("event"), ["else"] = new JsonObject { ["not"] = new JsonObject { ["anyOf"] = new JsonArray(Has("event"), Has("matches"), Has("defaultPayload")) } } },
+                    new JsonObject { ["if"] = Not("activity"), ["then"] = new JsonObject { ["properties"] = new JsonObject
+                    {
+                        ["activityVersion"] = new JsonObject { ["const"] = "" }
+                    } } },
+                    new JsonObject { ["if"] = new JsonObject { ["not"] = new JsonObject { ["anyOf"] = new JsonArray(Has("on"), Has("reply"), Has("activity")) } },
+                        ["then"] = new JsonObject { ["properties"] = new JsonObject
+                    {
+                        ["input"] = new JsonObject { ["maxItems"] = 0 }, ["output"] = new JsonObject { ["maxItems"] = 0 }
+                    } } }
+                };
+                var forms = new[] { "on", "reply", "after", "activity" };
+                for (var i = 0; i < forms.Length; i++)
+                    for (var j = i + 1; j < forms.Length; j++) rules.Add(Not(forms[i], forms[j]));
+                result["allOf"] = rules;
+                ((JsonObject)result["properties"]!["cases"]!)["minItems"] = 1;
+            }
+            if (type == typeof(StateDocument))
+                result["allOf"] = new JsonArray(new JsonObject
+                {
+                    ["if"] = new JsonObject { ["required"] = Strings(["final"]), ["properties"] = new JsonObject { ["final"] = new JsonObject { ["const"] = true } } },
+                    ["then"] = new JsonObject { ["not"] = Has("exit"), ["properties"] = new JsonObject
+                    {
+                        ["transitions"] = new JsonObject { ["maxItems"] = 0 }
+                    } }
+                });
         }
 
         JsonObject AbstractSchema(Type type)
