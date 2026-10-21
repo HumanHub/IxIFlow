@@ -325,10 +325,8 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
     private static void CaptureFaults(WorkflowStep step)
     {
         step.Runtime = step.Runtime.ForFault<TFault>();
-        foreach (var child in new[] { step.SequenceSteps, step.ThenSteps, step.ElseSteps,
-                     step.LoopBodySteps, step.ForEachBodySteps, step.FinallySteps, step.TimeoutSteps }
-                     .Concat(step.ParallelBranches).Concat(step.OutcomeBranches.Select(branch => branch.Steps))
-                     .SelectMany(body => body))
+        foreach (var child in step.ChildScopes().Where(scope => scope.Kind != "catch")
+                     .SelectMany(scope => scope.Steps))
             CaptureFaults(child);
     }
 

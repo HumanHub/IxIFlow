@@ -114,40 +114,47 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
                         Invalid("PAR001", "Only a conditional parallel join requires a condition", stepPath + ".condition", diagnostics);
                     ValidateExpression(parallelStep.Condition, diagnostics, stepPath + ".condition", ["workflow"], document.Code);
                     ValidateCombiners(parallelStep.Combine, stepPath + ".combine", diagnostics);
-                    var branches = parallelStep.Branches ?? [];
-                    for (var childIndex = 0; childIndex < branches.Count; childIndex++)
-                        await ValidateStepsAsync(branches[childIndex].Steps, $"{stepPath}.branches[{childIndex}].steps", document, diagnostics, context, cancellationToken, aliases);
+                    if (parallelStep.Branches != null)
+                        foreach (var child in parallelStep.ChildScopes())
+                            await ValidateStepsAsync(child.Steps, $"{stepPath}.branches[{child.Key}].steps", document, diagnostics, context, cancellationToken, aliases);
                     break;
                 }
                 case LoopStepDocument loop:
                 {
                     ValidateExpression(loop.Condition, diagnostics, stepPath + ".condition", inputRoots, document.Code);
-                    await ValidateStepsAsync(loop.Steps, stepPath + ".steps", document, diagnostics, context, cancellationToken, aliases);
+                    foreach (var child in loop.ChildScopes())
+                        await ValidateStepsAsync(child.Steps, stepPath + ".steps", document, diagnostics, context, cancellationToken, aliases);
                     break;
                 }
                 case TryStepDocument attempt:
                 {
                     if (attempt.Catches.Count == 0 && attempt.Finally == null)
                         Invalid("TRY001", "Try requires a catch or finally to complete the fluent chain", stepPath, diagnostics);
-                    await ValidateStepsAsync(attempt.Steps, stepPath + ".steps", document, diagnostics, context, cancellationToken, aliases);
-                    for (var childIndex = 0; childIndex < attempt.Catches.Count; childIndex++)
+                    foreach (var child in attempt.ChildScopes())
                     {
-                        var handler = attempt.Catches[childIndex];
-                        var handlerPath = $"{stepPath}.catches[{childIndex}]";
-                        Fault(handler.Exception, handler.FaultType, handlerPath, diagnostics);
-                        await ValidateStepsAsync(handler.Steps, handlerPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Catch);
+                        if (child.Kind == "catch")
+                        {
+                            var handler = attempt.Catches[int.Parse(child.Key!, System.Globalization.CultureInfo.InvariantCulture)];
+                            var handlerPath = $"{stepPath}.catches[{child.Key}]";
+                            Fault(handler.Exception, handler.FaultType, handlerPath, diagnostics);
+                            await ValidateStepsAsync(child.Steps, handlerPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Catch);
+                        }
+                        else
+                            await ValidateStepsAsync(child.Steps, stepPath + (child.Kind == "finally" ? ".finally" : ".steps"), document, diagnostics, context, cancellationToken, aliases);
                     }
-                    if (attempt.Finally != null)
-                        await ValidateStepsAsync(attempt.Finally, stepPath + ".finally", document, diagnostics, context, cancellationToken, aliases);
                     break;
                 }
                 case SagaStepDocument saga:
                 {
-                    await ValidateStepsAsync(saga.Steps, stepPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Saga);
-                    for (var childIndex = 0; childIndex < saga.OnError.Count; childIndex++)
+                    foreach (var child in saga.ChildScopes())
                     {
-                        var handler = saga.OnError[childIndex];
-                        var handlerPath = $"{stepPath}.onError[{childIndex}]";
+                        if (child.Kind == "sequence")
+                        {
+                            await ValidateStepsAsync(child.Steps, stepPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Saga);
+                            continue;
+                        }
+                        var handler = saga.OnError[int.Parse(child.Key!, System.Globalization.CultureInfo.InvariantCulture)];
+                        var handlerPath = $"{stepPath}.onError[{child.Key}]";
                         Fault(handler.Exception, handler.FaultType, handlerPath, diagnostics);
                         if (handler.CompensateUpTo != null)
                         {
@@ -165,21 +172,24 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
                         if (handler.IgnoreCompensationErrors && handler.Then != "continue")
                             Invalid("SAGA004", "ignoreCompensationErrors is available only for continue", handlerPath + ".ignoreCompensationErrors", diagnostics);
                         if (handler.Retry != null) ValidateRetry(handler.Retry, handlerPath + ".retry", diagnostics);
-                        await ValidateStepsAsync(handler.Steps, handlerPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.SagaHandler);
+                        await ValidateStepsAsync(child.Steps, handlerPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.SagaHandler);
                     }
                     break;
                 }
                 case OutcomeStepDocument outcome:
                 {
                     ValidateExpression(outcome.Value, diagnostics, stepPath + ".value", inputRoots, document.Code);
-                    for (var childIndex = 0; childIndex < outcome.Branches.Count; childIndex++)
+                    foreach (var child in outcome.ChildScopes())
                     {
-                        var branch = outcome.Branches[childIndex];
-                        ValidateExpression(branch.Value, diagnostics, $"{stepPath}.branches[{childIndex}].value", [], document.Code);
-                        await ValidateStepsAsync(branch.Steps, $"{stepPath}.branches[{childIndex}].steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Saga);
+                        var childIndex = int.Parse(child.Key!, System.Globalization.CultureInfo.InvariantCulture);
+                        if (childIndex < outcome.Branches.Count)
+                        {
+                            ValidateExpression(outcome.Branches[childIndex].Value, diagnostics, $"{stepPath}.branches[{child.Key}].value", [], document.Code);
+                            await ValidateStepsAsync(child.Steps, $"{stepPath}.branches[{child.Key}].steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Saga);
+                        }
+                        else
+                            await ValidateStepsAsync(child.Steps, stepPath + ".default", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Saga);
                     }
-                    if (outcome.Default != null)
-                        await ValidateStepsAsync(outcome.Default, stepPath + ".default", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Saga);
                     break;
                 }
                 case InvokeWorkflowTypeStepDocument invocation:
@@ -263,8 +273,8 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
 
                 case ConditionalStepDocument conditionalStep:
                     ValidateExpression(conditionalStep.Condition, diagnostics, $"{stepPath}.condition", new[] { "workflow", "previousStep", "event" }.Concat(aliases).ToArray(), document.Code);
-                    await ValidateStepsAsync(conditionalStep.Then, $"{stepPath}.then", document, diagnostics, context, cancellationToken, aliases);
-                    await ValidateStepsAsync(conditionalStep.Else, $"{stepPath}.else", document, diagnostics, context, cancellationToken, aliases);
+                    foreach (var child in conditionalStep.ChildScopes())
+                        await ValidateStepsAsync(child.Steps, $"{stepPath}.{child.Kind}", document, diagnostics, context, cancellationToken, aliases);
                     break;
 
                 case ForEachStepDocument each:
@@ -292,11 +302,13 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
                         ValidateCombiners(parallel.Combine, $"{stepPath}.parallel.combine", diagnostics);
                         ValidateExpression(parallel.Condition, diagnostics, $"{stepPath}.parallel.condition", ["workflow", "results"], document.Code);
                     }
-                    await ValidateStepsAsync(each.Steps, $"{stepPath}.steps", document, diagnostics, context, cancellationToken, aliases.Append(each.As).ToArray());
+                    foreach (var child in each.ChildScopes())
+                        await ValidateStepsAsync(child.Steps, $"{stepPath}.steps", document, diagnostics, context, cancellationToken, aliases.Append(each.As).ToArray());
                     break;
 
                 case SequenceStepDocument sequenceStep:
-                    await ValidateStepsAsync(sequenceStep.Steps, $"{stepPath}.steps", document, diagnostics, context, cancellationToken, aliases);
+                    foreach (var child in sequenceStep.ChildScopes())
+                        await ValidateStepsAsync(child.Steps, $"{stepPath}.steps", document, diagnostics, context, cancellationToken, aliases);
                     break;
             }
             if (step is TryStepDocument or SagaStepDocument) scope = WorkflowDocumentScope.Workflow;
@@ -512,7 +524,8 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
         if (wait.OnTimeout != null)
         {
             if (wait.Timeout == null && wait.OnTimeout.Count > 0) Invalid("WAIT002", "onTimeout requires a timeout", path + ".onTimeout", diagnostics);
-            await ValidateStepsAsync(wait.OnTimeout, path + ".onTimeout", document, diagnostics, context, token, aliases);
+            foreach (var child in wait.ChildScopes())
+                await ValidateStepsAsync(child.Steps, path + ".onTimeout", document, diagnostics, context, token, aliases);
         }
     }
 
@@ -608,8 +621,9 @@ public sealed class WorkflowDocumentValidator : IWorkflowDocumentValidator
             if (step is ActivityReferenceStepDocument reference && document.Activities.TryGetValue(reference.Ref, out var template))
                 yield return template.Activity;
             if (step is OutcomeStepDocument outcome)
-                foreach (var activityType in SagaActivities(outcome.Branches.SelectMany(branch => branch.Steps).Concat(outcome.Default ?? []), document))
-                    yield return activityType;
+                foreach (var child in outcome.ChildScopes())
+                    foreach (var activityType in SagaActivities(child.Steps, document))
+                        yield return activityType;
         }
     }
 }
