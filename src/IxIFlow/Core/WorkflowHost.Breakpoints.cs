@@ -7,7 +7,8 @@ public sealed partial class WorkflowHost
     internal sealed partial class InstanceOperations
     {
         public async Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId,
-            IReadOnlyList<Breakpoint> breakpoints, string actor, CancellationToken cancellationToken, Guid? expectedIncarnation = null)
+            IReadOnlyList<Breakpoint> breakpoints, string actor, CancellationToken cancellationToken, Guid? expectedIncarnation = null,
+            Action<DebugCommandReceipt>? accepted = null)
         {
             InstanceIds.Validate(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(actor);
@@ -41,6 +42,7 @@ public sealed partial class WorkflowHost
                 DebugCommandKind.SetBreakpoints, generation, actor, resolved) { ExpectedIncarnation = instance.Incarnation });
             if (result.Status != DebugCommandStatus.Accepted)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, $"Debug command refused: {result.Status}");
+            accepted?.Invoke(new(instanceId, instance.Incarnation, result.Command!.Id, result.Command.Order, result.Command.Kind));
             return resolved;
         }
 

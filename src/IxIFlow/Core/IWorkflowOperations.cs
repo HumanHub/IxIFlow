@@ -41,10 +41,26 @@ public interface IWorkflowOperations
     /// <summary>Requests a durable pause; running activities finish before it is committed.</summary>
     Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
     /// <summary>Continues a pause under a fresh lease on this host.</summary>
+    /// <remarks>
+    /// Records acceptance before result construction and retains command-specific recovery through failures or cancellation.
+    /// A Running result with InvalidState and "The workflow instance is executing on another host"
+    /// means the immediate claim was refused. The accepted command remains queued for the owner or
+    /// recovery to apply once the lease is available; do not resubmit it.
+    /// Paused can describe an earlier command's commit while this command is still scheduled.
+    /// Default AwaitAsync can return the original pause; it does not await this command's acknowledgement.
+    /// </remarks>
     Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
     /// <summary>Accepts a durable continue and schedules it on the host, without waiting for workflow activities to finish.</summary>
     Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
     /// <summary>Runs only the selected continuation and branches it creates, under a fresh lease.</summary>
+    /// <remarks>
+    /// Records acceptance before result construction and retains command-specific recovery through failures or cancellation.
+    /// A Running result with InvalidState and "The workflow instance is executing on another host"
+    /// means the immediate claim was refused. The accepted command remains queued for the owner or
+    /// recovery to apply once the lease is available; do not resubmit it.
+    /// Paused can describe an earlier command's commit while this command is still scheduled.
+    /// Default AwaitAsync can return the original pause; it does not await this command's acknowledgement.
+    /// </remarks>
     Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
         string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
     /// <summary>Edits a paused root or branch view with an immutable, caller-supplied edit ID.</summary>

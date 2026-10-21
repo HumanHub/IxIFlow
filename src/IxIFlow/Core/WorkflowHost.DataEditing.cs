@@ -9,7 +9,8 @@ public sealed partial class WorkflowHost
     internal sealed partial class InstanceOperations
     {
         public async Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
-            DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken, Guid? expectedIncarnation = null)
+            DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken, Guid? expectedIncarnation = null,
+            Action<DebugCommandReceipt>? accepted = null)
         {
             InstanceIds.Validate(instanceId);
             ArgumentException.ThrowIfNullOrWhiteSpace(editId);
@@ -25,12 +26,13 @@ public sealed partial class WorkflowHost
             using var entered = await gate.EnterAsync(instanceId, cancellationToken);
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
             RequireIncarnation(instance, expectedIncarnation);
-            return await EditUnderGateAsync(instanceId, editId, request, actor, cancellationToken,
-                instance?.Incarnation ?? throw EditRefused("Workflow instance does not exist"));
+            return (await EditUnderGateAsync(instanceId, editId, request, actor, cancellationToken,
+                instance?.Incarnation ?? throw EditRefused("Workflow instance does not exist"), accepted))!;
         }
 
-        private async Task<DataEditResult> EditUnderGateAsync(string instanceId, string editId, DataEditRequest request,
-            string actor, CancellationToken cancellationToken, Guid incarnation)
+        private async Task<DataEditResult?> EditUnderGateAsync(string instanceId, string editId, DataEditRequest request,
+            string actor, CancellationToken cancellationToken, Guid incarnation, Action<DebugCommandReceipt>? onAccepted = null,
+            DebugCommandReceipt? recoveryReceipt = null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             RequireIncarnation(await _store.GetWorkflowInstanceSummaryAsync(instanceId), incarnation);
@@ -48,7 +50,11 @@ public sealed partial class WorkflowHost
                     ?? throw EditRefused("The instance is owned by another host; retry the same edit ID");
             }
             using var assignment = Admit(instance, owner, signals.AssignmentId);
+            // The edit shortcut owns a separate lease: protect it with the same receipt check
+            // as execution recovery before acknowledging any command under that lease.
+            if (recoveryReceipt != null && !await DebugCommandNeedsRecoveryAsync(recoveryReceipt)) return null;
             var latest = (await _store.GetDebugStatesAsync([instanceId]))[instanceId];
+            if (recoveryReceipt != null && latest.Commands.Any(c => c.Id == editId && c.Order > recoveryReceipt.Order)) return null;
             if (EditReceipt(latest, editId, request, actor) is { } committed) return committed;
             var current = await _store.GetWorkflowInstanceAsync(instanceId);
             if (current == null || current.Incarnation != instance.Incarnation ||
@@ -113,6 +119,7 @@ public sealed partial class WorkflowHost
                     { ExpectedIncarnation = incarnation });
             if (accepted.Status is not (DebugCommandStatus.Accepted or DebugCommandStatus.AlreadyAccepted))
                 throw EditRefused($"Edit command refused: {accepted.Status}");
+            onAccepted?.Invoke(new(instanceId, incarnation, accepted.Command!.Id, accepted.Command.Order, accepted.Command.Kind));
             if (accepted.Command!.EditResult is { } original) return original;
             if (accepted.Command.Order != order) throw new InvalidOperationException("Edit command order changed under its lease");
             var result = new DataEditResult(instanceId, editId, checked(current.Revision + 1), request.Target);

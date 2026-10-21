@@ -136,19 +136,26 @@ public sealed partial class WorkflowHost
 
         public Task<WorkflowExecutionStatus?> ReadStatusAsync(string instanceId) => _runner.ReadStatusAsync(instanceId);
 
-        public Task<WorkflowExecutionResult> RequestDebugAsync(string id, DebugCommandKind kind, string actor, CancellationToken token, Guid? expectedIncarnation = null) =>
-            _runner.RequestDebugAsync(id, kind, actor, token, expectedIncarnation: expectedIncarnation);
+        public Task<WorkflowExecutionResult> RequestDebugAsync(string id, DebugCommandKind kind, string actor, CancellationToken token, Guid? expectedIncarnation = null,
+            Action<DebugCommandReceipt>? accepted = null) =>
+            _runner.RequestDebugAsync(id, kind, actor, token, expectedIncarnation: expectedIncarnation, accepted: accepted);
 
         public Task<WorkflowExecutionResult> RequestStepAsync(string id, string continuationId, DebugStepKind kind,
-            string actor, CancellationToken token, Guid? expectedIncarnation = null) =>
-            _runner.RequestDebugAsync(id, DebugCommandKind.Step, actor, token, continuationId, kind, expectedIncarnation);
+            string actor, CancellationToken token, Guid? expectedIncarnation = null, Action<DebugCommandReceipt>? accepted = null) =>
+            _runner.RequestDebugAsync(id, DebugCommandKind.Step, actor, token, continuationId, kind, expectedIncarnation, accepted);
+
+        public Task<bool> DebugCommandNeedsRecoveryAsync(DebugCommandReceipt receipt) => _runner.DebugCommandNeedsRecoveryAsync(receipt);
+        public Task<WorkflowExecutionResult> RecoverDebugCommandAsync(DebugCommandReceipt receipt, CancellationToken token) =>
+            ForInstanceAsync(receipt.InstanceId, _runner.RecoverDebugCommandAsync(receipt, token));
 
         public Task<DataEditResult> EditDataAsync(string id, string editId, long expectedRevision,
-            DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken token, Guid? expectedIncarnation = null) =>
-            _runner.EditDataAsync(id, editId, expectedRevision, target, patches, actor, token, expectedIncarnation);
+            DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken token, Guid? expectedIncarnation = null,
+            Action<DebugCommandReceipt>? accepted = null) =>
+            _runner.EditDataAsync(id, editId, expectedRevision, target, patches, actor, token, expectedIncarnation, accepted);
 
-        public Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string id, IReadOnlyList<Breakpoint> breakpoints, string actor, CancellationToken token, Guid? expectedIncarnation = null) =>
-            _runner.SetBreakpointsAsync(id, breakpoints, actor, token, expectedIncarnation);
+        public Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string id, IReadOnlyList<Breakpoint> breakpoints, string actor, CancellationToken token, Guid? expectedIncarnation = null,
+            Action<DebugCommandReceipt>? accepted = null) =>
+            _runner.SetBreakpointsAsync(id, breakpoints, actor, token, expectedIncarnation, accepted);
         public Task<IReadOnlyList<Breakpoint>> GetBreakpointsAsync(string id, CancellationToken token) =>
             _runner.GetBreakpointsAsync(id, token);
 
