@@ -14,6 +14,7 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
     private long? _lastDemandRefresh;
     internal WorkflowHeartbeatService.CompatibilityMemo Compatibility { get; } = new();
     internal Microsoft.Extensions.Logging.ILogger<WorkflowHeartbeatService>? CapabilityLogger { get; init; }
+    internal IReadOnlyDictionary<string, string>? LastCapabilities => Volatile.Read(ref _capabilitySnapshot)?.Values;
 
     internal Task<IReadOnlyDictionary<string, string>> GetCapabilitiesAsync(IWorkflowCatalog catalog)
     {
@@ -66,7 +67,16 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
             : previous?.Versions ?? new Dictionary<(string, int), VersionCapability>();
         if (bundleHosting && (previous == null || previous.CatalogRevision != catalogRevision))
         {
-            var changes = await catalog.GetWorkflowVersionChangesAsync(reread ? 0 : previous?.CatalogRevision ?? 0);
+            var afterRevision = reread ? 0 : previous?.CatalogRevision ?? 0;
+            var changes = await catalog.GetWorkflowVersionChangesAsync(afterRevision);
+            // The store may have been restored between the scalar read and the delta.
+            if (changes.Revision < afterRevision)
+            {
+                CapabilityLogger?.LogWarning("The catalog revision moved back from {Previous} to {Current}; rereading every workflow version",
+                    afterRevision, changes.Revision);
+                versions = new Dictionary<(string, int), VersionCapability>();
+                changes = await catalog.GetWorkflowVersionChangesAsync(0);
+            }
             // Use the delta's watermark, never the earlier scalar read (a writer may race it).
             catalogRevision = changes.Revision;
             var updated = new Dictionary<(string, int), VersionCapability>(versions);

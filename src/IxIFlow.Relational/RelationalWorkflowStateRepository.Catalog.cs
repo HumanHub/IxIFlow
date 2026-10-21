@@ -237,27 +237,32 @@ public abstract partial class RelationalWorkflowStateRepository
                 new { Name = name }, transaction)).Select(row => row.Value).ToArray());
     }
 
-    public Task<long> GetCatalogRevisionAsync() => CatalogConnectionAsync((connection, transaction) =>
-        connection.QuerySingleAsync<long>(RequiredSql(Statement.CatalogRevision), transaction: transaction));
+    public Task<long> GetCatalogRevisionAsync() => CatalogConnectionAsync(ReadCatalogRevisionAsync);
+
+    private async Task<long> ReadCatalogRevisionAsync(DbConnection connection, DbTransaction? transaction) =>
+        await connection.QuerySingleOrDefaultAsync<long?>(RequiredSql(Statement.CatalogRevision), transaction: transaction)
+        ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The catalog revision row is missing; recreate the catalog schema");
 
     private async Task<long> AdvanceCatalogRevisionAsync(DbConnection connection, DbTransaction transaction)
     {
         if (await connection.ExecuteAsync(RequiredSql(Statement.CatalogRevisionAdvance), transaction: transaction) != 1)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The catalog revision row is missing; recreate the catalog schema");
-        return await connection.QuerySingleAsync<long>(RequiredSql(Statement.CatalogRevision), transaction: transaction);
+        return await ReadCatalogRevisionAsync(connection, transaction);
     }
 
     public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(afterRevision);
-        // Heartbeats must not wait for catalog writers, so this read takes no catalog lock.
+        // This read takes no catalog lock. Under SQL Server locking read committed, the
+        // revision read can wait for a writer's final statements; the heartbeat bounds its
+        // refresh wait to one interval and keeps advertising its last capability snapshot.
         // Writers advance the counter and stamp their row in one transaction and serialize on the
         // counter row, so revisions commit in order: once the watermark is read, every row stamped
         // at or below it is visible. Rows committed after the watermark may also be returned; they
         // are read again after the next revision, which is harmless.
         return CatalogConnectionAsync(async (connection, transaction) =>
         {
-            var revision = await connection.QuerySingleAsync<long>(RequiredSql(Statement.CatalogRevision), transaction: transaction);
+            var revision = await ReadCatalogRevisionAsync(connection, transaction);
             var rows = await connection.QueryAsync<VersionRow>(RequiredSql(Statement.CatalogVersionChanges),
                 new { AfterRevision = afterRevision }, transaction);
             return new WorkflowCatalogChanges(revision, rows.Select(row => row.Value).ToArray());

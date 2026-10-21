@@ -1,18 +1,21 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
+using Dapper;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Tests.Infrastructure;
 using Microsoft.Extensions.Time.Testing;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Feature", "host")]
 public sealed class CatalogHeartbeatRevisionTests
 {
-    public enum Scenario { Refresh, Demand, RacingPublication, ConcurrentWriters, NoOps, MemoRetention, DraftPublication, UnadvertisableDelta, DemandFailure, InflightDemand, RacingUnchangedRevision, CoalescedChanges, WithoutBundleHosting, RevisionMovedBack }
+    public enum Scenario { Refresh, Demand, RacingPublication, ConcurrentWriters, NoOps, MemoRetention, DraftPublication, UnadvertisableDelta, DemandFailure, InflightDemand, RacingUnchangedRevision, CoalescedChanges, WithoutBundleHosting, RevisionMovedBack, RevisionMovedBackDuringDelta }
     public static TheoryData<Scenario> Scenarios => new(Enum.GetValues<Scenario>());
 
     [Theory, MemberData(nameof(Scenarios))]
@@ -34,10 +37,21 @@ public sealed class CatalogHeartbeatRevisionTests
     [SqlServerFact, Trait("Category", "SqlIntegration")]
     public async Task SqlServer()
     {
+        foreach (var snapshot in new[] { false, true })
         foreach (var scenario in Enum.GetValues<Scenario>())
         {
             var cs = await SqlServerTestServer.CreateDatabaseAsync("CatalogRevision");
-            try { await VerifyAsync(new SqlWorkflowStateRepository(cs), scenario); }
+            try
+            {
+                await using (var connection = new SqlConnection(cs))
+                {
+                    await connection.OpenAsync();
+                    await connection.ExecuteAsync($"ALTER DATABASE [{connection.Database}] SET READ_COMMITTED_SNAPSHOT {(snapshot ? "ON" : "OFF")}");
+                    Assert.Equal(snapshot, await connection.ExecuteScalarAsync<bool>(
+                        "SELECT is_read_committed_snapshot_on FROM sys.databases WHERE name = DB_NAME()"));
+                }
+                await VerifyAsync(new SqlWorkflowStateRepository(cs), scenario);
+            }
             finally { await SqlServerTestServer.DropDatabaseAsync(cs); }
         }
     }
@@ -60,7 +74,8 @@ public sealed class CatalogHeartbeatRevisionTests
         var observed = DispatchProxy.Create<IWorkflowCatalog, CatalogReads>();
         var reads = (CatalogReads)(object)observed;
         reads.Inner = catalog;
-        var settings = HostSettings.Default with { BundleHostingEnabled = true };
+        var logger = new HeartbeatLogger();
+        var settings = HostSettings.Default with { BundleHostingEnabled = true, CapabilityLogger = logger };
         var time = new FakeTimeProvider();
         Task<IReadOnlyDictionary<string, string>> Refresh() => settings.RefreshCapabilitiesAsync(observed);
         async Task<IReadOnlyDictionary<string, string>> Demand()
@@ -73,13 +88,7 @@ public sealed class CatalogHeartbeatRevisionTests
         string Key(WorkflowVersion row) => $"workflow:{row.Name}@{row.Version}";
         // Exercise publication's transaction without compiling another bundle for each scenario.
         // The catalog accepts artifact/manifest metadata; compatibility uses the actual host profile.
-        var shared = new[] { typeof(WorkflowDefinition).Assembly, typeof(object).Assembly, Assembly.Load("System.Runtime") }
-            .Select(assembly => assembly.GetName()).ToDictionary(name => name.FullName, name => name.Version!.ToString());
-        var manifest = System.Text.Json.JsonSerializer.Serialize(new WorkflowBundleManifest(1, prefix, 1, "hash", "data", "entry",
-            typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion, "",
-            new("test", "latest", "release", true, "portable"), shared, new[] { WorkflowBundleArchive.AssemblyPath, WorkflowBundleArchive.PdbPath,
-                WorkflowBundleArchive.YamlPath, WorkflowBundleArchive.SourcePath }
-                .ToDictionary(path => path, _ => ArtifactDigest.Of(new byte[] { 1 }))));
+        var manifest = CompatibleManifest(prefix);
         Assert.True(WorkflowSharedAssemblies.IsCompatible(System.Text.Json.JsonSerializer.Deserialize<WorkflowBundleManifest>(manifest)!));
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
         async Task<WorkflowVersion> Publish(string name)
@@ -305,6 +314,38 @@ public sealed class CatalogHeartbeatRevisionTests
                 Assert.Equal(0, reads.VersionReads);
                 break;
             }
+            case Scenario.RevisionMovedBackDuringDelta:
+            {
+                var retained = await Publish(prefix);
+                var removed = await Publish(prefix + "-removed");
+                var snapshot = await Refresh();
+                Assert.Contains(Key(retained), snapshot.Keys);
+                Assert.Contains(Key(removed), snapshot.Keys);
+                var cursor = await store.GetCatalogRevisionAsync();
+                await store.SetWorkflowVersionStateAsync(retained.Name, 1, WorkflowVersionState.Deprecated);
+                reads.Reset();
+                // The scalar sees a forward revision, then the store is restored before the delta.
+                reads.BeforeDelta = () =>
+                {
+                    Assert.Equal(cursor, reads.LastAfter);
+                    reads.BeforeDelta = null;
+                    reads.RevisionMap = _ => cursor - 1;
+                    reads.Filter = row => row.Name == retained.Name;
+                    return Task.CompletedTask;
+                };
+                var restored = await Refresh();
+                Assert.Contains(Key(retained), restored.Keys);
+                Assert.DoesNotContain(Key(removed), restored.Keys);
+                Assert.Equal(2, reads.VersionReads);
+                Assert.Equal(0, reads.LastAfter);
+                Assert.Equal(retained.Name, Assert.Single(reads.Rows).Name);
+                Assert.Equal($"The catalog revision moved back from {cursor} to {cursor - 1}; rereading every workflow version",
+                    Assert.Single(logger.Messages));
+                reads.Reset();
+                Assert.Same(restored, await Refresh());
+                Assert.Equal(0, reads.VersionReads);
+                break;
+            }
             case Scenario.DraftPublication:
             {
                 var row = new WorkflowVersion(prefix, 1, "hash", WorkflowVersionState.Draft,
@@ -352,6 +393,153 @@ public sealed class CatalogHeartbeatRevisionTests
         }
     }
 
+    [Theory, InlineData(false), InlineData(true)]
+    public async Task HeartbeatsKeepTheirSnapshotWhileOneRefreshIsBlockedOrFails(bool fail)
+    {
+        var time = new HeartbeatTime();
+        var inner = new InMemoryWorkflowStateRepository(time);
+        var store = DispatchProxy.Create<IWorkflowStateRepository, HeartbeatReads>();
+        var beats = (HeartbeatReads)(object)store;
+        beats.Inner = inner;
+        using var catalog = new WorkflowCatalog(inner);
+        await catalog.RegisterWorkflowAsync(Workflow.Create<CatalogArtifactContractTests.Data>("HeartbeatLocal")
+            .Step<CatalogArtifactContractTests.Noop>().Build());
+        var observed = DispatchProxy.Create<IWorkflowCatalog, CatalogReads>();
+        var reads = (CatalogReads)(object)observed;
+        reads.Inner = catalog;
+        var settings = HostSettings.Default with { BundleHostingEnabled = true };
+        var logger = new HeartbeatLogger();
+        using var heartbeat = new WorkflowHeartbeatService(store, observed, settings, time, logger);
+        await heartbeat.StartAsync(CancellationToken.None);
+        var initial = await settings.GetCapabilitiesAsync(observed);
+        Assert.Contains("workflow:HeartbeatLocal@1", initial.Keys);
+        Assert.Contains("bundle-host", initial.Keys);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        reads.Reset();
+        reads.BeforeRevision = async () =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+            if (fail) throw new IOException("catalog unavailable");
+        };
+        try
+        {
+            // Start one refresh, then expire its per-tick wait using only injected time.
+            await UntilAsync(() => Volatile.Read(ref time.PeriodicTimers) == 1);
+            time.Advance(settings.HeartbeatInterval);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await UntilAsync(() => Volatile.Read(ref time.RefreshWaits) == 1);
+            Assert.Empty(beats.Snapshots);
+            for (var tick = 1; tick <= 3; tick++)
+            {
+                time.Advance(settings.HeartbeatInterval);
+                await UntilAsync(() => beats.Snapshots.Count == tick && Volatile.Read(ref time.RefreshWaits) == tick + 1);
+                Assert.All(beats.Snapshots, values => Assert.Same(initial, values));
+                Assert.Same(initial, await settings.GetCapabilitiesAsync(observed));
+                Assert.Single(await inner.GetLiveMembersAsync());
+                Assert.Equal(1, reads.RevisionReads);
+                Assert.Equal(0, reads.VersionReads);
+            }
+            var digest = await inner.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
+            var version = new WorkflowVersion("HeartbeatPublished", 1, "hash", ArtifactDigest: digest,
+                ManifestJson: CompatibleManifest("HeartbeatPublished"));
+            await inner.RegisterWorkflowVersionAsync(version);
+            reads.BeforeRevision = null;
+            release.SetResult();
+            await UntilAsync(() => beats.Snapshots.Count == 4);
+            if (fail)
+            {
+                Assert.Same(initial, beats.Snapshots.Last());
+                Assert.Same(initial, await settings.GetCapabilitiesAsync(observed));
+                Assert.Equal(1, logger.Warnings);
+                time.Advance(settings.HeartbeatInterval);
+                await UntilAsync(() => beats.Snapshots.Count == 5);
+            }
+            else Assert.Equal(0, logger.Warnings);
+            Assert.Equal(version.StructureHash, beats.Snapshots.Last()["workflow:HeartbeatPublished@1"]);
+            // Catch refreshes queued behind the capability gate while the first one was blocked.
+            Assert.Equal(fail ? 2 : 1, reads.RevisionReads);
+            Assert.Equal(1, reads.VersionReads);
+        }
+        finally
+        {
+            reads.BeforeRevision = null;
+            release.TrySetResult();
+            await heartbeat.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static async Task UntilAsync(Func<bool> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!condition()) await Task.Delay(10, timeout.Token);
+    }
+
+    private static string CompatibleManifest(string name)
+    {
+        var shared = new[] { typeof(WorkflowDefinition).Assembly, typeof(object).Assembly, Assembly.Load("System.Runtime") }
+            .Select(assembly => assembly.GetName()).ToDictionary(assembly => assembly.FullName, assembly => assembly.Version!.ToString());
+        return System.Text.Json.JsonSerializer.Serialize(new WorkflowBundleManifest(1, name, 1, "hash", "data", "entry",
+            typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion, "",
+            new("test", "latest", "release", true, "portable"), shared, new[] { WorkflowBundleArchive.AssemblyPath, WorkflowBundleArchive.PdbPath,
+                WorkflowBundleArchive.YamlPath, WorkflowBundleArchive.SourcePath }
+                .ToDictionary(path => path, _ => ArtifactDigest.Of(new byte[] { 1 }))));
+    }
+
+    private sealed class HeartbeatTime : TimeProvider
+    {
+        private readonly FakeTimeProvider _clock = new();
+        public int RefreshWaits;
+        public int PeriodicTimers;
+        public void Advance(TimeSpan amount) => _clock.Advance(amount);
+        public override DateTimeOffset GetUtcNow() => _clock.GetUtcNow();
+        public override long GetTimestamp() => _clock.GetTimestamp();
+        public override long TimestampFrequency => _clock.TimestampFrequency;
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = _clock.CreateTimer(callback, state, dueTime, period);
+            // Observe timeout installation so advancing fake time never races the awaiting loop.
+            if (period == Timeout.InfiniteTimeSpan) Interlocked.Increment(ref RefreshWaits);
+            else Interlocked.Increment(ref PeriodicTimers);
+            return timer;
+        }
+    }
+
+    private sealed class HeartbeatLogger : ILogger<WorkflowHeartbeatService>
+    {
+        public int Warnings;
+        public readonly ConcurrentQueue<string> Messages = new();
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? error, Func<TState, Exception?, string> formatter)
+        {
+            if (level != LogLevel.Warning) return;
+            Messages.Enqueue(formatter(state, error));
+            Interlocked.Increment(ref Warnings);
+        }
+    }
+
+    public class HeartbeatReads : DispatchProxy
+    {
+        public IWorkflowStateRepository Inner = null!;
+        public readonly ConcurrentQueue<IReadOnlyDictionary<string, string>> Snapshots = new();
+        protected override object? Invoke(MethodInfo? method, object?[]? args)
+        {
+            if (method!.Name == nameof(IWorkflowStateRepository.HeartbeatAsync))
+                return BeatAsync((Guid)args![0]!, (IReadOnlyDictionary<string, string>)args[1]!, (CancellationToken)args[2]!);
+            try { return method.Invoke(Inner, args); }
+            catch (TargetInvocationException error) when (error.InnerException != null)
+            { ExceptionDispatchInfo.Capture(error.InnerException).Throw(); throw; }
+        }
+        private async Task<bool> BeatAsync(Guid id, IReadOnlyDictionary<string, string> values, CancellationToken token)
+        {
+            var result = await Inner.HeartbeatAsync(id, values, token);
+            Snapshots.Enqueue(values);
+            return result;
+        }
+    }
+
     public class CatalogReads : DispatchProxy
     {
         public IWorkflowCatalog Inner = null!;
@@ -363,7 +551,9 @@ public sealed class CatalogHeartbeatRevisionTests
         public Func<Task>? AfterDelta;
         public Func<Task>? BeforeDelta;
         public Func<Task>? AfterRevision;
+        public Func<Task>? BeforeRevision;
         public Func<WorkflowVersion, WorkflowVersion>? Transform;
+        public Func<WorkflowVersion, bool>? Filter;
         public void Reset() { VersionReads = 0; RevisionReads = 0; Rows = []; }
         public void AssertSingle(string name)
         {
@@ -383,7 +573,8 @@ public sealed class CatalogHeartbeatRevisionTests
         }
         private async Task<long> ReadRevision()
         {
-            RevisionReads++;
+            Interlocked.Increment(ref RevisionReads);
+            if (BeforeRevision != null) await BeforeRevision();
             var revision = await Inner.GetCatalogRevisionAsync();
             if (RevisionMap != null) revision = RevisionMap(revision);
             if (AfterRevision != null) await AfterRevision();
@@ -397,6 +588,7 @@ public sealed class CatalogHeartbeatRevisionTests
             var changes = await Inner.GetWorkflowVersionChangesAsync(after);
             if (RevisionMap != null) changes = changes with { Revision = RevisionMap(changes.Revision) };
             if (Transform != null) changes = changes with { Versions = changes.Versions.Select(Transform).ToArray() };
+            if (Filter != null) changes = changes with { Versions = changes.Versions.Where(Filter).ToArray() };
             Rows = changes.Versions;
             if (AfterDelta != null) await AfterDelta();
             return changes;
