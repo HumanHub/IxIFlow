@@ -12,7 +12,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Feature", "host")]
 public sealed class CatalogHeartbeatRevisionTests
 {
-    public enum Scenario { Refresh, Demand, RacingPublication, ConcurrentWriters, NoOps, MemoRetention, DraftPublication, UnadvertisableDelta, DemandFailure, InflightDemand, RacingUnchangedRevision, CoalescedChanges }
+    public enum Scenario { Refresh, Demand, RacingPublication, ConcurrentWriters, NoOps, MemoRetention, DraftPublication, UnadvertisableDelta, DemandFailure, InflightDemand, RacingUnchangedRevision, CoalescedChanges, WithoutBundleHosting }
     public static TheoryData<Scenario> Scenarios => new(Enum.GetValues<Scenario>());
 
     [Theory, MemberData(nameof(Scenarios))]
@@ -270,6 +270,24 @@ public sealed class CatalogHeartbeatRevisionTests
                 reads.AssertSingle(row.Name);
                 break;
             }
+            case Scenario.WithoutBundleHosting:
+            {
+                // A host that does not host bundles advertises only its own code: a populated,
+                // changing catalog must cost it no catalog reads at all.
+                var row = await Publish(prefix);
+                var local = HostSettings.Default with { BundleHostingEnabled = false };
+                reads.Reset();
+                var capabilities = await local.RefreshCapabilitiesAsync(observed);
+                Assert.DoesNotContain(Key(row), capabilities.Keys);
+                Assert.DoesNotContain("bundle-host", capabilities.Keys);
+                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Deprecated);
+                Assert.Same(capabilities, await local.RefreshCapabilitiesAsync(observed));
+                time.Advance(local.HeartbeatInterval);
+                await local.RefreshDemandCapabilitiesAsync(observed, time);
+                Assert.Equal(0, reads.VersionReads);
+                Assert.Equal(0, reads.RevisionReads);
+                break;
+            }
             case Scenario.DraftPublication:
             {
                 var row = new WorkflowVersion(prefix, 1, "hash", WorkflowVersionState.Draft,
@@ -321,12 +339,13 @@ public sealed class CatalogHeartbeatRevisionTests
     {
         public IWorkflowCatalog Inner = null!;
         public int VersionReads;
+        public int RevisionReads;
         public IReadOnlyList<WorkflowVersion> Rows = [];
         public Func<Task>? AfterDelta;
         public Func<Task>? BeforeDelta;
         public Func<Task>? AfterRevision;
         public Func<WorkflowVersion, WorkflowVersion>? Transform;
-        public void Reset() { VersionReads = 0; Rows = []; }
+        public void Reset() { VersionReads = 0; RevisionReads = 0; Rows = []; }
         public void AssertSingle(string name)
         {
             Assert.Equal(1, VersionReads);
@@ -345,6 +364,7 @@ public sealed class CatalogHeartbeatRevisionTests
         }
         private async Task<long> ReadRevision()
         {
+            RevisionReads++;
             var revision = await Inner.GetCatalogRevisionAsync();
             if (AfterRevision != null) await AfterRevision();
             return revision;
