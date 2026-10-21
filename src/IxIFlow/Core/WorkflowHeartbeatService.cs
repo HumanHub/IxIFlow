@@ -14,6 +14,8 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
     HostSettings settings, TimeProvider time, ILogger<WorkflowHeartbeatService> logger, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
     InspectionRedactionPolicy? inspectionPolicy = null) : BackgroundService
 {
+    private IReadOnlyDictionary<string, string> _registeredCapabilities = null!;
+
     internal static bool IsAutomaticCapability(string key) =>
         key is "os" or "arch" or "runtime" or "host" or "bundle-host" || key.StartsWith("workflow:", StringComparison.Ordinal);
 
@@ -79,7 +81,9 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
-        await RegisterAsync(await settings.RefreshCapabilitiesAsync(registry), cancellationToken);
+        var capabilities = await settings.RefreshCapabilitiesAsync(registry, cancellationToken);
+        await RegisterAsync(capabilities, cancellationToken);
+        _registeredCapabilities = capabilities;
         try { await base.StartAsync(cancellationToken); }
         catch
         {
@@ -88,10 +92,32 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
         }
     }
 
+    private async Task<IReadOnlyDictionary<string, string>?> ObserveRefreshAsync(
+        Task<IReadOnlyDictionary<string, string>> refresh, CancellationToken stoppingToken)
+    {
+        try { return await refresh; }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return null; }
+        catch (Exception error)
+        {
+            // This observer outlives the heartbeat waiter, including during shutdown. Even
+            // a failing logger must not leave the abandoned observer with an unobserved fault.
+            try
+            {
+                (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Warning, error,
+                    "Could not refresh capabilities for host {HostId}; heartbeating with its last snapshot", settings.Id);
+            }
+            catch { }
+            return null;
+        }
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(settings.HeartbeatInterval, time);
-        Task<IReadOnlyDictionary<string, string>>? refresh = null;
+        Task<IReadOnlyDictionary<string, string>?>? refresh = null;
+        // HostSettings may also serve placement reads for a different catalog object.
+        // Only this heartbeat's registration and completed refreshes supply its fallback.
+        var capabilities = _registeredCapabilities;
         try
         {
             while (await timer.WaitForNextTickAsync(stoppingToken))
@@ -100,22 +126,15 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
                 {
                     try
                     {
-                        // Keep one refresh in flight, but do not let the catalog consume the
-                        // host's liveness window. Registration supplies the initial snapshot.
-                        refresh ??= settings.RefreshCapabilitiesAsync(registry);
-                        if (settings.LastCapabilities == null) await refresh;
-                        else await refresh.WaitAsync(settings.HeartbeatInterval, time, stoppingToken);
+                        // Dispatch synchronous provider work off the heartbeat loop, keep one
+                        // refresh in flight, and bound only the heartbeat's wait for its result.
+                        refresh ??= ObserveRefreshAsync(Task.Run(
+                            () => settings.RefreshCapabilitiesAsync(registry, stoppingToken), stoppingToken), stoppingToken);
+                        capabilities = await refresh.WaitAsync(settings.HeartbeatInterval, time, stoppingToken) ?? capabilities;
                         refresh = null;
                     }
-                    catch (TimeoutException) when (refresh is { IsCompleted: false }) { }
+                    catch (TimeoutException) { }
                     catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
-                    catch (Exception error)
-                    {
-                        refresh = null;
-                        (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Could not refresh capabilities for host {HostId}; heartbeating with its last snapshot", settings.Id);
-                    }
-                    var capabilities = settings.LastCapabilities;
-                    if (capabilities == null) continue;
                     if (!await repository.HeartbeatAsync(settings.Id, capabilities, stoppingToken))
                         await RegisterAsync(capabilities, stoppingToken);
                 }
