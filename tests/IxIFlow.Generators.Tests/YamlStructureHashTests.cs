@@ -13,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Generators.Tests.StructureHashFixtures;
 
+[Trait("Spec", "F-03")]
 public sealed class YamlStructureHashTests
 {
     [Theory]
