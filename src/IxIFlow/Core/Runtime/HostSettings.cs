@@ -14,7 +14,6 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
     private long? _lastDemandRefresh;
     internal WorkflowHeartbeatService.CompatibilityMemo Compatibility { get; } = new();
     internal Microsoft.Extensions.Logging.ILogger<WorkflowHeartbeatService>? CapabilityLogger { get; init; }
-    internal IReadOnlyDictionary<string, string>? LastCapabilities => Volatile.Read(ref _capabilitySnapshot)?.Values;
 
     internal Task<IReadOnlyDictionary<string, string>> GetCapabilitiesAsync(IWorkflowCatalog catalog)
     {
@@ -24,8 +23,8 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
             ? Task.FromResult(snapshot.Values) : CapabilitiesAsync(catalog, refresh: false);
     }
 
-    internal Task<IReadOnlyDictionary<string, string>> RefreshCapabilitiesAsync(IWorkflowCatalog catalog) =>
-        CapabilitiesAsync(catalog, refresh: true);
+    internal Task<IReadOnlyDictionary<string, string>> RefreshCapabilitiesAsync(IWorkflowCatalog catalog, CancellationToken cancellationToken = default) =>
+        CapabilitiesAsync(catalog, refresh: true, cancellationToken);
 
     internal async Task<IReadOnlyDictionary<string, string>?> RefreshDemandCapabilitiesAsync(IWorkflowCatalog catalog, TimeProvider time)
     {
@@ -116,11 +115,13 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
         return snapshot;
     }
 
-    private async Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync(IWorkflowCatalog catalog, bool refresh)
+    private async Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync(IWorkflowCatalog catalog, bool refresh,
+        CancellationToken cancellationToken = default)
     {
-        await _capabilityGate.WaitAsync();
+        await _capabilityGate.WaitAsync(cancellationToken);
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             // Read the revision before enumerating. A registration racing the enumeration then
             // invalidates this snapshot on the next lookup instead of being cached as already seen.
             var revision = catalog.DefinitionRevision;

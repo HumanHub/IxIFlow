@@ -393,8 +393,8 @@ public sealed class CatalogHeartbeatRevisionTests
         }
     }
 
-    [Theory, InlineData(false), InlineData(true)]
-    public async Task HeartbeatsKeepTheirSnapshotWhileOneRefreshIsBlockedOrFails(bool fail)
+    [Theory, InlineData(false, false), InlineData(true, false), InlineData(false, true), InlineData(true, true)]
+    public async Task HeartbeatsKeepTheirSnapshotWhileOneRefreshIsBlockedOrFails(bool fail, bool synchronous)
     {
         var time = new HeartbeatTime();
         var inner = new InMemoryWorkflowStateRepository(time);
@@ -417,7 +417,14 @@ public sealed class CatalogHeartbeatRevisionTests
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         reads.Reset();
-        reads.BeforeRevision = async () =>
+        if (synchronous) reads.BeforeRevisionTask = () =>
+        {
+            // Block in Invoke itself, before the catalog returns any task to its caller.
+            entered.TrySetResult();
+            release.Task.GetAwaiter().GetResult();
+            if (fail) throw new IOException("catalog unavailable");
+        };
+        else reads.BeforeRevision = async () =>
         {
             entered.TrySetResult();
             await release.Task;
@@ -446,6 +453,7 @@ public sealed class CatalogHeartbeatRevisionTests
                 ManifestJson: CompatibleManifest("HeartbeatPublished"));
             await inner.RegisterWorkflowVersionAsync(version);
             reads.BeforeRevision = null;
+            reads.BeforeRevisionTask = null;
             release.SetResult();
             await UntilAsync(() => beats.Snapshots.Count == 4);
             if (fail)
@@ -465,8 +473,322 @@ public sealed class CatalogHeartbeatRevisionTests
         finally
         {
             reads.BeforeRevision = null;
+            reads.BeforeRevisionTask = null;
             release.TrySetResult();
             await heartbeat.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Theory, InlineData(false, false), InlineData(false, true), InlineData(true, false), InlineData(true, true)]
+    public async Task HeartbeatFallbackBelongsToItsCatalog(bool sqlite, bool fail)
+    {
+        await using var fixture = await HeartbeatFixture.StartAsync(sqlite);
+        using var other = new WorkflowCatalog(fixture.Inner);
+        await other.RegisterWorkflowAsync(Workflow.Create<CatalogArtifactContractTests.Data>("OtherLocal")
+            .Step<CatalogArtifactContractTests.Noop>().Build());
+        var own = await fixture.Settings.GetCapabilitiesAsync(fixture.Observed);
+        var foreign = await fixture.Settings.GetCapabilitiesAsync(other);
+        Assert.Contains("workflow:OtherLocal@1", foreign.Keys);
+        Assert.DoesNotContain("workflow:HeartbeatLocal@1", foreign.Keys);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Reads.BeforeRevision = async () =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+            if (fail) throw new IOException("catalog unavailable");
+        };
+        try
+        {
+            fixture.Time.Advance(fixture.Settings.HeartbeatInterval);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await UntilAsync(() => fixture.Time.RefreshWaits == 1);
+            fixture.Time.Advance(fixture.Settings.HeartbeatInterval);
+            await UntilAsync(() => fixture.Beats.Snapshots.Count == 1 && fixture.Time.RefreshWaits == 2);
+            Assert.Same(own, fixture.Beats.Snapshots.Last());
+            if (fail)
+            {
+                release.SetResult();
+                await UntilAsync(() => fixture.Beats.Snapshots.Count == 2);
+                Assert.Equal(1, fixture.Logger.Warnings);
+                Assert.Same(own, fixture.Beats.Snapshots.Last());
+            }
+            var member = Assert.Single(await fixture.Inner.GetLiveMembersAsync());
+            Assert.Contains("workflow:HeartbeatLocal@1", member.Capabilities.Keys);
+            Assert.DoesNotContain("workflow:OtherLocal@1", member.Capabilities.Keys);
+            Assert.All(fixture.Beats.Snapshots, snapshot => Assert.Same(own, snapshot));
+            // On success, adopt A's returned result even though the shared cache previously held B.
+            fixture.Reads.BeforeRevision = null;
+            release.TrySetResult();
+            await UntilAsync(() => fixture.Beats.Snapshots.Count >= 2);
+            fixture.Time.Advance(fixture.Settings.HeartbeatInterval);
+            await UntilAsync(() => fixture.Beats.Snapshots.Count >= 3);
+            Assert.Contains("workflow:HeartbeatLocal@1", fixture.Beats.Snapshots.Last().Keys);
+            Assert.DoesNotContain("workflow:OtherLocal@1", fixture.Beats.Snapshots.Last().Keys);
+        }
+        finally { fixture.Reads.BeforeRevision = null; release.TrySetResult(); }
+    }
+
+    [Theory, InlineData(false, false), InlineData(false, true), InlineData(true, false), InlineData(true, true)]
+    public async Task StoppedHeartbeatObservesLateRefreshCompletion(bool sqlite, bool fail)
+    {
+        var marker = "late-heartbeat-" + Guid.NewGuid().ToString("N");
+        var unobserved = new ConcurrentQueue<string>();
+        void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs args)
+        {
+            foreach (var error in args.Exception.Flatten().InnerExceptions)
+                if (error.Message == marker) unobserved.Enqueue(error.Message);
+            args.SetObserved();
+        }
+        TaskScheduler.UnobservedTaskException += OnUnobserved;
+        try
+        {
+            var tasks = await CompleteRefreshAfterStopAsync(sqlite, fail, marker);
+            // The helper has returned, so no live test frame roots the service or refresh tasks.
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                await Task.Delay(10);
+            }
+            Assert.All(tasks, task => Assert.False(task.IsAlive));
+            Assert.Empty(unobserved);
+        }
+        finally { TaskScheduler.UnobservedTaskException -= OnUnobserved; }
+    }
+
+    private static async Task<WeakReference[]> CompleteRefreshAfterStopAsync(bool sqlite, bool fail, string marker)
+    {
+        await using var fixture = await HeartbeatFixture.StartAsync(sqlite);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tasks = new ConcurrentQueue<WeakReference>();
+        fixture.Reads.RevisionTaskStarted = task => tasks.Enqueue(new(task));
+        fixture.Reads.BeforeRevision = async () =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+            if (fail) throw new IOException(marker);
+        };
+        try
+        {
+            fixture.Time.Advance(fixture.Settings.HeartbeatInterval);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await UntilAsync(() => fixture.Time.RefreshWaits == 1);
+            await UntilAsync(() => tasks.Count == 1);
+            await fixture.Heartbeat.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Empty(await fixture.Inner.GetLiveMembersAsync());
+            Assert.All(tasks, task => Assert.False(Assert.IsAssignableFrom<Task>(task.Target).IsCompleted));
+            release.SetResult();
+            await UntilAsync(() => tasks.All(task => task.Target is not Task pending || pending.IsCompleted));
+            var gate = (SemaphoreSlim)typeof(HostSettings).GetField("_capabilityGate", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(fixture.Settings)!;
+            await UntilAsync(() => gate.CurrentCount == 1);
+            if (fail)
+            {
+                await UntilAsync(() => fixture.Logger.Warnings == 1);
+                Assert.StartsWith($"Could not refresh capabilities for host {fixture.Settings.Id}; heartbeating with its last snapshot",
+                    Assert.Single(fixture.Logger.Messages));
+            }
+            else Assert.Equal(0, fixture.Logger.Warnings);
+            Assert.Equal(1, fixture.Reads.RevisionReads);
+            Assert.Empty(fixture.Beats.Snapshots);
+            return tasks.ToArray();
+        }
+        finally { release.TrySetResult(); }
+    }
+
+    [Theory, InlineData(false), InlineData(true)]
+    public async Task StoppingCancelsHeartbeatQueuedBehindDemandWithoutReadingCatalog(bool sqlite)
+    {
+        await using var fixture = await HeartbeatFixture.StartAsync(sqlite);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Reads.BeforeRevision = async () => { entered.TrySetResult(); await release.Task; };
+        var demand = fixture.Settings.RefreshDemandCapabilitiesAsync(fixture.Observed, fixture.Time);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            fixture.Time.Advance(fixture.Settings.HeartbeatInterval);
+            await UntilAsync(() => fixture.Time.RefreshWaits == 1);
+            // Observe the actual semaphore queue, rather than race shutdown against Task.Run dispatch.
+            var gate = (SemaphoreSlim)typeof(HostSettings).GetField("_capabilityGate", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(fixture.Settings)!;
+            var head = typeof(SemaphoreSlim).GetField("m_asyncHead", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            await UntilAsync(() => head.GetValue(gate) != null);
+            await fixture.Heartbeat.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            await UntilAsync(() => head.GetValue(gate) == null);
+            Assert.Empty(await fixture.Inner.GetLiveMembersAsync());
+            release.SetResult();
+            Assert.NotNull(await demand.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal(1, fixture.Reads.RevisionReads);
+            Assert.Equal(0, fixture.Reads.VersionReads);
+            Assert.Equal(0, fixture.Logger.Warnings);
+        }
+        finally { release.TrySetResult(); await demand; }
+    }
+
+    private sealed class HeartbeatFixture : IAsyncDisposable
+    {
+        private readonly string? _root;
+        internal readonly HeartbeatTime Time = new();
+        internal readonly IWorkflowStateRepository Inner;
+        internal readonly WorkflowCatalog Catalog;
+        internal readonly IWorkflowCatalog Observed;
+        internal readonly CatalogReads Reads;
+        internal readonly HeartbeatReads Beats;
+        internal readonly HostSettings Settings = HostSettings.Default with { BundleHostingEnabled = true };
+        internal readonly HeartbeatLogger Logger = new();
+        internal readonly WorkflowHeartbeatService Heartbeat;
+        private HeartbeatFixture(bool sqlite)
+        {
+            if (sqlite)
+            {
+                _root = Path.Combine(Path.GetTempPath(), "IxIFlow.HeartbeatIsolation", Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(_root);
+                Inner = new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(_root, "state.db"), Time);
+            }
+            else Inner = new InMemoryWorkflowStateRepository(Time);
+            Catalog = new(Inner);
+            Observed = DispatchProxy.Create<IWorkflowCatalog, CatalogReads>();
+            Reads = (CatalogReads)(object)Observed;
+            Reads.Inner = Catalog;
+            var store = DispatchProxy.Create<IWorkflowStateRepository, HeartbeatReads>();
+            Beats = (HeartbeatReads)(object)store;
+            Beats.Inner = Inner;
+            Heartbeat = new(store, Observed, Settings, Time, Logger);
+        }
+        internal static async Task<HeartbeatFixture> StartAsync(bool sqlite)
+        {
+            var fixture = new HeartbeatFixture(sqlite);
+            await fixture.Catalog.RegisterWorkflowAsync(Workflow.Create<CatalogArtifactContractTests.Data>("HeartbeatLocal")
+                .Step<CatalogArtifactContractTests.Noop>().Build());
+            await fixture.Heartbeat.StartAsync(CancellationToken.None);
+            await UntilAsync(() => fixture.Time.PeriodicTimers == 1);
+            fixture.Reads.Reset();
+            return fixture;
+        }
+        public async ValueTask DisposeAsync()
+        {
+            await Heartbeat.StopAsync(CancellationToken.None);
+            Heartbeat.Dispose();
+            Catalog.Dispose();
+            if (Inner is IAsyncDisposable disposable) await disposable.DisposeAsync();
+            if (_root != null) await SqliteTestFiles.DeleteAsync(_root);
+        }
+    }
+
+    [SqlServerFact, Trait("Category", "SqlIntegration")]
+    public async Task SqlServerHeldWriterKeepsHeartbeatsLiveAcrossCommitAndRollback()
+    {
+        foreach (var snapshot in new[] { false, true })
+        foreach (var commit in new[] { false, true })
+        {
+            var cs = await SqlServerTestServer.CreateDatabaseAsync("CatalogHeldWriter");
+            try { await VerifyHeldSqlWriterAsync(cs, snapshot, commit); }
+            finally { await SqlServerTestServer.DropDatabaseAsync(cs); }
+        }
+    }
+
+    private static async Task VerifyHeldSqlWriterAsync(string cs, bool snapshot, bool commit)
+    {
+        await using var holder = new SqlConnection(cs);
+        await holder.OpenAsync();
+        await holder.ExecuteAsync($"ALTER DATABASE [{holder.Database}] SET READ_COMMITTED_SNAPSHOT {(snapshot ? "ON" : "OFF")}");
+        Assert.Equal(snapshot, await holder.ExecuteScalarAsync<bool>(
+            "SELECT is_read_committed_snapshot_on FROM sys.databases WHERE name = DB_NAME()"));
+        var inner = new SqlWorkflowStateRepository(cs);
+        using var catalog = new WorkflowCatalog(inner);
+        var observed = DispatchProxy.Create<IWorkflowCatalog, CatalogReads>();
+        var reads = (CatalogReads)(object)observed;
+        reads.Inner = catalog;
+        var store = DispatchProxy.Create<IWorkflowStateRepository, HeartbeatReads>();
+        var beats = (HeartbeatReads)(object)store;
+        beats.Inner = inner;
+        var settings = HostSettings.Default with { BundleHostingEnabled = true, HeartbeatInterval = TimeSpan.FromSeconds(1) };
+        var logger = new HeartbeatLogger();
+        using var heartbeat = new WorkflowHeartbeatService(store, observed, settings, TimeProvider.System, logger);
+        var digest = await inner.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
+        var held = new WorkflowVersion("HeldPublication", 1, "held-hash", ArtifactDigest: digest,
+            ManifestJson: CompatibleManifest("HeldPublication"));
+        var before = await inner.GetCatalogRevisionAsync();
+        await heartbeat.StartAsync(CancellationToken.None);
+        var registered = Assert.Single(await inner.GetLiveMembersAsync());
+        reads.Reset();
+        await using var transaction = await holder.BeginTransactionAsync();
+        var finished = false;
+        try
+        {
+            // Match CatalogWriteAsync, CatalogRevisionAdvance and CatalogVersionInsert exactly:
+            // the application lock, counter increment/read and stamped insert share one transaction.
+            await holder.ExecuteAsync("""
+                DECLARE @catalogLock INT; EXEC @catalogLock = sys.sp_getapplock @Resource=N'IxIFlow.Catalog', @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=30000; IF @catalogLock < 0 THROW 51000, 'Could not lock the workflow catalog', 1;
+                UPDATE dbo.IxIFlowCatalogRevision SET Revision=Revision+1 WHERE Id=1;
+                """, transaction: transaction);
+            var revision = await holder.ExecuteScalarAsync<long>(
+                "SELECT Revision FROM dbo.IxIFlowCatalogRevision WHERE Id=1", transaction: transaction);
+            Assert.Equal(before + 1, revision);
+            await holder.ExecuteAsync("""
+                INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision)
+                """, new
+            {
+                held.Name, held.Version, held.StructureHash, State = held.State.ToString(),
+                ArtifactDigest = held.ArtifactDigest!.Value.Value,
+                MetadataJson = System.Text.Json.JsonSerializer.Serialize(held), CatalogRevision = revision
+            }, transaction);
+            await UntilAsync(() => Volatile.Read(ref reads.RevisionReads) >= 1);
+            if (!snapshot)
+            {
+                // Verify the heartbeat really reached the held SQL lock, rather than merely
+                // taking no refresh during the transaction.
+                var session = await holder.ExecuteScalarAsync<int>("SELECT @@SPID", transaction: transaction);
+                await using var observer = new SqlConnection(cs);
+                await observer.OpenAsync();
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                while (!await observer.ExecuteScalarAsync<bool>(new CommandDefinition("""
+                    SELECT CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id=@Session)
+                    THEN 1 ELSE 0 END AS bit)
+                    """, new { Session = session }, cancellationToken: timeout.Token))) await Task.Delay(10, timeout.Token);
+            }
+            var previous = registered.HeartbeatAtUtc;
+            // Hold longer than the three-interval liveness window, observing actual persisted
+            // renewals against SQL Server's clock, under both locking RC and RCSI.
+            var observedBeats = 0;
+            for (var count = 1; count <= 4; count++)
+            {
+                await UntilAsync(() => beats.Snapshots.Count > observedBeats);
+                var member = Assert.Single(await inner.GetLiveMembersAsync());
+                Assert.True(member.HeartbeatAtUtc > previous);
+                Assert.True(member.HeartbeatAtUtc - previous < settings.HeartbeatInterval * 3);
+                Assert.DoesNotContain("workflow:HeldPublication@1", member.Capabilities.Keys);
+                previous = member.HeartbeatAtUtc;
+                observedBeats = beats.Snapshots.Count;
+            }
+            Assert.True(previous - registered.HeartbeatAtUtc >= settings.HeartbeatInterval * 3);
+            Assert.All(beats.Snapshots, values => Assert.DoesNotContain("workflow:HeldPublication@1", values.Keys));
+            if (commit) await transaction.CommitAsync();
+            else await transaction.RollbackAsync();
+            finished = true;
+            var countAtRelease = beats.Snapshots.Count;
+            await UntilAsync(() => beats.Snapshots.Count > countAtRelease &&
+                (!commit || beats.Snapshots.Last().ContainsKey("workflow:HeldPublication@1")));
+            Assert.Equal(commit ? before + 1 : before, await inner.GetCatalogRevisionAsync());
+            Assert.Equal(commit, (await inner.GetWorkflowVersionAsync(held.Name, held.Version)) != null);
+            if (commit) Assert.Equal(held.StructureHash, beats.Snapshots.Last()["workflow:HeldPublication@1"]);
+            else Assert.All(beats.Snapshots, values => Assert.DoesNotContain("workflow:HeldPublication@1", values.Keys));
+            var later = held with { Name = "LaterPublication", StructureHash = "later-hash" };
+            await inner.RegisterWorkflowVersionAsync(later);
+            await UntilAsync(() => beats.Snapshots.Last().ContainsKey("workflow:LaterPublication@1"));
+            var final = Assert.Single(await inner.GetLiveMembersAsync());
+            Assert.Equal(later.StructureHash, final.Capabilities["workflow:LaterPublication@1"]);
+            Assert.Equal(commit, final.Capabilities.ContainsKey("workflow:HeldPublication@1"));
+            Assert.Equal(0, logger.Warnings);
+        }
+        finally
+        {
+            if (!finished) await transaction.RollbackAsync();
+            await heartbeat.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
         }
     }
 
@@ -552,6 +874,8 @@ public sealed class CatalogHeartbeatRevisionTests
         public Func<Task>? BeforeDelta;
         public Func<Task>? AfterRevision;
         public Func<Task>? BeforeRevision;
+        public Action? BeforeRevisionTask;
+        public Action<Task>? RevisionTaskStarted;
         public Func<WorkflowVersion, WorkflowVersion>? Transform;
         public Func<WorkflowVersion, bool>? Filter;
         public void Reset() { VersionReads = 0; RevisionReads = 0; Rows = []; }
@@ -562,7 +886,14 @@ public sealed class CatalogHeartbeatRevisionTests
         }
         protected override object? Invoke(MethodInfo? method, object?[]? args)
         {
-            if (method!.Name == nameof(IWorkflowCatalog.GetCatalogRevisionAsync)) return ReadRevision();
+            if (method!.Name == nameof(IWorkflowCatalog.GetCatalogRevisionAsync))
+            {
+                Interlocked.Increment(ref RevisionReads);
+                BeforeRevisionTask?.Invoke();
+                var task = ReadRevision();
+                RevisionTaskStarted?.Invoke(task);
+                return task;
+            }
             if (method.Name == nameof(IWorkflowCatalog.GetWorkflowVersionChangesAsync))
                 return ReadDelta((long)args![0]!);
             if (method.Name == nameof(IWorkflowCatalog.GetWorkflowVersionsAsync))
@@ -573,7 +904,6 @@ public sealed class CatalogHeartbeatRevisionTests
         }
         private async Task<long> ReadRevision()
         {
-            Interlocked.Increment(ref RevisionReads);
             if (BeforeRevision != null) await BeforeRevision();
             var revision = await Inner.GetCatalogRevisionAsync();
             if (RevisionMap != null) revision = RevisionMap(revision);
