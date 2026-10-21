@@ -124,6 +124,52 @@ public abstract record WorkflowStepDocument : DocumentNode
     public string Kind { get; init; } = string.Empty;
     [Description("The explicit step name used by the fluent definition.")]
     public string? Name { get; init; }
+
+    /// <summary>Child bodies in document traversal order, including declared empty bodies.</summary>
+    public IEnumerable<(string Kind, string? Key, List<WorkflowStepDocument> Steps)> ChildScopes()
+    {
+        switch (this)
+        {
+            case SequenceStepDocument sequence:
+                yield return ("sequence", null, sequence.Steps);
+                break;
+            case ConditionalStepDocument condition:
+                yield return ("then", null, condition.Then);
+                yield return ("else", null, condition.Else);
+                break;
+            case ForEachStepDocument each:
+                yield return ("foreach", null, each.Steps);
+                break;
+            case WaitStepDocument { OnTimeout: { } timeout }:
+                yield return ("timeout", null, timeout);
+                break;
+            case ParallelStepDocument parallel:
+                for (var index = 0; index < parallel.Branches.Count; index++)
+                    yield return ("branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), parallel.Branches[index].Steps);
+                break;
+            case LoopStepDocument loop:
+                yield return ("loop", null, loop.Steps);
+                break;
+            case TryStepDocument attempt:
+                yield return ("sequence", null, attempt.Steps);
+                for (var index = 0; index < attempt.Catches.Count; index++)
+                    yield return ("catch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), attempt.Catches[index].Steps);
+                if (attempt.Finally != null)
+                    yield return ("finally", null, attempt.Finally);
+                break;
+            case SagaStepDocument saga:
+                yield return ("sequence", null, saga.Steps);
+                for (var index = 0; index < saga.OnError.Count; index++)
+                    yield return ("catch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), saga.OnError[index].Steps);
+                break;
+            case OutcomeStepDocument outcome:
+                for (var index = 0; index < outcome.Branches.Count; index++)
+                    yield return ("outcome", index.ToString(System.Globalization.CultureInfo.InvariantCulture), outcome.Branches[index].Steps);
+                if (outcome.Default != null)
+                    yield return ("outcome", outcome.Branches.Count.ToString(System.Globalization.CultureInfo.InvariantCulture), outcome.Default);
+                break;
+        }
+    }
 }
 
 [Description("An activity invocation with defaults and input and output mappings.")]

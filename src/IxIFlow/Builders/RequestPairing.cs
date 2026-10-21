@@ -72,16 +72,11 @@ internal static class RequestPairing
         bodies.Add(body);
         foreach (var step in body)
         {
-            foreach (var nested in new[]
+            foreach (var scope in step.ChildScopes().OrderBy(scope => scope.Kind switch
                      {
-                         step.SequenceSteps, step.ThenSteps, step.ElseSteps, step.LoopBodySteps, step.FinallySteps,
-                         step.TimeoutSteps, step.CatchBlocks, step.ForEachBodySteps
-                     })
-                Collect(nested, bodies);
-            foreach (var branch in step.ParallelBranches)
-                Collect(branch, bodies);
-            foreach (var outcome in step.OutcomeBranches)
-                Collect(outcome.Steps, bodies);
+                         "foreach" => 1, "branch" or "outcome" => 2, _ => 0
+                     }))
+                Collect(scope.Steps, bodies);
         }
     }
 

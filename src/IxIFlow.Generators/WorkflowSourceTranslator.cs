@@ -73,21 +73,8 @@ public static class WorkflowSourceTranslator
         }
     }
 
-    private static IEnumerable<WorkflowStepDocument> Children(WorkflowStepDocument step) => step switch
-    {
-        SequenceStepDocument sequence => sequence.Steps,
-        ConditionalStepDocument condition => condition.Then.Concat(condition.Else),
-        ForEachStepDocument each => each.Steps,
-        WaitStepDocument wait => wait.OnTimeout ?? Enumerable.Empty<WorkflowStepDocument>(),
-        ParallelStepDocument parallel => parallel.Branches.SelectMany(branch => branch.Steps),
-        LoopStepDocument loop => loop.Steps,
-        TryStepDocument attempt => attempt.Steps.Concat(attempt.Catches.SelectMany(handler => handler.Steps))
-            .Concat(attempt.Finally ?? Enumerable.Empty<WorkflowStepDocument>()),
-        SagaStepDocument saga => saga.Steps.Concat(saga.OnError.SelectMany(handler => handler.Steps)),
-        OutcomeStepDocument outcome => outcome.Branches.SelectMany(branch => branch.Steps)
-            .Concat(outcome.Default ?? Enumerable.Empty<WorkflowStepDocument>()),
-        _ => Enumerable.Empty<WorkflowStepDocument>()
-    };
+    private static IEnumerable<WorkflowStepDocument> Children(WorkflowStepDocument step) =>
+        step.ChildScopes().SelectMany(scope => scope.Steps);
 
     private static IEnumerable<string> StepTypeNames(WorkflowStepDocument step)
     {
@@ -110,15 +97,17 @@ public static class WorkflowSourceTranslator
                 if (invocation.DataType != null) yield return invocation.DataType;
                 break;
             case TryStepDocument attempt:
-                foreach (var handler in attempt.Catches)
+                foreach (var scope in attempt.ChildScopes().Where(scope => scope.Kind == "catch"))
                 {
+                    var handler = attempt.Catches[int.Parse(scope.Key!, CultureInfo.InvariantCulture)];
                     if (handler.Exception != null) yield return handler.Exception;
                     if (handler.FaultType != null) yield return handler.FaultType;
                 }
                 break;
             case SagaStepDocument saga:
-                foreach (var handler in saga.OnError)
+                foreach (var scope in saga.ChildScopes().Where(scope => scope.Kind == "catch"))
                 {
+                    var handler = saga.OnError[int.Parse(scope.Key!, CultureInfo.InvariantCulture)];
                     if (handler.Exception != null) yield return handler.Exception;
                     if (handler.FaultType != null) yield return handler.FaultType;
                     if (handler.CompensateUpTo != null) yield return handler.CompensateUpTo;

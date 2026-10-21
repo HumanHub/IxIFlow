@@ -8,7 +8,7 @@ internal sealed class WorkflowScopeCatalog
 {
     private readonly Dictionary<string, IReadOnlyList<WorkflowStep>> _scopes = new();
     private readonly Dictionary<string, WorkflowStep> _steps = new();
-    private readonly Dictionary<(WorkflowStep Step, string Kind, int Index), string> _scopeIds = new();
+    private readonly Dictionary<(WorkflowStep Step, string Kind, string? Key), string> _scopeIds = new();
     private readonly Dictionary<(WorkflowStep Saga, WorkflowStep Source), string> _compensationScopeIds = new();
     private readonly Dictionary<WorkflowStep, string> _ids = new();
     private readonly Dictionary<ItemScope, string> _handles = new(ReferenceEqualityComparer.Instance);
@@ -58,14 +58,14 @@ internal sealed class WorkflowScopeCatalog
     public string FinallyScope(WorkflowStep step) => ScopeId(step, "finally");
     public string TimeoutScope(WorkflowStep step) => ScopeId(step, "timeout");
     public string CatchBodyScope(WorkflowStep catchBlock) => SequenceScope(catchBlock);
-    public string BranchScope(WorkflowStep step, int index) => ScopeId(step, "branch", index);
-    public string OutcomeScope(WorkflowStep step, int index) => ScopeId(step, "outcome", index);
+    public string BranchScope(WorkflowStep step, int index) => ScopeId(step, "branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    public string OutcomeScope(WorkflowStep step, int index) => ScopeId(step, "outcome", index.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
-    private string ScopeId(WorkflowStep step, string kind, int index = -1)
+    private string ScopeId(WorkflowStep step, string kind, string? childKey = null)
     {
-        var key = (step, kind, index);
+        var key = (step, kind, childKey);
         if (!_scopeIds.TryGetValue(key, out var id))
-            _scopeIds.Add(key, id = index < 0 ? $"{Id(step)}/{kind}" : $"{Id(step)}/{kind}/{index}");
+            _scopeIds.Add(key, id = childKey == null ? $"{Id(step)}/{kind}" : $"{Id(step)}/{kind}/{childKey}");
         return id;
     }
 
@@ -82,20 +82,12 @@ internal sealed class WorkflowScopeCatalog
             if (step.ForEachItem != null && !_handles.TryAdd(step.ForEachItem, stepId))
                 throw WorkflowBuildError.Invalid(step,
                     $"{step.ForEachItem} belongs to two ForEach steps, '{_handles[step.ForEachItem]}' and '{stepId}'");
-            AddScope(SequenceScope(step), step.SequenceSteps);
-            AddScope(ThenScope(step), step.ThenSteps);
-            AddScope(ElseScope(step), step.ElseSteps);
-            AddScope(LoopScope(step), step.LoopBodySteps);
-            AddScope(ForEachScope(step), step.ForEachBodySteps);
-            AddScope(FinallyScope(step), step.FinallySteps);
-            AddScope(TimeoutScope(step), step.TimeoutSteps);
-            AddScope($"{stepId}/catch", step.CatchBlocks);
-            if (step.StepType == WorkflowStepType.Saga)
-                AddSagaCompensations(step);
-            for (var branchIndex = 0; branchIndex < step.ParallelBranches.Count; branchIndex++)
-                AddScope(BranchScope(step, branchIndex), step.ParallelBranches[branchIndex]);
-            for (var outcomeIndex = 0; outcomeIndex < step.OutcomeBranches.Count; outcomeIndex++)
-                AddScope(OutcomeScope(step, outcomeIndex), step.OutcomeBranches[outcomeIndex].Steps);
+            foreach (var scope in step.ChildScopes())
+            {
+                AddScope(ScopeId(step, scope.Kind, scope.Key), scope.Steps);
+                if (scope.Kind == "catch" && step.StepType == WorkflowStepType.Saga)
+                    AddSagaCompensations(step);
+            }
         }
     }
 
@@ -134,8 +126,8 @@ internal sealed class WorkflowScopeCatalog
             if (step.StepType == WorkflowStepType.Activity &&
                 step.StepMetadata.ContainsKey("IsSagaStep"))
                 yield return step;
-            foreach (var branch in step.OutcomeBranches)
-                foreach (var nested in SagaActivities(branch.Steps))
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind == "outcome"))
+                foreach (var nested in SagaActivities(scope.Steps))
                     yield return nested;
         }
     }

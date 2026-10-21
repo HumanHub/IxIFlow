@@ -126,15 +126,12 @@ internal static class ParallelRules
         foreach (var step in steps)
         {
             yield return step;
-            var nested = new IReadOnlyList<WorkflowStep>[]
-                {
-                    step.SequenceSteps, step.ThenSteps, step.ElseSteps, step.LoopBodySteps, step.FinallySteps,
-                    step.CatchBlocks, step.TimeoutSteps, step.ForEachBodySteps
-                }
-                .Concat(step.ParallelBranches)
-                .Concat(step.OutcomeBranches.Select(branch => branch.Steps));
-            foreach (var body in nested)
-                foreach (var inner in Flatten(body))
+            // Keep validation order: catches precede timeouts, and item bodies follow both.
+            foreach (var scope in step.ChildScopes().OrderBy(scope => scope.Kind switch
+                     {
+                         "timeout" => 1, "foreach" => 2, "branch" or "outcome" => 3, _ => 0
+                     }))
+                foreach (var inner in Flatten(scope.Steps))
                     yield return inner;
         }
     }
