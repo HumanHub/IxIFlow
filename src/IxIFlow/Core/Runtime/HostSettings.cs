@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>How many instances the host runs at once and how long it drains on stop.</summary>
@@ -55,11 +57,16 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
         if (previous != null && previous.Revision == revision && previous.CatalogRevision == catalogRevision)
             return previous.Values;
 
-        IReadOnlyDictionary<(string Name, int Version), VersionCapability> versions = previous?.Versions
-            ?? new Dictionary<(string, int), VersionCapability>();
+        // A revision below the cursor means the store was restored or replaced: reread every version.
+        var reread = previous != null && catalogRevision < previous.CatalogRevision;
+        if (reread)
+            CapabilityLogger?.LogWarning("The catalog revision moved back from {Previous} to {Current}; rereading every workflow version",
+                previous!.CatalogRevision, catalogRevision);
+        IReadOnlyDictionary<(string Name, int Version), VersionCapability> versions = reread ? new Dictionary<(string, int), VersionCapability>()
+            : previous?.Versions ?? new Dictionary<(string, int), VersionCapability>();
         if (bundleHosting && (previous == null || previous.CatalogRevision != catalogRevision))
         {
-            var changes = await catalog.GetWorkflowVersionChangesAsync(previous?.CatalogRevision ?? 0);
+            var changes = await catalog.GetWorkflowVersionChangesAsync(reread ? 0 : previous?.CatalogRevision ?? 0);
             // Use the delta's watermark, never the earlier scalar read (a writer may race it).
             catalogRevision = changes.Revision;
             var updated = new Dictionary<(string, int), VersionCapability>(versions);
