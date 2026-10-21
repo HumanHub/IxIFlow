@@ -126,6 +126,7 @@ internal sealed partial class TraceBuffer
         CapturePositions(entry.Timestamp);
         var (stepId, continuationId) = entry.Payload switch
         {
+            GraphTrace p => (p.StepId, p.ContinuationId),
             ControlFlowTrace p => (p.StepId, p.ContinuationId),
             ConditionTrace p => (p.StepId, p.ContinuationId),
             JoinTrace p => (p.StepId, p.ContinuationId),
@@ -157,7 +158,9 @@ internal sealed partial class TraceBuffer
         TraceEntryType.ForEachItemEnded or TraceEntryType.CompensationStarted or TraceEntryType.CompensationCompleted or
         TraceEntryType.CompensationFailed or TraceEntryType.WaitTimedOut or TraceEntryType.DelayFired or
         TraceEntryType.SagaRetryStarted or TraceEntryType.StepRetryScheduled or
-        TraceEntryType.ReplayOrigin or TraceEntryType.ThreadPosition;
+        TraceEntryType.ReplayOrigin or TraceEntryType.ThreadPosition or TraceEntryType.NodeEntered or
+        TraceEntryType.NodeExited or TraceEntryType.TransitionTaken or TraceEntryType.GraphCompleted or
+        TraceEntryType.StateEntered or TraceEntryType.ExitEntered or TraceEntryType.ActionEntered;
 
     public void Committed()
     {

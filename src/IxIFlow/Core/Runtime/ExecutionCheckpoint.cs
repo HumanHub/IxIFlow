@@ -214,9 +214,9 @@ internal sealed class ExecutionCheckpoint
         if (root.ValueKind != JsonValueKind.Object ||
             !root.TryGetProperty(nameof(Runtime), out var runtime) || runtime.GetString() != "structured-v2" ||
             !root.TryGetProperty(nameof(SchemaVersion), out savedVersion) ||
-            savedVersion.ValueKind != JsonValueKind.Number || !savedVersion.TryGetInt32(out var number) || number != 4)
+            savedVersion.ValueKind != JsonValueKind.Number || !savedVersion.TryGetInt32(out var number) || number != WorkflowDefinitionValidator.CheckpointContractVersion)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                $"Unsupported execution checkpoint version '{version}'; expected 4. " +
+                $"Unsupported execution checkpoint version '{version}'; expected {WorkflowDefinitionValidator.CheckpointContractVersion}. " +
                 "Saved instances from earlier builds cannot be read; no migration is available");
     }
 
@@ -773,8 +773,34 @@ internal sealed class ActivityInputValue
         problem.GetBaseException().Message, problem);
 }
 
+internal enum FrameKind { Body, Item, Node, Edge }
+
+internal sealed class GraphState
+{
+    public string Node { get; set; } = "";
+    public long Visits { get; set; }
+    public string? Via { get; set; }
+    public GraphPending? Pending { get; set; }
+    [JsonIgnore]
+    public int PassEntries { get; set; }
+}
+
+internal sealed class GraphPending
+{
+    public string Via { get; set; } = "";
+    public string? Target { get; set; }
+    public TransitionCause Cause { get; set; }
+}
+
 internal sealed class ScopePosition
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public FrameKind Kind { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GraphState? Graph { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Node { get; set; }
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool CompensationFailed { get; set; }
 

@@ -106,7 +106,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         ExecutionCheckpoint checkpoint,
         ContinuationState continuation,
         int maxActiveBranches,
-        int maxForEachItems)
+        int maxForEachItems,
+        int maxGraphTransitionsPerPass = ExecutionLimits.DefaultMaxGraphTransitionsPerPass)
     {
         checkpoint.Touch(continuation);
         var workflowData = checkpoint.DataOf(continuation);
@@ -137,6 +138,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var steps = scopes.Steps(position.ScopeId);
         if (position.NextStepIndex == steps.Count)
         {
+            GraphTransitions.CheckExit(continuation, position, maxGraphTransitionsPerPass);
             continuation.Stack.RemoveAt(continuation.Stack.Count - 1);
             if (position.RestorePreviousOnExit)
             {
@@ -159,6 +161,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 if (position.ExitParentScopeOnExit)
                 {
                     parent.NextStepIndex = scopes.Steps(parent.ScopeId).Count;
+                    if (parent.Kind == FrameKind.Node)
+                    {
+                        parent.NextStepIndex--;
+                        continuation.SetPrevious(null);
+                    }
                     return;
                 }
                 var currentStep = scopes.Steps(parent.ScopeId)[parent.NextStepIndex];
@@ -173,7 +180,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     // The ForEach runs its next item, or completes, when it is advanced again.
                 }
                 else if (!TryScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation) &&
-                         !SagaScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation))
+                         !SagaScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation) &&
+                         !GraphTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation))
                     parent.NextStepIndex++;
             }
             return;
@@ -182,6 +190,29 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var step = steps[position.NextStepIndex];
         switch (step.StepType)
         {
+            case WorkflowStepType.Flowchart:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
+                GraphTransitions.Enter(scopes, checkpoint, continuation, position, step);
+                break;
+
+            case WorkflowStepType.Enter:
+                var owner = continuation.Stack[^2];
+                var graph = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
+                checkpoint.Trace.Graph(TraceEntryType.NodeEntered, step, continuation, scopes.Id(graph),
+                    position.Node!, owner.Graph!.Visits, owner.Graph.Via);
+                position.NextStepIndex++;
+                break;
+
+            case WorkflowStepType.Decision:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
+                GraphTransitions.Decide(scopes, checkpoint, continuation, step, services);
+                break;
+
+            case WorkflowStepType.Edge:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
+                GraphTransitions.Edge(scopes, checkpoint, continuation, step);
+                break;
+
             case WorkflowStepType.Sequence:
                 checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 continuation.Stack.Add(new ScopePosition
@@ -1021,6 +1052,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             }
             foreach (var frame in continuation.Stack)
             {
+                if (frame.Graph != null) frame.Graph.PassEntries = 0;
                 if (frame is { RuntimeEntryPrevious: not null, EntryPrevious: null })
                 {
                     frame.EntryPrevious = SerializedValue.From(frame.RuntimeEntryPrevious);

@@ -27,6 +27,7 @@ public sealed class DebugStepLocationTests
             .Saga(s => s.Step<Noop>(a => a.CompensateWith<Noop>())).OnError(b => b.Step<Noop>()).Step<Noop>()
             .WaitFor<Go>("go")
             .ForEach(c => c.WorkflowData.Items, (b, item) => b.Result(c => c.Item(item)))
+            .Flowchart(f => f.Start("start").Node("start", edges => edges.Always("done")).Node("done"))
             .Build();
         var table = definition.StepTable;
         Assert.Same(table, definition.StepTable);

@@ -579,10 +579,10 @@ public sealed class WorkflowExecutor
                             if (runnable.ParentJoinId == null)
                                 checkpoint.RootDataChanged = true;
                             _transitions.Advance(scopes, checkpoint, runnable,
-                                host.Limits.MaxActiveBranches, host.Limits.MaxForEachItems);
+                                host.Limits.MaxActiveBranches, host.Limits.MaxForEachItems, host.Limits.MaxGraphTransitionsPerPass);
                         }
                         catch (ResourceLimitExceededException limit) when
-                            (limit is BranchLimitExceededException or ForEachLimitExceededException)
+                            (limit is BranchLimitExceededException or ForEachLimitExceededException or GraphTransitionLimitExceededException)
                         {
                             // Nothing was forked or saved, the list included; the step runs after a release.
                             limitStop = limit.Message;

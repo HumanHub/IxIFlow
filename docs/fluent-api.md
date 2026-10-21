@@ -7,6 +7,32 @@ Start with `Workflow.Create<TData>(name, version)`, configure the fluent graph, 
 
 Workflow identity is `(name, version)`. A nonblank name is required; definitions no longer receive implicit or hash-derived names. Declare the version and change it when changing behavior.
 
+## Flowcharts
+
+`Flowchart` is available on root and continuation builders, including sequence, branch, loop, catch, timeout and ForEach bodies. Each node body receives the graph's incoming previous type; its edge builder receives the type returned by the body lambda.
+
+<!-- snippet: samples/IxIFlow.Samples/Flowcharts.cs#stock-flowchart -->
+```csharp
+public static WorkflowDefinition Definition() =>
+    Workflow.Create<Order>("FulfilOrder")
+        .Flowchart(f => f.Start("check")
+            .Node("check", n => n.Step<CheckStock>(), edges => edges
+                .When(ctx => ctx.PreviousStep.InStock, to: "ship")
+                .Otherwise(to: "backorder"))
+            .Node("ship", n => n.Step<Ship>())
+            .Node("backorder", n => n.Delay(TimeSpan.FromDays(1)),
+                edges => edges.Always("check")))
+        .Build();
+```
+
+[Flowcharts.cs](../samples/IxIFlow.Samples/Flowcharts.cs) contains the complete compiled example and its activity types.
+
+Use `.Node("route", edges => edges.Switch(ctx => ctx.WorkflowData.Region).Case("EU", "eu").Otherwise("other"))` for an empty switch node. Guards and selectors retain their expression trees for purity validation and hashing. A node cannot mix guards with switch cases. Keys are non-empty, ordinal-unique, contain no `/`, and cannot be `end`. Start and destination keys must exist. A null destination ends the chart; a node with no matching edge ends with `NoTransition`.
+
+`.Named(name)` on the flowchart builder names the preceding node. `.WithId("approval")` on the enclosing workflow builder gives generated picks author IDs such as `approval/pending/enter`, `approval/pending/decision` and `approval/pending/to/0`. Every pick appears in `StepTable`.
+
+A timeout path directly leaving a node must end in `.Transition("destination")`. Explicit transitions elsewhere are build errors. Graphs preserve their incoming previous value after completion. A saga may run inside a node; saga activity bodies retain their existing restricted builder surface. YAML, schema and generator support follow separately.
+
 ## Map activity data
 
 With `IxIFlow.Builders`, `IxIFlow.Core` and the sample types in scope, this definition uses the same activity contract as the quick start:
@@ -31,7 +57,7 @@ The activity context also exposes live `WorkflowData` and `PreviousStepData` obj
 
 ## Control-flow reference
 
-The continuation builder exposes these families. The root builder exposes initial activities, requests and delays; samples that begin with another construct use `new WorkflowBuilder<TData, object>([], name)`.
+The continuation builder exposes these families. The root builder exposes initial activities, requests, delays and flowcharts; samples that begin with another construct use `new WorkflowBuilder<TData, object>([], name)`.
 
 | Method | Behavior and compiled example |
 | --- | --- |

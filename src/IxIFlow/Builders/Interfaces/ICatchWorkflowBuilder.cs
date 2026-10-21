@@ -66,6 +66,11 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Sequence(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
+    /// <summary>Runs a flowchart in the catch body, retaining the incoming previous value and fault context.</summary>
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Flowchart(
+        Action<FlowchartBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> If(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> condition,
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> then,

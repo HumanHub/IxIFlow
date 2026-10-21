@@ -4,6 +4,7 @@ namespace IxIFlow.Core;
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "Type")]
 [JsonDerivedType(typeof(ControlFlowTrace), "control")]
+[JsonDerivedType(typeof(GraphTrace), "graph")]
 [JsonDerivedType(typeof(ConditionTrace), "condition")]
 [JsonDerivedType(typeof(JoinTrace), "join")]
 [JsonDerivedType(typeof(ItemEndTrace), "itemEnd")]
@@ -89,3 +90,8 @@ public sealed record BreakpointHitTrace(string BranchId, string StepId, string B
     public string? Reason { get; init; }
     public IReadOnlyList<BreakpointConditionDiagnostic> Diagnostics { get; init; } = [];
 }
+
+/// <summary>Value-free graph entry, selection and completion facts; selections are not replay stops.</summary>
+public sealed record GraphTrace(string StepId, string ContinuationId, string GraphId, string Node,
+    long Visit, string? Via = null, string? Target = null, TransitionCause? Cause = null,
+    ItemEndCause? ExitCause = null) : TracePayload;

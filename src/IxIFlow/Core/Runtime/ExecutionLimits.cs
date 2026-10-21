@@ -8,6 +8,8 @@ public sealed record ExecutionLimits
     public const int DefaultMaxActiveBranches = 1_000;
     public const int DefaultMaxActivitiesPerRun = 100;
     public const int DefaultMaxForEachItems = 1_000;
+    /// <summary>The default number of graph entries between prepared commits.</summary>
+    public const int DefaultMaxGraphTransitionsPerPass = 1_000;
     public static readonly TimeSpan DefaultParkRetriesLongerThan = TimeSpan.FromSeconds(1);
 
     public static ExecutionLimits Default { get; } = new();
@@ -36,6 +38,9 @@ public sealed record ExecutionLimits
     /// <summary>The longest list a <c>ForEach</c> takes; a longer one stops the instance for an operator.</summary>
     public int MaxForEachItems { get; init; } = DefaultMaxForEachItems;
 
+    /// <summary>Maximum entries of one graph activation between prepared commits; stops for an operator.</summary>
+    public int MaxGraphTransitionsPerPass { get; init; } = DefaultMaxGraphTransitionsPerPass;
+
     /// <summary>
     /// A run with nothing in flight whose next retry is further away than this gives its slot and
     /// lease back and is resumed on time; a shorter backoff is slept through in the slot.
@@ -53,3 +58,7 @@ internal abstract class ResourceLimitExceededException(string message) : Excepti
 internal sealed class BranchLimitExceededException(int live, int forking, int limit)
     : ResourceLimitExceededException(
         $"A parallel step would make {live + forking} branches live, over the configured limit of {limit}");
+
+/// <summary>A graph would enter another node beyond its per-pass budget; its pending edge is retained.</summary>
+internal sealed class GraphTransitionLimitExceededException(int limit)
+    : ResourceLimitExceededException($"A graph exceeded the configured limit of {limit} entries per pass");

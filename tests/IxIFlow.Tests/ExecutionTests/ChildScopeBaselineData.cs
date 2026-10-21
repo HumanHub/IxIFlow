@@ -7,7 +7,7 @@ public sealed partial class ChildScopeBaselineTests
         [
           {
             "Name": "Empty",
-            "Hash": "24C8E87EBEB416517CA7B9DBD7FEC112006D21616AF9C2312408D9BBB57D8383",
+            "Hash": "C37F1ABD33AFF833F45DD256D8165F583BA3EF849A17A4A72357EADB41231C97",
             "ScopeIds": [
               "root"
             ],
@@ -15,7 +15,7 @@ public sealed partial class ChildScopeBaselineTests
           },
           {
             "Name": "Every step",
-            "Hash": "DC1B10877F585C5D9F9361713E588A43D05DDA6C9CFFEE6AF7597F4B2131E579",
+            "Hash": "FBF4A68557A22B79EC599AF90D0C3B9FDEF15D4CCEF447C0237947BD82FFAB2F",
             "ScopeIds": [
               "root",
               "root/0/sequence",
@@ -121,7 +121,39 @@ public sealed partial class ChildScopeBaselineTests
               "root/12/foreach",
               "root/12/finally",
               "root/12/timeout",
-              "root/12/catch"
+              "root/12/catch",
+              "root/13/sequence",
+              "root/13/then",
+              "root/13/else",
+              "root/13/loop",
+              "root/13/foreach",
+              "root/13/finally",
+              "root/13/timeout",
+              "root/13/catch",
+              "root/14/sequence",
+              "root/14/then",
+              "root/14/else",
+              "root/14/loop",
+              "root/14/foreach",
+              "root/14/finally",
+              "root/14/timeout",
+              "root/14/catch",
+              "root/15/sequence",
+              "root/15/then",
+              "root/15/else",
+              "root/15/loop",
+              "root/15/foreach",
+              "root/15/finally",
+              "root/15/timeout",
+              "root/15/catch",
+              "root/16/sequence",
+              "root/16/then",
+              "root/16/else",
+              "root/16/loop",
+              "root/16/foreach",
+              "root/16/finally",
+              "root/16/timeout",
+              "root/16/catch"
             ],
             "StepIds": [
               "root/0",
@@ -136,12 +168,16 @@ public sealed partial class ChildScopeBaselineTests
               "root/9",
               "root/10",
               "root/11",
-              "root/12"
+              "root/12",
+              "root/13",
+              "root/14",
+              "root/15",
+              "root/16"
             ]
           },
           {
             "Name": "Nested bodies",
-            "Hash": "696EC2DA99F2CAD29C1585F092BBBA69892BB4884C45FFC654EF42B60A6A2E30",
+            "Hash": "5BF26DAE1EE0075977B974ED09956966726AC86FE50971AE14F88D451CD284E0",
             "ScopeIds": [
               "root",
               "root/0/sequence",

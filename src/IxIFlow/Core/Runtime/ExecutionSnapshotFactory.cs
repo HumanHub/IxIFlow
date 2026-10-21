@@ -47,17 +47,22 @@ internal static class ExecutionSnapshotFactory
                 var name = owner?.Name ?? frame.ScopeId;
                 if (owner?.StepType == WorkflowStepType.Loop) name += $" (iteration {iteration})";
                 if (frame.ForEachIndex is { } itemIndex) name += $" (item {itemIndex})";
+                var graph = GraphFrameInfo.Of(scopes, continuation, index);
                 snapshot.Frames.Add(new ExecutionFrame
                 {
                     FrameId = frame.ActivationId,
-                    Name = name,
+                    Name = graph?.Name ?? name,
                     LoopIteration = iteration,
                     ForEachItemIndex = frame.ForEachIndex,
-                    Kind = owner?.StepType.ToString() ?? frame.ScopeId,
+                    Kind = frame.Kind is FrameKind.Node or FrameKind.Edge
+                        ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId,
                     StepId = frame.ScopeId,
                     ParentFrameId = parent?.ActivationId,
                     State = new Dictionary<string, string>
                     {
+                        ["Phase"] = graph?.Phase ?? "",
+                        ["Visit"] = graph?.Visit.ToString() ?? "",
+                        ["Via"] = graph?.Via ?? "",
                         ["NextStepIndex"] = frame.NextStepIndex.ToString(),
                         ["LoopIteration"] = iteration.ToString(),
                         ["ForEachItemIndex"] = frame.ForEachIndex?.ToString() ?? "",

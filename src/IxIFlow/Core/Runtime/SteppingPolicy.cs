@@ -20,8 +20,27 @@ internal static class SteppingPolicy
         if (branch == null || branch.Stack.Count == 0 ||
             branch.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "The selected continuation is not live");
-        return new(branch.Id, command.StepKind!.Value, Position(branch.Stack[^1]),
-            branch.Stack.Select(f => f.ActivationId).ToArray(), [branch.Id], command.Id, command.Actor);
+        // Out leaves the enclosing node activation, including any nested body or timeout frame.
+        var origin = command.StepKind == DebugStepKind.Out
+            ? branch.Stack.LastOrDefault(frame => frame.Kind == FrameKind.Node) ?? branch.Stack[^1]
+            : branch.Stack[^1];
+        return new(branch.Id, command.StepKind!.Value, Position(origin),
+            branch.Stack.Select(f => f.ActivationId).ToArray(), [branch.Id], command.Id, command.Actor)
+        {
+            OriginGraph = branch.Stack.LastOrDefault(frame => frame.Graph != null) is { } owner
+                ? owner.ScopeId + "/" + owner.NextStepIndex : null
+        };
+    }
+
+    public static void Entered(ExecutionCheckpoint checkpoint, ContinuationState continuation,
+        string graphId, ScopePosition frame)
+    {
+        if (checkpoint.Debug.Stepping is { Kind: DebugStepKind.Over } step &&
+            step.ContinuationId == continuation.Id && step.OriginGraph == graphId)
+            checkpoint.Debug = checkpoint.Debug with
+            {
+                Stepping = step with { OriginScopes = step.OriginScopes.Append(frame.ActivationId).ToArray() }
+            };
     }
 
     public static void Forked(ExecutionCheckpoint checkpoint, ContinuationState parent, ContinuationState child)

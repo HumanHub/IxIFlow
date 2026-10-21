@@ -243,6 +243,16 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         return this;
     }
 
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Flowchart(
+        Action<FlowchartBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
+            .Flowchart(configure, sourcePath: sourcePath, sourceLine: sourceLine);
+        CaptureFaults(steps[^1]);
+        return this;
+    }
+
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> If(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> condition,
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> then,

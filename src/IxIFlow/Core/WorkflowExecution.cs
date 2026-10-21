@@ -632,7 +632,21 @@ public enum TraceEntryType
     ReplayOrigin,
     ThreadPosition,
     /// <summary>A versioned hard-stop command was acknowledged.</summary>
-    WorkflowTerminated
+    WorkflowTerminated,
+    /// <summary>A node entry pick, captured after its frame is pushed.</summary>
+    NodeEntered,
+    /// <summary>A node frame left normally or during unwind.</summary>
+    NodeExited,
+    /// <summary>A graph edge was selected; this is not an executable pick.</summary>
+    TransitionTaken,
+    /// <summary>A graph ended.</summary>
+    GraphCompleted,
+    /// <summary>A state entry pick, captured after its frame is pushed.</summary>
+    StateEntered,
+    /// <summary>A state exit-body entry pick.</summary>
+    ExitEntered,
+    /// <summary>A transition action's edge pick.</summary>
+    ActionEntered
 }
 
 /// <summary>
@@ -977,6 +991,24 @@ public class WorkflowStep
     /// </summary>
     public Dictionary<string, object> StepMetadata { get; set; } = new();
 
+    /// <summary>The required starting key of a flowchart.</summary>
+    public string? GraphStart { get; set; }
+
+    /// <summary>The keyed bodies and ordered edges of a flowchart.</summary>
+    public List<FlowchartNode> GraphNodes { get; set; } = [];
+
+    /// <summary>An edge's destination key, or null to end the graph.</summary>
+    public string? Target { get; set; }
+
+    /// <summary>The switch label compared with the decision's selector.</summary>
+    public object? EdgeLabel { get; set; }
+
+    /// <summary>Whether this edge is the last fallback.</summary>
+    public bool IsDefault { get; set; }
+
+    /// <summary>Whether this is an authored transition at the end of a timeout path.</summary>
+    public bool Explicit { get; set; }
+
     /// <summary>Child bodies in catalog order, including empty bodies; a key is an ordinal index or an authored key.</summary>
     public IEnumerable<(string Kind, string? Key, List<WorkflowStep> Steps)> ChildScopes()
     {
@@ -990,6 +1022,12 @@ public class WorkflowStep
         yield return ("catch", null, CatchBlocks);
         for (var index = 0; index < ParallelBranches.Count; index++)
             yield return ("branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), ParallelBranches[index]);
+        foreach (var node in GraphNodes)
+        {
+            yield return ("node", node.Key, node.Steps);
+            for (var index = 0; index < node.Edges.Count; index++)
+                yield return ("node", node.Key + "/to/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture), node.Edges[index]);
+        }
         for (var index = 0; index < OutcomeBranches.Count; index++)
             yield return ("outcome", index.ToString(System.Globalization.CultureInfo.InvariantCulture), OutcomeBranches[index].Steps);
     }
@@ -1014,6 +1052,13 @@ public class WorkflowStep
             OutputMappings = OutputMappings.Select(m => m.Clone()).ToList(),
             SourceLocation = SourceLocation,
             Runtime = Runtime,
+            GraphStart = GraphStart,
+            GraphNodes = GraphNodes.Select(node => new FlowchartNode
+            {
+                Key = node.Key, Name = node.Name,
+                Edges = node.Edges.Select(_ => new List<WorkflowStep>()).ToList()
+            }).ToList(),
+            Target = Target, EdgeLabel = EdgeLabel, IsDefault = IsDefault, Explicit = Explicit,
             OutcomeExpression = OutcomeExpression,
             CompiledCondition = CompiledCondition,
             ConditionExpression = ConditionExpression,
@@ -1137,7 +1182,16 @@ public enum WorkflowStepType
     ForEach,
 
     /// <summary>The last step of a <c>ForEach</c> body: the value it gives for its item.</summary>
-    ForEachResult
+    ForEachResult,
+
+    /// <summary>A graph of keyed node bodies and ordered transitions.</summary>
+    Flowchart,
+    /// <summary>The executable entry pick of a graph node.</summary>
+    Enter,
+    /// <summary>The trailing selection pick of a flowchart node.</summary>
+    Decision,
+    /// <summary>A selected edge or an explicit timeout transition.</summary>
+    Edge
 }
 
 /// <summary>
