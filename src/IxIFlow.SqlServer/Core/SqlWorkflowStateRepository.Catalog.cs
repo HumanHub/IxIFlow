@@ -12,15 +12,22 @@ public sealed partial class SqlWorkflowStateRepository
             State VARCHAR(10) NOT NULL CHECK (State = 'Draft'),
             PRIMARY KEY (Name, Version)
         );
+        CREATE TABLE dbo.IxIFlowCatalogRevision (
+            Id INT NOT NULL PRIMARY KEY CHECK (Id = 1),
+            Revision BIGINT NOT NULL CHECK (Revision >= 0)
+        );
+        INSERT INTO dbo.IxIFlowCatalogRevision (Id, Revision) VALUES (1, 0);
         CREATE TABLE dbo.IxIFlowWorkflowVersions (
             Name NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
             Version INT NOT NULL,
             StructureHash NVARCHAR(MAX) NOT NULL,
             State VARCHAR(10) NOT NULL CHECK (State IN ('Draft','Published','Deprecated','Retired')),
+            CatalogRevision BIGINT NOT NULL,
             ArtifactDigest VARCHAR(71) COLLATE Latin1_General_100_BIN2 NULL,
             MetadataJson NVARCHAR(MAX) NOT NULL,
             PRIMARY KEY (Name, Version)
         );
+        CREATE INDEX ix_workflow_versions_revision ON dbo.IxIFlowWorkflowVersions (CatalogRevision);
         CREATE TABLE dbo.IxIFlowPackages (
             Id NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
             Version NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
@@ -51,6 +58,9 @@ public sealed partial class SqlWorkflowStateRepository
             DECLARE @catalogLock INT; EXEC @catalogLock = sys.sp_getapplock @Resource=N'IxIFlow.Catalog', @LockMode=N'Shared', @LockOwner=N'Transaction', @LockTimeout=30000; IF @catalogLock < 0 THROW 51000, 'Could not lock the workflow catalog', 1;
             """,
         Statement.CatalogInstanceDigests => "SELECT DISTINCT BundleDigest FROM dbo.IxIFlowWorkflowInstances WHERE BundleDigest IS NOT NULL",
+        Statement.CatalogRevision => "SELECT Revision FROM dbo.IxIFlowCatalogRevision WHERE Id=1",
+        Statement.CatalogRevisionAdvance => "UPDATE dbo.IxIFlowCatalogRevision SET Revision=Revision+1 WHERE Id=1",
+        Statement.CatalogVersionChanges => "SELECT MetadataJson, State FROM dbo.IxIFlowWorkflowVersions WHERE CatalogRevision>@AfterRevision",
         Statement.CatalogVersions => """
             SELECT MetadataJson AS MetadataJson, State AS State FROM dbo.IxIFlowWorkflowVersions
             """,
@@ -72,10 +82,10 @@ public sealed partial class SqlWorkflowStateRepository
                     AND instance.Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
             """,
         Statement.CatalogVersionInsert => """
-            INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson)
+            INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision)
             """,
         Statement.CatalogVersionState => """
-            UPDATE dbo.IxIFlowWorkflowVersions SET State=@State WHERE Name=@Name AND Version=@Version
+            UPDATE dbo.IxIFlowWorkflowVersions SET State=@State, CatalogRevision=@CatalogRevision WHERE Name=@Name AND Version=@Version
             """,
         Statement.CatalogDefinition => """
             SELECT Name AS Name, Version AS Version, Kind AS Kind, Source AS Source, Revision AS Revision FROM dbo.IxIFlowDefinitions WHERE Name=@Name AND Version=@Version

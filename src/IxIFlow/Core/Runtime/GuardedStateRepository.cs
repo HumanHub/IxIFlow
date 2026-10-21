@@ -29,6 +29,10 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.RegisterWorkflowVersionAsync(version, artifacts), "Accessing workflow catalog or artifacts");
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
         Guard(() => _store.GetWorkflowVersionAsync(name, version), "Accessing workflow catalog or artifacts");
+    public Task<long> GetCatalogRevisionAsync() =>
+        Guard(() => _store.GetCatalogRevisionAsync(), "Reading catalog revision");
+    public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) =>
+        Guard(() => _store.GetWorkflowVersionChangesAsync(afterRevision), "Reading catalog changes");
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
         Guard(() => _store.GetWorkflowVersionsAsync(name), "Accessing workflow catalog or artifacts");
     public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>

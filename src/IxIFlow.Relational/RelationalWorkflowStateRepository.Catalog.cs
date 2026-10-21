@@ -184,10 +184,11 @@ public abstract partial class RelationalWorkflowStateRepository
             await WorkflowCatalogRules.CheckArtifactsAsync(version, artifacts ?? this);
             foreach (var dependency in version.Dependencies ?? [])
                 WorkflowCatalogRules.CheckStartable(versions.SingleOrDefault(row => row.Name == dependency.Name && row.Version == dependency.Version), dependency.Name, dependency.Version);
+            var revision = await AdvanceCatalogRevisionAsync(connection, transaction);
             await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionInsert), new
             {
                 version.Name, version.Version, version.StructureHash, State = version.State.ToString(),
-                ArtifactDigest = version.ArtifactDigest!.Value.Value, MetadataJson = JsonSerializer.Serialize(version)
+                ArtifactDigest = version.ArtifactDigest!.Value.Value, MetadataJson = JsonSerializer.Serialize(version), CatalogRevision = revision
             }, transaction);
             if (await connection.ExecuteAsync(RequiredSql(Statement.CatalogDefinitionDelete), draftId, transaction) != 1)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed");
@@ -209,10 +210,11 @@ public abstract partial class RelationalWorkflowStateRepository
                     foreach (var dependency in version.Dependencies ?? [])
                         if (versions.SingleOrDefault(row => row.Name == dependency.Name && row.Version == dependency.Version) is { } child)
                             WorkflowCatalogRules.CheckStartable(child, child.Name, child.Version);
+                var revision = await AdvanceCatalogRevisionAsync(connection, transaction);
                 await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionInsert), new
                 {
                     version.Name, version.Version, version.StructureHash, State = version.State.ToString(),
-                    ArtifactDigest = version.ArtifactDigest?.Value, MetadataJson = JsonSerializer.Serialize(version)
+                    ArtifactDigest = version.ArtifactDigest?.Value, MetadataJson = JsonSerializer.Serialize(version), CatalogRevision = revision
                 }, transaction);
             }
             return true;
@@ -233,6 +235,38 @@ public abstract partial class RelationalWorkflowStateRepository
         return await CatalogConnectionAsync<IReadOnlyList<WorkflowVersion>>(async (connection, transaction) =>
             (await connection.QueryAsync<VersionRow>(RequiredSql(name == null ? Statement.CatalogVersions : Statement.CatalogNamedVersions),
                 new { Name = name }, transaction)).Select(row => row.Value).ToArray());
+    }
+
+    public Task<long> GetCatalogRevisionAsync() => CatalogConnectionAsync(ReadCatalogRevisionAsync);
+
+    private async Task<long> ReadCatalogRevisionAsync(DbConnection connection, DbTransaction? transaction) =>
+        await connection.QuerySingleOrDefaultAsync<long?>(RequiredSql(Statement.CatalogRevision), transaction: transaction)
+        ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The catalog revision row is missing; recreate the catalog schema");
+
+    private async Task<long> AdvanceCatalogRevisionAsync(DbConnection connection, DbTransaction transaction)
+    {
+        if (await connection.ExecuteAsync(RequiredSql(Statement.CatalogRevisionAdvance), transaction: transaction) != 1)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The catalog revision row is missing; recreate the catalog schema");
+        return await ReadCatalogRevisionAsync(connection, transaction);
+    }
+
+    public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(afterRevision);
+        // This read takes no catalog lock. Under SQL Server locking read committed, the
+        // revision read can wait for a writer's final statements; the heartbeat bounds its
+        // refresh wait to one interval and keeps advertising its last capability snapshot.
+        // Writers advance the counter and stamp their row in one transaction and serialize on the
+        // counter row, so revisions commit in order: once the watermark is read, every row stamped
+        // at or below it is visible. Rows committed after the watermark may also be returned; they
+        // are read again after the next revision, which is harmless.
+        return CatalogConnectionAsync(async (connection, transaction) =>
+        {
+            var revision = await ReadCatalogRevisionAsync(connection, transaction);
+            var rows = await connection.QueryAsync<VersionRow>(RequiredSql(Statement.CatalogVersionChanges),
+                new { AfterRevision = afterRevision }, transaction);
+            return new WorkflowCatalogChanges(revision, rows.Select(row => row.Value).ToArray());
+        });
     }
 
     public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null)
@@ -266,7 +300,9 @@ public abstract partial class RelationalWorkflowStateRepository
                     if ((dependency.Name, dependency.Version) != (name, version))
                         WorkflowCatalogRules.CheckStartable(versions.SingleOrDefault(child => child.Name == dependency.Name && child.Version == dependency.Version),
                             dependency.Name, dependency.Version);
-            await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionState), new { Name = name, Version = version, State = state.ToString() }, transaction);
+            var revision = await AdvanceCatalogRevisionAsync(connection, transaction);
+            await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionState),
+                new { Name = name, Version = version, State = state.ToString(), CatalogRevision = revision }, transaction);
             return true;
         });
     }
