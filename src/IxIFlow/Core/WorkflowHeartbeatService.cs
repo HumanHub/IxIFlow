@@ -91,13 +91,31 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(settings.HeartbeatInterval, time);
+        Task<IReadOnlyDictionary<string, string>>? refresh = null;
         try
         {
             while (await timer.WaitForNextTickAsync(stoppingToken))
             {
                 try
                 {
-                    var capabilities = await settings.RefreshCapabilitiesAsync(registry);
+                    try
+                    {
+                        // Keep one refresh in flight, but do not let the catalog consume the
+                        // host's liveness window. Registration supplies the initial snapshot.
+                        refresh ??= settings.RefreshCapabilitiesAsync(registry);
+                        if (settings.LastCapabilities == null) await refresh;
+                        else await refresh.WaitAsync(settings.HeartbeatInterval, time, stoppingToken);
+                        refresh = null;
+                    }
+                    catch (TimeoutException) when (refresh is { IsCompleted: false }) { }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
+                    catch (Exception error)
+                    {
+                        refresh = null;
+                        (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Could not refresh capabilities for host {HostId}; heartbeating with its last snapshot", settings.Id);
+                    }
+                    var capabilities = settings.LastCapabilities;
+                    if (capabilities == null) continue;
                     if (!await repository.HeartbeatAsync(settings.Id, capabilities, stoppingToken))
                         await RegisterAsync(capabilities, stoppingToken);
                 }
