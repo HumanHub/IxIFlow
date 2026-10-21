@@ -7,7 +7,11 @@ public enum MemberKind { Host, Coordinator }
 
 /// <summary>A process advertisement. Its identity is fresh for each start; its name is for display.</summary>
 public sealed record MemberRegistration(Guid Id, MemberKind Kind, string Name, string? Endpoint, int Slots,
-    string EngineVersion, TimeSpan HeartbeatInterval, IReadOnlyDictionary<string, string> Capabilities);
+    string EngineVersion, TimeSpan HeartbeatInterval, IReadOnlyDictionary<string, string> Capabilities)
+{
+    /// <summary>The installed activity declarations selected by this host.</summary>
+    public IReadOnlyList<InstalledActivityPackage> InstalledPackages { get; init; } = [];
+}
 
 /// <summary>A member and its capability snapshot, stamped by the store's clock.</summary>
 public sealed record StoreMember(MemberRegistration Registration, DateTime StartedAtUtc, DateTime HeartbeatAtUtc)
@@ -46,7 +50,16 @@ internal static class MemberRegistry
         if (member.Slots < 0 || member.Kind == MemberKind.Host && member.Slots == 0)
             throw new ArgumentOutOfRangeException(nameof(member.Slots));
         ValidateInterval(member.HeartbeatInterval);
-        return member with { Capabilities = SnapshotCapabilities(member.Capabilities) };
+        var packages = member.InstalledPackages.Select(package => InstalledPackageRules.Snapshot(package)).ToArray();
+        var identities = new HashSet<(string, string, string)>();
+        foreach (var package in packages)
+            if (!identities.Add((package.Id, package.Version, package.Fingerprint)))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                    $"Installed activity package '{package.Id}@{package.Version}' repeats fingerprint '{package.Fingerprint}'");
+        if (member.Kind == MemberKind.Coordinator && packages.Length != 0)
+            throw new ArgumentException("Coordinators cannot register installed activity packages");
+        return member with { Capabilities = SnapshotCapabilities(member.Capabilities),
+            InstalledPackages = Array.AsReadOnly(packages) };
     }
 
     internal static void ValidateId(Guid id)
@@ -69,5 +82,8 @@ internal static class MemberRegistry
     }
 
     internal static bool IsLive(StoreMember member, DateTime now) =>
-        now - member.HeartbeatAtUtc < member.HeartbeatInterval * 3;
+        IsLive(member.HeartbeatAtUtc, member.HeartbeatInterval, now);
+
+    internal static bool IsLive(DateTime heartbeatAtUtc, TimeSpan heartbeatInterval, DateTime now) =>
+        now - heartbeatAtUtc < heartbeatInterval * 3;
 }

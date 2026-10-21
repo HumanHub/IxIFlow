@@ -12,6 +12,8 @@ public sealed partial class SqlWorkflowStateRepository
         try
         {
             using var schema = await connection.QueryMultipleAsync("""
+                SELECT Id, Version, Fingerprint, ActivitiesJson FROM dbo.IxIFlowInstalledPackages WHERE 1=0;
+                SELECT MemberId, PackageId, PackageVersion, Fingerprint FROM dbo.IxIFlowHostPackages WHERE 1=0;
                 SELECT InstanceId, CommandId, CommandOrder, CommandJson FROM dbo.IxIFlowWorkflowDebugCommands WHERE 1=0;
                 SELECT Digest, Bytes, Body, MetadataJson FROM dbo.IxIFlowWorkflowPayloads WHERE 1=0;
                 SELECT Digest, OwnerKind, OwnerId FROM dbo.IxIFlowWorkflowPayloadRefs WHERE 1=0;

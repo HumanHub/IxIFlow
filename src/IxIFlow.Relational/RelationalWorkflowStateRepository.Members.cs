@@ -30,6 +30,34 @@ public abstract partial class RelationalWorkflowStateRepository
         public string Value { get; set; } = "";
     }
 
+    private sealed class HostPackageRow
+    {
+        public Guid MemberId { get; set; }
+        public string Id { get; set; } = "";
+        public string Version { get; set; } = "";
+        public string Fingerprint { get; set; } = "";
+    }
+
+    public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null)
+    {
+        if (id != null) id = WorkflowPackageRules.NormalizeId(id);
+        return RegistryAsync<IReadOnlyList<InstalledActivityPackage>>(async (connection, transaction, now) =>
+        {
+            var packages = await connection.QueryAsync<InstalledActivityPackage>(new CommandDefinition(
+                RequiredSql(Statement.InstalledPackages), new { Id = id }, transaction));
+            var marks = await connection.QueryAsync<HostPackageRow>(new CommandDefinition(
+                RequiredSql(Statement.HostPackages), transaction: transaction));
+            var live = (await ReadLiveMemberRowsAsync(connection, transaction, now, CancellationToken.None))
+                .Select(member => member.MemberId).ToHashSet();
+            var hosts = marks.Where(mark => live.Contains(mark.MemberId))
+                .ToLookup(mark => (mark.Id, mark.Version, mark.Fingerprint), mark => mark.MemberId);
+            return packages.OrderBy(package => package.Id, StringComparer.Ordinal)
+                .ThenBy(package => package.Version, StringComparer.Ordinal).ThenBy(package => package.Fingerprint, StringComparer.Ordinal)
+                .Select(package => package with { Hosts = Array.AsReadOnly(
+                    hosts[(package.Id, package.Version, package.Fingerprint)].Order().ToArray()) }).ToArray();
+        }, CancellationToken.None);
+    }
+
     // All registry operations use the same database lock, so a read cannot combine a heartbeat
     // with the previous capability set, nor can pruning race a renewal. Sample time after locking.
     private async Task<T> RegistryAsync<T>(Func<DbConnection, DbTransaction?, DateTime, Task<T>> action,
@@ -72,6 +100,17 @@ public abstract partial class RelationalWorkflowStateRepository
                     HeartbeatIntervalTicks = member.HeartbeatInterval.Ticks }, ("Now", now)), transaction,
                 cancellationToken: cancellationToken));
             await ReplaceCapabilitiesAsync(connection, transaction, member.Id, member.Capabilities, cancellationToken);
+            await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.DeleteHostPackages),
+                new { MemberId = member.Id }, transaction, cancellationToken: cancellationToken));
+            foreach (var package in member.InstalledPackages)
+            {
+                await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.InsertInstalledPackage),
+                    new { package.Id, package.Version, package.Fingerprint, package.ActivitiesJson }, transaction,
+                    cancellationToken: cancellationToken));
+                await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.InsertHostPackage),
+                    new { MemberId = member.Id, package.Id, package.Version, package.Fingerprint }, transaction,
+                    cancellationToken: cancellationToken));
+            }
             return true;
         }, cancellationToken, () => { if (SingleHostRegistry) _singleHostMember = member.Id; });
     }
@@ -106,11 +145,19 @@ public abstract partial class RelationalWorkflowStateRepository
         RegistryAsync<IReadOnlyList<StoreMember>>(async (connection, transaction, now) =>
             await ReadLiveMembersAsync(connection, transaction, now, cancellationToken), cancellationToken);
 
-    private async Task<IReadOnlyList<StoreMember>> ReadLiveMembersAsync(DbConnection connection,
+    private async Task<IReadOnlyList<MemberRow>> ReadLiveMemberRowsAsync(DbConnection connection,
         DbTransaction? transaction, DateTime now, CancellationToken cancellationToken)
     {
         var rows = await connection.QueryAsync<MemberRow>(new CommandDefinition(RequiredSql(Statement.Members),
             transaction: transaction, cancellationToken: cancellationToken));
+        return rows.Where(row => MemberRegistry.IsLive(ReadTime(row.HeartbeatAtUtc),
+            TimeSpan.FromTicks(row.HeartbeatIntervalTicks), now)).ToArray();
+    }
+
+    private async Task<IReadOnlyList<StoreMember>> ReadLiveMembersAsync(DbConnection connection,
+        DbTransaction? transaction, DateTime now, CancellationToken cancellationToken)
+    {
+        var rows = await ReadLiveMemberRowsAsync(connection, transaction, now, cancellationToken);
         var capabilities = (await connection.QueryAsync<CapabilityRow>(new CommandDefinition(
             RequiredSql(Statement.MemberCapabilities), transaction: transaction, cancellationToken: cancellationToken)))
             .ToLookup(row => row.MemberId);
@@ -119,7 +166,7 @@ public abstract partial class RelationalWorkflowStateRepository
                 row.EngineVersion, TimeSpan.FromTicks(row.HeartbeatIntervalTicks),
                 MemberRegistry.SnapshotCapabilities(capabilities[row.MemberId].ToDictionary(c => c.Key, c => c.Value,
                     StringComparer.Ordinal))), ReadTime(row.StartedAtUtc), ReadTime(row.HeartbeatAtUtc)))
-            .Where(member => MemberRegistry.IsLive(member, now)).OrderBy(member => member.Id).ToArray();
+            .OrderBy(member => member.Id).ToArray();
     }
 
     private async Task ReplaceCapabilitiesAsync(DbConnection connection, DbTransaction? transaction, Guid memberId,

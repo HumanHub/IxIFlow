@@ -163,6 +163,7 @@ public class ActivityExecutor : IActivityExecutor
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ActivityExecutor> _logger;
     private readonly TimeProvider _time;
+    private readonly IActivityRegistry _activities;
 
     public ActivityExecutor(
         IServiceProvider serviceProvider,
@@ -172,6 +173,7 @@ public class ActivityExecutor : IActivityExecutor
         _time = timeProvider ?? TimeProvider.System;
         _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _activities = _serviceProvider.GetRequiredService<IActivityRegistry>();
     }
 
     public async Task<PreparedActivity> PrepareTypedActivityAsync<TWorkflowData, TPreviousStepData>(
@@ -182,7 +184,7 @@ public class ActivityExecutor : IActivityExecutor
         IReadOnlyCollection<string>? codeInputs = null)
     {
         ArgumentNullException.ThrowIfNull(request);
-        var activity = Runtime.ActivityActivation.Create(request.ActivityType, _serviceProvider);
+        var activity = Runtime.ActivityActivation.Create(request.ActivityType, _serviceProvider, _activities);
         var context = new TypedActivityExecutionContext<TWorkflowData, TPreviousStepData>(
             _serviceProvider,
             request.ExecutionContext.WorkflowInstance.InstanceId,

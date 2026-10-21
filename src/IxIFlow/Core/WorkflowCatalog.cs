@@ -28,6 +28,8 @@ public sealed record WorkflowDraftId(string Name, int Version, long Revision);
 /// <summary>Durable catalog operations, shared with the instance commit protocol.</summary>
 public interface IWorkflowCatalogStore
 {
+    /// <summary>Lists installed metadata variants and their live host marks, optionally filtered by normalized id.</summary>
+    Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null);
     Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts);
     Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null);
     Task<WorkflowPackage?> GetPackageAsync(string id, string version);
@@ -159,6 +161,7 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
     public Task RetireWorkflowVersionAsync(string name, int version) =>
         SetWorkflowVersionStateAsync(name, version, WorkflowVersionState.Retired);
     public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _store.GetDefinitionAsync(name, version);
+    public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) => _store.GetInstalledPackagesAsync(id);
     public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => _store.RegisterPackageAsync(package, artifacts);
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _store.GetPackagesAsync(id);
     public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _store.GetPackageAsync(id, version);

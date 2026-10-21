@@ -192,6 +192,7 @@ public sealed class DefinitionValidationTests
             return new WorkflowCatalog(store);
         }
         public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => _catalog.RegisterPackageAsync(package, artifacts);
+        public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) => _catalog.GetInstalledPackagesAsync(id);
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _catalog.GetPackagesAsync(id);
         public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _catalog.GetPackageAsync(id, version);
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _catalog.GetPackagePageAsync(id, afterVersion, limit);

@@ -7,8 +7,6 @@ using IxIFlow.Core;
 using IxIFlow.Extensions;
 using IxIFlow.Generators;
 using Microsoft.Extensions.DependencyInjection;
-using YamlDotNet.Serialization;
-using YamlDotNet.Serialization.NamingConventions;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -205,46 +203,45 @@ public sealed class ActivityContractTests
     [Fact]
     public void CatalogUsesDotNetMetadataForInputsOutputsAndInOutAndSerializesTypedDefaults()
     {
-        var registry = new ActivityPackageRegistry();
-        registry.AddAssembly(typeof(CatalogActivity).Assembly, "contracts", "1.0");
-        var activity = Assert.Single(Assert.Single(registry.Packages).Activities, activity => activity.Key == "contract.catalog");
-        var input = Assert.Single(activity.Fields, field => field.Key == "Input");
-        Assert.Equal("Input label", input.Label);
-        Assert.Equal("Input help", input.Help);
+        var services = new ServiceCollection();
+        services.AddIxIFlow().AddActivity<CatalogActivity>().AddActivity<Convention>();
+        using var provider = services.BuildServiceProvider();
+        var registry = provider.GetRequiredService<IActivityRegistry>();
+        Assert.Single(registry.Packages);
+        var activity = Assert.Single(registry.Activities, activity => activity.Key == "contract.catalog");
+        var input = Assert.Single(activity.Inputs, field => field.Name == "Input");
+        Assert.Equal("Input label", input.DisplayName);
+        Assert.Equal("Input help", input.Description);
         Assert.True(input.Required);
-        Assert.Equal("code", input.Control);
-        Assert.Equal("Shared label", activity.Outputs["Shared"].Label);
-        Assert.Equal("Shared help", activity.Outputs["Shared"].Help);
-        Assert.Equal("Output label", activity.Outputs["Output"].Label);
-        Assert.Equal("Output help", activity.Outputs["Output"].Help);
-        Assert.Contains(activity.Fields, field => field.Key == "Shared" && field.Control == "text");
-        Assert.DoesNotContain(activity.Fields, field => field.Key == "Unmarked");
-        Assert.DoesNotContain("Unmarked", activity.Outputs.Keys);
-        Assert.Equal(3, Assert.IsType<int>(activity.Defaults["Input"]));
+        Assert.Equal("code", input.UIHint);
+        Assert.Equal("Shared label", Assert.Single(activity.Outputs, field => field.Name == "Shared").DisplayName);
+        Assert.Equal("Shared help", Assert.Single(activity.Outputs, field => field.Name == "Shared").Description);
+        Assert.Equal("Output label", Assert.Single(activity.Outputs, field => field.Name == "Output").DisplayName);
+        Assert.Equal("Output help", Assert.Single(activity.Outputs, field => field.Name == "Output").Description);
+        Assert.Contains(activity.Inputs, field => field.Name == "Shared" && field.UIHint == "text");
+        Assert.DoesNotContain(activity.Inputs, field => field.Name == "Unmarked");
+        Assert.DoesNotContain(activity.Outputs, field => field.Name == "Unmarked");
+        Assert.Equal("3", input.DefaultJson);
         var json = JsonSerializer.Serialize(activity);
-        Assert.Equal(3, JsonDocument.Parse(json).RootElement.GetProperty("Defaults").GetProperty("Input").GetInt32());
-        var yaml = new SerializerBuilder().WithNamingConvention(CamelCaseNamingConvention.Instance).Build()
-            .Serialize(new { SchemaVersion = "1.0", Package = Assert.Single(registry.Packages).Package,
-                Activities = Assert.Single(registry.Packages).Activities });
-        var parsed = ActivityPackageManifest.Parse(yaml);
-        Assert.Equal("Shared label", Assert.Single(parsed.Activities, item => item.Key == "contract.catalog").Outputs["Shared"].Label);
-        var convention = Assert.Single(Assert.Single(registry.Packages).Activities, item => item.Key == "contract.convention");
-        Assert.Equal("Value", Assert.Single(convention.Fields).Label);
-        Assert.Contains("Value", convention.Outputs);
-        Assert.Equal("Value", convention.Outputs["Value"].Label);
-        Assert.Null(convention.Outputs["Value"].Help);
+        Assert.Equal("3", JsonDocument.Parse(json).RootElement.GetProperty("Inputs")[0].GetProperty("DefaultJson").GetString());
+        var convention = Assert.Single(registry.Activities, item => item.Key == "contract.convention");
+        Assert.Equal("Value", Assert.Single(convention.Inputs).DisplayName);
+        Assert.Contains(convention.Outputs, field => field.Name == "Value");
+        Assert.Equal("Value", Assert.Single(convention.Outputs).DisplayName);
+        Assert.Null(Assert.Single(convention.Outputs).Description);
     }
 
     [Fact]
-    public void ManifestStillRejectsUnsupportedControls()
+    public void RegistrationRejectsUnsupportedControls()
     {
-        var manifest = new ActivityPackageManifest
-        {
-            Package = new ActivityPackageIdentity { Name = "contracts", Version = "1.0" },
-            Activities = [new ActivityManifestEntry { Key = "bad", Name = "Bad", Version = "1.0", Category = "Tests",
-                Fields = [new ActivityManifestField { Key = "Value", Label = "Value", Control = "unknown" }] }]
-        };
-        Assert.Throws<InvalidOperationException>(manifest.Validate);
+        var services = new ServiceCollection();
+        Assert.Throws<WorkflowEngineException>(() => services.AddIxIFlow().AddActivity<UnsupportedControl>());
+    }
+
+    [WorkflowActivity("contract.unsupported-control")]
+    public sealed class UnsupportedControl : Empty
+    {
+        [ActivityInput, UIHint("unknown")] public int Value { get; set; }
     }
 
     private static ServiceProvider Services()

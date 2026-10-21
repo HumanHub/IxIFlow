@@ -1,4 +1,5 @@
-using IxIFlow.ActivitySdk;
+using IxIFlow.Extensions;
+using Microsoft.Extensions.DependencyInjection;
 using IxIFlow.Core;
 
 namespace IxIFlow.Samples;
@@ -14,10 +15,16 @@ public static class Contracts
     }
 
     /// <summary>The catalog exposes the same input, output and designer metadata as the activity contract.</summary>
-    public static ActivityPackageRegistry Catalog()
+    public static IActivityRegistry Catalog()
     {
-        var catalog = new ActivityPackageRegistry();
-        catalog.AddAssembly(typeof(AddFee).Assembly, "IxIFlow.Samples", "1.0.0");
-        return catalog;
+        var services = new ServiceCollection();
+        // snippet: register-activities
+        services.AddIxIFlow()
+            .AddActivities(typeof(AddFee).Assembly);
+        // To select one activity instead:
+        // services.AddIxIFlow().AddActivity<AddFee>();
+        // end-snippet: register-activities
+        using var provider = services.BuildServiceProvider();
+        return provider.GetRequiredService<IActivityRegistry>();
     }
 }
