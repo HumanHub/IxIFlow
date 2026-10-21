@@ -135,6 +135,74 @@ public static class WorkflowCompilation
                     .OfType<IAssemblySymbol>().ToArray();
             }
         }
+
+        internal INamedTypeSymbol? BindType(string typeName, string generatedNamespace)
+        {
+            var source = string.Join("\n", WorkflowSourceTranslator.ImportedNamespaces.Select(name => "using " + name + ";")) +
+                "\nnamespace " + generatedNamespace + ";\ninternal class TypeBinding { private " + typeName + " value; }";
+            var tree = CSharpSyntaxTree.ParseText(source);
+            var compilation = CSharpCompilation.Create("WorkflowConfiguredType", [tree], Metadata,
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+            var syntax = tree.GetRoot().DescendantNodes().OfType<FieldDeclarationSyntax>().Single().Declaration.Type;
+            return compilation.GetSemanticModel(tree).GetTypeInfo(syntax).Type is INamedTypeSymbol { TypeKind: not TypeKind.Error } type ? type : null;
+        }
+
+        internal string SavedTypeName(string savedName, ISet<string>? assemblyNames = null)
+        {
+            if (!savedName.StartsWith("ixi-type:1:", StringComparison.Ordinal)) throw new InvalidOperationException("Invalid saved workflow data type");
+            var compilation = CSharpCompilation.Create("WorkflowTypeReferences", references: Metadata);
+            var position = "ixi-type:1:".Length;
+            int Count()
+            {
+                var end = savedName.IndexOf(':', position);
+                if (end <= position || end - position > 6) throw new InvalidOperationException("Invalid saved workflow data type");
+                var value = int.Parse(savedName.AsSpan(position, end - position), System.Globalization.CultureInfo.InvariantCulture);
+                position = end + 1;
+                return value;
+            }
+            string Part()
+            {
+                var length = Count();
+                var value = savedName.Substring(position, length);
+                position += length;
+                return value;
+            }
+            ITypeSymbol Read(int depth)
+            {
+                if (depth > 64) throw new InvalidOperationException("Invalid saved workflow data type nesting");
+                var kind = savedName[position++];
+                if (kind is 'V' or 'A')
+                {
+                    var rank = kind == 'V' ? 1 : Count();
+                    return compilation.CreateArrayTypeSymbol(Read(depth + 1), rank);
+                }
+                if (kind != 'N') throw new InvalidOperationException("Invalid saved workflow data type");
+                var assembly = Part();
+                assemblyNames?.Add(assembly);
+                var name = Part();
+                var count = Count();
+                if (count > 128) throw new InvalidOperationException("Invalid saved workflow data type arguments");
+                var arguments = Enumerable.Range(0, count).Select(_ => Read(depth + 1)).ToArray();
+                var type = Assemblies.SingleOrDefault(item => item.Identity.Name == assembly)?.GetTypeByMetadataName(name)
+                    ?? throw new InvalidOperationException($"Callee data type '{name}' in '{assembly}' is outside the publishing reference closure");
+                var index = 0;
+                INamedTypeSymbol Construct(INamedTypeSymbol definition)
+                {
+                    var result = definition.ContainingType == null ? definition :
+                        Construct(definition.ContainingType).GetTypeMembers(definition.Name, definition.Arity).Single();
+                    if (result.Arity == 0) return result;
+                    var selected = arguments.Skip(index).Take(result.Arity).ToArray();
+                    index += result.Arity;
+                    return result.Construct(selected);
+                }
+                var result = count == 0 ? type : Construct(type);
+                if (index != count) throw new InvalidOperationException("Invalid saved workflow data type arity");
+                return result;
+            }
+            var result = Read(0);
+            if (position != savedName.Length) throw new InvalidOperationException("Invalid saved workflow data type suffix");
+            return result.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        }
     }
 
     internal static string[] NormalizeReferences(IEnumerable<string> paths) => paths

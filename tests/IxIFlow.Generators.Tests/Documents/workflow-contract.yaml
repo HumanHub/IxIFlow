@@ -1,0 +1,7 @@
+workflow:
+  name: ContractSchema
+  version: 1
+  dataType: FlowData
+  input: [Value]
+  output: []
+definitions: []

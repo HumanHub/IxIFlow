@@ -8,11 +8,15 @@ public enum WorkflowVersionState { Draft, Published, Deprecated, Retired }
 
 public sealed record WorkflowVersionReference(string Name, int Version);
 
+public enum WorkflowDependencyKind { Child }
+
+public sealed record WorkflowVersionDependency(string Name, int Version, WorkflowDependencyKind Kind = WorkflowDependencyKind.Child);
+
 /// <summary>Immutable version metadata. Only State may change after registration.</summary>
 public sealed record WorkflowVersion(string Name, int Version, string StructureHash,
     string ContractJson, string ContractHash,
     WorkflowVersionState State = WorkflowVersionState.Published, ArtifactDigest? ArtifactDigest = null,
-    IReadOnlyList<WorkflowVersionReference>? Dependencies = null,
+    IReadOnlyList<WorkflowVersionDependency>? Dependencies = null,
     IReadOnlyList<ArtifactDigest>? ArtifactReferences = null,
     long? PublishedDraftRevision = null, string? ManifestJson = null);
 
@@ -97,10 +101,7 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
     {
         WorkflowDefinitionValidator.Validate(definition);
         var scopes = new WorkflowScopeCatalog(definition);
-        var dependencies = scopes.AllSteps.Select(pair => pair.Value)
-            .Where(step => step.WorkflowName != null && step.WorkflowVersion != null)
-            .Select(step => new WorkflowVersionReference(step.WorkflowName!, step.WorkflowVersion!.Value))
-            .Distinct().OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ToArray();
+        var dependencies = WorkflowDefinitionValidator.GetDependencies(definition);
         var contract = WorkflowDefinitionValidator.GetContract(definition);
         var registration = new WorkflowVersion(definition.Name, definition.Version, scopes.StructureHash,
             contract.ToJson(), contract.Hash, Dependencies: dependencies);
@@ -251,6 +252,7 @@ internal static class WorkflowCatalogRules
         {
             ValidateName(dependency.Name);
             ArgumentOutOfRangeException.ThrowIfLessThan(dependency.Version, 1);
+            if (!Enum.IsDefined(dependency.Kind)) throw new ArgumentOutOfRangeException(nameof(dependency.Kind));
         }
     }
 

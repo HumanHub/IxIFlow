@@ -7,7 +7,7 @@ namespace IxIFlow.Authoring;
 
 internal sealed record WorkflowBuildResult(string Name = "", int Version = 0, string StructureHash = "",
     string DataType = "", string EntryType = "", string CombinerSignature = "",
-    WorkflowVersionReference[]? Dependencies = null, string? Error = null, int Line = 1, int Column = 1, string ContractJson = "");
+    WorkflowVersionDependency[]? Dependencies = null, string? Error = null, int Line = 1, int Column = 1, string ContractJson = "");
 
 internal static class WorkflowBuild
 {

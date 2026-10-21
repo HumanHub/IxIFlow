@@ -249,8 +249,7 @@ public abstract partial class RelationalWorkflowStateRepository
             if (row.State == state) return true;
             if (state == WorkflowVersionState.Retired)
             {
-                var reference = new WorkflowVersionReference(name, version);
-                var callers = versions.Where(caller => (caller.Dependencies ?? []).Contains(reference)).ToArray();
+                var callers = versions.Where(caller => (caller.Dependencies ?? []).Any(edge => edge.Name == name && edge.Version == version)).ToArray();
                 WorkflowCatalogRules.CheckRetirement(row, callers, null);
                 if (callers.Length != 0)
                 {

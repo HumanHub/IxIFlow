@@ -84,6 +84,20 @@
           "type": "string",
           "description": "The workflow data CLR type or resolved catalog key."
         },
+        "input": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Input members added to workflow markers; an empty list explicitly declares no convention inputs."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Output members added to workflow markers; an empty list explicitly declares no convention outputs."
+        },
         "displayName": {
           "type": [
             "string",

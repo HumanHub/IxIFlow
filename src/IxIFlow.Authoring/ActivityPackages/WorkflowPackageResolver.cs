@@ -1,5 +1,7 @@
 using System.Reflection;
+using System.Text.Json;
 using IxIFlow.Core;
+using IxIFlow.Dsl.Documents;
 using NuGet.Client;
 using NuGet.Common;
 using NuGet.Configuration;
@@ -24,24 +26,28 @@ internal sealed class ResolvedWorkflowPackages : IDisposable
     internal List<byte[]> AllRuntimeAssemblies { get; } = [];
     internal HashSet<string> RuntimeNames { get; } = new(StringComparer.OrdinalIgnoreCase);
     internal Dictionary<string, (string Id, string Version)> Owners { get; } = new(StringComparer.OrdinalIgnoreCase);
+    internal long ResolutionBytes { get; set; }
+    internal Dictionary<string, IReadOnlyDictionary<string, ReadOnlyMemory<byte>>> Contents { get; } = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _compiled = new(StringComparer.OrdinalIgnoreCase);
 
-    internal void Add(WorkflowPackage package, WorkflowPackagePin pin, IReadOnlyDictionary<string, ReadOnlyMemory<byte>> entries, bool compile)
+    internal void Add(WorkflowPackagePin pin, IReadOnlyDictionary<string, ReadOnlyMemory<byte>> entries, bool compile)
     {
         Pins.Add(pin);
-        var root = Path.GetFullPath(Path.Combine(_directory, package.Digest.Value[7..]));
-        if (!root.StartsWith(Path.GetFullPath(_directory) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Package scratch path escapes its root");
-        Directory.CreateDirectory(root);
-        foreach (var path in compile ? pin.ReferenceAssemblies : [])
-        {
-            var name = AssemblyIdentity(entries[path]);
-            if (WorkflowSharedAssemblies.IsShared(name)) continue;
-            var file = Path.Combine(root, Path.GetFileName(path));
-            File.WriteAllBytes(file, entries[path].ToArray());
-            References.Add(file);
-            if (!Owners.TryAdd(name.Name!, (package.Id, package.Version)))
-                throw new InvalidOperationException($"Packages contain duplicate reference assembly '{name.Name}'");
-        }
+        Contents.Add(pin.Id, entries);
+        if (compile) Compile(pin);
+        AddRuntime(pin, entries);
+    }
+
+    internal void RefreshRuntime()
+    {
+        RuntimeAssemblies.Clear();
+        AllRuntimeAssemblies.Clear();
+        RuntimeNames.Clear();
+        foreach (var pin in Pins) AddRuntime(pin, Contents[pin.Id]);
+    }
+
+    private void AddRuntime(WorkflowPackagePin pin, IReadOnlyDictionary<string, ReadOnlyMemory<byte>> entries)
+    {
         // Build runs on the publisher's platform; no native code is executed by activity validation.
         var rid = System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier;
         var assets = pin.AppliesTo(rid) ? pin.RuntimeAssets.GetValueOrDefault(rid)
@@ -56,6 +62,26 @@ internal sealed class ResolvedWorkflowPackages : IDisposable
             var name = AssemblyIdentity(entries[path]);
             if (!WorkflowSharedAssemblies.IsShared(name) && !RuntimeAssemblies.TryAdd(name.Name!, entries[path].ToArray()))
                 throw new InvalidOperationException($"Packages contain duplicate runtime assembly '{name.Name}'");
+        }
+    }
+
+    internal void Compile(WorkflowPackagePin pin)
+    {
+        if (!_compiled.Add(pin.Id)) return;
+        var entries = Contents[pin.Id];
+        var root = Path.GetFullPath(Path.Combine(_directory, pin.Digest.Value[7..]));
+        if (!root.StartsWith(Path.GetFullPath(_directory) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Package scratch path escapes its root");
+        Directory.CreateDirectory(root);
+        foreach (var path in pin.ReferenceAssemblies)
+        {
+            var name = AssemblyIdentity(entries[path]);
+            if (WorkflowSharedAssemblies.IsShared(name)) continue;
+            var file = Path.Combine(root, Path.GetFileName(path));
+            File.WriteAllBytes(file, entries[path].ToArray());
+            References.Add(file);
+            if (!Owners.TryAdd(name.Name!, (pin.Id, pin.Version)))
+                throw new InvalidOperationException($"Packages contain duplicate reference assembly '{name.Name}'");
         }
     }
 
@@ -79,6 +105,71 @@ internal sealed class ResolvedWorkflowPackages : IDisposable
 
 internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IArtifactStore artifacts, WorkflowPublisherOptions options)
 {
+    internal async Task UnionAsync(ResolvedWorkflowPackages result, IReadOnlyList<WorkflowPackagePin> pins, DocumentLocation location, CancellationToken token)
+    {
+        foreach (var pin in pins)
+        {
+            var existing = result.Pins.SingleOrDefault(item => item.Id.Equals(pin.Id, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+            {
+                if (Selection(existing) != Selection(pin))
+                    throw new WorkflowPublishException("PUB010", $"Conflicting package pins for '{pin.Id}': {existing.Version} ({existing.Digest}) and {pin.Version} ({pin.Digest})", location);
+                var runtime = existing.RuntimeAssets.ToDictionary(StringComparer.Ordinal);
+                foreach (var (rid, assets) in pin.RuntimeAssets)
+                {
+                    if (runtime.TryGetValue(rid, out var selected) &&
+                        (!selected.ManagedAssemblies.Order(StringComparer.Ordinal).SequenceEqual(assets.ManagedAssemblies.Order(StringComparer.Ordinal)) ||
+                         !selected.NativeLibraries.Order(StringComparer.Ordinal).SequenceEqual(assets.NativeLibraries.Order(StringComparer.Ordinal))))
+                        throw new WorkflowPublishException("PUB010", $"Conflicting runtime '{rid}' selections for package '{pin.Id}@{pin.Version}'", location);
+                    runtime[rid] = assets;
+                }
+                var merged = existing with
+                {
+                    RuntimeAssets = runtime.OrderBy(pair => pair.Key, StringComparer.Ordinal).ToDictionary(),
+                    ApplicableRuntimeIdentifiers = existing.ApplicableRuntimeIdentifiers == null || pin.ApplicableRuntimeIdentifiers == null ? null :
+                        existing.ApplicableRuntimeIdentifiers.Concat(pin.ApplicableRuntimeIdentifiers).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray()
+                };
+                result.Pins[result.Pins.IndexOf(existing)] = merged;
+                // RID-only dependencies can provide mutually exclusive implementations of the same assembly.
+                // Only platform-neutral packages belong in the common compilation reference set.
+                try { if (merged.ApplicableRuntimeIdentifiers == null) result.Compile(merged); }
+                catch (InvalidOperationException error) { throw new WorkflowPublishException("PUB010", error.Message, location); }
+                continue;
+            }
+            if (result.Pins.Count >= options.MaxResolvedPackages)
+                throw new WorkflowPublishException("PUB010", "Callee package closure exceeds the resolved package limit", location);
+            await using var stream = await artifacts.OpenAsync(pin.Digest, token)
+                ?? throw new WorkflowPublishException("PUB010", $"Pinned callee package '{pin.Id}@{pin.Version}' is unavailable", location);
+            using var buffer = new MemoryStream();
+            var remaining = options.MaxPackageResolutionBytes - result.ResolutionBytes;
+            if (remaining <= 0) throw new WorkflowPublishException("PUB010", "Callee package closure exceeds the total byte limit", location);
+            await WorkflowBundleArchiveCopyAsync(stream, buffer, Math.Min(options.PackageReadLimits.MaxArchiveBytes, remaining), token);
+            result.ResolutionBytes = checked(result.ResolutionBytes + buffer.Length);
+            buffer.Position = 0;
+            var entries = await WorkflowPackageArchive.ReadAsync(buffer, pin.Digest,
+                options.PackageReadLimits with { MaxExpandedBytes = Math.Min(options.PackageReadLimits.MaxExpandedBytes, remaining) }, token);
+            result.ResolutionBytes = checked(result.ResolutionBytes + entries.Values.Sum(value => (long)value.Length));
+            if (result.ResolutionBytes > options.MaxPackageResolutionBytes)
+                throw new WorkflowPublishException("PUB010", "Callee package closure exceeds the total byte limit", location);
+            if (entries.Count != pin.Entries.Count || entries.Any(pair => !pin.Entries.TryGetValue(pair.Key, out var hash) || hash != ArtifactDigest.Of(pair.Value.Span)))
+                throw new WorkflowPublishException("PUB010", $"Pinned callee package '{pin.Id}@{pin.Version}' entries differ", location);
+            try { result.Add(pin, entries, compile: pin.ApplicableRuntimeIdentifiers == null); }
+            catch (InvalidOperationException error)
+            { throw new WorkflowPublishException("PUB010", $"Callee package '{pin.Id}@{pin.Version}' conflicts with the caller closure: {error.Message}", location); }
+        }
+        try { result.RefreshRuntime(); CheckRuntimeClosure(result, []); }
+        catch (Exception error) when (error is InvalidOperationException or WorkflowEngineException)
+        { throw new WorkflowPublishException("PUB010", error.Message, location); }
+
+        static string Selection(WorkflowPackagePin pin) => JsonSerializer.Serialize(new
+        {
+            Id = pin.Id.ToLowerInvariant(), pin.Version, pin.Digest,
+            Entries = pin.Entries.OrderBy(pair => pair.Key, StringComparer.Ordinal),
+            References = pin.ReferenceAssemblies.Order(StringComparer.Ordinal),
+            pin.RequiresRuntimeIdentifier
+        });
+    }
+
     internal static async Task<WorkflowPackage> UploadAsync(IWorkflowCatalogStore catalog, IArtifactStore artifacts,
         Stream content, WorkflowBundleReadLimits limits, CancellationToken token)
     {
@@ -182,6 +273,7 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
             void Budget(long count)
             {
                 bytesRead = checked(bytesRead + count);
+                result.ResolutionBytes = bytesRead;
                 if (bytesRead > options.MaxPackageResolutionBytes) throw new InvalidOperationException("Package resolution exceeds the total byte limit");
             }
             async Task<NuGetVersion[]> Versions(string id)
@@ -432,33 +524,39 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
                             if (!selection.ManagedAssemblies.Any(path => ResolvedWorkflowPackages.AssemblyIdentity(entries[path]).Name == ResolvedWorkflowPackages.AssemblyIdentity(entries[reference]).Name))
                                 throw new InvalidOperationException($"Package '{identity}' has no runtime implementation for reference '{reference}'");
                 await UploadAsync(catalog, artifacts, new MemoryStream(bytes), options.PackageReadLimits, token);
-                result.Add(package, pin, entries, neutralClosure.Contains(identity.Id));
+                result.Add(pin, entries, neutralClosure.Contains(identity.Id));
             }
-            foreach (var rid in graph.Runtimes.Keys.Concat(result.Pins.SelectMany(pin => pin.RuntimeAssets.Keys)).Append("").Distinct(StringComparer.Ordinal))
-            {
-                var names = new HashSet<string>(rid.StartsWith("win", StringComparison.Ordinal) ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
-                var managedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                var nativeImages = new Dictionary<string, ReadOnlyMemory<byte>>(names.Comparer);
-                foreach (var pin in result.Pins.Where(pin => rid == "" ? pin.ApplicableRuntimeIdentifiers == null : pin.AppliesTo(rid)))
-                {
-                    var assets = pin.RuntimeAssets.GetValueOrDefault(rid) ?? (!pin.RequiresRuntimeIdentifier ? pin.RuntimeAssets.GetValueOrDefault("") : null);
-                    var entries = archives[new PackageIdentity(pin.Id, NuGetVersion.Parse(pin.Version))].Entries;
-                    foreach (var path in assets?.ManagedAssemblies ?? [])
-                        if (!managedNames.Add(ResolvedWorkflowPackages.AssemblyIdentity(entries[path]).Name!))
-                            throw new InvalidOperationException($"Duplicate managed package assembly '{Path.GetFileName(path)}' for runtime '{rid}'");
-                    foreach (var path in assets?.NativeLibraries ?? [])
-                    {
-                        if (!names.Add(Path.GetFileName(path))) throw new InvalidOperationException($"Duplicate native package filename '{Path.GetFileName(path)}' for runtime '{rid}'");
-                        nativeImages.Add(Path.GetFileName(path), entries[path]);
-                    }
-                }
-                WorkflowNativeLibraries.Validate(nativeImages, rid);
-            }
+            CheckRuntimeClosure(result, graph.Runtimes.Keys);
             imports.Clear();
             foreach (var root in roots) imports.Add(root.Id.ToLowerInvariant() + "@" + VersionKey(root.Version));
             return result;
         }
         catch { result.Dispose(); throw; }
+    }
+
+    private static void CheckRuntimeClosure(ResolvedWorkflowPackages result, IEnumerable<string> runtimes)
+    {
+        foreach (var rid in runtimes.Concat(result.Pins.SelectMany(pin => pin.RuntimeAssets.Keys))
+                     .Concat(result.Pins.SelectMany(pin => pin.ApplicableRuntimeIdentifiers ?? [])).Append("").Distinct(StringComparer.Ordinal))
+        {
+            var names = new HashSet<string>(rid.StartsWith("win", StringComparison.Ordinal) ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+            var managedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var nativeImages = new Dictionary<string, ReadOnlyMemory<byte>>(names.Comparer);
+            foreach (var pin in result.Pins.Where(pin => rid == "" ? pin.ApplicableRuntimeIdentifiers == null : pin.AppliesTo(rid)))
+            {
+                var assets = pin.RuntimeAssets.GetValueOrDefault(rid) ?? (!pin.RequiresRuntimeIdentifier ? pin.RuntimeAssets.GetValueOrDefault("") : null);
+                var entries = result.Contents[pin.Id];
+                foreach (var path in assets?.ManagedAssemblies ?? [])
+                    if (!managedNames.Add(ResolvedWorkflowPackages.AssemblyIdentity(entries[path]).Name!))
+                        throw new InvalidOperationException($"Duplicate managed package assembly '{Path.GetFileName(path)}' for runtime '{rid}'");
+                foreach (var path in assets?.NativeLibraries ?? [])
+                {
+                    if (!names.Add(Path.GetFileName(path))) throw new InvalidOperationException($"Duplicate native package filename '{Path.GetFileName(path)}' for runtime '{rid}'");
+                    nativeImages.Add(Path.GetFileName(path), entries[path]);
+                }
+            }
+            WorkflowNativeLibraries.Validate(nativeImages, rid);
+        }
     }
 
     private static WorkflowPackagePin SelectAssets(WorkflowPackage package, IReadOnlyDictionary<string, ReadOnlyMemory<byte>> entries,

@@ -45,12 +45,12 @@ public static class WorkflowDefinitionValidator
 
     public const int CheckpointContractVersion = 4;
 
-    public static IReadOnlyList<WorkflowVersionReference> GetDependencies(WorkflowDefinition definition)
+    public static IReadOnlyList<WorkflowVersionDependency> GetDependencies(WorkflowDefinition definition)
     {
         Validate(definition);
         return ForExecution(definition).AllSteps.Select(pair => pair.Value)
             .Where(step => step.WorkflowName != null && step.WorkflowVersion != null)
-            .Select(step => new WorkflowVersionReference(step.WorkflowName!, step.WorkflowVersion!.Value))
+            .Select(step => new WorkflowVersionDependency(step.WorkflowName!, step.WorkflowVersion!.Value, WorkflowDependencyKind.Child))
             .Distinct().OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ToArray();
     }
 

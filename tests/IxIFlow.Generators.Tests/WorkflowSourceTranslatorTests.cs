@@ -217,7 +217,7 @@ public sealed class WorkflowSourceTranslatorTests
     public void ChildInvocationRequiresAResolvedContractAndPinnedVersion()
     {
         var yaml = Header + "  - kind: invokeWorkflow\n    workflow: {name: child, version: 3}\n";
-        Assert.Contains("resolved data contract", Assert.Throws<WorkflowSourceException>(() =>
+        Assert.Contains("resolved workflow contract", Assert.Throws<WorkflowSourceException>(() =>
             WorkflowSourceTranslator.Translate(yaml, "child.yaml")).Message);
         var options = new WorkflowSourceOptions();
         options.Workflows.Add("child@3", new WorkflowSourceReference(typeof(FlowData).FullName!, 3));
