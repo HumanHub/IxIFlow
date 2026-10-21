@@ -17,9 +17,11 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
     internal static bool IsAutomaticCapability(string key) =>
         key is "os" or "arch" or "runtime" or "host" or "bundle-host" || key.StartsWith("workflow:", StringComparison.Ordinal);
 
-    internal static async Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync(IWorkflowCatalog registry, HostSettings settings)
-    {
-        var capabilities = new Dictionary<string, string>(settings.Capabilities, StringComparer.Ordinal)
+    internal static Task<IReadOnlyDictionary<string, string>> CapabilitiesAsync(IWorkflowCatalog registry, HostSettings settings) =>
+        settings.RefreshCapabilitiesAsync(registry);
+
+    internal static Dictionary<string, string> BaseCapabilities(HostSettings settings) =>
+        new(settings.Capabilities, StringComparer.Ordinal)
         {
             ["os"] = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsLinux() ? "linux"
                 : OperatingSystem.IsMacOS() ? "macos" : RuntimeInformation.OSDescription,
@@ -27,23 +29,6 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
             ["runtime"] = RuntimeInformation.FrameworkDescription,
             ["host"] = settings.Id.ToString("D")
         };
-        foreach (var definition in await registry.GetWorkflowDefinitionsAsync())
-            if (await registry.GetWorkflowStructureHashAsync(definition.Name, definition.Version) is { } hash)
-                capabilities.Add($"workflow:{definition.Name}@{definition.Version}", hash);
-        if (settings.BundleHostingEnabled && !WorkflowSharedAssemblies.IsUsable)
-            settings.Compatibility.WarnUnusableProfile(settings.CapabilityLogger);
-        else if (settings.BundleHostingEnabled)
-        {
-            capabilities.Add("bundle-host", "");
-            var rows = await registry.GetWorkflowVersionsAsync();
-            var retained = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var row in rows)
-                if (row.ArtifactDigest != null && settings.Compatibility.Compatible(row.ManifestJson, retained, settings.CapabilityLogger))
-                    capabilities[$"workflow:{row.Name}@{row.Version}"] = row.StructureHash;
-            settings.Compatibility.Retain(retained);
-        }
-        return capabilities;
-    }
 
     internal sealed class CompatibilityMemo
     {

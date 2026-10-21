@@ -199,6 +199,8 @@ public sealed class DefinitionValidationTests
         public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) => _catalog.SaveDefinitionAsync(definition, expectedRevision);
         public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) => _catalog.RegisterWorkflowVersionAsync(version, artifacts);
         public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _catalog.GetWorkflowVersionAsync(name, version);
+        public Task<long> GetCatalogRevisionAsync() => _catalog.GetCatalogRevisionAsync();
+        public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => _catalog.GetWorkflowVersionChangesAsync(afterRevision);
         public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _catalog.GetWorkflowVersionsAsync(name);
         public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) => _catalog.SetWorkflowVersionStateAsync(name, version, state, artifacts);
         public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) => _catalog.PublishDefinitionAsync(draftId, version, artifacts);

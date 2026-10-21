@@ -9,6 +9,7 @@ using IxIFlow.BundleFixtures;
 using IxIFlow.Core;
 using IxIFlow.Core.Runtime;
 using IxIFlow.Tests.Infrastructure;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
@@ -210,11 +211,15 @@ public sealed class BundleRound3Tests : IDisposable
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task DemandRefreshIsThrottledAndFailureHandsOff(bool fail)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task DemandRefreshIsThrottledAndFailureHandsOff(bool fail, bool sqlite)
     {
-        var store = new InMemoryWorkflowStateRepository();
+        await using var sqliteStore = sqlite ? new SqliteWorkflowStateRepository(new SqliteConnectionStringBuilder
+        { DataSource = Path.Combine(Folder("db"), "state.db"), Pooling = false }.ConnectionString) : null;
+        IWorkflowStateRepository store = sqliteStore ?? (IWorkflowStateRepository)new InMemoryWorkflowStateRepository();
         using var catalog = new WorkflowCatalog(store, artifacts: store, bundles: new(Folder("catalog")));
         var counted = DispatchProxy.Create<IWorkflowCatalog, CatalogProbe>();
         var probe = (CatalogProbe)(object)counted;
@@ -236,40 +241,61 @@ public sealed class BundleRound3Tests : IDisposable
             Assert.Equal(WorkflowStatus.Running, (await store.GetWorkflowInstanceSummaryAsync(id))!.Status);
         }
         Assert.Equal(2, probe.VersionReads);
+        Assert.Equal(2, probe.RevisionReads);
         time.Advance(settings.HeartbeatInterval);
         var refreshed = await settings.RefreshDemandCapabilitiesAsync(counted, time);
         if (fail) Assert.Null(refreshed);
-        else Assert.NotNull(refreshed);
-        Assert.Equal(3, probe.VersionReads);
+        else
+        {
+            Assert.NotNull(refreshed);
+            Assert.DoesNotContain("workflow:BundleLifecycle@1", refreshed.Keys);
+        }
+        // Success cached the unchanged revision; failure still needs to retry the delta.
+        Assert.Equal(fail ? 3 : 2, probe.VersionReads);
+        Assert.Equal(3, probe.RevisionReads);
     }
 
-    [Fact]
-    public async Task AnInflightDemandRefreshDoesNotQueueOtherPlacementReads()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AnInflightDemandRefreshDoesNotQueueOtherPlacementReads(bool sqlite)
     {
-        var store = new InMemoryWorkflowStateRepository();
+        await using var sqliteStore = sqlite ? new SqliteWorkflowStateRepository(new SqliteConnectionStringBuilder
+        { DataSource = Path.Combine(Folder("db"), "state.db"), Pooling = false }.ConnectionString) : null;
+        IWorkflowStateRepository store = sqliteStore ?? (IWorkflowStateRepository)new InMemoryWorkflowStateRepository();
         using var catalog = new WorkflowCatalog(store);
         var counted = DispatchProxy.Create<IWorkflowCatalog, CatalogProbe>();
         var probe = (CatalogProbe)(object)counted;
         probe.Inner = catalog;
         var settings = HostSettings.Default with { BundleHostingEnabled = true };
         var snapshot = await settings.GetCapabilitiesAsync(counted);
+        var version = await PublishedBundleScenario.PublishAsync(store);
         probe.PausedVersions = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        probe.VersionsEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         var refresh = settings.RefreshDemandCapabilitiesAsync(counted, TimeProvider.System);
         try
         {
+            await probe.VersionsEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             Assert.False(refresh.IsCompleted);
             Assert.Null(await settings.RefreshDemandCapabilitiesAsync(counted, TimeProvider.System).WaitAsync(TimeSpan.FromSeconds(2)));
             Assert.Same(snapshot, await settings.GetCapabilitiesAsync(counted).WaitAsync(TimeSpan.FromSeconds(2)));
             Assert.Equal(2, probe.VersionReads);
+            Assert.Equal(2, probe.RevisionReads);
         }
         finally { probe.PausedVersions.TrySetResult([]); }
-        Assert.NotNull(await refresh);
+        var refreshed = await refresh;
+        Assert.NotNull(refreshed);
+        Assert.Equal(version.StructureHash, refreshed[$"workflow:{version.Name}@{version.Version}"]);
     }
 
-    [Fact]
-    public async Task CompatibilityFailuresAreMemoisedAsFalseLoggedOnceAndRemovedWithTheirVersions()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompatibilityFailuresAreMemoisedAsFalseLoggedOnceAndRemovedWithTheirVersions(bool sqlite)
     {
-        var store = new InMemoryWorkflowStateRepository();
+        await using var sqliteStore = sqlite ? new SqliteWorkflowStateRepository(new SqliteConnectionStringBuilder
+        { DataSource = Path.Combine(Folder("db"), "state.db"), Pooling = false }.ConnectionString) : null;
+        IWorkflowStateRepository store = sqliteStore ?? (IWorkflowStateRepository)new InMemoryWorkflowStateRepository();
         var version = await PublishedBundleScenario.PublishAsync(store);
         using var catalog = new WorkflowCatalog(store);
         var counted = DispatchProxy.Create<IWorkflowCatalog, CatalogProbe>();
@@ -280,13 +306,28 @@ public sealed class BundleRound3Tests : IDisposable
         // This passes basic compatibility checks, then raises a non-JSON exception in validation.
         probe.VersionRows = [version with { ManifestJson = JsonSerializer.Serialize(
             JsonSerializer.Deserialize<WorkflowBundleManifest>(version.ManifestJson!)! with { SharedAssemblies = null! }) }];
+        Lazy<bool>? cached = null;
         for (var i = 0; i < 2; i++)
+        {
+            // Revisit the same corrupt manifest through an actual changed-row delta.
+            if (i != 0) await store.SetWorkflowVersionStateAsync(version.Name, version.Version, WorkflowVersionState.Deprecated);
             Assert.DoesNotContain("workflow:BundleLifecycle@1", (await settings.RefreshCapabilitiesAsync(counted)).Keys);
+            var entry = Assert.Single(MemoEntries(settings.Compatibility)).Value;
+            if (cached != null) Assert.Same(cached, entry);
+            cached = entry;
+        }
+        Assert.Equal(2, probe.VersionReads);
+        Assert.Equal(2, probe.RevisionReads);
         Assert.Equal(1, logger.Warnings);
         Assert.Single(MemoEntries(settings.Compatibility));
         Assert.False(Assert.Single(MemoEntries(settings.Compatibility)).Value.Value);
-        probe.VersionRows = [];
-        await settings.RefreshCapabilitiesAsync(counted);
+        // Rows are retained by the store; a policy view withdraws this manifest's last reference.
+        probe.VersionRows = [version with { State = WorkflowVersionState.Retired, ManifestJson = null }];
+        await store.SetWorkflowVersionStateAsync(version.Name, version.Version, WorkflowVersionState.Retired);
+        Assert.DoesNotContain("workflow:BundleLifecycle@1", (await settings.RefreshCapabilitiesAsync(counted)).Keys);
+        Assert.Equal(3, probe.VersionReads);
+        Assert.Equal(3, probe.RevisionReads);
+        Assert.Equal(1, logger.Warnings);
         Assert.Empty(MemoEntries(settings.Compatibility));
     }
 
@@ -307,22 +348,34 @@ public sealed class BundleRound3Tests : IDisposable
     {
         public IWorkflowCatalog Inner = null!;
         public int VersionReads;
+        public int RevisionReads;
         public bool FailVersions;
         public bool HideVersions;
         public IReadOnlyList<WorkflowVersion>? VersionRows;
         public TaskCompletionSource<IReadOnlyList<WorkflowVersion>>? PausedVersions;
+        public TaskCompletionSource? VersionsEntered;
         protected override object? Invoke(MethodInfo? method, object?[]? args)
         {
-            if (method!.Name == nameof(IWorkflowCatalog.GetWorkflowVersionsAsync))
-            {
-                Interlocked.Increment(ref VersionReads);
-                if (PausedVersions != null) return PausedVersions.Task;
-                if (FailVersions) throw new IOException("catalog unavailable");
-                if (HideVersions || VersionRows != null) return Task.FromResult(VersionRows ?? []);
-            }
+            if (method!.Name == nameof(IWorkflowCatalog.GetCatalogRevisionAsync))
+                Interlocked.Increment(ref RevisionReads);
+            if (method.Name == nameof(IWorkflowCatalog.GetWorkflowVersionChangesAsync))
+                return ReadChangesAsync((long)args![0]!);
+            if (method.Name == nameof(IWorkflowCatalog.GetWorkflowVersionsAsync))
+                throw new InvalidOperationException("Capability refresh must not enumerate the full catalog");
             try { return method.Invoke(Inner, args); }
             catch (TargetInvocationException error) when (error.InnerException != null)
             { ExceptionDispatchInfo.Capture(error.InnerException).Throw(); throw; }
+        }
+        private async Task<WorkflowCatalogChanges> ReadChangesAsync(long afterRevision)
+        {
+            Interlocked.Increment(ref VersionReads);
+            VersionsEntered?.TrySetResult();
+            if (PausedVersions != null) await PausedVersions.Task;
+            if (FailVersions) throw new IOException("catalog unavailable");
+            var changes = await Inner.GetWorkflowVersionChangesAsync(afterRevision);
+            return changes with { Versions = HideVersions
+                ? changes.Versions.Select(row => row with { ManifestJson = null }).ToArray()
+                : VersionRows ?? changes.Versions };
         }
     }
 }

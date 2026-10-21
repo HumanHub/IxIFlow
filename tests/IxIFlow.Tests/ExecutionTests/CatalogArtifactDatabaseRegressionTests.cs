@@ -114,9 +114,19 @@ public sealed class CatalogArtifactDatabaseRegressionTests
         await using var connection = connect();
         await connection.OpenAsync();
         var insert = provider == Provider.SqlServer
-            ? "INSERT INTO dbo.IxIFlowWorkflowVersions (Name,Version,StructureHash,State,MetadataJson) VALUES (@Name,1,'caller','Retired',@Metadata)"
-            : "INSERT INTO ixiflow_workflow_versions (name,version,structure_hash,state,metadata_json) VALUES (@Name,1,'caller','Retired',@Metadata)";
-        await connection.ExecuteAsync(insert, callers.Select(caller => new { caller.Name, Metadata = JsonSerializer.Serialize(caller) }));
+            ? "INSERT INTO dbo.IxIFlowWorkflowVersions (Name,Version,StructureHash,State,MetadataJson,CatalogRevision) VALUES (@Name,1,'caller','Retired',@Metadata,@Revision)"
+            : "INSERT INTO ixiflow_workflow_versions (name,version,structure_hash,state,metadata_json,catalog_revision) VALUES (@Name,1,'caller','Retired',@Metadata,@Revision)";
+        // Bulk fixture setup obeys the same atomic counter/row stamping invariant as registration.
+        await using (var transaction = await connection.BeginTransactionAsync())
+        {
+            var counter = provider == Provider.SqlServer ? "dbo.IxIFlowCatalogRevision" : "ixiflow_catalog_revision";
+            var revisionColumn = provider == Provider.SqlServer ? "Revision" : "revision";
+            var idColumn = provider == Provider.SqlServer ? "Id" : "id";
+            await connection.ExecuteAsync($"UPDATE {counter} SET {revisionColumn}={revisionColumn}+1 WHERE {idColumn}=1", transaction: transaction);
+            var revision = await connection.QuerySingleAsync<long>($"SELECT {revisionColumn} FROM {counter} WHERE {idColumn}=1", transaction: transaction);
+            await connection.ExecuteAsync(insert, callers.Select(caller => new { caller.Name, Metadata = JsonSerializer.Serialize(caller), Revision = revision }), transaction);
+            await transaction.CommitAsync();
+        }
         var unrelated = Instance(name + "-unrelated");
         var terminal = Instance(name + "-terminal");
         terminal.Status = WorkflowStatus.Terminated;

@@ -4,7 +4,10 @@ namespace IxIFlow.Core.Runtime;
 internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan PollInterval, string Name)
 {
     private readonly SemaphoreSlim _capabilityGate = new(1, 1);
-    private sealed record CapabilitySnapshot(IWorkflowCatalog Catalog, long Revision, IReadOnlyDictionary<string, string> Values);
+    private sealed record VersionCapability(string StructureHash, bool Compatible, string? ManifestHash);
+    private sealed record CapabilitySnapshot(IWorkflowCatalog Catalog, long Revision, long CatalogRevision,
+        IReadOnlyDictionary<(string Name, int Version), VersionCapability> Versions,
+        IReadOnlyDictionary<string, string> LocalDefinitions, IReadOnlyDictionary<string, string> Values);
     private CapabilitySnapshot? _capabilitySnapshot;
     private long? _lastDemandRefresh;
     internal WorkflowHeartbeatService.CompatibilityMemo Compatibility { get; } = new();
@@ -40,10 +43,58 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
 
     private async Task<IReadOnlyDictionary<string, string>> ReadCapabilitiesAsync(IWorkflowCatalog catalog)
     {
-        // Capture the revision before enumeration so a concurrent registration invalidates it.
+        // Capture local registration revision before enumeration so a racing registration
+        // invalidates this snapshot on the next placement lookup.
         var revision = catalog.DefinitionRevision;
-        var snapshot = MemberRegistry.SnapshotCapabilities(await WorkflowHeartbeatService.CapabilitiesAsync(catalog, this));
-        Volatile.Write(ref _capabilitySnapshot, new(catalog, revision, snapshot));
+        var previous = _capabilitySnapshot;
+        if (previous != null && !ReferenceEquals(previous.Catalog, catalog)) previous = null;
+        var catalogRevision = await catalog.GetCatalogRevisionAsync();
+        if (previous != null && previous.Revision == revision && previous.CatalogRevision == catalogRevision)
+            return previous.Values;
+
+        var bundleHosting = BundleHostingEnabled && WorkflowSharedAssemblies.IsUsable;
+        if (BundleHostingEnabled && !bundleHosting) Compatibility.WarnUnusableProfile(CapabilityLogger);
+        IReadOnlyDictionary<(string Name, int Version), VersionCapability> versions = previous?.Versions
+            ?? new Dictionary<(string, int), VersionCapability>();
+        if (previous == null || previous.CatalogRevision != catalogRevision)
+        {
+            var changes = await catalog.GetWorkflowVersionChangesAsync(previous?.CatalogRevision ?? 0);
+            // Use the delta's watermark, never the earlier scalar read (a writer may race it).
+            catalogRevision = changes.Revision;
+            var updated = new Dictionary<(string, int), VersionCapability>(versions);
+            foreach (var row in changes.Versions)
+            {
+                var hashes = new HashSet<string>(StringComparer.Ordinal);
+                var compatible = bundleHosting && row.ArtifactDigest != null &&
+                    row.State != WorkflowVersionState.Draft &&
+                    Compatibility.Compatible(row.ManifestJson, hashes, CapabilityLogger);
+                updated[(row.Name, row.Version)] = new(row.StructureHash, compatible, hashes.SingleOrDefault());
+            }
+            versions = updated;
+        }
+        IReadOnlyDictionary<string, string> local = previous?.LocalDefinitions ?? new Dictionary<string, string>();
+        if (previous == null || previous.Revision != revision)
+        {
+            var definitions = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var definition in await catalog.GetWorkflowDefinitionsAsync())
+                if (await catalog.GetWorkflowStructureHashAsync(definition.Name, definition.Version) is { } hash)
+                    definitions.Add($"workflow:{definition.Name}@{definition.Version}", hash);
+            local = definitions;
+        }
+        var values = WorkflowHeartbeatService.BaseCapabilities(this);
+        foreach (var (key, hash) in local) values.Add(key, hash);
+        if (bundleHosting) values.Add("bundle-host", "");
+        foreach (var (key, result) in versions)
+        {
+            var capability = $"workflow:{key.Name}@{key.Version}";
+            // Retirement prevents new starts, but existing instances still demand this
+            // executable capability during recovery. Admission checks enforce retirement.
+            if (result.Compatible) values[capability] = result.StructureHash;
+        }
+        var snapshot = MemberRegistry.SnapshotCapabilities(values);
+        Compatibility.Retain(versions.Values.Where(result => result.ManifestHash != null)
+            .Select(result => result.ManifestHash!).ToHashSet(StringComparer.Ordinal));
+        Volatile.Write(ref _capabilitySnapshot, new(catalog, revision, catalogRevision, versions, local, snapshot));
         return snapshot;
     }
 
