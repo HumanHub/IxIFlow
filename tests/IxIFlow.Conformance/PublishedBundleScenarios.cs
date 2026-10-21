@@ -32,7 +32,7 @@ public sealed class PublishedBundleScenarios
         var store = database.NewRepository();
         var original = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream([1]));
         var different = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream([2]));
-        await store.RegisterWorkflowVersionAsync(new("Pinned", 1, "store-contract", ArtifactDigest: original));
+        await store.RegisterWorkflowVersionAsync(new("Pinned", 1, "store-contract", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: original));
         WorkflowInstance Instance(ArtifactDigest pin) => new()
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Pinned", WorkflowVersion = 1,
@@ -69,9 +69,9 @@ public sealed class PublishedBundleScenarios
         var store = database.NewRepository();
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.PinRetention", Guid.NewGuid().ToString("N"));
         var files = new FileSystemArtifactStore(folder);
-        var manifest = new WorkflowBundleManifest(1, "PinRetention", 1, "store-contract", "fixture-data", "fixture-entry",
+        var manifest = new WorkflowBundleManifest(2, "PinRetention", 1, "store-contract", "fixture-data", "fixture-entry",
             typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
-            "", IxIFlow.Authoring.WorkflowCompilation.Settings, new Dictionary<string, string>(), new Dictionary<string, ArtifactDigest>());
+            "", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, IxIFlow.Authoring.WorkflowCompilation.Settings, new Dictionary<string, string>(), new Dictionary<string, ArtifactDigest>());
         var archive = WorkflowBundleArchive.Create(manifest, new Dictionary<string, byte[]>
         {
             [WorkflowBundleArchive.AssemblyPath] = [1], [WorkflowBundleArchive.PdbPath] = [2],
@@ -79,7 +79,7 @@ public sealed class PublishedBundleScenarios
         });
         var pinned = await files.PutAsync(ArtifactKind.Bundle, new MemoryStream(archive));
         var orphan = await files.PutAsync(ArtifactKind.Bundle, new MemoryStream([2]));
-        await store.RegisterWorkflowVersionAsync(new("PinRetention", 1, "store-contract", ArtifactDigest: pinned), files);
+        await store.RegisterWorkflowVersionAsync(new("PinRetention", 1, "store-contract", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: pinned), files);
         await store.SeedAsync(new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "PinRetention", WorkflowVersion = 1,

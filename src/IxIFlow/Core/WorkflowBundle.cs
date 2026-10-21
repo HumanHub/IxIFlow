@@ -12,6 +12,7 @@ public sealed record WorkflowCompilerSettings(string RoslynVersion, string Langu
 public sealed record WorkflowBundleManifest(
     int FormatVersion, string Name, int Version, string StructureHash, string DataType, string EntryType,
     string EngineVersion, int CheckpointContractVersion, string CombinerSignature,
+    string Contract, string ContractHash,
     WorkflowCompilerSettings Compiler, IReadOnlyDictionary<string, string> SharedAssemblies,
     IReadOnlyDictionary<string, ArtifactDigest> Entries)
 {
@@ -159,11 +160,19 @@ public static class WorkflowBundleArchive
 
     internal static void CheckManifest(WorkflowBundleManifest manifest)
     {
-        if (manifest.FormatVersion != 1 || string.IsNullOrWhiteSpace(manifest.Name) || manifest.Version < 1 ||
+        if (manifest.FormatVersion != 2 || string.IsNullOrWhiteSpace(manifest.Name) || manifest.Version < 1 ||
             string.IsNullOrWhiteSpace(manifest.StructureHash) || string.IsNullOrWhiteSpace(manifest.DataType) ||
             string.IsNullOrWhiteSpace(manifest.EntryType) || string.IsNullOrWhiteSpace(manifest.EngineVersion) ||
             manifest.CheckpointContractVersion < 1 || manifest.Compiler == null || manifest.SharedAssemblies == null || manifest.Entries == null || manifest.ActivityPackages == null)
             throw Mismatch("Invalid bundle manifest metadata");
+        try
+        {
+            var contract = WorkflowContract.Parse(manifest.Contract);
+            if (contract.ToJson() != manifest.Contract || contract.Hash != manifest.ContractHash)
+                throw new ArgumentException("Contract JSON or hash differs");
+        }
+        catch (Exception error) when (error is ArgumentException or JsonException or InvalidOperationException)
+        { throw Mismatch("Invalid bundle workflow contract or contract hash", error); }
         var packageIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var pin in manifest.ActivityPackages)
         {

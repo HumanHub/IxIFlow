@@ -120,9 +120,9 @@ public sealed class CatalogArtifactReviewRegressionTests
                         "Data Source=" + Path.Combine(folder, "start-wins.db"), clock);
                     store = sqlite ?? (store is InMemoryWorkflowStateRepository
                         ? new InMemoryWorkflowStateRepository(clock) : store);
-                    await store.RegisterWorkflowVersionAsync(new(name, 1, "child"));
+                    await store.RegisterWorkflowVersionAsync(new(name, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash));
                     var caller = name + "-caller";
-                    await store.RegisterWorkflowVersionAsync(new(caller, 1, "parent", Dependencies: [new(name, 1)]));
+                    await store.RegisterWorkflowVersionAsync(new(caller, 1, "parent", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Dependencies: [new(name, 1)]));
                     var parent = Instance(caller);
                     var lease = await StoreTestSupport.LeaseAsync(store, parent.InstanceId);
                     WorkflowEngineException error;
@@ -236,10 +236,10 @@ public sealed class CatalogArtifactReviewRegressionTests
             }
             case Scenario.RetirementSelection:
             {
-                await store.RegisterWorkflowVersionAsync(new(name, 1, "child"));
+                await store.RegisterWorkflowVersionAsync(new(name, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash));
                 var caller = name + "-caller";
-                await store.RegisterWorkflowVersionAsync(new(caller, 1, "caller", Dependencies: [new(name, 1)]));
-                await store.RegisterWorkflowVersionAsync(new(caller, 2, "unrelated-version"));
+                await store.RegisterWorkflowVersionAsync(new(caller, 1, "caller", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Dependencies: [new(name, 1)]));
+                await store.RegisterWorkflowVersionAsync(new(caller, 2, "unrelated-version", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash));
                 var terminal = Instance(caller);
                 terminal.Status = WorkflowStatus.Terminated;
                 await store.SeedAsync(terminal);
@@ -259,11 +259,11 @@ public sealed class CatalogArtifactReviewRegressionTests
                 {
                     await Assert.ThrowsAsync<ArgumentException>(() => store.SaveDefinitionAsync(new(invalid, 1, "workflow", "bad"), 1));
                     await Assert.ThrowsAsync<ArgumentException>(() => store.GetDefinitionAsync(invalid, 1));
-                    await Assert.ThrowsAsync<ArgumentException>(() => store.RegisterWorkflowVersionAsync(new(invalid, 1, "bad")));
+                    await Assert.ThrowsAsync<ArgumentException>(() => store.RegisterWorkflowVersionAsync(new(invalid, 1, "bad", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash)));
                     await Assert.ThrowsAsync<ArgumentException>(() => store.GetWorkflowVersionAsync(invalid, 1));
                     await Assert.ThrowsAsync<ArgumentException>(() => store.GetWorkflowVersionsAsync(invalid));
                     await Assert.ThrowsAsync<ArgumentException>(() => store.SetWorkflowVersionStateAsync(invalid, 1, WorkflowVersionState.Retired));
-                    await Assert.ThrowsAsync<ArgumentException>(() => store.RegisterWorkflowVersionAsync(new(name, 2, "bad", Dependencies: [new(invalid, 1)])));
+                    await Assert.ThrowsAsync<ArgumentException>(() => store.RegisterWorkflowVersionAsync(new(name, 2, "bad", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Dependencies: [new(invalid, 1)])));
                     Assert.Throws<WorkflowEngineException>(() => Definition(invalid));
                     await using var provider = Provider(store, new WorkflowCatalog(store));
                     await Assert.ThrowsAsync<ArgumentException>(() => provider.GetRequiredService<IWorkflowClient>().StartAsync(invalid, new Data()));
@@ -303,7 +303,7 @@ public sealed class CatalogArtifactReviewRegressionTests
                 var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream([67, 1, 5]));
                 await age();
                 var paused = new PausedArtifactRead(store);
-                var registering = Task.Run(() => store.RegisterWorkflowVersionAsync(new(name, 1, "locked", ArtifactDigest: digest), paused));
+                var registering = Task.Run(() => store.RegisterWorkflowVersionAsync(new(name, 1, "locked", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest), paused));
                 await paused.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
                 var collecting = Task.Run(() => store.PurgeArtifactsAsync(store, TimeSpan.FromDays(90), 1));
                 try
@@ -322,7 +322,7 @@ public sealed class CatalogArtifactReviewRegressionTests
                 var references = new List<ArtifactDigest>();
                 for (var i = 0; i < 128; i++)
                     references.Add(await store.PutAsync(ArtifactKind.Template, new MemoryStream(BitConverter.GetBytes(i))));
-                await store.RegisterWorkflowVersionAsync(new(name, 1, "referenced", ArtifactReferences: references));
+                await store.RegisterWorkflowVersionAsync(new(name, 1, "referenced", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactReferences: references));
                 await age();
                 var orphans = new List<ArtifactDigest>();
                 for (var i = 128; i < 133; i++)
@@ -361,20 +361,20 @@ public sealed class CatalogArtifactReviewRegressionTests
         await age();
         Assert.Equal(digest, await artifacts.PutAsync(ArtifactKind.Package, new MemoryStream(bytes)));
         Assert.Equal(0, await store.PurgeArtifactsAsync(artifacts, TimeSpan.FromDays(90), 1));
-        await store.RegisterWorkflowVersionAsync(new(name, 1, "reupload", ArtifactDigest: digest), artifacts);
+        await store.RegisterWorkflowVersionAsync(new(name, 1, "reupload", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest), artifacts);
         Assert.True(await artifacts.ExistsAsync(digest));
     }
 
     private static async Task MissingArtifactsAsync(IWorkflowStateRepository store, IArtifactStore artifacts, string name)
     {
         var missing = ArtifactDigest.Of([67, 0, 0]);
-        await Refused(() => store.RegisterWorkflowVersionAsync(new(name, 1, "missing", ArtifactDigest: missing), artifacts),
+        await Refused(() => store.RegisterWorkflowVersionAsync(new(name, 1, "missing", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: missing), artifacts),
             WorkflowErrorKind.ArtifactUnavailable);
-        await Refused(() => store.RegisterWorkflowVersionAsync(new(name, 2, "missing", ArtifactReferences: [missing]), artifacts),
+        await Refused(() => store.RegisterWorkflowVersionAsync(new(name, 2, "missing", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactReferences: [missing]), artifacts),
             WorkflowErrorKind.ArtifactUnavailable);
         Assert.Null(await store.GetWorkflowVersionAsync(name, 1));
         var digest = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream([67, 1, 0]));
-        await store.RegisterWorkflowVersionAsync(new(name, 3, "publish", WorkflowVersionState.Draft, ArtifactDigest: digest), artifacts);
+        await store.RegisterWorkflowVersionAsync(new(name, 3, "publish", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, WorkflowVersionState.Draft, ArtifactDigest: digest), artifacts);
         await artifacts.DeleteAsync(digest);
         await Refused(() => store.SetWorkflowVersionStateAsync(name, 3, WorkflowVersionState.Published, artifacts),
             WorkflowErrorKind.ArtifactUnavailable);
@@ -425,7 +425,7 @@ public sealed class CatalogArtifactReviewRegressionTests
             await using var provider = services.BuildServiceProvider();
             var catalog = provider.GetRequiredService<IWorkflowCatalog>();
             var digest = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream([67, 9, 0]));
-            await catalog.RegisterWorkflowVersionAsync(new("DI-files", 1, "file", ArtifactDigest: digest));
+            await catalog.RegisterWorkflowVersionAsync(new("DI-files", 1, "file", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest));
         }
         finally { Directory.Delete(folder, recursive: true); }
     }

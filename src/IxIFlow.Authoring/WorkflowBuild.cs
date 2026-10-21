@@ -7,7 +7,7 @@ namespace IxIFlow.Authoring;
 
 internal sealed record WorkflowBuildResult(string Name = "", int Version = 0, string StructureHash = "",
     string DataType = "", string EntryType = "", string CombinerSignature = "",
-    WorkflowVersionReference[]? Dependencies = null, string? Error = null, int Line = 1, int Column = 1);
+    WorkflowVersionReference[]? Dependencies = null, string? Error = null, int Line = 1, int Column = 1, string ContractJson = "");
 
 internal static class WorkflowBuild
 {
@@ -61,7 +61,8 @@ internal static class WorkflowBuild
                         type.GetMethods().Any(handle => metadata.GetString(metadata.GetMethodDefinition(handle).Name) == "Build"));
                 return new WorkflowBuildResult(definition.Name, definition.Version, structureHash, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(definition.WorkflowDataType!),
                     metadata.GetString(entry.Namespace) + "." + metadata.GetString(entry.Name),
-                    WorkflowDefinitionValidator.GetCombinerSignature(definition), WorkflowDefinitionValidator.GetDependencies(definition).ToArray());
+                    WorkflowDefinitionValidator.GetCombinerSignature(definition), WorkflowDefinitionValidator.GetDependencies(definition).ToArray(),
+                    ContractJson: WorkflowDefinitionValidator.GetContract(definition).ToJson());
             });
         }
         catch (Exception error)

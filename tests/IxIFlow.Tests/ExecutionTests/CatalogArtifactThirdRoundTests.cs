@@ -56,9 +56,9 @@ public sealed class CatalogArtifactThirdRoundTests
         var caller = child + "-caller";
         const int oldVersion = 3;
         const int newVersion = 8;
-        await store.RegisterWorkflowVersionAsync(new(child, 1, "child"));
-        await store.RegisterWorkflowVersionAsync(new(caller, oldVersion, "old", Dependencies: [new(child, 1)]));
-        await store.RegisterWorkflowVersionAsync(new(caller, newVersion, "new"));
+        await store.RegisterWorkflowVersionAsync(new(child, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash));
+        await store.RegisterWorkflowVersionAsync(new(caller, oldVersion, "old", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Dependencies: [new(child, 1)]));
+        await store.RegisterWorkflowVersionAsync(new(caller, newVersion, "new", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash));
 
         if (scenario is Scenario.PublishedCaller or Scenario.DeprecatedCaller)
         {
@@ -81,8 +81,8 @@ public sealed class CatalogArtifactThirdRoundTests
         // Also reject a false cross product of names and versions: (caller,3), (other,8)
         // must not match either (caller,8) above or (other,3) below.
         var other = child + "-other";
-        await store.RegisterWorkflowVersionAsync(new(other, oldVersion, "other-old"));
-        await store.RegisterWorkflowVersionAsync(new(other, newVersion, "other-new",
+        await store.RegisterWorkflowVersionAsync(new(other, oldVersion, "other-old", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash));
+        await store.RegisterWorkflowVersionAsync(new(other, newVersion, "other-new", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash,
             WorkflowVersionState.Retired, Dependencies: [new(child, 1)]));
         await SeedAsync(other, oldVersion);
         var pairs = new WorkflowVersionReference[] { new(caller, oldVersion), new(other, newVersion) };

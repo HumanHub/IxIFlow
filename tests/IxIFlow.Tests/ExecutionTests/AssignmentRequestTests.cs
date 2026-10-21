@@ -38,7 +38,7 @@ public sealed class AssignmentRequestTests
                 (await run.Host.CheckpointAsync(new(identity, commit))).Conflict);
             Assert.Equal(ConflictReason.NotAssigned,
                 (await run.Host.StartChildAsync(new(identity, run.Instance.InstanceId, run.Owner.Epoch,
-                    "root/0", new("child", "{}", "wait"), "hash"))).Conflict);
+                    "root/0", new("child", "{}", "wait"), "hash", WorkflowContract.OfType(typeof(Data)).Hash))).Conflict);
             Assert.Equal(ConflictReason.NotAssigned,
                 (await run.Host.ReadInboxAsync(new(identity, run.Instance.InstanceId, 0, 10))).Conflict);
             Assert.Equal(ConflictReason.NotAssigned,
@@ -116,7 +116,7 @@ public sealed class AssignmentRequestTests
             new Data { Value = variant == "size" ? new string('x', 5_000) : "input" }, run.Instance, "child", "wait", DateTime.UtcNow);
         var hash = WorkflowDefinitionValidator.ForExecution(childDefinition).StructureHash;
         var reply = await run.Host.StartChildAsync(new(run.Identity, run.Instance.InstanceId, run.Owner.Epoch,
-            "root/0", child, variant == "hash" ? "wrong" : hash));
+            "root/0", child, variant == "hash" ? "wrong" : hash, WorkflowDefinitionValidator.GetContract(childDefinition).Hash));
         Assert.Equal(run.Identity, reply.AssignmentId);
         if (variant == "accepted") Assert.Equal(child, reply.Start);
         else

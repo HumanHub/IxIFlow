@@ -43,7 +43,7 @@ public sealed class CatalogArtifactSecondRoundTests
         var name = "Separate-" + Guid.NewGuid().ToString("N");
         var referenced = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream(Guid.NewGuid().ToByteArray()));
         var orphan = await artifacts.PutAsync(ArtifactKind.Template, new MemoryStream(Guid.NewGuid().ToByteArray()));
-        await catalog.RegisterWorkflowVersionAsync(new(name, 1, "separate", ArtifactDigest: referenced), artifacts);
+        await catalog.RegisterWorkflowVersionAsync(new(name, 1, "separate", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: referenced), artifacts);
         await using (var connection = connect())
         {
             await connection.OpenAsync();
@@ -86,9 +86,9 @@ public sealed class CatalogArtifactSecondRoundTests
         var name = "OneConnection-" + Guid.NewGuid().ToString("N");
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(Guid.NewGuid().ToByteArray()));
         IArtifactStore artifacts = decorated ? new InspectingArtifacts(store, name) : store;
-        await store.RegisterWorkflowVersionAsync(new(name, 1, "one", ArtifactDigest: digest), artifacts)
+        await store.RegisterWorkflowVersionAsync(new(name, 1, "one", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest), artifacts)
             .WaitAsync(TimeSpan.FromSeconds(5));
-        await store.RegisterWorkflowVersionAsync(new(name, 2, "two", WorkflowVersionState.Draft,
+        await store.RegisterWorkflowVersionAsync(new(name, 2, "two", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, WorkflowVersionState.Draft,
             ArtifactReferences: [digest]), artifacts).WaitAsync(TimeSpan.FromSeconds(5));
         await store.SetWorkflowVersionStateAsync(name, 2, WorkflowVersionState.Published, artifacts)
             .WaitAsync(TimeSpan.FromSeconds(5));

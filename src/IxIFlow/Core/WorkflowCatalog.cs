@@ -10,6 +10,7 @@ public sealed record WorkflowVersionReference(string Name, int Version);
 
 /// <summary>Immutable version metadata. Only State may change after registration.</summary>
 public sealed record WorkflowVersion(string Name, int Version, string StructureHash,
+    string ContractJson, string ContractHash,
     WorkflowVersionState State = WorkflowVersionState.Published, ArtifactDigest? ArtifactDigest = null,
     IReadOnlyList<WorkflowVersionReference>? Dependencies = null,
     IReadOnlyList<ArtifactDigest>? ArtifactReferences = null,
@@ -100,8 +101,9 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
             .Where(step => step.WorkflowName != null && step.WorkflowVersion != null)
             .Select(step => new WorkflowVersionReference(step.WorkflowName!, step.WorkflowVersion!.Value))
             .Distinct().OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ToArray();
+        var contract = WorkflowDefinitionValidator.GetContract(definition);
         var registration = new WorkflowVersion(definition.Name, definition.Version, scopes.StructureHash,
-            Dependencies: dependencies);
+            contract.ToJson(), contract.Hash, Dependencies: dependencies);
         await _registrationLock.WaitAsync();
         try
         {
@@ -234,6 +236,14 @@ internal static class WorkflowCatalogRules
         ValidateName(row.Name);
         ArgumentOutOfRangeException.ThrowIfLessThan(row.Version, 1);
         ArgumentException.ThrowIfNullOrWhiteSpace(row.StructureHash);
+        try
+        {
+            var contract = WorkflowContract.Parse(row.ContractJson);
+            if (contract.ToJson() != row.ContractJson || contract.Hash != row.ContractHash)
+                throw new ArgumentException("Contract JSON or hash is not canonical");
+        }
+        catch (Exception error) when (error is ArgumentException or System.Text.Json.JsonException or InvalidOperationException)
+        { throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow version requires a canonical contract and matching contract hash", error); }
         if (!Enum.IsDefined(row.State)) throw new ArgumentOutOfRangeException(nameof(row.State));
         foreach (var digest in (row.ArtifactReferences ?? []).Concat(row.ArtifactDigest is { } artifact ? [artifact] : []))
             _ = new ArtifactDigest(digest.Value);
@@ -252,6 +262,7 @@ internal static class WorkflowCatalogRules
                 $"'{existing.StructureHash}'; loaded structure hash '{loaded.StructureHash}' differs");
         if (existing.ArtifactDigest != loaded.ArtifactDigest || existing.PublishedDraftRevision != loaded.PublishedDraftRevision ||
             existing.ManifestJson != loaded.ManifestJson ||
+            existing.ContractJson != loaded.ContractJson || existing.ContractHash != loaded.ContractHash ||
             !(existing.Dependencies ?? []).SequenceEqual(loaded.Dependencies ?? []) ||
             !(existing.ArtifactReferences ?? []).SequenceEqual(loaded.ArtifactReferences ?? []))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow version metadata is immutable");

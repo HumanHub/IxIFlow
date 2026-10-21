@@ -14,6 +14,38 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
     where TWorkflowData : class
 {
     private readonly List<WorkflowStep> _steps = new();
+    private List<string>? declaredInputs;
+    private List<string>? declaredOutputs;
+
+    public IWorkflowBuilder<TWorkflowData> Input(params Expression<Func<TWorkflowData, object?>>[] members)
+    {
+        declaredInputs = members is { Length: 0 } ? [] : declaredInputs ?? [];
+        Declare(declaredInputs, members);
+        return this;
+    }
+
+    public IWorkflowBuilder<TWorkflowData> Output(params Expression<Func<TWorkflowData, object?>>[] members)
+    {
+        declaredOutputs = members is { Length: 0 } ? [] : declaredOutputs ?? [];
+        Declare(declaredOutputs, members);
+        return this;
+    }
+
+    private static void Declare(List<string> names, Expression<Func<TWorkflowData, object?>>[] members)
+    {
+        if (members == null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+            $"Workflow '{typeof(TWorkflowData).Name}' declarations require property member-access expressions");
+        foreach (var expression in members)
+        {
+            Expression? body = expression?.Body;
+            if (body is UnaryExpression { NodeType: ExpressionType.Convert } convert) body = convert.Operand;
+            if (body is not MemberExpression { Member: System.Reflection.PropertyInfo, Expression: ParameterExpression parameter } member ||
+                parameter != expression!.Parameters[0])
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Workflow '{typeof(TWorkflowData).Name}' declarations require a direct property member-access expression");
+            if (!names.Contains(member.Member.Name, StringComparer.Ordinal)) names.Add(member.Member.Name);
+        }
+    }
     private readonly List<WorkflowDemand> _demands = [];
 
     public IWorkflowBuilder<TWorkflowData> Demand(string key, string? value = null, bool inherit = false)
@@ -77,6 +109,8 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             Demands = _demands.ToList(),
+            DeclaredInputs = declaredInputs?.ToArray(),
+            DeclaredOutputs = declaredOutputs?.ToArray(),
             Steps = _steps
         };
         WorkflowDefinitionValidator.Apply(definition);
@@ -107,7 +141,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
         _steps.Add(step);
 
         // Return continuation builder with TActivity as previous step type
-        return new WorkflowBuilder<TWorkflowData, TActivity>(_steps, workflowName, workflowVersion, _demands);
+        return new WorkflowBuilder<TWorkflowData, TActivity>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs);
     }
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -147,7 +181,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
 public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     List<WorkflowStep> steps,
     string name,
-    int workflowVersion = 1, List<WorkflowDemand>? demands = null)
+    int workflowVersion = 1, List<WorkflowDemand>? demands = null, IReadOnlyList<string>? declaredInputs = null, IReadOnlyList<string>? declaredOutputs = null)
     : IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     where TWorkflowData : class
     where TPreviousStepData : class
@@ -240,7 +274,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         _steps.Add(step);
 
         // Return continuation builder with TActivity as new previous step type
-        return new WorkflowBuilder<TWorkflowData, TActivity>(_steps, name, workflowVersion, _demands);
+        return new WorkflowBuilder<TWorkflowData, TActivity>(_steps, name, workflowVersion, _demands, declaredInputs, declaredOutputs);
     }
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -280,6 +314,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         where TWorkflow : IWorkflow<TInvokedData> where TInvokedData : class
     {
         var identity = WorkflowAttribute.For(typeof(TWorkflow));
+        var contract = WorkflowContract.OfType(typeof(TInvokedData));
         var step = new WorkflowStep
         {
             SourceLocation = sourcePath + ":" + sourceLine,
@@ -291,6 +326,9 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowName = identity.Name,
             WorkflowVersion = identity.Version,
             InvokedDataType = typeof(TInvokedData),
+            InvokedContract = contract,
+            InvokedContractHash = contract.Hash,
+            InvokedContractKind = WorkflowInvocationContractKind.CallerView,
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
             Order = _steps.Count
@@ -302,7 +340,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         _steps.Add(step);
 
-        return new WorkflowBuilder<TWorkflowData, TInvokedData>(_steps, name, workflowVersion, _demands);
+        return new WorkflowBuilder<TWorkflowData, TInvokedData>(_steps, name, workflowVersion, _demands, declaredInputs, declaredOutputs);
     }
 
     /// <summary>
@@ -310,8 +348,20 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     /// </summary>
     public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version,
         Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TInvokedData : class => Invoke(workflowName, version, WorkflowContract.OfType(typeof(TInvokedData)),
+            WorkflowInvocationContractKind.CallerView, configure, sourcePath, sourceLine);
+
+    public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version, WorkflowContract contract,
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TInvokedData : class
+        => Invoke(workflowName, version, contract, WorkflowInvocationContractKind.ExactPin, configure, sourcePath, sourceLine);
+
+    private IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version, WorkflowContract contract,
+        WorkflowInvocationContractKind contractKind,
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure, string sourcePath, int sourceLine)
         where TInvokedData : class
     {
+        ArgumentNullException.ThrowIfNull(contract);
         var step = new WorkflowStep
         {
             SourceLocation = sourcePath + ":" + sourceLine,
@@ -321,6 +371,9 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             StepType = WorkflowStepType.WorkflowInvocation,
             WorkflowName = workflowName,
             InvokedDataType = typeof(TInvokedData),
+            InvokedContract = contract,
+            InvokedContractHash = contract.Hash,
+            InvokedContractKind = contractKind,
             WorkflowVersion = version,
             WorkflowDataType = typeof(TWorkflowData),
             PreviousStepDataType = typeof(TPreviousStepData),
@@ -333,7 +386,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
 
         _steps.Add(step);
 
-        return new WorkflowBuilder<TWorkflowData, TInvokedData>(_steps, name, workflowVersion, _demands);
+        return new WorkflowBuilder<TWorkflowData, TInvokedData>(_steps, name, workflowVersion, _demands, declaredInputs, declaredOutputs);
     }
 
     /// <summary>
@@ -461,7 +514,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         _steps.Add(tryStep);
 
         return new TryBuilder<TWorkflowData, TPreviousStepData>(
-            _steps, tryStep, name, workflowVersion, _demands);
+            _steps, tryStep, name, workflowVersion, _demands, declaredInputs, declaredOutputs);
     }
 
     /// <summary>
@@ -496,7 +549,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         _steps.Add(sagaStep);
 
         // Return a real saga container builder that delegates to this workflow builder
-        return new SagaContainerBuilder<TWorkflowData, TPreviousStepData>(_steps, name, workflowVersion, _demands);
+        return new SagaContainerBuilder<TWorkflowData, TPreviousStepData>(_steps, name, workflowVersion, _demands, declaredInputs, declaredOutputs);
     }
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -600,7 +653,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         _steps.Add(suspendStep);
 
         // Return a workflow builder with TResumeEvent as the previous step type
-        return new WorkflowBuilder<TWorkflowData, TResumeEvent>(_steps, name, workflowVersion, _demands);
+        return new WorkflowBuilder<TWorkflowData, TResumeEvent>(_steps, name, workflowVersion, _demands, declaredInputs, declaredOutputs);
     }
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -781,6 +834,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowDataType = typeof(TWorkflowData),
             CreatedAt = DateTime.UtcNow,
             Demands = _demands.ToList(),
+            DeclaredInputs = declaredInputs?.ToArray(),
+            DeclaredOutputs = declaredOutputs?.ToArray(),
             Steps = _steps
         };
         WorkflowDefinitionValidator.Apply(definition);
@@ -849,7 +904,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
         if (policy != null)
             handlerBlock.StepMetadata["SagaErrorConfig"] = policy;
         sagaStep.CatchBlocks.Add(handlerBlock);
-        return new SagaContainerBuilder<TWorkflowData, TPreviousStepData>(_steps, name, workflowVersion, _demands);
+        return new SagaContainerBuilder<TWorkflowData, TPreviousStepData>(_steps, name, workflowVersion, _demands, declaredInputs, declaredOutputs);
     }
     /// <summary>
     ///     Adds saga error handling for any exception

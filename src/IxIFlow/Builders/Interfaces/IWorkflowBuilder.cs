@@ -10,6 +10,10 @@ namespace IxIFlow.Builders.Interfaces;
 /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
 public interface IWorkflowBuilder<TWorkflowData>
 {
+    /// <summary>Declares root input properties; no arguments declares no inputs.</summary>
+    IWorkflowBuilder<TWorkflowData> Input(params Expression<Func<TWorkflowData, object?>>[] members);
+    /// <summary>Declares root output properties; no arguments declares no outputs.</summary>
+    IWorkflowBuilder<TWorkflowData> Output(params Expression<Func<TWorkflowData, object?>>[] members);
     /// <summary>Requires a capability; explicitly inherited constraints also apply to children.</summary>
     IWorkflowBuilder<TWorkflowData> Demand(string key, string? value = null, bool inherit = false);
     /// <summary>Resolves a capability value once from start data using a pure expression.</summary>
@@ -139,6 +143,11 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="configure">Configuration for the workflow invocation</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
     IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version,
+        Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TInvokedData : class;
+
+    /// <summary>Invokes a workflow using an explicit pinned input and output contract.</summary>
+    IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TInvokedData>(string workflowName, int version, WorkflowContract contract,
         Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TInvokedData : class;
 

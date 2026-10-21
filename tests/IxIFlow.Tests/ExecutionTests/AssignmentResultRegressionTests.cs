@@ -54,7 +54,7 @@ public sealed class AssignmentResultRegressionTests
                 (await run.Endpoint.ReadInboxAsync(new(request.AssignmentId, instance.InstanceId, 0, 10))).Conflict,
                 (await run.Endpoint.ReadWaitAsync(new(request.AssignmentId, instance.InstanceId, "wait"))).Conflict,
                 (await run.Endpoint.StartChildAsync(new(request.AssignmentId, instance.InstanceId, request.Commit.Epoch,
-                    "root/0", new("child", "{}", "wait"), "hash"))).Conflict);
+                    "root/0", new("child", "{}", "wait"), "hash", WorkflowContract.OfType(typeof(Data)).Hash))).Conflict);
         });
         run.UseEndpoint(endpoint);
 

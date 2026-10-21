@@ -378,6 +378,9 @@ internal sealed class ActivityAttempts(
                       $"but the invocation requires '{step.WorkflowName}' v{step.WorkflowVersion}"
                     : "The child definition has a different declared identity");
         var childScopes = WorkflowDefinitionValidator.ForExecution(childDefinition);
+        var childContract = WorkflowDefinitionValidator.GetContract(childDefinition);
+        if (childDefinition.WorkflowDataType != null)
+            ChildInputs.CheckContract(childDefinition, step, childContract);
         pending.ChildDataType = WorkflowTypeIdentity.SavedName(childDefinition.WorkflowDataType!);
         pending.ChildBundleDigest = childDefinition.BundleDigest;
         ChildStart start;
@@ -394,7 +397,7 @@ internal sealed class ActivityAttempts(
             child.WorkflowDataJson = host.Payloads.Store(child.WorkflowDataJson);
             prepared = new(prepared.ChildInstanceId, System.Text.Json.JsonSerializer.Serialize(child), prepared.ParentWaitId)
                 { Incarnation = prepared.Incarnation };
-            var reply = await host.StartChildAsync(scopes.Id(step), prepared, childScopes.StructureHash);
+            var reply = await host.StartChildAsync(scopes.Id(step), prepared, childScopes.StructureHash, childContract.Hash);
             if (reply.Refusal == WorkflowErrorKind.ResourceExhausted)
             {
                 continuation.PendingActivity = pending;
@@ -405,7 +408,7 @@ internal sealed class ActivityAttempts(
                 throw new WorkflowEngineException(refusal, reply.Message ?? "The child start was refused");
             start = reply.Start ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Missing child start");
         }
-        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidRequest)
+        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidRequest && !error.RaisedByWorkflowCode)
         {
             continuation.PendingActivity = pending;
             Attempt(instance, checkpoint, continuation, step, pending, "InvokeWorkflow");
