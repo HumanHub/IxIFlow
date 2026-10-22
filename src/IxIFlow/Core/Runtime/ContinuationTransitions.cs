@@ -270,6 +270,24 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 });
                 break;
 
+            case WorkflowStepType.Assign:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
+                var assignContext = WorkflowValueBinding.EvaluationContext(step, workflowData,
+                    continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation),
+                    TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes));
+                try
+                {
+                    step.Assignment!.Apply!(assignContext);
+                }
+                catch (Exception error)
+                {
+                    WorkflowEngineException.FromWorkflowCode(error);
+                    throw;
+                }
+                position.NextStepIndex++;
+                checkpoint.Trace.Assigned(step, continuation);
+                break;
+
             case WorkflowStepType.Switch:
                 checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 var switchContext = WorkflowValueBinding.EvaluationContext(step, workflowData,

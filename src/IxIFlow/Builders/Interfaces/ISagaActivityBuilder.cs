@@ -10,6 +10,12 @@ namespace IxIFlow.Builders.Interfaces;
 public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     where TPreviousStepData : class
 {
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Assign<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> target,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     /// <summary>Identifies the preceding step and its source.</summary>
     ISagaActivityBuilder<TWorkflowData, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 

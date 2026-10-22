@@ -34,6 +34,9 @@ public sealed class WorkflowEngineException : Exception
     /// </summary>
     internal bool RaisedByWorkflowCode { get; set; }
 
+    // Lazy context reads still belong to the engine while authored code is on the stack.
+    internal bool RaisedByEngineContext { get; set; }
+
     /// <summary>
     /// True for a failure of the engine itself. Such a failure interrupts or fails the instance and never
     /// reaches <c>Catch</c> or saga handlers. Anything raised by workflow code is that step's failure,
@@ -45,7 +48,7 @@ public sealed class WorkflowEngineException : Exception
     /// <summary>Marks an exception raised by workflow code as that step's failure.</summary>
     internal static Exception FromWorkflowCode(Exception error)
     {
-        if (error is WorkflowEngineException engineError)
+        if (error is WorkflowEngineException { RaisedByEngineContext: false } engineError)
             engineError.RaisedByWorkflowCode = true;
         return error;
     }

@@ -30,13 +30,39 @@ internal sealed partial class WorkflowCode
          method.ContainingType.ToDisplayString() == "System.Text.StringBuilder");
 
     // Freshness is a proof, not an assumption. Unresolved aliases and calls are treated as existing state.
-    public IEnumerable<(IOperation Use, string Member)> MutationUses(IOperation operation, CancellationToken cancellation)
+    public IEnumerable<(IOperation Use, string Member)> MutationUses(IOperation operation, CancellationToken cancellation, bool destination = false)
     {
         var results = new List<(IOperation, string)>();
         var path = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
         var aliases = new MutationAliases();
         var callbackEffects = 0;
-        Analyze(operation, aliases, false, 0, null);
+        if (destination && operation is IAnonymousFunctionOperation { Body.Operations.Length: 1 } lambda &&
+            lambda.Body.Operations[0] is IReturnOperation { ReturnedValue: { } returned })
+        {
+            var target = EngineSymbols.Unwrapped(returned);
+            VisitDestination(target, aliases);
+        }
+        else Analyze(operation, aliases, false, 0, null);
+
+        void VisitDestination(IOperation target, MutationAliases bindings)
+        {
+            target = EngineSymbols.Unwrapped(target);
+            if (target is IPropertyReferenceOperation property)
+            {
+                if (property.Instance != null) Visit(property.Instance, bindings, false, 0, null);
+                foreach (var argument in property.Arguments) Visit(argument.Value, bindings, false, 0, null);
+            }
+            else if (target is IArrayElementReferenceOperation array)
+            {
+                Visit(array.ArrayReference, bindings, false, 0, null);
+                foreach (var index in array.Indices) Visit(index, bindings, false, 0, null);
+            }
+            else Visit(target, bindings, false, 0, null);
+            // The compiler permits the location writes themselves; both scans follow the same
+            // executed setter chain, stopping as soon as a reference receiver ends write-back.
+            foreach (var link in DestinationWrites(target).OfType<IPropertyReferenceOperation>())
+                Through(link.Property.SetMethod, [], link.Instance, bindings, false, 0, link, receiverFresh: true);
+        }
         return results.Distinct();
 
         void Analyze(IOperation body, MutationAliases bindings, bool instance, int depth, IOperation? site)

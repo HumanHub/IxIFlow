@@ -1,0 +1,42 @@
+{
+  "workflow": {
+    "name": "AssignTimeout",
+    "dataType": "IxIFlow.Tests.Conformance.AssignScenarios+Data"
+  },
+  "definitions": [
+    {
+      "kind": "assign",
+      "to": {
+        "path": "workflow.Count"
+      },
+      "value": {
+        "kind": "binary",
+        "operator": "add",
+        "left": {
+          "path": "workflow.Count"
+        },
+        "right": {
+          "kind": "constant",
+          "value": 1
+        }
+      }
+    },
+    {
+      "kind": "waitFor",
+      "key": "timer",
+      "event": "IxIFlow.Tests.Conformance.AssignScenarios+Go",
+      "timeout": "00:00:00.1000000",
+      "onTimeout": [
+        {
+          "kind": "assign",
+          "to": {
+            "path": "workflow.Other"
+          },
+          "value": {
+            "path": "workflow.Count"
+          }
+        }
+      ]
+    }
+  ]
+}

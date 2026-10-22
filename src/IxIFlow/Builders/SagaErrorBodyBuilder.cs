@@ -13,6 +13,17 @@ public sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepDat
     where TWorkflowData : class
     where TPreviousStepData : class
 {
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Assign<TValue>(
+        Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> target,
+        Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        steps.Add(AssignmentRules.Step<TWorkflowData, TPreviousStepData>(target, value, typeof(TValue), sourcePath, sourceLine, steps.Count));
+        CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>.CaptureFaults(steps[^1]);
+        return this;
+    }
+
     public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Switch<TValue>(
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> selector,
         Action<SwitchCases<TValue, ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>>> configure,

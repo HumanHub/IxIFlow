@@ -158,7 +158,7 @@ internal sealed class WorkflowScopeCatalog
         // adding an empty branch changes the topology even when it adds no steps.
         var manifest = new
         {
-            Format = 5,
+            Format = 6,
             Data = WorkflowTypeIdentity.StableName(definition.WorkflowDataType),
             DataTypes = _steps.Values.Select(step => step.WorkflowDataType).Prepend(definition.WorkflowDataType)
                 .OfType<Type>().Distinct().OrderBy(WorkflowTypeIdentity.StableName, StringComparer.Ordinal)
@@ -197,6 +197,9 @@ internal sealed class WorkflowScopeCatalog
                     Condition = Shape(step.ConditionExpression),
                     Outcome = Shape(step.OutcomeExpression),
                     SwitchValueType = WorkflowTypeIdentity.StableName(step.SwitchValueType),
+                    Assignment = step.Assignment == null ? null : new { step.Assignment.TargetPath,
+                        Type = WorkflowTypeIdentity.StableName(step.Assignment.ValueType),
+                        Target = Shape(step.Assignment.Target), Value = Shape(step.Assignment.Value) },
                     Completion = Shape(step.ParallelCompletionExpression),
                     Outcomes = step.OutcomeBranches.Select(OutcomeBranchSignature),
                     Policy = ErrorPolicySignature(step),

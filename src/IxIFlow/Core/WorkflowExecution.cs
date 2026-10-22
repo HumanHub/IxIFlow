@@ -667,6 +667,7 @@ public enum TraceEntryType
     InlineExited,
     /// <summary>A switch selected a case, default or no-match path.</summary>
     SwitchSelected,
+    DataAssigned,
     /// <summary>An invocation policy selected retry, ignore or propagation.</summary>
     InvocationPolicyApplied
 }
@@ -860,6 +861,9 @@ public class WorkflowStep
     internal Type? ForEachConditionResultType { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
+    /// <summary>One typed workflow-data assignment.</summary>
+    public Assignment? Assignment { get; set; }
+
     public Type? SwitchValueType { get; set; }
     internal Func<object?, object?, bool>? SwitchEquals { get; set; }
     internal Type? LexicalFaultType { get; set; }
@@ -1154,6 +1158,7 @@ public class WorkflowStep
             TriggerKind = TriggerKind, AfterExpression = AfterExpression, After = After,
             Target = Target, EdgeLabel = EdgeLabel, IsDefault = IsDefault, Explicit = Explicit,
             OutcomeExpression = OutcomeExpression,
+            Assignment = Assignment == null ? null : Assignment with { },
             SwitchValueType = SwitchValueType,
             SwitchEquals = SwitchEquals,
             LexicalFaultType = LexicalFaultType,
@@ -1308,7 +1313,8 @@ public enum WorkflowStepType
     /// <summary>Execute a built workflow body on its own data copy.</summary>
     InlineWorkflow,
     /// <summary>Selects one body with typed label equality.</summary>
-    Switch
+    Switch,
+    Assign
 }
 
 /// <summary>

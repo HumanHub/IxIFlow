@@ -26,6 +26,12 @@ public interface IWorkflowBuilder<TWorkflowData>
     /// <summary>Names the preceding step.</summary>
     IWorkflowBuilder<TWorkflowData> Named(string name);
 
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    IWorkflowBuilder<TWorkflowData, object> Assign<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, object>, TValue>> target,
+        Expression<Func<WorkflowContext<TWorkflowData, object>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     /// <summary>Selects one case body, retaining the incoming previous value.</summary>
     IWorkflowBuilder<TWorkflowData, object> Switch<TValue>(
         Expression<Func<WorkflowContext<TWorkflowData, object>, TValue>> selector,
@@ -100,6 +106,12 @@ public interface IWorkflowBuilder<TWorkflowData>
 public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     where TPreviousStepData : class
 {
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Assign<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> target,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     /// <summary>Requires a capability; explicitly inherited constraints also apply to children.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Demand(string key, string? value = null, bool inherit = false);
     /// <summary>Resolves a capability value once from start data using a pure expression.</summary>

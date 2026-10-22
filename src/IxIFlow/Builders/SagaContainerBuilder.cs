@@ -51,6 +51,13 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         _workflowBuilder.WithId(id, sourcePath, sourceLine);
 
     // Delegate all IWorkflowBuilder methods to the real workflow builder
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Assign<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> target,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        _workflowBuilder.Assign(target, value, sourcePath, sourceLine);
+
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Switch<TValue>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> selector,
         Action<SwitchCases<TValue, IWorkflowBuilder<TWorkflowData, TPreviousStepData>>> configure,

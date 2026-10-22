@@ -47,7 +47,7 @@ public static partial class WorkflowSourceTranslator
         if (diagnostic != null)
         {
             var location = DocumentModel.GetLocation(document, diagnostic.Path);
-            throw new WorkflowSourceException((diagnostic.Code.StartsWith("SWITCH", StringComparison.Ordinal) ? diagnostic.Code + ": " : "") + diagnostic.Message, sourcePath, location.Line, location.Column);
+            throw new WorkflowSourceException(((diagnostic.Code.StartsWith("SWITCH", StringComparison.Ordinal) || diagnostic.Code.StartsWith("ASSIGN", StringComparison.Ordinal)) ? diagnostic.Code + ": " : "") + diagnostic.Message, sourcePath, location.Line, location.Column);
         }
         return new Translation(document, sourcePath, options).Run();
     }
@@ -333,6 +333,12 @@ public static partial class WorkflowSourceTranslator
                         break;
                     case SagaStepDocument saga:
                         Saga(saga, builder, next, id, previousType);
+                        break;
+                    case AssignStepDocument assignment:
+                        Locate(assignment.To, "path");
+                        Line($"var {next} = {builder}.Assign(target: ctx => {Expression(assignment.To)},");
+                        Locate(assignment.Value, assignment.Value is PathExpressionDocument ? "path" : null);
+                        Line($"value: ctx => {Expression(assignment.Value)});");
                         break;
                     case SwitchStepDocument outcome:
                         Switch(outcome, builder, next, id, previousType, builderScope);
@@ -866,6 +872,18 @@ public static partial class WorkflowSourceTranslator
     private sealed class ContextNames(IReadOnlyDictionary<string, string> arguments,
         IReadOnlyDictionary<string, string> items, bool hasFault, string? eventName, string workflowRoot, string previousRoot, string dataType, IDictionary<string, string> members) : CSharpSyntaxRewriter
     {
+        public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
+        {
+            if (node.Expression is IdentifierNameSyntax { Identifier.ValueText: "index" })
+            {
+                if (node.ArgumentList.Arguments.Count != 1 || node.ArgumentList.Arguments[0].Expression is not IdentifierNameSyntax alias ||
+                    !items.TryGetValue(alias.Identifier.ValueText, out var handle))
+                    throw new InvalidOperationException("index(alias) requires one in-scope ForEach item alias");
+                return SyntaxFactory.ParseExpression("ctx.Index(" + handle + ")").WithTriviaFrom(node);
+            }
+            return base.VisitInvocationExpression(node);
+        }
+
         public override SyntaxNode? VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
         {
             var visited = (MemberAccessExpressionSyntax)base.VisitMemberAccessExpression(node)!;

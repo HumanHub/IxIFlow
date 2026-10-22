@@ -95,6 +95,11 @@ public static class WorkflowYamlSerializer
         foreach (var property in DocumentModel.GetMembers(type))
             if (entries.TryGetValue(DocumentModel.GetName(property), out var child))
             {
+                if (type == typeof(AssignStepDocument) && child is YamlScalarNode assignmentScalar && Scalar(assignmentScalar) == null &&
+                    property.Name is nameof(AssignStepDocument.To) or nameof(AssignStepDocument.Value))
+                    throw new YamlException(child.Start, child.End,
+                        (property.Name == nameof(AssignStepDocument.To) ? "ASSIGN001" : "ASSIGN003") +
+                        ": Assign requires a non-null " + DocumentModel.GetName(property) + " expression");
                 var memberValue = child is YamlMappingNode &&
                     (type == typeof(StateTransitionDocument) && property.Name == nameof(StateTransitionDocument.After) ||
                      type == typeof(FlowchartEdgeDocument) && property.Name == nameof(FlowchartEdgeDocument.Case))

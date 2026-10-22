@@ -34,6 +34,9 @@ internal static class ForEachRules
         for (var index = 0; index < body.Count; index++)
         {
             var step = body[index];
+            if (step.ForEachIntoExpression != null && step.ForEachInto == null)
+                throw WorkflowBuildError.Invalid(step,
+                    $"A ForEach stores its results in a settable property of the workflow data, not of an item: {step.ForEachIntoExpression}");
             if (step.StepType == WorkflowStepType.ForEachResult && (!leavesItem || index != body.Count - 1))
                 throw WorkflowBuildError.Invalid(step, "A ForEach result must be the last step of a ForEach body, or of a timeout " +
                               "branch that leaves the body");
@@ -41,23 +44,15 @@ internal static class ForEachRules
                 foreach (var handle in ItemCaptures.Of(behavior))
                     if (!inScope.Contains(handle))
                         throw WorkflowBuildError.Invalid(step, $"{handle} is used outside its ForEach body, in step '{step.Name}'");
-            var outputs = Mappings(step).Where(mapping => mapping.Direction == PropertyMappingDirection.Output)
-                .ToArray();
-            if (outputs.Any(mapping => mapping.TargetPath?.StartsWith(MemberPath.ItemRoot, StringComparison.Ordinal) == true))
-                throw WorkflowBuildError.Invalid(step, $"Step '{step.Name}' writes a ForEach item; items are read-only, so write " +
-                              "workflow data instead");
-            // In a body, a target must be named to show that it writes neither an item nor stored results.
-            if (enclosing.Count > 0 && outputs.Any(mapping => mapping.TargetPath == null))
+            var writes = WorkflowDataWrites.Of(step).ToArray();
+            if (writes.Any(path => path?.StartsWith(MemberPath.ItemRoot, StringComparison.Ordinal) == true))
+                throw WorkflowBuildError.Invalid(step, $"Step '{step.Name}' writes a ForEach item; items are read-only, so write workflow data instead");
+            if (enclosing.Count > 0 && writes.Any(path => path == null))
                 throw WorkflowBuildError.Invalid(step, $"Step '{step.Name}' in a ForEach body writes a target that is not a chain of " +
-                              "members and indexes, so it cannot be shown to write workflow data");
+                    "members and indexes, so it cannot be shown to write workflow data");
             foreach (var owner in enclosing.Where(owner => owner.ForEachIntoPath != null))
-            {
-                var writes = outputs.Select(mapping => mapping.TargetPath)
-                    .Append(step.StepType == WorkflowStepType.ForEach ? step.ForEachIntoPath : null);
                 if (writes.Any(path => MemberPath.Overlaps(path, owner.ForEachIntoPath!)))
-                    throw WorkflowBuildError.Invalid(step, $"Step '{step.Name}' writes '{owner.ForEachIntoPath}', where its ForEach stores " +
-                                  "its results");
-            }
+                    throw WorkflowBuildError.Invalid(step, $"Step '{step.Name}' writes '{owner.ForEachIntoPath}', where its ForEach stores its results");
             if (step.StepType == WorkflowStepType.ForEach)
                 ValidateForEach(step, inScope, enclosing);
             foreach (var nested in Bodies(step))
@@ -77,9 +72,6 @@ internal static class ForEachRules
     private static void ValidateForEach(WorkflowStep step, HashSet<ItemScope> inScope,
         IReadOnlyList<WorkflowStep> enclosing)
     {
-        if (step.ForEachIntoExpression != null && step.ForEachInto == null)
-            throw WorkflowBuildError.Invalid(step,
-                $"A ForEach stores its results in a settable property of the workflow data, not of an item: {step.ForEachIntoExpression}");
         if (step.ForEachStoredResultType != null && step.ForEachStoredResultType != step.ResultType)
             throw WorkflowBuildError.Invalid(step,
                 $"ForEach step '{step.Name}' decides on {step.ResultType?.Name} results, so it stores them");
@@ -119,7 +111,8 @@ internal static class ForEachRules
             .SelectMany(mapping => new Delegate?[] { mapping.SourceFunction, mapping.TargetAssignmentFunction })
             .Concat([
                 step.CompiledCondition, step.OutcomeSelector, step.ParallelCompletionCondition,
-                step.RequestSubject, step.ResultSelector, step.ForEachItems, step.ForEachInto
+                step.RequestSubject, step.ResultSelector, step.ForEachItems, step.ForEachInto,
+                step.Assignment?.TargetBehavior, step.Assignment?.ValueBehavior
             ]);
 
     private static IEnumerable<IReadOnlyList<WorkflowStep>> Bodies(WorkflowStep step) =>

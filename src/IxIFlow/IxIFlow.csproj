@@ -65,5 +65,6 @@
 
   <ItemGroup>
     <Compile Include="../Shared/RetryDelayRules.cs" Link="Authoring/RetryDelayRules.cs" />
+    <Compile Include="../Shared/AssignmentLocationChain.cs" Link="Authoring/AssignmentLocationChain.cs" />
   </ItemGroup>
 </Project>

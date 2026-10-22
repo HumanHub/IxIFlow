@@ -95,6 +95,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
         await ValidateStepsAsync(document.Definitions, "definitions", document, diagnostics, context, cancellationToken);
         ValidateGraphPlacement(document.Definitions, "definitions", document, diagnostics, null, false, false, []);
 
+        ValidateAssignmentIntrinsics(document, diagnostics);
         return new WorkflowValidationResult(diagnostics);
     }
 
@@ -209,6 +210,14 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     }
                     break;
                 }
+                case AssignStepDocument assignment:
+                    if (assignment.To != null)
+                        ValidatePath(assignment.To, diagnostics, stepPath + ".to", ["workflow"], "ASSIGN001", "Assign target must be rooted at workflow");
+                    if (ParseDocumentExpression(assignment.To?.Path ?? "") is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax)
+                        Invalid("ASSIGN001", "Assign requires a location inside workflow data", stepPath + ".to", diagnostics);
+                    ValidateExpression(assignment.To, diagnostics, stepPath + ".to", inputRoots, document.Code);
+                    ValidateExpression(assignment.Value, diagnostics, stepPath + ".value", inputRoots, document.Code);
+                    break;
                 case SwitchStepDocument outcome:
                 {
                     if (HasMissingMember(stepPath + ".value", diagnostics))
@@ -348,7 +357,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                 case ForEachStepDocument each:
                     ValidateExpression(each.Items, diagnostics, $"{stepPath}.items", inputRoots, document.Code);
                     if (string.IsNullOrWhiteSpace(each.As) || aliases.Contains(each.As) ||
-                        each.As is "workflow" or "previousStep" or "event" or "ctx" or "fault" or "currentStep" or "reply" or "answered" or "previousCompensation" ||
+                        each.As is "workflow" or "previousStep" or "event" or "ctx" or "fault" or "currentStep" or "reply" or "answered" or "previousCompensation" or "index" ||
                         !System.Text.RegularExpressions.Regex.IsMatch(each.As, @"^[_\p{L}][_\p{L}\p{Nd}]*$"))
                         diagnostics.Add(new("EACH001", "ForEach alias must be a distinct identifier", WorkflowDiagnosticSeverity.Error, $"{stepPath}.as"));
                     var itemRoots = inputRoots.Append(each.As).ToArray();
@@ -525,6 +534,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
 
             case PathExpressionDocument pathExpression:
                 ValidatePath(pathExpression, diagnostics, path, allowedRoots, "EXPR001", $"Path expression root must be one of: {string.Join(", ", allowedRoots)}");
+                ValidateLexicalRoots(pathExpression.Path, allowedRoots, path, diagnostics);
                 break;
 
             case BinaryExpressionDocument binaryExpression:
@@ -540,16 +550,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                         diagnostics.Add(new WorkflowDiagnostic("EXPR003", $"Unknown function '{functionExpression.Function}'", WorkflowDiagnosticSeverity.Error, $"{path}.function"));
                     else
                     {
-                        var tree = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression(asset.Source);
-                        foreach (var identifier in tree.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>())
-                        {
-                            if (identifier.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax access && access.Name == identifier) continue;
-                            var name = identifier.Identifier.ValueText;
-                            if ((name is "workflow" or "previousStep" or "event" or "fault" or "currentStep" or "reply" or "answered") && !allowedRoots.Contains(name) ||
-                                name == "ctx" && (allowedRoots.Count == 0 || !allowedRoots.Contains("fault") &&
-                                    identifier.Parent?.ToString().StartsWith("ctx.Fault", StringComparison.Ordinal) == true))
-                                Invalid("EXPR001", $"Expression root '{name}' is outside its lexical scope", path, diagnostics);
-                        }
+                        ValidateLexicalRoots(asset.Source, allowedRoots, path, diagnostics);
                     }
                 }
                 break;
@@ -557,6 +558,22 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             case not null and not ConstantExpressionDocument:
                 diagnostics.Add(new WorkflowDiagnostic("EXPR004", $"Unsupported expression '{expression.GetType().Name}'", WorkflowDiagnosticSeverity.Error, path));
                 break;
+        }
+    }
+
+    private static void ValidateLexicalRoots(string source, IReadOnlyCollection<string> allowedRoots,
+        string path, List<WorkflowDiagnostic> diagnostics)
+    {
+        if (diagnostics.Any(diagnostic => diagnostic.Code == "EXPR001" && diagnostic.Path == path)) return;
+        var tree = ParseDocumentExpression(source);
+        foreach (var identifier in tree.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>())
+        {
+            if (identifier.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax access && access.Name == identifier) continue;
+            var name = identifier.Identifier.ValueText;
+            if ((name is "workflow" or "previousStep" or "event" or "fault" or "currentStep" or "reply" or "answered") && !allowedRoots.Contains(name) ||
+                name == "ctx" && (allowedRoots.Count == 0 || !allowedRoots.Contains("fault") &&
+                    identifier.Parent?.ToString().StartsWith("ctx.Fault", StringComparison.Ordinal) == true))
+                Invalid("EXPR001", $"Expression root '{name}' is outside its lexical scope", path, diagnostics);
         }
     }
 
@@ -575,7 +592,22 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             return;
         }
 
-        var root = pathExpression.Path.Split(new[] { '.' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        var syntax = ParseDocumentExpression(pathExpression.Path);
+        var rootNode = syntax;
+        while (true)
+        {
+            if (rootNode is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax member) rootNode = member.Expression;
+            else if (rootNode is Microsoft.CodeAnalysis.CSharp.Syntax.ElementAccessExpressionSyntax element) rootNode = element.Expression;
+            else break;
+        }
+        var root = (rootNode as Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax)?.Identifier.ValueText ??
+            syntax.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>().FirstOrDefault()?.Identifier.ValueText;
+        if (code == "ASSIGN001" && (syntax.ContainsDiagnostics || rootNode is not Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax ||
+            syntax is not (Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax or Microsoft.CodeAnalysis.CSharp.Syntax.ElementAccessExpressionSyntax)))
+        {
+            diagnostics.Add(new WorkflowDiagnostic(code, "Assign requires a property or indexed location inside workflow data", WorkflowDiagnosticSeverity.Error, path));
+            return;
+        }
         if (string.IsNullOrWhiteSpace(root) || !allowedRoots.Contains(root, StringComparer.OrdinalIgnoreCase))
         {
             diagnostics.Add(new WorkflowDiagnostic(code, message, WorkflowDiagnosticSeverity.Error, path));
@@ -584,8 +616,8 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
 
     internal static bool Supports(WorkflowDocumentScope scope, WorkflowStepDocument step) => scope switch
     {
-        WorkflowDocumentScope.Saga => step is ActivityStepDocument or ActivityReferenceStepDocument or WaitStepDocument or SwitchStepDocument,
-        WorkflowDocumentScope.SagaHandler => step is ActivityStepDocument and not RequestStepDocument or ActivityReferenceStepDocument or WaitForStepDocument or SwitchStepDocument,
+        WorkflowDocumentScope.Saga => step is ActivityStepDocument or ActivityReferenceStepDocument or WaitStepDocument or SwitchStepDocument or AssignStepDocument,
+        WorkflowDocumentScope.SagaHandler => step is ActivityStepDocument and not RequestStepDocument or ActivityReferenceStepDocument or WaitForStepDocument or SwitchStepDocument or AssignStepDocument,
         WorkflowDocumentScope.Catch => true,
         _ => true
     };
@@ -710,7 +742,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
         TimeSpan.TryParseExact(value, "c", CultureInfo.InvariantCulture, out duration) && (positive ? duration > TimeSpan.Zero : duration >= TimeSpan.Zero);
 
     private static bool HasMissingMember(string path, List<WorkflowDiagnostic> diagnostics) =>
-        diagnostics.Any(diagnostic => (diagnostic.Code == "MEMBER001" || diagnostic.Code is "SWITCH001" or "SWITCH002" && diagnostic.Message.StartsWith("Missing '", StringComparison.Ordinal)) && diagnostic.Path is { } missing &&
+        diagnostics.Any(diagnostic => (diagnostic.Code == "MEMBER001" || diagnostic.Code is "SWITCH001" or "SWITCH002" or "ASSIGN001" or "ASSIGN003" && diagnostic.Message.StartsWith("Missing '", StringComparison.Ordinal)) && diagnostic.Path is { } missing &&
             (path == missing || path.StartsWith(missing + ".", StringComparison.Ordinal) || path.StartsWith(missing + "[", StringComparison.Ordinal)));
 
     private static void Invalid(string code, string message, string path, List<WorkflowDiagnostic> diagnostics)
@@ -731,7 +763,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                 if (member.IsDefined(typeof(DocumentRequiredAttribute), true) &&
                     (fromSource && !node.Members.ContainsKey(name) || child is string text && string.IsNullOrWhiteSpace(text) || child == null))
                 {
-                    Invalid(node is SwitchStepDocument && name == "value" ? "SWITCH001" : node is SwitchCaseDocument && name == "value" ? "SWITCH002" : "MEMBER001", $"Missing '{name}'", memberPath, diagnostics);
+                    Invalid(node is AssignStepDocument ? (name == "to" ? "ASSIGN001" : "ASSIGN003") : node is SwitchStepDocument && name == "value" ? "SWITCH001" : node is SwitchCaseDocument && name == "value" ? "SWITCH002" : "MEMBER001", $"Missing '{name}'", memberPath, diagnostics);
                     continue;
                 }
                 var values = DocumentModel.GetValues(node.GetType(), member.Name);

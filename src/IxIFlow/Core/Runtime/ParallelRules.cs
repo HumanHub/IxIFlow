@@ -89,23 +89,18 @@ internal static class ParallelRules
         var dataType = parallel.WorkflowDataType;
         foreach (var step in Flatten(body, crossInline: false))
         {
-            foreach (var mapping in Mappings(step).Where(mapping => mapping.Direction == PropertyMappingDirection.Output))
+            foreach (var path in WorkflowDataWrites.Of(step))
             {
-                // Under WaitAny nothing is compared, so a target the rules cannot name is the author's.
-                if (mapping.TargetPath == null && (waitAny || parallel.ParallelJoinMode == ParallelJoinMode.WaitAny))
-                    continue;
-                if (mapping.TargetPath == null)
+                if (path == null && (waitAny || parallel.ParallelJoinMode == ParallelJoinMode.WaitAny)) continue;
+                if (path == null)
                     throw WorkflowBuildError.Invalid(step,
                         $"Step '{step.Name}' in a branch of parallel step '{parallel.Name}' writes a target that is " +
                         "not a chain of members, indexes and casts, so it cannot be shown not to conflict with " +
                         "another branch; write a named property, or join with WaitAny");
                 if (dataType != null)
-                    yield return WorkflowBuildError.Check(step, () => BranchData.MergePath(dataType, mapping.TargetPath,
+                    yield return WorkflowBuildError.Check(step, () => BranchData.MergePath(dataType, path,
                         () => $"Step '{step.Name}' in a branch of parallel step '{parallel.Name}'"));
             }
-            if (step.ForEachIntoPath != null && dataType != null)
-                yield return WorkflowBuildError.Check(step, () => BranchData.MergePath(dataType, step.ForEachIntoPath,
-                    () => $"ForEach step '{step.Name}' in a branch of parallel step '{parallel.Name}'"));
         }
     }
 
@@ -122,12 +117,6 @@ internal static class ParallelRules
     private static bool Combined(Type? dataType, List<string> path, IReadOnlyDictionary<string, Type> overrides) =>
         dataType != null && Enumerable.Range(1, path.Count)
             .Any(length => BranchData.CombinerAt(dataType, path.Take(length).ToList(), overrides) != null);
-
-    private static IEnumerable<PropertyMapping> Mappings(WorkflowStep step) =>
-        step.OutputMappings.Concat(step.StepMetadata.TryGetValue("CompensationActivities", out var value) &&
-                                   value is List<CompensationActivityInfo> compensations
-            ? compensations.SelectMany(compensation => compensation.OutputMappings)
-            : []);
 
     /// <summary>Every step, and every step nested inside one, in order.</summary>
     public static IEnumerable<WorkflowStep> Flatten(IReadOnlyList<WorkflowStep> steps, bool crossInline = true)

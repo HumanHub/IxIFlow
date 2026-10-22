@@ -88,6 +88,17 @@ public sealed class FaultSagaActivityBuilder<TData, TFault, TPrevious>(List<Work
         CatchWorkflowBuilder<TData, TFault, TPrevious>.CaptureFaults(steps[^1]);
         return new FaultSagaActivityBuilder<TData, TFault, TEvent>(steps, sagaSteps);
     }
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    public IFaultSagaActivityBuilder<TData, TFault, TPrevious> Assign<TValue>(
+        Expression<Func<FaultContext<TData, TFault, TPrevious>, TValue>> target,
+        Expression<Func<FaultContext<TData, TFault, TPrevious>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        steps.Add(AssignmentRules.Step<TData, TPrevious>(target, value, typeof(TValue), sourcePath, sourceLine, steps.Count));
+        CatchWorkflowBuilder<TData, TFault, TPrevious>.CaptureFaults(steps[^1]);
+        return this;
+    }
+
     public IFaultSagaActivityBuilder<TData, TFault, TPrevious> Switch<TValue>(
         Expression<Func<FaultContext<TData, TFault, TPrevious>, TValue>> selector,
         Action<SwitchCases<TValue, IFaultSagaActivityBuilder<TData, TFault, TPrevious>>> configure,

@@ -246,3 +246,21 @@ The analyzer has no return-value or heap-element summaries. A fresh enumerator r
 Immutable collection operations returning a replacement collection are accepted by both checks; builders and `StringBuilder` retain their mutation checks. Returning the collection type distinguishes replacement-style calls from ordinary collection mutators. Visible custom method bodies are still analyzed, and opaque custom methods remain the author's responsibility. Source following stops at recursion and depth 32; this bounded check is not a general proof of purity.
 
 Selection creates no extra checkpoint. A saved activity/wait/debug stop inside a case resumes that arm; before a boundary, selection can be re-derived. Expression signatures, including selector bodies, are part of the structure hash; changing `Route + 0` to `Route` changes that hash.
+
+## Assigning workflow data
+
+Use `Assign(target, value)` for one write without an activity:
+
+<!-- snippet: samples/IxIFlow.Samples/AssignTotals.cs#assign-totals -->
+```csharp
+public void Build(IWorkflowBuilder<AssignmentTotalsData> builder) =>
+    builder.Assign(ctx => ctx.WorkflowData.Total,
+                   ctx => ctx.WorkflowData.Price * ctx.WorkflowData.Quantity)
+           .WithId("total");
+```
+
+The target must be a writable serialized property, array/list element or dictionary entry reached through workflow data. Nested structs are written back through their setters. Getter-only reference objects are accepted as intermediate containers only with a restorable serializer Populate contract. Mutable collections populated by adding to initializer contents are refused, even with a setter, because assignments would not survive serialization and recovery faithfully; use collection replacement instead. Fields, ignored properties, previous values, item handles, fault DTOs and captured or static objects cannot be targets. Null parents and invalid indices fail at the step; Assign does not create containers or extend lists.
+
+Both expressions follow workflow purity rules. Values can read the incoming previous value, lexical items and `ctx.Index(item)`, the workflow clock, and a typed `ctx.Fault` in Catch descendants. Fresh replacement objects and collections are allowed. Receivers, indices and the value are evaluated once, in that order. Assignment retains the previous value and participates in parallel conflict/combiner and ForEach result-destination checks.
+
+Assign advances as a pure control step. The next ordinary checkpoint saves its data and cursor together; a restart before that boundary recomputes from the last committed data. Saga retries reapply assignments without automatically undoing data changes. Direct writes and recognized mutators in expressions are rejected; the source analyzer also follows visible helpers, accessors and operators with bounded analysis. Opaque external code, virtual dispatch and arbitrary setter behavior remain the author's responsibility.

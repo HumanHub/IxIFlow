@@ -216,6 +216,16 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         return next;
     }
 
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    public ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Assign<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> target,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        _steps.Add(AssignmentRules.Step<TWorkflowData, TPreviousStepData>(target, value, typeof(TValue), sourcePath, sourceLine, _steps.Count));
+        return this;
+    }
+
     public ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Switch<TProperty>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TProperty>> propertySelector,
         Action<ISagaSwitchBuilder<TWorkflowData, TPreviousStepData, TProperty>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)

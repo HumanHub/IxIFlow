@@ -490,6 +490,7 @@
             "doWhile",
             "try",
             "saga",
+            "assign",
             "switch",
             "delay",
             "request",
@@ -739,6 +740,21 @@
           },
           "then": {
             "$ref": "#/definitions/sagaStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "assign"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/assignStep"
           }
         },
         {
@@ -2401,6 +2417,42 @@
           "default": false
         }
       }
+    },
+    "assignStep": {
+      "type": "object",
+      "description": "One typed write to a serialized workflow-data location.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "assign",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "to": {
+          "$ref": "#/definitions/pathExpression",
+          "description": "A writable workflow path, including pure list indices and dictionary keys. Use index(alias) for an iteration position."
+        },
+        "value": {
+          "$ref": "#/definitions/expression",
+          "description": "The pure replacement value. May read workflow, previousStep, lexical items and fault."
+        }
+      },
+      "required": [
+        "kind",
+        "to",
+        "value"
+      ]
     },
     "switchStep": {
       "type": "object",

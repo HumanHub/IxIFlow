@@ -29,6 +29,8 @@ internal static class ExpressionRules
                 Check(step, step.ResultExpression);
                 Check(step, step.ForEachCompletionExpression);
                 Check(step, step.OutcomeExpression);
+                Check(step, step.Assignment?.Target);
+                Check(step, step.Assignment?.Value);
                 Check(step, step.AfterExpression);
                 foreach (var behavior in Delegates.Select(property => property.GetValue(step) as Delegate))
                     Check(step, DelegateCode.FirstImpure(behavior));

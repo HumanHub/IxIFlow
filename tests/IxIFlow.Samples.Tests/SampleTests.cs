@@ -75,8 +75,9 @@ public sealed class SampleTests
         var covered = Pairs.Select(row => Definitions((string)row[0]).Yaml)
             .Select(definition => definition.Name)
             .Concat(YamlSampleTests.YamlDefinitions.Values.Select(build => build().Name))
-            .Append(SwitchSampleTests.GeneratedDefinition().Name).Distinct().Count();
-        Assert.Equal(21, generated.Length);
+            .Append(SwitchSampleTests.GeneratedDefinition().Name)
+            .Append(AssignSampleTests.GeneratedDefinition().Name).Distinct().Count();
+        Assert.Equal(22, generated.Length);
         Assert.Equal(generated.Length, covered);
     }
 

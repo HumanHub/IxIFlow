@@ -251,3 +251,24 @@ definitions:
 ```
 
 Case labels are constant expressions or named `csharp-expression` assets evaluated at definition build, with no workflow, previous, item or fault context. Use `valueType` for ambiguous null/base-type selectors; typed enum, decimal and supported struct labels can use code assets. An explicitly empty `default: []` is retained. An absent default means no-match continues normally. Build reports `SWITCH001` for a missing selector, `SWITCH002` for an incompatible label/type, `SWITCH003` for duplicate cases/defaults and `SWITCH004` for unsupported or incomplete label state. Existing purity diagnostics apply to selectors and label expressions. See [Switch bodies](fluent-api.md#switch-bodies) for equality, label-state and recovery rules.
+
+## Assigning data and iteration positions
+
+<!-- snippet: samples/IxIFlow.Samples/Definitions/assign-totals.workflow.yaml -->
+```yaml
+workflow: {name: AssignTotals, dataType: IxIFlow.Samples.AssignmentTotalsData}
+
+definitions:
+  - kind: assign
+    id: total
+    to: {path: workflow.Total}
+    value:
+      kind: binary
+      operator: multiply
+      left: {path: workflow.Price}
+      right: {path: workflow.Quantity}
+```
+
+`to` names one writable serialized workflow location. `value` uses the existing constant, path, binary or function expression forms. Nested properties, structs, array/list elements and dictionary entries use the same typed location compiler as fluent C#. Invalid roots and unwritable storage report `ASSIGN001`/`ASSIGN002`; incompatible values report `ASSIGN003` during definition validation, or a positioned C# diagnostic during compilation.
+
+Within `forEach` with `as: line`, write `workflow.Lines[index(line)].Total` to select the current position. `index(line)` also works in C# expression assets. It accepts exactly one lexical item alias; `index` is reserved for this intrinsic. `line.Index` continues to read the item's own property. Outer aliases remain available inside nested iterations; an alias cannot be reused in the same lexical scope.

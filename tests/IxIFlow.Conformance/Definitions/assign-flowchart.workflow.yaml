@@ -1,0 +1,79 @@
+{
+  "workflow": {
+    "name": "Assignflowchart",
+    "dataType": "IxIFlow.Tests.Conformance.AssignScenarios+Data"
+  },
+  "definitions": [
+    {
+      "kind": "flowchart",
+      "start": "work",
+      "nodes": [
+        {
+          "key": "work",
+          "steps": [
+            {
+              "kind": "assign",
+              "to": {
+                "path": "workflow.Count"
+              },
+              "value": {
+                "kind": "binary",
+                "operator": "add",
+                "left": {
+                  "path": "workflow.Count"
+                },
+                "right": {
+                  "kind": "constant",
+                  "value": 1
+                }
+              },
+              "id": "assign"
+            },
+            {
+              "kind": "activity",
+              "activity": "IxIFlow.Tests.Conformance.AssignScenarios+Boundary"
+            },
+            {
+              "kind": "waitFor",
+              "key": "saved",
+              "event": "IxIFlow.Tests.Conformance.AssignScenarios+Go"
+            },
+            {
+              "kind": "assign",
+              "to": {
+                "path": "workflow.Count"
+              },
+              "value": {
+                "kind": "binary",
+                "operator": "add",
+                "left": {
+                  "path": "workflow.Count"
+                },
+                "right": {
+                  "kind": "constant",
+                  "value": 1
+                }
+              }
+            }
+          ],
+          "transitions": [
+            {
+              "when": {
+                "kind": "binary",
+                "operator": "lt",
+                "left": {
+                  "path": "workflow.Count"
+                },
+                "right": {
+                  "kind": "constant",
+                  "value": 3
+                }
+              },
+              "to": "work"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+workflow: {name: AssignReviewjoin, dataType: IxIFlow.Tests.Conformance.AssignReviewScenarios+Data}
+definitions:
+- {kind: waitFor, key: start, event: IxIFlow.Tests.Conformance.AssignReviewScenarios+Go}
+- kind: parallel
+  combine: [{property: {path: workflow.Count}, propertyType: int, combiner: 'IxIFlow.Core.Sum<int>'}]
+  branches:
+  - steps:
+    - kind: assign
+      to: {path: workflow.Count}
+      value: {kind: binary, operator: add, left: {path: workflow.Count}, right: {kind: constant, value: 1}}
+  - steps:
+    - kind: assign
+      to: {path: workflow.Count}
+      value: {kind: binary, operator: add, left: {path: workflow.Count}, right: {kind: constant, value: 2}}
+- {kind: waitFor, key: joined, event: IxIFlow.Tests.Conformance.AssignReviewScenarios+Go}

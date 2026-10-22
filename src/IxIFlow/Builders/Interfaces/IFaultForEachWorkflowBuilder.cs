@@ -8,6 +8,12 @@ namespace IxIFlow.Builders.Interfaces;
 public interface IFaultForEachWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> : ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
     where TPreviousStepData : class
 {
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    new IFaultForEachWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Assign<TValue>(
+        Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> target,
+        Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     new IFaultForEachWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Named(string name);
     new IFaultForEachWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Delay(TimeSpan duration,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);

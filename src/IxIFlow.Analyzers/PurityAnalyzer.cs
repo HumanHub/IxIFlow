@@ -55,12 +55,13 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
         var invocation = (IInvocationOperation)context.Operation;
         if (!engine.IsBuilderMethod(invocation.TargetMethod) || NameOnly.Contains(invocation.TargetMethod.Name))
             return;
-        var destination = Destinations.Contains(invocation.TargetMethod.Name);
+        var destinationMethod = Destinations.Contains(invocation.TargetMethod.Name);
         foreach (var argument in invocation.Arguments)
         {
             if (argument.Parameter == null || argument.ArgumentKind == ArgumentKind.DefaultValue ||
                 !(engine.TakesCode(argument.Parameter.Type) || invocation.TargetMethod.Name == "Case" && argument.Parameter.Ordinal == 0))
                 continue;
+            var destination = destinationMethod || invocation.TargetMethod.Name == "Assign" && argument.Parameter.Ordinal == 0;
             var value = EngineSymbols.Unwrapped(argument.Value);
             for (var depth = 0; depth < 8 && value is ILocalReferenceOperation local &&
                                 EngineSymbols.Initializer(local, context.CancellationToken) is { } stored; depth++)
@@ -72,7 +73,7 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
             foreach (var (use, member) in (demand ? demands : code).Uses(value, destination, context.CancellationToken))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureExpression, use.Syntax.GetLocation(),
                     demand ? null : ClockFix(engine, use, member), member));
-            foreach (var (use, member) in code.MutationUses(value, context.CancellationToken))
+            foreach (var (use, member) in code.MutationUses(value, context.CancellationToken, destination))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureExpression, use.Syntax.GetLocation(), member));
         }
     }

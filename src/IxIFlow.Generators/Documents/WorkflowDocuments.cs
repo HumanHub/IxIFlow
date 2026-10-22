@@ -152,9 +152,9 @@ public abstract record WorkflowStepDocument : DocumentNode
             case WaitStepDocument { OnTimeout: { } timeout }:
                 yield return ("timeout", null, timeout);
                 break;
-            case ParallelStepDocument parallel:
-                for (var index = 0; index < parallel.Branches.Count; index++)
-                    yield return ("branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), parallel.Branches[index].Steps);
+            case ParallelStepDocument { Branches: { } branches }:
+                for (var index = 0; index < branches.Count; index++)
+                    yield return ("branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), branches[index].Steps);
                 break;
             case LoopStepDocument loop:
                 yield return ("loop", null, loop.Steps);
@@ -594,6 +594,18 @@ public sealed record SagaErrorHandlerDocument : DocumentNode
     public RetryPolicyDocument? Retry { get; init; }
     [Description("Whether ThenContinue ignores compensation errors.")]
     public bool IgnoreCompensationErrors { get; init; }
+}
+
+[Description("One typed write to a serialized workflow-data location.")]
+[DocumentKind("assign")]
+public sealed record AssignStepDocument : WorkflowStepDocument
+{
+    [Description("A writable workflow path, including pure list indices and dictionary keys. Use index(alias) for an iteration position.")]
+    [DocumentRequired]
+    public PathExpressionDocument To { get; init; } = new();
+    [Description("The pure replacement value. May read workflow, previousStep, lexical items and fault.")]
+    [DocumentRequired]
+    public ExpressionDocument Value { get; init; } = new ConstantExpressionDocument();
 }
 
 [Description("Body selection by a typed value.")]

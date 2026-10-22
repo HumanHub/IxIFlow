@@ -1,0 +1,8 @@
+workflow: {name: AssignReviewpause, dataType: IxIFlow.Tests.Conformance.AssignReviewScenarios+Data}
+definitions:
+- {kind: waitFor, key: start, event: IxIFlow.Tests.Conformance.AssignReviewScenarios+Go}
+- kind: assign
+  id: assign
+  to: {path: workflow.Count}
+  value: {kind: binary, operator: add, left: {path: workflow.Count}, right: {kind: constant, value: 1}}
+- {kind: assign, id: after, to: {path: workflow.Copy}, value: {path: workflow.Count}}

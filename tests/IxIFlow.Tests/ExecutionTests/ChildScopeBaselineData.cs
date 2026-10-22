@@ -2,12 +2,12 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public sealed partial class ChildScopeBaselineTests
 {
-    // Recaptured from the combined fixture after checkpoint contract 10 / structure hash format 5.
+    // Recaptured from the combined fixture after checkpoint contract 11 / structure hash format 6.
     private const string MainBaseline = """
         [
           {
             "Name": "Empty",
-            "Hash": "E4097440BFD9D23A724FD25F3C3C85134DA73858E4732C4D47B6DA454E4EF36E",
+            "Hash": "D61E5251157DC6EA86D08D57DB18D9636B364B379AC40549BCB59C3BDF87A967",
             "ScopeIds": [
               "root"
             ],
@@ -15,7 +15,7 @@ public sealed partial class ChildScopeBaselineTests
           },
           {
             "Name": "Every step",
-            "Hash": "BC49D613BDC6AF64465D72F754092BCA3EBA3F7CF6979494023C1C5C6FA259B8",
+            "Hash": "C45CF6CB59B4784A419539D613B59D7908BE4DE8C05E1061D216DC360A714132",
             "ScopeIds": [
               "root",
               "root/0/sequence",
@@ -210,7 +210,15 @@ public sealed partial class ChildScopeBaselineTests
               "root/23/foreach",
               "root/23/finally",
               "root/23/timeout",
-              "root/23/catch"
+              "root/23/catch",
+              "root/24/sequence",
+              "root/24/then",
+              "root/24/else",
+              "root/24/loop",
+              "root/24/foreach",
+              "root/24/finally",
+              "root/24/timeout",
+              "root/24/catch"
             ],
             "StepIds": [
               "root/0",
@@ -236,12 +244,13 @@ public sealed partial class ChildScopeBaselineTests
               "root/20",
               "root/21",
               "root/22",
-              "root/23"
+              "root/23",
+              "root/24"
             ]
           },
           {
             "Name": "Nested bodies",
-            "Hash": "663DABD3A8101486F8831CC883A2EB0A845C053FA1F997CB6A2B37CDE5EA8225",
+            "Hash": "FF41C8C52624063ABFB00EE5841C4B8CEC983962C773F2C57B5C1BDC85518295",
             "ScopeIds": [
               "root",
               "root/0/sequence",

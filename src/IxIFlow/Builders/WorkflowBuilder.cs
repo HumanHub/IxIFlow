@@ -94,6 +94,14 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
         new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs)
             .Use<TInvokedData>(callee, pin, configure == null ? null : setup => configure(setup), sourcePath, sourceLine);
 
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    public IWorkflowBuilder<TWorkflowData, object> Assign<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, object>, TValue>> target,
+        Expression<Func<WorkflowContext<TWorkflowData, object>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs)
+            .Assign(target, value, sourcePath, sourceLine);
+
     /// <summary>Selects one case body with no incoming activity value.</summary>
     public IWorkflowBuilder<TWorkflowData, object> Switch<TValue>(
         Expression<Func<WorkflowContext<TWorkflowData, object>, TValue>> selector,
@@ -261,6 +269,16 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name)
     {
         Core.Runtime.WorkflowStepIdentity.Name(_steps, name);
+        return this;
+    }
+
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Assign<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> target,
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        _steps.Add(AssignmentRules.Step<TWorkflowData, TPreviousStepData>(target, value, typeof(TValue), sourcePath, sourceLine, _steps.Count));
         return this;
     }
 

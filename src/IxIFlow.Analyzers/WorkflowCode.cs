@@ -7,6 +7,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Operations;
 using Microsoft.CodeAnalysis.FlowAnalysis;
+using IxIFlow.Authoring;
 
 namespace IxIFlow.Analyzers;
 
@@ -113,14 +114,27 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
     {
         if (operation is IMemberReferenceOperation member)
             yield return member.Member is IMethodSymbol method ? ResolveImplementation(method, member.Instance) : member.Member;
-        if (operation == assigned && operation is IPropertyReferenceOperation property &&
+        if (operation is IPropertyReferenceOperation property && assigned != null && DestinationWrites(assigned).Contains(operation) &&
             !property.Property.ReturnsByRef && !property.Property.ReturnsByRefReadonly)
         {
             if (property.Property.SetMethod != null) yield return ResolveImplementation(property.Property.SetMethod, property.Instance);
-            yield break;
+            if (operation == assigned) yield break;
         }
         foreach (var step in AllSteps(MethodSteps(operation)))
             if (step.Method != null) yield return step.Method;
+    }
+
+    private static IEnumerable<IOperation> DestinationWrites(IOperation target)
+    {
+        var links = new List<IOperation>();
+        for (IOperation? link = EngineSymbols.Unwrapped(target); link != null; link = link switch
+        {
+            IPropertyReferenceOperation property => property.Instance == null ? null : EngineSymbols.Unwrapped(property.Instance),
+            IArrayElementReferenceOperation array => EngineSymbols.Unwrapped(array.ArrayReference),
+            _ => null
+        }) links.Add(link);
+        links.Reverse();
+        return AssignmentLocationChain.WrittenLinks(links, link => link.Type?.IsValueType == true).Select(index => links[index]);
     }
 
     // The impure member a member of this compilation leads to, named with the member; none for other members.

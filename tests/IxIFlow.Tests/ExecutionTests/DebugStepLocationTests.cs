@@ -36,6 +36,7 @@ public sealed class DebugStepLocationTests
             .Switch(c => c.WorkflowData.Items.Count,
                 cases => cases.Case(1, b => b.Step<Noop>()).Default(b => b.Step<Noop>()))
             .Use<Data>(() => Workflow.Create<Data>("LocationInline").Build(), pin)
+            .Assign(c => c.WorkflowData.Items[0], c => 2)
             .Build();
         var table = definition.StepTable;
         Assert.Same(table, definition.StepTable);
@@ -57,7 +58,7 @@ public sealed class DebugStepLocationTests
     [Fact]
     public void CreationMethodsAndInterfacesCaptureLocationsIncludingDelegatingOverloads()
     {
-        var creatingNames = new[] { "Step", "Request", "Delay", "Invoke", "Sequence", "If", "Parallel", "WhileDo", "DoWhile", "ForEach", "Result", "Try", "Saga", "Suspend", "WaitFor", "Switch", "CompensateWith" };
+        var creatingNames = new[] { "Step", "Request", "Delay", "Invoke", "Sequence", "If", "Parallel", "WhileDo", "DoWhile", "ForEach", "Result", "Try", "Saga", "Suspend", "WaitFor", "Switch", "Assign", "CompensateWith" };
         var types = typeof(Workflow).Assembly.GetTypes().Where(t => t.Namespace?.StartsWith("IxIFlow.Builders") == true);
         foreach (var method in types.SelectMany(t => t.GetMethods()).Where(m => creatingNames.Contains(m.Name) && m.DeclaringType?.Name.Contains("ForEachSetup") != true))
         {

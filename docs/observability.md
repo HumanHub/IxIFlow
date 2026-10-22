@@ -151,3 +151,7 @@ Operator resolution of a workflow invocation requires the observed `PendingActiv
 Invocation `ActivityStarted`, `ActivityCompleted` and `ActivityFailed` entries carry typed `InvocationTrace` facts: logical invocation ID, policy-attempt ID/number, nullable started child ID and terminal child status. Preparation failures have no started child. `InvocationPolicyApplied` records the selected policy/action and retry, ignore, exhaustion or propagation disposition. `StepRetryScheduled` includes the same invocation facts and absolute due time. `ActivityResolutionTrace.PolicyAttemptId` is the attempt actually decided by the operator.
 
 These facts contain no mapped values, wait capabilities or exception text. Errors use diagnostic references. Tracing can be disabled or truncated while the checkpoint retains every invocation attempt; use privileged inspection for that record.
+
+## Assignment picks
+
+Assign is a real executable pick. A breakpoint before it sees old data; stepping to the next pick sees the assigned data. Full tracing records `StepEntered` and a `DataAssigned` completion with the structural destination and step identity. Computed keys, values and expression text are omitted. Activities-only tracing can omit this control-flow completion. Replay stops at `StepEntered` and never evaluates either expression. The step catalog includes the destination and declared value type; ordinary data inspection supplies redacted values.

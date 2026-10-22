@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="IxIFlow.Analyzers.CodeFixes" />
+    <Compile Include="../Shared/AssignmentLocationChain.cs" Link="Authoring/AssignmentLocationChain.cs" />
   </ItemGroup>
 
 </Project>

@@ -8,6 +8,12 @@ namespace IxIFlow.Builders.Interfaces;
 public interface ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>
     where TPreviousStepData : class
 {
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Assign<TValue>(
+        Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> target,
+        Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Switch<TValue>(
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> selector,
         Action<SwitchCases<TValue, ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>>> configure,

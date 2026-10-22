@@ -190,6 +190,34 @@ internal static class BranchData
             ?? throw new ArgumentException("Workflow data cannot be null");
     }
 
+    internal static void ValidateAssignmentProperty(Type receiver, PropertyInfo member, bool write, bool leaf)
+    {
+        var info = Info(receiver);
+        var property = info.Properties.FirstOrDefault(property => property.AttributeProvider is PropertyInfo reflected &&
+            reflected.Name == member.Name && reflected.DeclaringType == member.DeclaringType);
+        var value = property == null ? null : Info(property.PropertyType);
+        var populate = property != null && !property.PropertyType.IsValueType &&
+            (property.ObjectCreationHandling ?? info.PreferredPropertyObjectCreationHandling) == JsonObjectCreationHandling.Populate &&
+            value!.Kind == JsonTypeInfoKind.Object && MergedInPlace(property);
+        if (property?.Get == null || property.IsExtensionData || property.Set == null && (write || !populate) ||
+            PopulatedCollection(info, property) || !leaf && property.CustomConverter != null)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"ASSIGN002: '{member.Name}' is not writable serialized workflow data (getter-only containers require a restorable Populate contract)");
+        if (leaf && property.CustomConverter == null)
+            ValidateAssignmentValue(property.PropertyType);
+    }
+
+    internal static void ValidateAssignmentValue(Type type)
+    {
+        Walk(Info(type), [], merged: false, new HashSet<(Type, bool)>(), (path, owner, property, _) =>
+        {
+            if (PopulatedCollection(owner, property) || !RestorableProperty(owner, property))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"ASSIGN002: '{string.Join('.', path)}' in assignment value '{type.Name}' cannot be restored whole " +
+                    "from a checkpoint; use replacement restoration rather than retaining initializer state");
+        });
+    }
+
     private static JsonPropertyInfo EditableProperty(JsonTypeInfo info, string name, bool leaf = true)
     {
         // Dictionary keys are values, so accepting them would also expose them in audit paths.
@@ -777,25 +805,13 @@ internal static class BranchData
             }
             if (!branches)
                 return;
-            var value = Info(property.PropertyType);
-            var populated = (property.ObjectCreationHandling ?? owner.PreferredPropertyObjectCreationHandling) ==
-                            JsonObjectCreationHandling.Populate;
             // The serializer populates an existing mutable collection; an array, an immutable or frozen one, or
             // a read-only view it replaces, whatever the preference says.
-            if (populated && value.Kind is JsonTypeInfoKind.Enumerable or JsonTypeInfoKind.Dictionary &&
-                Populatable(value.Type))
+            if (PopulatedCollection(owner, property))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"'{at}' is read back by adding to what its initializer put in it, so a parallel branch's copy " +
                     "would keep items the data no longer has; read it back whole");
-            if (property.Set != null || property.AssociatedParameter != null ||
-                value.Kind == JsonTypeInfoKind.Object && populated && MergedInPlace(property))
-                return;
-            // A get-only auto-property holds state, which a copy reads back only through a constructor
-            // parameter; a scalar the type computes is not state.
-            var stored = property.AttributeProvider is PropertyInfo { DeclaringType: { } declaring } clr &&
-                         declaring.GetField($"<{clr.Name}>k__BackingField",
-                             BindingFlags.Instance | BindingFlags.NonPublic) != null;
-            if (!stored && (value.Type.IsValueType || value.Kind == JsonTypeInfoKind.None))
+            if (RestorableProperty(owner, property))
                 return;
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"'{at}' has no setter and no constructor parameter the serializer uses, so a parallel branch's " +
@@ -803,6 +819,25 @@ internal static class BranchData
                 "parameter, marking that constructor [JsonConstructor] if the type has others");
         });
     }
+
+    private static bool RestorableProperty(JsonTypeInfo owner, JsonPropertyInfo property)
+    {
+        var value = Info(property.PropertyType);
+        if (property.Set != null || property.AssociatedParameter != null ||
+            value.Kind == JsonTypeInfoKind.Object &&
+            (property.ObjectCreationHandling ?? owner.PreferredPropertyObjectCreationHandling) == JsonObjectCreationHandling.Populate &&
+            MergedInPlace(property))
+            return true;
+        // Computed scalars carry no state; stored getter-only members must be reconstructed.
+        var stored = property.AttributeProvider is PropertyInfo { DeclaringType: { } declaring } clr &&
+                     declaring.GetField($"<{clr.Name}>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic) != null;
+        return !stored && (value.Type.IsValueType || value.Kind == JsonTypeInfoKind.None);
+    }
+
+    private static bool PopulatedCollection(JsonTypeInfo owner, JsonPropertyInfo property) =>
+        (property.ObjectCreationHandling ?? owner.PreferredPropertyObjectCreationHandling) == JsonObjectCreationHandling.Populate &&
+        Info(property.PropertyType).Kind is JsonTypeInfoKind.Enumerable or JsonTypeInfoKind.Dictionary &&
+        Populatable(property.PropertyType);
 
     private static bool Populatable(Type type) =>
         !type.IsArray && type.Namespace is not ("System.Collections.Immutable" or "System.Collections.Frozen") &&
@@ -826,8 +861,8 @@ internal static class BranchData
     }
 
     // Visits every serialized property a branch copy reads back: through objects and dictionaries, list
-    // elements and polymorphic values. merged says whether a join merges at the property itself, or it is
-    // inside a value merged whole.
+    // elements, nullable structs and polymorphic values. merged says whether a join merges at the property
+    // itself, or it is inside a value merged whole.
     private static void Walk(JsonTypeInfo info, List<string> path, bool merged, HashSet<(Type, bool)> visiting,
         Action<List<string>, JsonTypeInfo, JsonPropertyInfo, bool> visit)
     {
@@ -835,6 +870,13 @@ internal static class BranchData
             return;
         try
         {
+            // Built-in nullable contracts read the underlying value whole; custom converters stay opaque.
+            if (Nullable.GetUnderlyingType(info.Type) is { } underlying &&
+                info.Converter.GetType().Assembly == typeof(System.Text.Json.JsonSerializer).Assembly)
+            {
+                Walk(Info(underlying), path, merged: false, visiting, visit);
+                return;
+            }
             var inside = merged && PerMember(info);
             if (info.PolymorphismOptions is { } polymorphism)
                 foreach (var derived in polymorphism.DerivedTypes.Where(item => item.DerivedType != info.Type))

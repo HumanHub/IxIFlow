@@ -80,11 +80,19 @@ internal sealed class ItemValues
 
     public (int Index, object? Value) Of(ItemScope scope)
     {
-        if (!_values.TryGetValue(scope, out var saved))
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                $"{scope} is read outside its ForEach body");
-        if (!_read.TryGetValue(scope, out var value))
-            _read[scope] = value = Runtime.ForEachTransitions.Deserialize(saved.Json, scope.ItemType, "item");
-        return (saved.Index, value);
+        try
+        {
+            if (!_values.TryGetValue(scope, out var saved))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"{scope} is read outside its ForEach body");
+            if (!_read.TryGetValue(scope, out var value))
+                _read[scope] = value = Runtime.ForEachTransitions.Deserialize(saved.Json, scope.ItemType, "item");
+            return (saved.Index, value);
+        }
+        catch (WorkflowEngineException error)
+        {
+            error.RaisedByEngineContext = true;
+            throw;
+        }
     }
 }

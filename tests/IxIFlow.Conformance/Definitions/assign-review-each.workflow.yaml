@@ -1,0 +1,24 @@
+workflow: {name: AssignReviewEach, dataType: IxIFlow.Tests.Conformance.AssignReviewScenarios+Data}
+definitions:
+- kind: forEach
+  items: {path: workflow.Items}
+  as: item
+  parallel:
+    combine:
+    - {property: {path: workflow.Total}, propertyType: int, combiner: 'IxIFlow.Core.Sum<int>'}
+    - {property: {path: workflow.Seen}, propertyType: int, combiner: 'IxIFlow.Core.Sum<int>'}
+  steps:
+  - kind: assign
+    to: {path: workflow.Total}
+    value: {kind: binary, operator: add, left: {path: workflow.Total}, right: {path: item}}
+  - {kind: waitFor, key: item, event: IxIFlow.Tests.Conformance.AssignReviewScenarios+Go}
+  - kind: assign
+    to: {path: workflow.Seen}
+    value:
+      kind: binary
+      operator: add
+      left: {kind: binary, operator: add, left: {path: workflow.Seen}, right: {kind: function, function: position}}
+      right: {kind: constant, value: 1}
+- {kind: waitFor, key: joined, event: IxIFlow.Tests.Conformance.AssignReviewScenarios+Go}
+code:
+  position: {language: csharp-expression, source: 'index(item)'}

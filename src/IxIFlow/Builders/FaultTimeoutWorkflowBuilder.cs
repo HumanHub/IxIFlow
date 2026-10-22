@@ -28,6 +28,16 @@ internal sealed class FaultTimeoutWorkflowBuilder<TWorkflowData, TFault, TPrevio
         base.Request<TActivity>(name, configure, subjectExpression, sourcePath, sourceLine);
         return new FaultTimeoutWorkflowBuilder<TWorkflowData, TFault, TActivity>(Steps, ExceptionType);
     }
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    public new IFaultTimeoutWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Assign<TValue>(
+        Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> target,
+        Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        base.Assign(target, value, sourcePath, sourceLine);
+        return this;
+    }
+
     public new IFaultTimeoutWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Switch<TValue>(
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> selector,
         Action<SwitchCases<TValue, ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>>> configure,

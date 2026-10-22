@@ -1,0 +1,68 @@
+{
+  "workflow": {
+    "name": "Assignswitch",
+    "dataType": "IxIFlow.Tests.Conformance.AssignScenarios+Data"
+  },
+  "definitions": [
+    {
+      "kind": "switch",
+      "value": {
+        "path": "workflow.Count"
+      },
+      "cases": [
+        {
+          "value": {
+            "kind": "constant",
+            "value": 0
+          },
+          "steps": [
+            {
+              "kind": "assign",
+              "to": {
+                "path": "workflow.Count"
+              },
+              "value": {
+                "kind": "binary",
+                "operator": "add",
+                "left": {
+                  "path": "workflow.Count"
+                },
+                "right": {
+                  "kind": "constant",
+                  "value": 1
+                }
+              },
+              "id": "assign"
+            },
+            {
+              "kind": "activity",
+              "activity": "IxIFlow.Tests.Conformance.AssignScenarios+Boundary"
+            },
+            {
+              "kind": "waitFor",
+              "key": "saved",
+              "event": "IxIFlow.Tests.Conformance.AssignScenarios+Go"
+            },
+            {
+              "kind": "assign",
+              "to": {
+                "path": "workflow.Count"
+              },
+              "value": {
+                "kind": "binary",
+                "operator": "add",
+                "left": {
+                  "path": "workflow.Count"
+                },
+                "right": {
+                  "kind": "constant",
+                  "value": 1
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

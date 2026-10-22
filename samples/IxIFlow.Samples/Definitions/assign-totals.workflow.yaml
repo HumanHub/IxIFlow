@@ -1,0 +1,10 @@
+workflow: {name: AssignTotals, dataType: IxIFlow.Samples.AssignmentTotalsData}
+definitions:
+  - kind: assign
+    id: total
+    to: {path: workflow.Total}
+    value:
+      kind: binary
+      operator: multiply
+      left: {path: workflow.Price}
+      right: {path: workflow.Quantity}

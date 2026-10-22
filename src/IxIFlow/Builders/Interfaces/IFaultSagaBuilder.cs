@@ -4,6 +4,12 @@ using IxIFlow.Core;
 namespace IxIFlow.Builders.Interfaces;
 public interface IFaultSagaActivityBuilder<TData, TFault, TPrevious> where TPrevious : class
 {
+    /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
+    IFaultSagaActivityBuilder<TData, TFault, TPrevious> Assign<TValue>(
+        Expression<Func<FaultContext<TData, TFault, TPrevious>, TValue>> target,
+        Expression<Func<FaultContext<TData, TFault, TPrevious>, TValue>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     IFaultSagaActivityBuilder<TData, TFault, TPrevious> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
     IFaultSagaActivityBuilder<TData, TFault, TActivity> Step<TActivity>(Action<FaultSagaActivitySetup<TData, TFault, TActivity, TPrevious>>? configure = null,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TActivity : class, IAsyncActivity;
