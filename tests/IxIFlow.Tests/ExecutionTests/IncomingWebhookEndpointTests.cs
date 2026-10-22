@@ -496,6 +496,7 @@ public sealed partial class IncomingWebhookEndpointTests
         Assert.DoesNotContain("private-stack", failed.Body);
         var timeout = await host.Send("/slow/{orderId}");
         Assert.Equal(202, timeout.Status);
+        await host.Client.AwaitAsync(timeout.Id, WorkflowAwaitCondition.Idle).WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(WorkflowExecutionStatus.Suspended, await host.Client.GetStatusAsync(timeout.Id));
         var accepted = await host.Send("/workflows/{id}/events/{key}", Cloud(), instanceId: timeout.Id,
             contentType: "application/cloudevents+json");
