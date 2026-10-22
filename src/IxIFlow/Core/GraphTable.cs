@@ -78,7 +78,7 @@ public sealed class GraphTable : IReadOnlyList<GraphTableEntry>
                     if (step.StepType is WorkflowStepType.Flowchart or WorkflowStepType.StateMachine) continue;
                     if (step.StepType == WorkflowStepType.Edge && step.Explicit)
                         transitions.Add(new(null, from, TransitionCause.Explicit, null, null, null, null, Array.AsReadOnly(new[] { Case([step], 0) })));
-                    foreach (var child in step.ChildScopes()) Explicit(from, child.Steps);
+                    foreach (var child in step.ChildScopes().Where(scope => scope.Kind != "inline")) Explicit(from, child.Steps);
                 }
             }
         }

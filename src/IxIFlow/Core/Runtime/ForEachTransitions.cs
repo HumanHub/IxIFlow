@@ -103,6 +103,7 @@ internal static class ForEachTransitions
         {
             StepId = scopes.Id(step),
             ParentContinuationId = parent.Id,
+            DataFrameId = checkpoint.DataFrameId(parent),
             Mode = step.ParallelJoinMode
         };
         checkpoint.Joins.Add(join);

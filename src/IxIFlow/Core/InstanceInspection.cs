@@ -27,6 +27,7 @@ public sealed record InspectionThread(string ContinuationId, string Name, string
 public sealed record InspectionFrame(string ActivationId, string Name, string Kind, string ScopeId,
     string? ParentActivationId, int NextStepIndex, int LoopIteration, int? ForEachItemIndex)
 {
+    public string? DataType { get; init; }
     /// <summary>The derived graph phase, when this frame belongs to a graph.</summary>
     public string? Phase { get; init; }
     public long ArmOccurrence { get; init; }
@@ -45,4 +46,8 @@ public sealed record InspectionAttempt(string ContinuationId, string InvocationI
     string? AttemptId, string? Kind, string? Host, DateTime StartedAtUtc, string? Reason);
 public sealed record InspectionWait(string WaitRef, string ContinuationId, string StepId, WaitKind Kind,
     string? Key, DateTime? DeadlineUtc, string? ChildInstanceId);
-public sealed record InspectionData(string ContinuationId, JsonElement Value);
+public sealed record InspectionData(string ContinuationId, JsonElement Value)
+{
+    public string? FrameId { get; init; }
+    public string? DataType { get; init; }
+}

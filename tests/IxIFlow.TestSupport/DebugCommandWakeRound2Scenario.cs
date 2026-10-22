@@ -128,7 +128,7 @@ public static class DebugCommandWakeRound2Scenario
             else if (scenario == "committed-result-failure")
             {
                 probe.FailResultAfterCommit = true;
-                await Assert.ThrowsAnyAsync<Exception>(() => ops.ContinueAsync(id, "operator"));
+                Assert.Equal(WorkflowExecutionStatus.Suspended, (await ops.ContinueAsync(id, "operator")).Status);
                 Assert.Equal(WorkflowStatus.Suspended, (await store.GetWorkflowInstanceAsync(id))!.Status);
                 var claims = probe.Claims;
                 await Task.Delay(1200);

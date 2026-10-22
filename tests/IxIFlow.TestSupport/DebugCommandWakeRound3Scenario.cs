@@ -16,7 +16,8 @@ public static class DebugCommandWakeRound3Scenario
         "suspended-between-reads", "completed-between-reads", "pause-before-continue", "pause-before-request",
         "pause-before-step", "edit-before-step", "breakpoint-failure", "acknowledged-step",
         "acknowledged-edit", "acknowledged-pause", "acknowledged-breakpoints",
-        "disabled-continue", "disabled-step", "disabled-edit", "conditions-continue", "conditions-step"];
+        "disabled-continue", "disabled-step", "disabled-edit", "conditions-continue", "conditions-step",
+        "claim-success", "claim-failure", "claim-step", "capability-continue", "capability-step", "post-edit-reuse"];
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan SetupPatience = Patience + TimeSpan.FromSeconds(5);
 
@@ -30,9 +31,13 @@ public static class DebugCommandWakeRound3Scenario
         var remoteProbe = (Probe)remote; remoteProbe.Store = otherStore;
         using var catalog = new WorkflowCatalog();
         var builder = new WorkflowBuilder<Data, object>([], "DebugWakeRound3")
-            .ForEach(c => c.WorkflowData.Items, (body, item) => body.Result(c => c.Item(item) + 1),
+            .ForEach(c => c.WorkflowData.Items, (body, item) =>
+            {
+                if (scenario == "claim-failure") body.Result(c => 100 / (c.Item(item) - 41));
+                else body.Result(c => c.Item(item) + 1);
+            },
                 setup => setup.Into(c => c.WorkflowData.Results));
-        var definition = scenario == "completed-between-reads" ? builder.Build() : builder.WaitFor<Go>("end").Build();
+        var definition = scenario is "completed-between-reads" or "claim-success" ? builder.Build() : builder.WaitFor<Go>("end").Build();
         await catalog.RegisterWorkflowAsync(definition);
         await using var requester = Services(wrapped, "requester", true);
         await using var other = Services(remote, "other", true);
@@ -54,7 +59,102 @@ public static class DebugCommandWakeRound3Scenario
             var continuation = Assert.Single((await requester.GetRequiredService<IWorkflowClient>().GetSnapshotAsync(id))!.Pointers).PointerId;
             var claims = probe.Claims;
 
-            if (scenario is "edit-alone" or "edit-conditions-no-compiler")
+            if (scenario.StartsWith("claim-"))
+            {
+                WorkflowExecutionResult? settled = null;
+                probe.OnAccepted = (_, _) =>
+                {
+                    // A has already read the pending command when its claim reaches the store.
+                    probe.BeforeAcquire = async () => settled = await RemoteRecover();
+                    return Task.CompletedTask;
+                };
+                var result = scenario == "claim-step"
+                    ? await ops.StepAsync(id, continuation, DebugStepKind.Over, "operator")
+                    : await ops.ContinueAsync(id, "operator");
+                Assert.NotNull(settled);
+                Assert.Equal(scenario == "claim-failure" ? WorkflowExecutionStatus.Faulted :
+                    scenario == "claim-step" ? WorkflowExecutionStatus.Paused : WorkflowExecutionStatus.Success, settled.Status);
+                Assert.Equal(settled.Status, result.Status);
+                Assert.Equal(settled.ErrorKind, result.ErrorKind);
+                Assert.Equal(settled.ErrorMessage, result.ErrorMessage);
+                Assert.Equal(1, probe.Refusals);
+                Assert.Equal(claims + 1, probe.Claims);
+                if (scenario == "claim-failure") Assert.NotNull(result.ErrorMessage);
+                else Assert.Equal(42, Assert.Single(Assert.IsType<Data>(result.WorkflowData).Results).Value);
+            }
+            else if (scenario.StartsWith("capability-"))
+            {
+                Assert.Null(requester.GetService<IBreakpointConditionCompiler>());
+                Assert.NotNull(other.GetService<IBreakpointConditionCompiler>());
+                Assert.Equal(WorkflowExecutionStatus.Paused,
+                    (await ops.StepAsync(id, continuation, DebugStepKind.Over, "setup-step")).Status);
+                initial = (await store.GetWorkflowInstanceAsync(id))!;
+                generation = WorkflowDebugRules.Checkpoint(initial).PauseGeneration;
+                initial = await SetConditionalBreakpointsAsync("false");
+                generation = WorkflowDebugRules.Checkpoint(initial).PauseGeneration;
+                Assert.NotNull(WorkflowDebugRules.Checkpoint(initial).Stepping);
+                await Accept(DebugCommandKind.EditData, "earlier-edit");
+                claims = probe.Claims;
+                WorkflowExecutionResult? settled = null;
+                probe.OnAccepted = (_, _) => { probe.DebugReads = 0; probe.Armed = true; return Task.CompletedTask; };
+                probe.BeforeDebugRead = async read =>
+                {
+                    if (read != 2) return;
+                    // The pending edit allows initial reconciliation. B applies both commands
+                    // before A's next control read; A then reaches its retained-stepping hold.
+                    Assert.Equal(WorkflowExecutionStatus.Paused, (await RemoteRecover()).Status);
+                    settled = await RemoteRecover();
+                };
+                var result = scenario.EndsWith("step")
+                    ? await ops.StepAsync(id, continuation, DebugStepKind.Over, "operator")
+                    : await ops.ContinueAsync(id, "operator");
+                Assert.NotNull(settled);
+                Assert.Equal(scenario.EndsWith("step") ? WorkflowExecutionStatus.Paused : WorkflowExecutionStatus.Suspended, settled.Status);
+                Assert.Equal(settled.Status, result.Status);
+                Assert.Null(result.ErrorKind);
+                Assert.Equal(new[] { 99 }, Assert.IsType<Data>(result.WorkflowData).Items);
+                Assert.Equal(claims, probe.Claims);
+                Assert.True(probe.DebugReads >= 2);
+                if (!scenario.EndsWith("step"))
+                {
+                    var strict = await requester.GetRequiredService<IWorkflowClient>().RecoverAsync(id);
+                    Assert.Equal(WorkflowExecutionStatus.Faulted, strict.Status);
+                    Assert.Contains("no interrupted execution", strict.ErrorMessage);
+                }
+            }
+            else if (scenario == "post-edit-reuse")
+            {
+                var edit = await Accept(DebugCommandKind.EditData, "earlier-edit");
+                var replaced = false;
+                probe.AfterEditCommitted = () =>
+                {
+                    // Arm the *next* full read, after EditUnderGateAsync has returned and
+                    // released its lease, rather than changing identity inside the edit.
+                    probe.BeforeInstanceRead = async () =>
+                    {
+                        Assert.NotNull((await store.GetDebugStatesAsync([id]))[id].Commands.Single(c => c.Id == edit.Id).EditResult);
+                        await otherStore.DeleteWorkflowInstanceAsync(id, TimeSpan.FromMilliseconds(1));
+                        await Until(async () => await otherStore.GetTombstoneAsync(id) == null);
+                        Task replacementRun;
+                        using (ExecutionContext.SuppressFlow())
+                            replacementRun = Task.Run(() => other.GetRequiredService<IWorkflowOperations>().LaunchAsync(id, definition.Name,
+                                definition.Version, JsonSerializer.SerializeToElement(new Data { Items = [7] }), true, "replacement"));
+                        await replacementRun.WaitAsync(Patience);
+                        var replacement = (await otherStore.GetWorkflowInstanceAsync(id))!;
+                        Assert.NotEqual(initial.Incarnation, replacement.Incarnation);
+                        replaced = true;
+                    };
+                    return Task.CompletedTask;
+                };
+                var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => ops.ContinueAsync(id, "operator"));
+                Assert.True(replaced);
+                Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
+                Assert.Contains("ID reused", error.Message);
+                Assert.Equal(new[] { 7 }, (await SavedData()).Items);
+                Assert.DoesNotContain((await store.GetDebugStatesAsync([id]))[id].Commands,
+                    c => c.Kind == DebugCommandKind.Continue);
+            }
+            else if (scenario is "edit-alone" or "edit-conditions-no-compiler")
             {
                 if (scenario == "edit-conditions-no-compiler")
                 {
@@ -192,7 +292,8 @@ public static class DebugCommandWakeRound3Scenario
             {
                 probe.FailAfterAcknowledgement = true;
                 if (scenario.EndsWith("edit")) await Assert.ThrowsAnyAsync<Exception>(Edit);
-                else if (scenario.EndsWith("pause")) await Assert.ThrowsAnyAsync<Exception>(() => ops.PauseAsync(id, "pause"));
+                else if (scenario.EndsWith("pause"))
+                    Assert.Equal(WorkflowExecutionStatus.Paused, (await ops.PauseAsync(id, "pause")).Status);
                 else if (scenario.EndsWith("breakpoints"))
                 {
                     // SetBreakpoints is request-only; interrupt its recovery after the acknowledgement.
@@ -263,13 +364,15 @@ public static class DebugCommandWakeRound3Scenario
                 return accepted.Command!;
             }
             DebugCommandReceipt Receipt(DebugCommand command) => new(id, initial.Incarnation, command.Id, command.Order, command.Kind);
-            async Task<WorkflowInstance> SetConditionalBreakpointsAsync()
+            async Task<WorkflowInstance> SetConditionalBreakpointsAsync(string condition = "true")
             {
-                var breakpoints = BreakpointResolver.Resolve(definition, [new("conditional", "root/1", Condition: "true")]);
+                var breakpoints = BreakpointResolver.Resolve(definition, [new("conditional", "root/1", Condition: condition)]);
                 var command = await Accept(DebugCommandKind.SetBreakpoints, "conditions", breakpoints);
                 var receipt = Receipt(command);
-                // Use the requester's gate so the later edit cannot race setup's lease release.
-                await requester.GetRequiredService<WorkflowHost>().WakeDebugCommandIfNeededAsync(receipt);
+                // Retained stepping requires the capable host even to install configuration.
+                // Other scenarios use the requester's gate before their later edit.
+                var setupHost = scenario.StartsWith("capability-") ? other : requester;
+                await setupHost.GetRequiredService<WorkflowHost>().WakeDebugCommandIfNeededAsync(receipt);
                 WorkflowInstance? configured = null;
                 // The original instance was already paused. Wait for this configuration's
                 // acknowledgement and matching saved checkpoint, using store reads only.
@@ -325,6 +428,8 @@ public static class DebugCommandWakeRound3Scenario
                 return repository;
             });
             configure?.Invoke(services);
+            if (name == "other" && scenario.StartsWith("capability-"))
+                services.AddSingleton<IBreakpointConditionCompiler, NeverBreakCompiler>();
             services.AddSingleton(new InProcessInstanceGate());
             // No scanners, heartbeat or hosted recovery services run.
             return services.BuildServiceProvider();
@@ -346,7 +451,8 @@ public static class DebugCommandWakeRound3Scenario
         public IWorkflowStateRepository Store = null!;
         public Func<DebugCommandRequest, DebugCommandResult, Task>? OnAccepted;
         public Func<int, Task>? BeforeDebugRead;
-        public int DebugReads, Claims, AcknowledgementFailures;
+        public Func<Task>? BeforeAcquire, BeforeInstanceRead, AfterEditCommitted;
+        public int DebugReads, Claims, Refusals, AcknowledgementFailures;
         public bool Armed, FailEdits, FailAfterAcknowledgement, FailScopeAfterAcceptance, HoldAfterResume, BlockCommitsAfterResume;
         public TaskCompletionSource ResumeCommitted = Signal(), ReleaseResume = Signal(), AcknowledgementInterrupted = Signal();
         protected override object? Invoke(MethodInfo? method, object?[]? args)
@@ -354,8 +460,24 @@ public static class DebugCommandWakeRound3Scenario
             if (method!.Name == nameof(IWorkflowStateRepository.RequestDebugCommandAsync)) return Accept((string)args![0]!, (DebugCommandRequest)args[1]!);
             if (method.Name == nameof(IWorkflowStateRepository.GetDebugStatesAsync)) return DebugRead((IReadOnlyCollection<string>)args![0]!);
             if (method.Name == nameof(IWorkflowStateRepository.CommitWorkflowInstanceAsync)) return Commit((CheckpointCommit)args![0]!);
-            if (method.Name == nameof(IWorkflowStateRepository.TryAcquireExecutionLeaseAsync)) Interlocked.Increment(ref Claims);
+            if (method.Name == nameof(IWorkflowStateRepository.TryAcquireExecutionLeaseAsync)) return Acquire(method, args!);
+            if (method.Name == nameof(IWorkflowStateRepository.GetWorkflowInstanceAsync)) return Read((string)args![0]!);
             return Forward(method, Store, args);
+        }
+        private async Task<WorkflowInstance?> Read(string id)
+        {
+            var before = Interlocked.Exchange(ref BeforeInstanceRead, null);
+            if (before != null) await before();
+            return await Store.GetWorkflowInstanceAsync(id);
+        }
+        private async Task<ExecutionLeaseGrant?> Acquire(MethodInfo method, object?[] args)
+        {
+            Interlocked.Increment(ref Claims);
+            var before = Interlocked.Exchange(ref BeforeAcquire, null);
+            if (before != null) await before();
+            var grant = await (Task<ExecutionLeaseGrant?>)Forward(method, Store, args)!;
+            if (grant == null) Interlocked.Increment(ref Refusals);
+            return grant;
         }
         private async Task<DebugCommandResult> Accept(string id, DebugCommandRequest request)
         {
@@ -379,6 +501,8 @@ public static class DebugCommandWakeRound3Scenario
             if (BlockCommitsAfterResume) throw new IOException("Interrupted execution after resume acknowledgement");
             var result = await Store.CommitWorkflowInstanceAsync(commit);
             if (result.Status != WorkflowCommitStatus.Applied) return result;
+            if (trace.Any(e => e.EntryType == TraceEntryType.DataEdited) && AfterEditCommitted != null)
+                await AfterEditCommitted();
             if (HoldAfterResume && trace.Any(e => e.EntryType == TraceEntryType.Continued))
             {
                 ResumeCommitted.TrySetResult();
@@ -412,6 +536,14 @@ public static class DebugCommandWakeRound3Scenario
         catch (TargetInvocationException error) { ExceptionDispatchInfo.Capture(error.InnerException!).Throw(); throw; }
     }
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private sealed class NeverBreakCompiler : IBreakpointConditionCompiler
+    {
+        public BreakpointConditionCompilation Compile(BreakpointConditionRequest request)
+        {
+            Assert.Equal("false", request.Text);
+            return new((_, _, _, _, _) => false, []);
+        }
+    }
     public sealed class Data
     {
         public List<int> Items { get; set; } = [41];

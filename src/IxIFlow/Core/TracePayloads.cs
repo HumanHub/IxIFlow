@@ -5,6 +5,7 @@ namespace IxIFlow.Core;
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "Type")]
 [JsonDerivedType(typeof(ControlFlowTrace), "control")]
 [JsonDerivedType(typeof(GraphTrace), "graph")]
+[JsonDerivedType(typeof(InlineTrace), "inline")]
 [JsonDerivedType(typeof(ConditionTrace), "condition")]
 [JsonDerivedType(typeof(JoinTrace), "join")]
 [JsonDerivedType(typeof(ItemEndTrace), "itemEnd")]
@@ -41,6 +42,9 @@ public sealed record ConditionTrace(string StepId, WorkflowStepType StepKind, st
 public enum JoinPath { Merged, Conflict, Unwound }
 public sealed record JoinTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,
     string JoinId, JoinPath Path) : TracePayload;
+
+public sealed record InlineTrace(string StepId, string ContinuationId, string ScopeId,
+    string ActivationId, ItemEndCause? Cause = null) : TracePayload;
 
 public enum ItemEndCause { Completed, Failed, Cancelled, UnwoundByOuterHandler }
 public sealed record ItemEndTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,

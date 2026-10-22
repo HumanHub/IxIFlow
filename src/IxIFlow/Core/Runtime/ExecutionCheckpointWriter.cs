@@ -172,6 +172,7 @@ internal static class ExecutionCheckpointWriter
                 ContinuationTransitions.PrepareCheckpoint(checkpoint, scopes);
             checkpoint.RetainDiagnostics();
             checkpoint.RecordBranchChanges();
+            checkpoint.RecordInlineFrames(payloads);
             // Recording changes the persisted trace-budget counters; do it before splitting the checkpoint.
             checkpoint.Trace.CapturePositions(now);
             var reuseData = instance.SavedParts != null && (!checkpoint.RootDataChanged ||

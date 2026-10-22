@@ -6,7 +6,7 @@ internal static class BreakpointConditionInputs
     {
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
         var step = scopes.Step(stepId);
-        return new(scopes.StructureHash, text, definition.WorkflowDataType,
+        return new(scopes.StructureHash, text, step.WorkflowDataType,
             step.PreviousStepDataType, ItemScope(scopes, stepId)?.ItemType);
     }
 

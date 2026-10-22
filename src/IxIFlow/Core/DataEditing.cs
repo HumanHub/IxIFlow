@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace IxIFlow.Core;
 
 /// <summary>A paused data view. A null continuation selects the root fork baseline.</summary>
-public sealed record DataEditTarget(long PauseGeneration, string? ContinuationId = null);
+public sealed record DataEditTarget(long PauseGeneration, string? ContinuationId = null, string? FrameId = null);
 
 /// <summary>A path of serialized property names and its JSON value, or a property removal.</summary>
 public sealed record DataPatch(IReadOnlyList<string> Path, JsonElement Value, bool Remove = false);

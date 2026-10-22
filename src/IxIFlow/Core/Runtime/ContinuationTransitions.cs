@@ -124,7 +124,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         checkpoint.Touch(continuation);
         var workflowData = checkpoint.DataOf(continuation);
         // A branch's copy may change in any transition; its changes are recorded at the next commit.
-        continuation.DataChanged = continuation.ParentJoinId != null;
+        checkpoint.MarkDataChanged(continuation);
         if (continuation.AcceptedWait is { } accepted)
         {
             var acceptedPosition = continuation.Stack[^1];
@@ -163,6 +163,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             GraphTransitions.CheckExit(continuation, position, maxGraphTransitionsPerPass);
             if (position.Kind == FrameKind.Listen)
                 GraphTransitions.ReturnReplies(checkpoint, continuation, position, restoreReceipt: false);
+            if (position.Kind == FrameKind.Inline)
+            {
+                InlineTransitions.Complete(scopes, checkpoint, continuation, position);
+                checkpoint.Trace.InlineLeaving(continuation, position, ItemEndCause.Completed);
+            }
             continuation.Stack.RemoveAt(continuation.Stack.Count - 1);
             if (position.RestorePreviousOnExit)
             {
@@ -215,6 +220,9 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var step = steps[position.NextStepIndex];
         switch (step.StepType)
         {
+            case WorkflowStepType.InlineWorkflow:
+                InlineTransitions.Enter(scopes, checkpoint, continuation, step, services);
+                break;
             case WorkflowStepType.Flowchart:
             case WorkflowStepType.StateMachine:
                 checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
@@ -509,6 +517,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         {
             StepId = scopes.Id(step),
             ParentContinuationId = parent.Id,
+            DataFrameId = checkpoint.DataFrameId(parent),
             Mode = graphBranches != null ? ParallelJoinMode.WaitAny : step.ParallelJoinMode
         };
         checkpoint.Joins.Add(join);
@@ -806,7 +815,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     private static MergedData Merge(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ParallelJoinState join, IEnumerable<ContinuationState> children)
     {
-        var baseline = checkpoint.DataOf(ParentOf(checkpoint, join));
+        var baseline = checkpoint.Baseline(join);
         var order = join.ChildContinuationIds.Select((id, index) => (id, index))
             .ToDictionary(item => item.id, item => item.index, StringComparer.Ordinal);
         JsonNode? baselineNode = null;
@@ -849,8 +858,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     private static void ApplyMerge(ExecutionCheckpoint checkpoint, ContinuationState parent, MergedData merge)
     {
         BranchData.Apply(checkpoint.DataOf(parent), merge);
-        if (parent.ParentJoinId != null && merge.Paths.Count > 0)
-            parent.DataChanged = true;
+        if (merge.Paths.Count > 0) checkpoint.MarkDataChanged(parent);
     }
 
     /// <summary>
@@ -866,9 +874,10 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         foreach (var join in checkpoint.Joins.Where(item => item.IsCompleting && SteppingPolicy.AllowsJoin(checkpoint, item)).ToList())
         {
             var children = checkpoint.BranchesOf(join);
-            if (!children.All(item => item.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled))
+            if (!CanFinish(checkpoint, join))
                 continue;
             var parent = ParentOf(checkpoint, join);
+            var survivingOwner = HasOwningActivation(parent);
             checkpoint.Touch(parent);
             foreach (var child in children)
                 checkpoint.Touch(child);
@@ -902,6 +911,10 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             checkpoint.Joins.Remove(join);
             checkpoint.TouchOwner(join.ParentContinuationId);
             completed = true;
+            // Ancestry can outlive the activation that owned this fork. Retire its join, but
+            // never merge into, reactivate or advance a continuation whose unwind already ended.
+            if (!survivingOwner)
+                continue;
             if (checkpoint.UnhandledError != null)
             {
                 if (!inheritedCleanup)
@@ -929,10 +942,22 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         return completed;
     }
 
+    // A cancelled owner can still have descendants finishing cleanup. Keep its fork baseline
+    // and ancestry until those joins settle, even after its own stack unwinds. Scheduling uses
+    // the same predicate so an outer join cannot prevent an in-flight descendant from settling.
+    internal static bool CanFinish(ExecutionCheckpoint checkpoint, ParallelJoinState join)
+    {
+        var children = checkpoint.BranchesOf(join);
+        return children.All(child => child.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled) &&
+            !checkpoint.Joins.Any(nested => children.Any(child => nested.ParentContinuationId == child.Id));
+    }
+
     // Shared with recovery preparation: an unwound join must not read discarded branch data either.
     internal static bool Merges(ExecutionCheckpoint checkpoint, ParallelJoinState join)
     {
         var parent = ParentOf(checkpoint, join);
+        if (!HasOwningActivation(parent))
+            return false;
         var cleanup = IsCleanup(parent) || InsideCleanup(checkpoint, parent);
         return !join.ResumeParentWithoutAdvance &&
                (checkpoint.UnhandledError == null ? !parent.CancellationUnwind || cleanup : cleanup);
@@ -941,9 +966,15 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     private static bool IsCleanup(ContinuationState continuation) =>
         TryScopeTransitions.IsInsideFinally(continuation) || SagaScopeTransitions.IsInsideCompensation(continuation);
 
+    private static bool HasOwningActivation(ContinuationState continuation) =>
+        continuation.Stack.Count > 0 &&
+        continuation.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled);
+
     // True when a branch was forked, directly or through other forks, inside a Finally or a compensation.
     private static bool InsideCleanup(ExecutionCheckpoint checkpoint, ContinuationState continuation)
     {
+        if (!HasOwningActivation(continuation))
+            return false;
         while (continuation.ParentJoinId != null &&
                checkpoint.Joins.SingleOrDefault(item => item.Id == continuation.ParentJoinId) is { } join)
         {
@@ -1122,14 +1153,14 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 continue;
             }
 
-            // A completed scope restores its entry value, or ends the continuation.
+            // A completed scope restores its entry value, returns inline data, or ends the continuation.
             // Its last activity object will never be read again, so do not require
             // transient input properties on that object to be checkpointable.
             if (continuation.Stack.Count > 0)
             {
                 var current = continuation.Stack[^1];
                 if (current.NextStepIndex == scopes.Steps(current.ScopeId).Count &&
-                    (current.RestorePreviousOnExit || continuation.Stack.Count == 1))
+                    (current.Kind == FrameKind.Inline || current.RestorePreviousOnExit || continuation.Stack.Count == 1))
                 {
                     if (continuation.Previous != null)
                         checkpoint.Touch(continuation);

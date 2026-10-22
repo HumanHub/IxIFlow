@@ -53,6 +53,16 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Parallel(
         Action<IParallelBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TUsedData> Use<TWorkflow, TUsedData>(
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TUsedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TWorkflow : IWorkflow<TUsedData>, new()
+        where TUsedData : class;
+
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TUsedData> Use<TUsedData>(
+        Func<WorkflowDefinition> callee, WorkflowInlinePin pin,
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TUsedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TUsedData : class;
+
     ICatchWorkflowBuilder<TWorkflowData, TFault, TInvokedData> Invoke<TWorkflow, TInvokedData>(
         Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TWorkflow : IWorkflow<TInvokedData>

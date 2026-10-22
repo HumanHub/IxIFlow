@@ -13,14 +13,15 @@ public sealed class ChildScopeTests
     {
         var bodies = new List<List<WorkflowStep>>();
         var step = PopulatedStep(bodies);
+        step.StepType = WorkflowStepType.InlineWorkflow;
         var scopes = step.ChildScopes().ToArray();
 
         Assert.Equal(bodies.Count, scopes.Length);
         foreach (var body in bodies)
             Assert.Single(scopes, scope => ReferenceEquals(scope.Steps, body));
-        Assert.Equal(["sequence", "then", "else", "loop", "foreach", "finally", "timeout", "catch"],
-            scopes.Take(8).Select(scope => scope.Kind));
-        Assert.All(scopes.Take(8), scope => Assert.Null(scope.Key));
+        Assert.Equal(["inline", "sequence", "then", "else", "loop", "foreach", "finally", "timeout", "catch"],
+            scopes.Take(9).Select(scope => scope.Kind));
+        Assert.All(scopes.Take(9), scope => Assert.Null(scope.Key));
         Assert.Equal([("branch", "0"), ("branch", "1"),
                 ("node", ""), ("node", "/to/0"), ("node", "/to/1"),
                 ("node", ""), ("node", "/to/0"), ("node", "/to/1"),
@@ -29,7 +30,7 @@ public sealed class ChildScopeTests
                 ("state", ""), ("state", "/exit"), ("state", "/on/0"), ("state", "/on/0/case/0"), ("state", "/on/0/case/1"), ("state", "/on/0/run"),
                 ("state", "/on/1"), ("state", "/on/1/case/0"), ("state", "/on/1/case/1"), ("state", "/on/1/run"), ("state", "/listen"),
                 ("outcome", "0"), ("outcome", "1")],
-            scopes.Skip(8).Select(scope => (scope.Kind, scope.Key)));
+            scopes.Skip(9).Select(scope => (scope.Kind, scope.Key)));
         Assert.All(new WorkflowStep().ChildScopes(), scope => Assert.Empty(scope.Steps));
     }
 

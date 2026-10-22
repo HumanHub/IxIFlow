@@ -37,6 +37,7 @@ internal sealed class ExecutionCheckpoint
     public string StructureHash { get; set; } = "";
     public List<ContinuationState> Continuations { get; set; } = [];
     public List<ParallelJoinState> Joins { get; set; } = [];
+    public Dictionary<string, InlineFrameState> InlineFrames { get; set; } = new(StringComparer.Ordinal);
     public List<WaitState> Waits { get; set; } = [];
 
     /// <summary>How many branches the instance has started; the next one's <see cref="ContinuationState.Sequence"/>.</summary>
@@ -255,12 +256,46 @@ internal sealed class ExecutionCheckpoint
     }
 
     /// <summary>The workflow data <paramref name="continuation"/> reads and writes.</summary>
-    public object DataOf(ContinuationState continuation)
+    public string? DataFrameId(ContinuationState continuation, string? excluding = null) =>
+        continuation.Stack.LastOrDefault(frame => frame.Kind == FrameKind.Inline && frame.ActivationId != excluding)?.ActivationId;
+
+    public object DataOf(ContinuationState continuation) => DataOutside(continuation, null);
+
+    internal object DataOutside(ContinuationState continuation, string? excluding)
     {
-        if (continuation.ParentJoinId == null)
-            return RootData;
-        return continuation.Data ??= BranchData.Rebuild(DataOf(ForkParent(continuation)),
-            continuation.DataChanges ?? []);
+        if (DataFrameId(continuation, excluding) is { } id) return InlineFrames[id].Value;
+        if (continuation.ParentJoinId == null) return RootData;
+        return continuation.Data ??= BranchData.Rebuild(Baseline(JoinOf(continuation)), continuation.DataChanges ?? []);
+    }
+
+    internal ParallelJoinState JoinOf(ContinuationState branch) => Joins.Single(join => join.Id == branch.ParentJoinId);
+    public object Baseline(ParallelJoinState join) => join.DataFrameId is { } id
+        ? InlineFrames[id].Value : DataOf(ContinuationById(join.ParentContinuationId)!);
+
+    public void MarkDataChanged(ContinuationState continuation, string? excluding = null)
+    {
+        if (DataFrameId(continuation, excluding) is { } id) InlineFrames[id].Changed = true;
+        else if (continuation.ParentJoinId != null) continuation.DataChanged = true;
+        else RootDataChanged = true;
+    }
+
+    private HashSet<string>? _markedFrames;
+    public void TouchFrame(string id) => _markedFrames?.Add(id);
+
+    public void RecordInlineFrames(CheckpointPayloads? payloads)
+    {
+        var retained = Continuations.Where(c => c.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled))
+            .SelectMany(c => c.Stack.Where(f => f.Kind == FrameKind.Inline).Select(f => f.ActivationId))
+            .Concat(Joins.Select(j => j.DataFrameId).OfType<string>()).ToHashSet(StringComparer.Ordinal);
+        foreach (var id in InlineFrames.Keys.Where(id => !retained.Contains(id)).ToArray()) InlineFrames.Remove(id);
+        foreach (var (id, frame) in InlineFrames)
+        {
+            if (!frame.Changed) continue;
+            var json = BranchData.StoredSnapshot(frame.Value, payloads);
+            frame.Data = payloads?.Store(json) ?? json;
+            frame.Changed = false;
+            TouchFrame(id);
+        }
     }
 
     // The branches whose stored parts may have changed since a commit last took the marks, or null for all of them:
@@ -278,12 +313,13 @@ internal sealed class ExecutionCheckpoint
     public void TouchOwner(string continuationId) => _marked?.Add(continuationId);
 
     /// <summary>Marks every branch as changed.</summary>
-    public void TouchAll() => _marked = null;
+    public void TouchAll() { _marked = null; _markedFrames = null; }
 
     /// <summary>The marks a commit's split writes by; the checkpoint starts marking again from none.</summary>
     public PartMarks TakeMarks()
     {
-        var taken = new PartMarks(_marked);
+        var taken = new PartMarks(_marked, _markedFrames);
+        _markedFrames = new HashSet<string>(StringComparer.Ordinal);
         _marked = new HashSet<string>(StringComparer.Ordinal);
         return taken;
     }
@@ -291,6 +327,8 @@ internal sealed class ExecutionCheckpoint
     /// <summary>Gives back marks a commit took but did not save, so the next commit writes those parts.</summary>
     public void RestoreMarks(PartMarks marks)
     {
+        if (marks.Frames == null) _markedFrames = null;
+        else _markedFrames?.UnionWith(marks.Frames);
         if (marks.Ids == null)
             _marked = null;
         else
@@ -338,9 +376,9 @@ internal sealed class ExecutionCheckpoint
     {
         // Branches of one fork share their baseline, which is serialized once.
         foreach (var fork in Continuations.Where(item => item.ParentJoinId != null && item.DataChanged &&
-                                                         item.Data != null).GroupBy(ForkParent))
+                                                         item.Data != null).GroupBy(JoinOf))
         {
-            var baseline = DataOf(fork.Key);
+            var baseline = Baseline(fork.Key);
             var baselineNode = BranchData.Node(baseline);
             foreach (var branch in fork)
             {
@@ -777,7 +815,7 @@ internal sealed class ActivityInputValue
         problem.GetBaseException().Message, problem);
 }
 
-internal enum FrameKind { Body, Item, Node, Edge, State, StateExit, Transition, Case, Run, Listen }
+internal enum FrameKind { Body, Item, Node, Edge, State, StateExit, Transition, Case, Run, Listen, Inline }
 
 internal sealed class GraphState
 {
@@ -851,10 +889,11 @@ internal sealed class ScopePosition
 }
 
 /// <summary>The branches a commit writes: those marked as changed, or all of them.</summary>
-internal sealed record PartMarks(HashSet<string>? Ids)
+internal sealed record PartMarks(HashSet<string>? Ids, HashSet<string>? Frames = null)
 {
     public static PartMarks All { get; } = new((HashSet<string>?)null);
 
+    public bool HasFrame(string id) => Frames == null || Frames.Contains(id);
     public bool Has(string continuationId) => Ids == null || Ids.Contains(continuationId);
 }
 
@@ -1039,6 +1078,7 @@ internal sealed class SagaRestartPoint
 
 internal sealed class ParallelJoinState
 {
+    public string? DataFrameId { get; set; }
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string StepId { get; set; } = "";
     public string ParentContinuationId { get; set; } = "";
@@ -1222,4 +1262,16 @@ internal sealed class SerializedValue
                     return options;
                 }));
             });
+}
+
+internal sealed class InlineFrameState
+{
+    public string OwnerContinuationId { get; set; } = "";
+    public string DataType { get; set; } = "";
+    public StoredJson Data { get; set; } = StoredJson.Inline("");
+    [JsonIgnore] public object? Runtime { get; set; }
+    [JsonIgnore] public bool Changed { get; set; }
+    [JsonIgnore] public object Value => Runtime ??= BranchData.Copy(Data.InlineText,
+        WorkflowTypeIdentity.Resolve(DataType) ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+            $"Inline data type '{DataType}' is unavailable"));
 }

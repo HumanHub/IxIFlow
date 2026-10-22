@@ -95,6 +95,17 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         where TActivity : class, IAsyncActivity =>
         _workflowBuilder.Request(name, configure, subject, sourcePath: sourcePath, sourceLine: sourceLine);
 
+    public IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TWorkflow, TInvokedData>(
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TWorkflow : IWorkflow<TInvokedData>, new() where TInvokedData : class =>
+        _workflowBuilder.Use<TWorkflow, TInvokedData>(configure, sourcePath, sourceLine);
+
+    public IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TInvokedData>(Func<WorkflowDefinition> callee, WorkflowInlinePin pin,
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TInvokedData : class => _workflowBuilder.Use(callee, pin, configure, sourcePath, sourceLine);
+
     public IWorkflowBuilder<TWorkflowData, TInvokedData> Invoke<TWorkflow, TInvokedData>(
         Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TWorkflow : IWorkflow<TInvokedData> where TInvokedData : class

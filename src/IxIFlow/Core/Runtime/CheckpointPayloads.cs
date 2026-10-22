@@ -55,22 +55,10 @@ internal sealed class CheckpointPayloads(ExecutionLimits limits, PayloadBudget b
         stored.Hydrated(value.InlineText);
         return stored;
     }
-    public StoredJson Serialize<T>(T value, JsonSerializerOptions? options = null)
-    {
-        // With claim check off, use the shared serializer metadata, just as an ordinary checkpoint
-        // does. Existing references still need dependency metadata when a run resumes with it off.
-        if (limits.PayloadThresholdBytes == 0)
-        {
-            var text = JsonSerializer.Serialize(value, options);
-            if (!text.Contains("\"reference\"", StringComparison.Ordinal))
-                return StoredJson.Inline(text).WithDependencies([]);
-            var references = new HashSet<PayloadReference>();
-            // Serializer-written property names cannot contain an escaped reference key.
-            Scan(text, references);
-            return StoredJson.Inline(text).WithDependencies(references.ToArray());
-        }
-        return SerializeWithPayloads(value, options);
-    }
+    // Only the StoredJson converter observes dependencies. Application JSON remains opaque,
+    // including when claim checking is disabled on a resumed execution.
+    public StoredJson Serialize<T>(T value, JsonSerializerOptions? options = null) =>
+        SerializeWithPayloads(value, WorkflowJson.Options(options, value?.GetType() ?? typeof(T)));
 
     private StoredJson SerializeWithPayloads<T>(T value, JsonSerializerOptions? options)
     {
@@ -115,7 +103,7 @@ internal sealed class CheckpointPayloads(ExecutionLimits limits, PayloadBudget b
                  part.Value.HasDependencyMetadata))) return [];
         var found = new HashSet<PayloadReference>();
         if (trunk.HasDependencyMetadata) found.UnionWith(trunk.Dependencies);
-        else Scan(trunk.InlineText, found);
+        else ReadReferences(trunk.InlineText, typeof(ExecutionCheckpoint), found);
         foreach (var (key, value) in parts)
         {
             if (value.Reference is { } reference)
@@ -128,33 +116,34 @@ internal sealed class CheckpointPayloads(ExecutionLimits limits, PayloadBudget b
                      !value.HasDependencyMetadata)
             {
                 var dependencies = new HashSet<PayloadReference>();
-                Scan(value.InlineText, dependencies);
+                ReadReferences(value.InlineText, key.StartsWith("c/", StringComparison.Ordinal)
+                    ? typeof(StoredCheckpoint.BranchPart) : typeof(List<StoredJson>), dependencies);
                 value.WithDependencies(dependencies.ToArray());
             }
             foreach (var dependency in value.Dependencies) found.Add(dependency);
         }
         return found.OrderBy(r => r.Digest, StringComparer.Ordinal).ToArray();
     }
-    private static void Scan(string json, HashSet<PayloadReference> found)
+    private static void ReadReferences(string json, Type type, HashSet<PayloadReference> found)
     {
-        // Engine-written reference keys are literal. Escaped keys in imported JSON take the full
-        // parser path too; an ordinary checkpoint needs neither a DOM nor a recursive traversal.
-        if (!json.Contains("\"reference\"", StringComparison.Ordinal) && !json.Contains("\\u", StringComparison.Ordinal)) return;
-        using var document = JsonDocument.Parse(json);
-        Visit(document.RootElement);
-        void Visit(JsonElement element)
+        var options = new JsonSerializerOptions();
+        options.Converters.Add(new ReferenceReader(found));
+        _ = JsonSerializer.Deserialize(json, type, options);
+    }
+
+    // Deserialization follows the engine's declared types. In particular an inline StoredJson
+    // string is never parsed as another engine object, regardless of its application content.
+    private sealed class ReferenceReader(HashSet<PayloadReference> found) : JsonConverter<StoredJson>
+    {
+        private readonly StoredJsonConverter _wire = new();
+        public override StoredJson Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
         {
-            if (element.ValueKind == JsonValueKind.Object)
-            {
-                if (element.EnumerateObject().Count() == 1 && element.TryGetProperty("reference", out var reference) &&
-                    reference.ValueKind == JsonValueKind.Object && reference.TryGetProperty("digest", out var digest) &&
-                    reference.TryGetProperty("bytes", out var bytes))
-                { found.Add(new(digest.GetString()!, bytes.GetInt64())); return; }
-                foreach (var property in element.EnumerateObject()) Visit(property.Value);
-            }
-            else if (element.ValueKind == JsonValueKind.Array)
-                foreach (var item in element.EnumerateArray()) Visit(item);
+            var value = _wire.Read(ref reader, type, options);
+            if (value.Reference is { } reference) found.Add(reference);
+            return value;
         }
+        public override void Write(Utf8JsonWriter writer, StoredJson value, JsonSerializerOptions options) =>
+            _wire.Write(writer, value, options);
     }
 }
 

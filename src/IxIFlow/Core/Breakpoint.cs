@@ -61,6 +61,18 @@ public static class BreakpointResolver
             .Where(s => s.Source != null && SamePath(s.Source.Path, path) && s.Source.Line >= line)
             .OrderBy(s => s.Source!.Line).Select(s => s.Step).FirstOrDefault();
 
+    internal static IReadOnlyList<StepTableEntry> AtSourceSites(IReadOnlyList<StepTableEntry> steps, string path, int line)
+    {
+        var first = AtSource(steps, path, line);
+        if (first == null) return [];
+        var source = ParseSource(first.SourceLocation)!;
+        return steps.Where(step => ParseSource(step.SourceLocation) is { } location &&
+                SamePath(location.Path, path) && location.Line == source.Line)
+            .GroupBy(step => step.CatalogId.LastIndexOf("/inline/", StringComparison.Ordinal) is var index && index >= 0
+                ? step.CatalogId[..index] : "", StringComparer.Ordinal)
+            .Select(group => group.First()).ToArray();
+    }
+
     internal static bool Matches(string? condition, long count)
     {
         if (condition == null) return true;

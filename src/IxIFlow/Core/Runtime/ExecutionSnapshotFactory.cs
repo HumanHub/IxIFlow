@@ -32,7 +32,7 @@ internal static class ExecutionSnapshotFactory
                 Sequence = continuation.Sequence,
                 ForkActivationId = continuation.ForkActivationId,
                 StepId = next == null ? "" : scopes.Id(next),
-                AuthorStepId = next?.Id ?? "",
+                AuthorStepId = next == null ? "" : scopes.AuthorId(next),
                 StepIndex = position.NextStepIndex,
                 Status = continuation.Status.ToString(),
                 FrameId = position.ActivationId
@@ -51,6 +51,7 @@ internal static class ExecutionSnapshotFactory
                 snapshot.Frames.Add(new ExecutionFrame
                 {
                     FrameId = frame.ActivationId,
+                    DataType = FrameDataType(checkpoint, continuation, index, scopes),
                     Name = graph?.Name ?? name,
                     LoopIteration = iteration,
                     ForEachItemIndex = frame.ForEachIndex,
@@ -83,4 +84,17 @@ internal static class ExecutionSnapshotFactory
         }
         return snapshot;
     }
+    internal static string FrameDataType(ExecutionCheckpoint checkpoint, ContinuationState continuation, int index, WorkflowScopeCatalog scopes)
+    {
+        var frame = continuation.Stack.Take(index + 1).LastOrDefault(f => f.Kind == FrameKind.Inline);
+        if (frame != null) return checkpoint.InlineFrames[frame.ActivationId].DataType;
+        while (continuation.ParentJoinId is { } joinId)
+        {
+            var join = checkpoint.Joins.Single(j => j.Id == joinId);
+            if (join.DataFrameId is { } id) return checkpoint.InlineFrames[id].DataType;
+            continuation = checkpoint.ContinuationById(join.ParentContinuationId)!;
+        }
+        return scopes.RootDataType == null ? "" : WorkflowTypeIdentity.SavedName(scopes.RootDataType);
+    }
+
 }

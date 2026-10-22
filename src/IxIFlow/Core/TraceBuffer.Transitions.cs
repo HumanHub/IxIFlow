@@ -88,12 +88,30 @@ internal sealed partial class TraceBuffer
             });
     }
 
+    public void Inline(TraceEntryType kind, WorkflowStep step, ContinuationState continuation,
+        ScopePosition frame, ItemEndCause? cause = null)
+    {
+        var now = _time.GetUtcNow().UtcDateTime;
+        if (Accepts(kind, now)) Add(new ExecutionTraceEntry
+        {
+            Timestamp = now, EntryType = kind, FrameActivationId = frame.ActivationId,
+            Payload = new InlineTrace(_scopes!.Id(step), continuation.Id, frame.ScopeId, frame.ActivationId, cause)
+        });
+    }
+
+    public void InlineLeaving(ContinuationState continuation, ScopePosition frame, ItemEndCause cause)
+    {
+        if (frame.Kind != FrameKind.Inline) return;
+        Inline(TraceEntryType.InlineExited, _scopes!.Step(frame.ScopeId[..^"/inline".Length]), continuation, frame, cause);
+    }
+
     public void DropFrames(ContinuationState continuation, int start, ItemEndCause cause)
     {
         for (var index = continuation.Stack.Count - 1; index >= start; index--)
         {
             var frame = continuation.Stack[index];
             ItemEnded(continuation, frame, cause);
+            InlineLeaving(continuation, frame, cause);
             if (frame.Kind is FrameKind.Node or FrameKind.State && index > 0)
             {
                 var owner = continuation.Stack[index - 1];

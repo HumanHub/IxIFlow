@@ -392,7 +392,8 @@ public sealed class TraceReplayTests : IClassFixture<SqliteTestDatabase<TraceRep
                 var threads = snapshot.Pointers.Select(p => new InspectionThread(p.PointerId, p.Name, p.ParentPointerId,
                     p.ParentJoinId, p.Sequence, p.ForkActivationId, p.StepId, p.AuthorStepId, p.StepIndex, p.Status, p.FrameId!,
                     snapshot.Frames.Where(f => f.State["ContinuationId"] == p.PointerId).Select(f => new InspectionFrame(f.FrameId,
-                        f.Name, f.Kind, f.StepId, f.ParentFrameId, int.Parse(f.State["NextStepIndex"]), f.LoopIteration, f.ForEachItemIndex)).ToArray())).ToArray();
+                        f.Name, f.Kind, f.StepId, f.ParentFrameId, int.Parse(f.State["NextStepIndex"]), f.LoopIteration, f.ForEachItemIndex)
+                        { DataType = f.DataType }).ToArray())).ToArray();
                 lock (Snapshots) Snapshots.Add((instance.InstanceId, instance.Revision, JsonSerializer.Serialize(threads)));
             }
             return result;

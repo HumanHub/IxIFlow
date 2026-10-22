@@ -56,10 +56,13 @@ internal static class ChildInputs
     /// </summary>
     public static object NewData(WorkflowDefinition definition, WorkflowStep step, object context)
     {
-        var data = Activator.CreateInstance(definition.WorkflowDataType!)
-                   ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                       $"Failed to create instance of {definition.WorkflowDataType}");
-        var contract = WorkflowDefinitionValidator.GetContract(definition);
+        return NewData(definition.WorkflowDataType, WorkflowDefinitionValidator.GetContract(definition), step, context);
+    }
+
+    internal static object NewData(Type dataType, WorkflowContract contract, WorkflowStep step, object context)
+    {
+        var data = Activator.CreateInstance(dataType)
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, $"Failed to create instance of {dataType}");
         var assigned = new Dictionary<string, object?>(StringComparer.Ordinal);
         foreach (var member in contract.Inputs.Where(member => member.HasDefault &&
                      !step.InputMappings.Any(mapping => mapping.Direction == PropertyMappingDirection.Input && mapping.TargetProperty == member.Name)))

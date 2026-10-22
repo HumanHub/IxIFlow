@@ -441,11 +441,9 @@ public sealed class WorkflowExecutor
                 }
                 if (checkpoint.Debug.Evaluation == null)
                     uncommitted.NoteIf(ContinuationTransitions.NotifyCompletedBranches(scopes, checkpoint), instance);
-                if (checkpoint.Joins.Any(j => j.IsCompleting && checkpoint.ContinuationById(j.ParentContinuationId)?.ParentJoinId == null))
-                    checkpoint.RootDataChanged = true;
                 foreach (var join in checkpoint.Joins.Where(j => checkpoint.Debug.Evaluation == null &&
                              host.NeedsHydration && j.IsCompleting && SteppingPolicy.AllowsJoin(checkpoint, j) &&
-                             checkpoint.BranchesOf(j).All(c => c.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled) &&
+                             ContinuationTransitions.CanFinish(checkpoint, j) &&
                              ContinuationTransitions.Merges(checkpoint, j)))
                 {
                     await host.PrepareDataReadAsync(checkpoint, checkpoint.ContinuationById(join.ParentContinuationId)!);
@@ -585,8 +583,7 @@ public sealed class WorkflowExecutor
                         var boundary = EffectBoundary.Of(checkpoint);
                         try
                         {
-                            if (runnable.ParentJoinId == null)
-                                checkpoint.RootDataChanged = true;
+                            checkpoint.MarkDataChanged(runnable);
                             _transitions.Advance(scopes, checkpoint, runnable,
                                 host.Limits.MaxActiveBranches, host.Limits.MaxForEachItems, host.Limits.MaxGraphTransitionsPerPass);
                         }
@@ -619,8 +616,7 @@ public sealed class WorkflowExecutor
                 if (checkpoint.Continuations.Any(item =>
                         item.Status == ContinuationStatus.Cancelling && SteppingPolicy.Allows(checkpoint, item.Id) && !inFlight.ContainsKey(item.Id)) ||
                     checkpoint.Joins.Any(item => item.IsCompleting && SteppingPolicy.AllowsJoin(checkpoint, item) &&
-                        checkpoint.BranchesOf(item)
-                            .All(child => child.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)))
+                        ContinuationTransitions.CanFinish(checkpoint, item)))
                     continue;
                 if (_transitions.MayBeDue(checkpoint))
                     continue;

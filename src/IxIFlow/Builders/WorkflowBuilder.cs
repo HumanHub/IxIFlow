@@ -80,6 +80,20 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
         return this;
     }
 
+    /// <summary>Composes a fresh workflow body with private data into this definition.</summary>
+    public IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TWorkflow, TInvokedData>(
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TWorkflow : IWorkflow<TInvokedData>, new() where TInvokedData : class =>
+        new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs)
+            .Use<TWorkflow, TInvokedData>(configure == null ? null : setup => configure(setup), sourcePath, sourceLine);
+
+    /// <summary>Composes a fresh body after verifying its exact pin.</summary>
+    public IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TInvokedData>(Func<WorkflowDefinition> callee, WorkflowInlinePin pin,
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TInvokedData : class =>
+        new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs)
+            .Use<TInvokedData>(callee, pin, configure == null ? null : setup => configure(setup), sourcePath, sourceLine);
+
     /// <summary>Runs a flowchart with no incoming activity value.</summary>
     public IWorkflowBuilder<TWorkflowData, object> Flowchart(Action<FlowchartBuilder<TWorkflowData, object>> configure,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
@@ -240,6 +254,47 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     {
         Core.Runtime.WorkflowStepIdentity.Name(_steps, name);
         return this;
+    }
+
+    /// <summary>Composes a fresh workflow body with private data into this definition.</summary>
+    public IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TWorkflow, TInvokedData>(
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TWorkflow : IWorkflow<TInvokedData>, new() where TInvokedData : class =>
+        AddInline<TInvokedData>(InlineConstruction.Typed<TWorkflow, TInvokedData>(), typeof(TWorkflow), configure, sourcePath, sourceLine);
+
+    /// <summary>Composes a fresh body after verifying its exact pin.</summary>
+    public IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TInvokedData>(Func<WorkflowDefinition> callee, WorkflowInlinePin pin,
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TInvokedData : class =>
+        AddInline<TInvokedData>(InlineConstruction.Factory(callee, pin), null, configure, sourcePath, sourceLine);
+
+    private IWorkflowBuilder<TWorkflowData, TInvokedData> AddInline<TInvokedData>(WorkflowDefinition callee, Type? workflowType,
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure, string sourcePath, int sourceLine)
+        where TInvokedData : class
+    {
+        if (callee.WorkflowDataType != typeof(TInvokedData))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "Inline workflow data type differs from the callee");
+        _ = InlineConstruction.MergeDemands(_demands.Concat(callee.Demands));
+        var contract = WorkflowDefinitionValidator.GetContract(callee);
+        var step = new WorkflowStep
+        {
+            Name = callee.Name, StepType = WorkflowStepType.InlineWorkflow,
+            SourceLocation = sourcePath + ":" + sourceLine,
+            Runtime = WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
+            WorkflowDataType = typeof(TWorkflowData), PreviousStepDataType = typeof(TPreviousStepData),
+            WorkflowType = workflowType, WorkflowName = callee.Name, WorkflowVersion = callee.Version,
+            InvokedDataType = typeof(TInvokedData), InlineSteps = callee.Steps,
+            InlineStructureHash = WorkflowDefinitionValidator.Inspect(callee),
+            InvokedContract = contract, InvokedContractHash = contract.Hash,
+            InvokedContractKind = WorkflowInvocationContractKind.ExactPin,
+            InlineDemands = callee.Demands.ToArray(),
+            InlineBodyIdentity = new HashSet<WorkflowStep>(ParallelRules.Flatten(callee.Steps), ReferenceEqualityComparer.Instance),
+            Order = _steps.Count
+        };
+        configure?.Invoke(new WorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(step));
+        MappingRules.CheckWorkflow(step);
+        _steps.Add(step);
+        return new WorkflowBuilder<TWorkflowData, TInvokedData>(_steps, name, workflowVersion, _demands, declaredInputs, declaredOutputs);
     }
 
     /// <summary>Runs a flowchart and retains the incoming previous value.</summary>

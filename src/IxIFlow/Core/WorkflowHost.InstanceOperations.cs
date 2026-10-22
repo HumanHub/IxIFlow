@@ -748,7 +748,7 @@ public sealed partial class WorkflowHost
             if (debugCommand != null)
             {
                 var reconciled = await ReconcileDebugCommandAsync(debugCommand, instance);
-                if (!reconciled.NeedsRecovery) return await ReadDebugCommandResultAsync(debugCommand, cancellationToken);
+                if (!reconciled.NeedsRecovery) return await ReadResultAsync(reconciled.Instance!, cancellationToken);
                 instance = reconciled.Instance;
             }
             var claim = await ClaimQueryAsync();
@@ -779,14 +779,12 @@ public sealed partial class WorkflowHost
                 debugState?.Commands.FirstOrDefault(c => c.AcknowledgedRevision == null) is { Kind: DebugCommandKind.EditData, Edit: { } edit } pendingEdit)
             {
                 if (debugCommand != null && pendingEdit.Order > debugCommand.Order)
-                    return await ReadDebugCommandResultAsync(debugCommand, cancellationToken);
+                    return await ReadResultAsync(instance, cancellationToken);
                 if (!(hostSettings ?? HostSettings.Default).Debugging)
-                    return debugCommand != null ? await ReadDebugCommandResultAsync(debugCommand, cancellationToken)
-                        : await ExistingResultAsync(instance, cancellationToken);
+                    return await ExistingResultAsync(instance, cancellationToken);
                 await EditUnderGateAsync(instanceId, pendingEdit.Id, edit, pendingEdit.Actor, cancellationToken, instance.Incarnation,
                     recoveryReceipt: debugCommand);
-                return debugCommand != null ? await ReadDebugCommandResultAsync(debugCommand, cancellationToken)
-                    : await ExistingResultAsync((await _store.GetWorkflowInstanceAsync(instanceId))!, cancellationToken);
+                return await ExistingResultAsync((await _store.GetWorkflowInstanceAsync(instanceId))!, cancellationToken);
             }
             var pendingDebug = debugState?.Commands.Any(c => c.AcknowledgedRevision == null) == true;
             var debugCheckpoint = checkedCheckpoint?.Debug ?? new DebugCheckpoint();
@@ -798,19 +796,17 @@ public sealed partial class WorkflowHost
             if (cancellationReason == null && (debugCheckpoint.Stepping != null || pendingResume) &&
                 (!(hostSettings ?? HostSettings.Default).Debugging ||
                  hasConditions && services.GetService(typeof(IBreakpointConditionCompiler)) == null))
-                return debugCommand != null ? await ReadDebugCommandResultAsync(debugCommand, cancellationToken)
-                    : await ExistingResultAsync(instance!, cancellationToken);
+                return await ExistingResultAsync(instance!, cancellationToken);
             var canApplyPausedDebug = pendingDebug;
             if (instance?.Status == WorkflowStatus.Paused && cancellationReason == null && !canApplyPausedDebug)
-                return debugCommand != null ? await ReadDebugCommandResultAsync(debugCommand, cancellationToken)
-                    : await ExistingResultAsync(instance, cancellationToken);
+                return await ExistingResultAsync(instance, cancellationToken);
             var canRecover = instance?.Status == WorkflowStatus.Paused && (cancellationReason != null || canApplyPausedDebug) ||
                 instance?.Status == WorkflowStatus.Ready && pendingDebug || instance?.Status is WorkflowStatus.Running or WorkflowStatus.NeedsResolution ||
                 instance?.Status == WorkflowStatus.Suspended &&
                 (cancellationReason != null || pendingDebug || await HasInboxWorkAsync(instanceId));
             // Another run may have decided the event since the instance was read, so it is read again.
             if (!canRecover || !HasStructuredCheckpoint(instance))
-                return debugCommand != null ? await ReadDebugCommandResultAsync(debugCommand, cancellationToken)
+                return debugCommand != null ? await ReadResultAsync(instance!, cancellationToken)
                     : forEvent && await ReadAsync(instanceId, cancellationToken) is { } latest ? latest
                     : Rejected(instanceId, release
                         ? "The workflow instance is not stopped for an operator"
@@ -839,17 +835,17 @@ public sealed partial class WorkflowHost
                 release || !forEvent && instance.Status == WorkflowStatus.NeedsResolution
                     ? ExecutionClaimKind.Operator : ExecutionClaimKind.Runnable);
             if (owner == null)
-                return debugCommand != null && !await DebugCommandNeedsRecoveryAsync(debugCommand)
-                    ? await ReadDebugCommandResultAsync(debugCommand, cancellationToken) : Busy(instanceId);
+                return Busy(instanceId);
             using var assignment = Admit(instance, owner, signals.AssignmentId, signals.AcquisitionToken);
             var current = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
             // The command can have been applied between our first read and this claim. Never let
             // an old retry use its new lease to take a later command.
             if (debugCommand != null && !await DebugCommandNeedsRecoveryAsync(debugCommand, current))
-                return await ReadDebugCommandResultAsync(debugCommand, cancellationToken);
+                return await ReadResultAsync(instance, cancellationToken);
             if (current?.Incarnation != instance.Incarnation || current.Revision != instance.Revision ||
                 current.Status != instance.Status)
-                return current?.Status == WorkflowStatus.Running
+                return debugCommand != null ? await ReadResultAsync(current!, cancellationToken)
+                    : current?.Status == WorkflowStatus.Running
                     ? Busy(instanceId)
                     : Rejected(instanceId, "The workflow instance changed before recovery could start");
             // How long the instance waited to be claimed, on the store's clock as this run last read it (D-39).

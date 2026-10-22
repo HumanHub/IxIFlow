@@ -69,16 +69,18 @@ public sealed partial class DebugAdapterSession
         foreach (var request in requests)
         {
             var line = (request.Value<int?>("line") ?? _lineBase) + 1 - _lineBase;
-            var step = functions
-                ? _steps.FirstOrDefault(s => s.CatalogId == request.Value<string>("name") || s.AuthorId == request.Value<string>("name"))
-                : BreakpointResolver.AtSource(_steps, path, line);
-            if (step == null) { results.Add(new { verified = false, message = "No executable step at this address" }); continue; }
-            var id = Guid.NewGuid().ToString("N");
-            var breakpoint = new Core.Breakpoint(id, step.CatalogId,
-                functions ? null : new(path, line), request.Value<string>("hitCondition"),
-                Condition: request.Value<string>("condition"));
-            accepted.Add(breakpoint);
-            results.Add(BreakpointView(id, Location(step.SourceLocation)));
+            var matches = functions
+                ? _steps.Where(s => s.CatalogId == request.Value<string>("name") || s.AuthorId == request.Value<string>("name")).Take(1).ToArray()
+                : BreakpointResolver.AtSourceSites(_steps, path, line).ToArray();
+            if (matches.Length == 0) { results.Add(new { verified = false, message = "No executable step at this address" }); continue; }
+            foreach (var step in matches)
+            {
+                var id = Guid.NewGuid().ToString("N");
+                var breakpoint = new Core.Breakpoint(id, step.CatalogId,
+                    HitCondition: request.Value<string>("hitCondition"), Condition: request.Value<string>("condition"));
+                accepted.Add(breakpoint);
+                if (step == matches[0]) results.Add(BreakpointView(id, Location(step.SourceLocation)));
+            }
         }
         var all = _breakpointGroups.Where(p => !SamePath(p.Key, path)).SelectMany(p => p.Value).Concat(accepted).ToArray();
         if (_replay == null)

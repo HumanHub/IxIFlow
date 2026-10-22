@@ -68,7 +68,7 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
         for (var index = 0; index < continuation.Stack.Count; index++)
         {
             var frame = continuation.Stack[index];
-            if (frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen)
+            if (frame.Kind is FrameKind.Inline or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen)
                 await Reader.HydrateAsync(frame.EntryPrevious);
             await Reader.HydrateAsync(frame.Graph?.Pending?.Event);
             // Reply matching does not read the selected fire while its parent is still Joining.
@@ -108,8 +108,16 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
 
     public async Task PrepareDataReadAsync(ExecutionCheckpoint checkpoint, ContinuationState branch)
     {
-        if (!NeedsHydration || branch.ParentJoinId == null || branch.Data != null) return;
-        await PrepareDataReadAsync(checkpoint, checkpoint.ForkParent(branch));
+        if (!NeedsHydration) return;
+        foreach (var frame in branch.Stack.Where(f => f.Kind == FrameKind.Inline))
+            if (checkpoint.InlineFrames[frame.ActivationId] is { Runtime: null } state) await Reader.ReadAsync(state.Data);
+        if (branch.ParentJoinId == null || branch.Data != null) return;
+        var join = checkpoint.JoinOf(branch);
+        if (join.DataFrameId is { } id)
+        {
+            if (checkpoint.InlineFrames[id] is { Runtime: null } state) await Reader.ReadAsync(state.Data);
+        }
+        else await PrepareDataReadAsync(checkpoint, checkpoint.ForkParent(branch));
         await Reader.HydrateAsync(branch.DataChanges);
     }
 

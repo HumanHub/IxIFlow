@@ -23,7 +23,7 @@ internal static class ParallelRules
 
     public static void Validate(IReadOnlyList<WorkflowStep> steps)
     {
-        var all = Flatten(steps).ToList();
+        var all = Flatten(steps, crossInline: false).ToList();
         var parallel = all.Where(step => step.StepType == WorkflowStepType.Parallel ||
                                          step is { StepType: WorkflowStepType.ForEach, ForEachParallel: true } ||
                                          step.StepType == WorkflowStepType.StateMachine && step.GraphStates.Any(state =>
@@ -87,7 +87,7 @@ internal static class ParallelRules
     private static IEnumerable<List<string>?> Writes(WorkflowStep parallel, IReadOnlyList<WorkflowStep> body, bool waitAny = false)
     {
         var dataType = parallel.WorkflowDataType;
-        foreach (var step in Flatten(body))
+        foreach (var step in Flatten(body, crossInline: false))
         {
             foreach (var mapping in Mappings(step).Where(mapping => mapping.Direction == PropertyMappingDirection.Output))
             {
@@ -130,17 +130,17 @@ internal static class ParallelRules
             : []);
 
     /// <summary>Every step, and every step nested inside one, in order.</summary>
-    public static IEnumerable<WorkflowStep> Flatten(IReadOnlyList<WorkflowStep> steps)
+    public static IEnumerable<WorkflowStep> Flatten(IReadOnlyList<WorkflowStep> steps, bool crossInline = true)
     {
         foreach (var step in steps)
         {
             yield return step;
             // Keep validation order: catches precede timeouts, and item bodies follow both.
-            foreach (var scope in step.ChildScopes().OrderBy(scope => scope.Kind switch
+            foreach (var scope in step.ChildScopes().Where(scope => crossInline || scope.Kind != "inline").OrderBy(scope => scope.Kind switch
                      {
                          "timeout" => 1, "foreach" => 2, "branch" or "outcome" => 3, _ => 0
                      }))
-                foreach (var inner in Flatten(scope.Steps))
+                foreach (var inner in Flatten(scope.Steps, crossInline))
                     yield return inner;
         }
     }

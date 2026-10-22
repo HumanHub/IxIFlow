@@ -2,12 +2,12 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public sealed partial class ChildScopeBaselineTests
 {
-    // Recaptured from the built fixture after checkpoint contract 7 / structure hash format 3.
+    // Recaptured from the built fixture after checkpoint contract 8 / structure hash format 4.
     private const string MainBaseline = """
         [
           {
             "Name": "Empty",
-            "Hash": "818C7F632F256A9D655F98C312DC31D539F3A464771A8BBB3F282CC6892711C2",
+            "Hash": "95F528CFA3E0F4ECD03E67502C487729253DF90C5130552C86335CA898DC0122",
             "ScopeIds": [
               "root"
             ],
@@ -15,7 +15,7 @@ public sealed partial class ChildScopeBaselineTests
           },
           {
             "Name": "Every step",
-            "Hash": "448B6F5DD2C54CF375C9BC967BE86ACA611EEA8C6E8B554EAD521FE91CCC23CB",
+            "Hash": "01C4E02E0EE49344A036420606EBC0A48E4426111940949ED8F46039AC414942",
             "ScopeIds": [
               "root",
               "root/0/sequence",
@@ -193,7 +193,16 @@ public sealed partial class ChildScopeBaselineTests
               "root/21/foreach",
               "root/21/finally",
               "root/21/timeout",
-              "root/21/catch"
+              "root/21/catch",
+              "root/22/inline",
+              "root/22/sequence",
+              "root/22/then",
+              "root/22/else",
+              "root/22/loop",
+              "root/22/foreach",
+              "root/22/finally",
+              "root/22/timeout",
+              "root/22/catch"
             ],
             "StepIds": [
               "root/0",
@@ -217,12 +226,13 @@ public sealed partial class ChildScopeBaselineTests
               "root/18",
               "root/19",
               "root/20",
-              "root/21"
+              "root/21",
+              "root/22"
             ]
           },
           {
             "Name": "Nested bodies",
-            "Hash": "36AE3A3FDFD468E4E4C8A117AEDBCE38CC58CF611E1E325D189E2BCB2858F85A",
+            "Hash": "E478263794D543BA8500E65EDD49CD0AD7D8F80815499897E2C2987F46591087",
             "ScopeIds": [
               "root",
               "root/0/sequence",

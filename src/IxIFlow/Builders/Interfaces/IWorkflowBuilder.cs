@@ -26,6 +26,16 @@ public interface IWorkflowBuilder<TWorkflowData>
     /// <summary>Names the preceding step.</summary>
     IWorkflowBuilder<TWorkflowData> Named(string name);
 
+    /// <summary>Composes a fresh workflow body with private data into this definition.</summary>
+    IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TWorkflow, TInvokedData>(
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TWorkflow : IWorkflow<TInvokedData>, new() where TInvokedData : class;
+
+    /// <summary>Composes a fresh body after verifying its exact pin.</summary>
+    IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TInvokedData>(Func<WorkflowDefinition> callee, WorkflowInlinePin pin,
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TInvokedData : class;
+
     /// <summary>Runs a flowchart and retains its incoming previous value.</summary>
     IWorkflowBuilder<TWorkflowData, object> Flowchart(Action<FlowchartBuilder<TWorkflowData, object>> configure,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
@@ -95,6 +105,16 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
 
     /// <summary>Names the preceding step.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name);
+
+    /// <summary>Composes a fresh workflow body with private data into this definition.</summary>
+    IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TWorkflow, TInvokedData>(
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TWorkflow : IWorkflow<TInvokedData>, new() where TInvokedData : class;
+
+    /// <summary>Composes a fresh body after verifying its exact pin.</summary>
+    IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TInvokedData>(Func<WorkflowDefinition> callee, WorkflowInlinePin pin,
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TInvokedData : class;
 
     /// <summary>Runs a flowchart and retains its incoming previous value.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Flowchart(

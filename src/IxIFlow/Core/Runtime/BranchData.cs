@@ -75,6 +75,10 @@ internal static class BranchData
     /// <summary>The data as JSON, the form a fork copies from.</summary>
     public static string Snapshot(object data) => JsonSerializer.Serialize(data, data.GetType(), Options);
 
+    // Application JSON is one opaque value, even if its members resemble engine references.
+    internal static StoredJson StoredSnapshot(object data, CheckpointPayloads? payloads) =>
+        payloads?.Store(StoredJson.Inline(Snapshot(data)).WithDependencies([])) ?? StoredJson.Inline(Snapshot(data));
+
     /// <summary>Observes mutable data without serializing or hashing immutable leaves again.</summary>
     internal static Func<object, bool> Observe(object data)
     {

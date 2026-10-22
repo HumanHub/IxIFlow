@@ -125,6 +125,14 @@ The default `CancelWithParent` behavior cancels the child and waits for it to se
 
 Named invocations resolve a pinned `(name, version)` from the host's catalog and require a locally loaded definition. Typed invocations read `[Workflow("Name", Version = n)]` on the `IWorkflow<T>` class, registered with `services.RegisterWorkflow<TWorkflow>()` before building the service provider. Identity discovery uses reflection without constructing the workflow. The child's declared name and version enter the parent's structure hash; child resolution verifies the registered identity and structure hash. Retired versions refuse new child starts. See [Review.cs](../samples/IxIFlow.Samples/Review.cs) for a named, pinned child. Children combine their own definition demands with the parent's saved demands marked `WorkflowDemand.Inherit`; [placement and residency](coordinator-and-hosts.md#placement-and-data-residency) explains the regional pattern.
 
+## Inline workflows
+
+`Use` executes a built workflow body within the caller's instance. Each activation has its own durable data frame. Inputs are copied through the checkpoint serializer after defaults, mappings and required-input validation, so mutable lists and nested objects are isolated. On successful completion, output mappings update the caller and a separate serialized copy becomes the next step's previous value. Failures and cancellation discard outputs. A `Finally` inside the call sees inline data; a handler outside sees caller data.
+
+Parallel branches and item bodies inside a call keep the inline baseline that existed at their fork, including during cancellation, compensation and recovery after the owner frame unwinds. Frame values participate in checkpoint size limits and optional payload claim check. Flowcharts and state machines use that same data ownership, and inline calls can run inside their bodies.
+
+Inspection exposes the data type and value of each inline frame. Debugger workflow-data scopes select the nearest inline frame below the selected stack frame; selecting the caller shows caller data. A paused edit can target a frame by `DataEditTarget.FrameId`. Editing an inline frame with live forked descendants changes their baseline; their saved branch changes are reapplied, following the same rule as editing root data. Step Into enters the body, Over completes the call including joins, and Out leaves its selected enclosing body or graph activation.
+
 ## Parallel data and joins
 
 Each branch starts from isolated serialization copies of workflow data and the preceding step value at the fork. Branch writes cannot race through shared workflow-data references. Changes are tracked against that baseline and saved with their continuation; nested joins first merge into their enclosing branch.

@@ -32,6 +32,7 @@ internal static class InspectionProjection
                 if (saved.ActivationId != frame.ActivationId || saved.ScopeId != frame.ScopeId ||
                     saved.ParentActivationId != parent?.ActivationId || saved.NextStepIndex != frame.NextStepIndex ||
                     saved.LoopIteration != iteration || saved.ForEachItemIndex != frame.ForEachIndex ||
+                    saved.DataType != ExecutionSnapshotFactory.FrameDataType(checkpoint, continuation, index, scopes) ||
                     saved.Kind != kind || saved.Phase != graph?.Phase ||
                     saved.ArmOccurrence != frame.ArmOccurrence || saved.Visit != graph?.Visit || saved.Via != graph?.Via ||
                     saved.GraphId != graph?.GraphId || saved.Node != graph?.Node || saved.Pending != graph?.Pending) return false;
@@ -67,14 +68,14 @@ internal static class InspectionProjection
                     ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId;
                 frames.Add(new(frame.ActivationId, graph?.Name ?? name, kind,
                     frame.ScopeId, parent?.ActivationId, frame.NextStepIndex, iteration, frame.ForEachIndex)
-                { Phase = graph?.Phase, Visit = graph?.Visit, Via = graph?.Via, ArmOccurrence = frame.ArmOccurrence,
+                { DataType = ExecutionSnapshotFactory.FrameDataType(checkpoint, continuation, index, scopes), Phase = graph?.Phase, Visit = graph?.Visit, Via = graph?.Via, ArmOccurrence = frame.ArmOccurrence,
                     GraphId = graph?.GraphId, Node = graph?.Node, Pending = graph?.Pending });
             }
             threads.Add(new(continuation.Id,
                 continuation.ParentJoinId == null ? "Root" : $"Branch {continuation.Sequence} ({continuation.ForkActivationId})",
                 checkpoint.Joins.SingleOrDefault(j => j.Id == continuation.ParentJoinId)?.ParentContinuationId,
                 continuation.ParentJoinId, continuation.Sequence, continuation.ForkActivationId,
-                next == null ? "" : scopes.Id(next), next?.Id ?? "", position.NextStepIndex,
+                next == null ? "" : scopes.Id(next), next == null ? "" : scopes.AuthorId(next), position.NextStepIndex,
                 continuation.Status.ToString(), position.ActivationId, frames.ToArray()));
         }
         return threads.ToArray();

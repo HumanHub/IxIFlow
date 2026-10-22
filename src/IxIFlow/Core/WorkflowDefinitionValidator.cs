@@ -44,7 +44,7 @@ public static class WorkflowDefinitionValidator
         WorkflowTypeIdentity.SavedName(dataType) == WorkflowTypeIdentity.SavedName(workflowData.GetType());
 
     /// <summary>The persisted execution contract version; other versions require a separate migration.</summary>
-    public const int CheckpointContractVersion = 7;
+    public const int CheckpointContractVersion = 8;
 
     public static IReadOnlyList<WorkflowVersionDependency> GetDependencies(WorkflowDefinition definition)
     {
@@ -88,6 +88,10 @@ public static class WorkflowDefinitionValidator
             if (definition.Version < 1)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Workflow '{definition.Name}' requires a positive version");
+            var inlineDemands = ParallelRules.Flatten(definition.Steps, crossInline: false)
+                .SelectMany(step => step.InlineDemands).ToArray();
+            if (inlineDemands.Length > 0)
+                definition.Demands = InlineConstruction.MergeDemands(definition.Demands.Concat(inlineDemands));
             foreach (var demand in definition.Demands)
             {
                 WorkflowDemands.Validate(demand);
@@ -102,9 +106,8 @@ public static class WorkflowDefinitionValidator
                 _ = RedactingJson.ClassifiedPaths(type);
             GraphRules.Validate(steps);
             var ids = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var step in ParallelRules.Flatten(steps))
-                if (!ids.Add(step.Id))
-                    throw WorkflowBuildError.Invalid(step, $"Duplicate step ID '{step.Id}'");
+            CheckIds(steps, "", ids);
+
             ExpressionRules.Checked(MappingRules.Checked(ParallelRules.Checked(
                 ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(steps))))));
             foreach (var step in ParallelRules.Flatten(steps))
@@ -133,10 +136,25 @@ public static class WorkflowDefinitionValidator
             Check(() =>
             {
                 catalog = new WorkflowScopeCatalog(definition);
+                var ids = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var (_, step) in catalog.AllSteps)
+                    if (!ids.Add(catalog.AuthorId(step)))
+                        throw WorkflowBuildError.Invalid(step, $"Duplicate step ID '{catalog.AuthorId(step)}'");
                 ValidateSupportedSteps(catalog);
             });
             return catalog!;
         });
+    }
+
+    private static void CheckIds(IReadOnlyList<WorkflowStep> steps, string prefix, HashSet<string> ids)
+    {
+        foreach (var step in steps)
+        {
+            var id = prefix + step.Id;
+            if (!ids.Add(id)) throw WorkflowBuildError.Invalid(step, $"Duplicate step ID '{id}'");
+            foreach (var scope in step.ChildScopes())
+                CheckIds(scope.Steps, scope.Kind == "inline" ? id + "/" : prefix, ids);
+        }
     }
 
     private static void ValidateSupportedSteps(WorkflowScopeCatalog catalog)
@@ -146,7 +164,7 @@ public static class WorkflowDefinitionValidator
         {
             var supported = step.StepType switch
             {
-                WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.Sequence or
+                WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow or WorkflowStepType.Sequence or
                     WorkflowStepType.Conditional or WorkflowStepType.Parallel or WorkflowStepType.Loop or
                     WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
                     WorkflowStepType.ForEach or WorkflowStepType.ForEachResult or WorkflowStepType.Flowchart or
@@ -165,10 +183,13 @@ public static class WorkflowDefinitionValidator
                  step.WaitTimeout is { } timeout && timeout <= TimeSpan.Zero))
                 throw WorkflowBuildError.Invalid(step,
                     $"Wait at '{id}' requires a positive timeout and a timeout branch");
-            if (step.StepType == WorkflowStepType.WorkflowInvocation &&
+            if (step.StepType is WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow &&
                 (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowName.Length != step.WorkflowName.Trim().Length || step.WorkflowVersion is not > 0))
                 throw WorkflowBuildError.Invalid(step,
                     $"Workflow invocation at '{id}' has no child workflow reference");
+            if (step.StepType == WorkflowStepType.InlineWorkflow &&
+                (string.IsNullOrWhiteSpace(step.InlineStructureHash) || step.InvokedContractKind != WorkflowInvocationContractKind.ExactPin))
+                throw WorkflowBuildError.Invalid(step, $"Inline workflow at '{id}' has no exact callee pin");
             if (step.StepMetadata.ContainsKey("OutcomeType") &&
                 (step.OutcomeSelector == null || step.OutcomeBranches.Count == 0))
                 throw WorkflowBuildError.Invalid(step,

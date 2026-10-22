@@ -144,6 +144,9 @@ public sealed partial class WorkflowHost
             string actor, CancellationToken token, Guid? expectedIncarnation = null, Action<DebugCommandReceipt>? accepted = null) =>
             _runner.RequestDebugAsync(id, DebugCommandKind.Step, actor, token, continuationId, kind, expectedIncarnation, accepted);
 
+        public Task<WorkflowExecutionResult?> ReadSettledDebugCommandResultAsync(DebugCommandReceipt receipt) =>
+            _runner.ReadSettledDebugCommandResultAsync(receipt);
+
         public Task<bool> DebugCommandNeedsRecoveryAsync(DebugCommandReceipt receipt) => _runner.DebugCommandNeedsRecoveryAsync(receipt);
         public Task<WorkflowExecutionResult> RecoverDebugCommandAsync(DebugCommandReceipt receipt, CancellationToken token) =>
             ForInstanceAsync(receipt.InstanceId, _runner.RecoverDebugCommandAsync(receipt, token));

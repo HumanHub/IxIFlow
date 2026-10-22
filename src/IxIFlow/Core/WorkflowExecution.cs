@@ -414,6 +414,7 @@ public class ExecutionPointer
 /// </summary>
 public class ExecutionFrame
 {
+    public string? DataType { get; set; }
     public string Name { get; set; } = "";
     public int LoopIteration { get; set; }
     public int? ForEachItemIndex { get; set; }
@@ -661,7 +662,9 @@ public enum TraceEntryType
     /// <summary>A state activation left normally or unwound.</summary>
     StateExited,
     /// <summary>A timer trigger became due.</summary>
-    TimerFired
+    TimerFired,
+    InlineEntered,
+    InlineExited
 }
 
 /// <summary>
@@ -785,6 +788,13 @@ public class WorkflowStep
     /// <summary>For a workflow invocation step, the child's data type its mappings name, checked when built.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Type? InvokedDataType { get; set; }
+
+    /// <summary>The built body executed on a private data frame.</summary>
+    public List<WorkflowStep> InlineSteps { get; set; } = [];
+    /// <summary>The callee structure identity before composition.</summary>
+    public string? InlineStructureHash { get; set; }
+    internal IReadOnlyList<WorkflowDemand> InlineDemands { get; set; } = [];
+    internal IReadOnlySet<WorkflowStep>? InlineBodyIdentity { get; set; }
 
     /// <summary>The caller's immutable view or exact child input and output contract.</summary>
     public WorkflowContract? InvokedContract { get; set; }
@@ -1049,6 +1059,7 @@ public class WorkflowStep
     /// <summary>Child bodies in catalog order, including empty bodies; a key is an ordinal index or an authored key.</summary>
     public IEnumerable<(string Kind, string? Key, List<WorkflowStep> Steps)> ChildScopes()
     {
+        if (StepType == WorkflowStepType.InlineWorkflow) yield return ("inline", null, InlineSteps);
         yield return ("sequence", null, SequenceSteps);
         yield return ("then", null, ThenSteps);
         yield return ("else", null, ElseSteps);
@@ -1097,6 +1108,8 @@ public class WorkflowStep
             ActivityType = ActivityType,
             WorkflowType = WorkflowType,
             InvokedDataType = InvokedDataType,
+            InlineStructureHash = InlineStructureHash,
+            InlineDemands = InlineDemands,
             InvokedContract = InvokedContract,
             InvokedContractHash = InvokedContractHash,
             InvokedContractKind = InvokedContractKind,
@@ -1272,7 +1285,9 @@ public enum WorkflowStepType
     /// <summary>The shared wait pick of an activity-trigger fork.</summary>
     Listen,
     /// <summary>Records a fired trigger before its branch completes.</summary>
-    Fire
+    Fire,
+    /// <summary>Execute a built workflow body on its own data copy.</summary>
+    InlineWorkflow
 }
 
 /// <summary>

@@ -47,6 +47,7 @@ internal sealed class StoredCheckpoint
                          Parts.Values.Sum(part => part.CheckpointBytes);
 
     public static string BranchKey(string continuationId) => $"c/{continuationId}";
+    public static string FrameKey(string activationId) => $"i/{activationId}";
     public static string ListKey(string forEachId) => $"f/{forEachId}";
     public static string ResultKey(string forEachId, int index) => $"r/{forEachId}/{index}";
     public static string FinishedKey(string forEachId, int chunk) => $"b/{forEachId}/{chunk}";
@@ -106,6 +107,9 @@ internal sealed class StoredCheckpoint
                     BoundReplies = replies[branch.Id].ToList() is { Count: > 0 } ownReplies ? ownReplies : null
                 }, Stored));
         }
+        foreach (var (id, frame) in checkpoint.InlineFrames)
+            parts[FrameKey(id)] = saved != null && !marks.HasFrame(id) && saved.TryGetValue(FrameKey(id), out var keptFrame)
+                ? keptFrame : Store(frame.Data);
         foreach (var frame in checkpoint.Continuations.SelectMany(continuation => continuation.Stack))
         {
             if (frame.ForEach is not { } state)
@@ -197,6 +201,9 @@ internal sealed class StoredCheckpoint
             checkpoint.Waits.AddRange(branch.Waits ?? []);
             checkpoint.BoundReplies.AddRange(branch.BoundReplies ?? []);
         }
+        foreach (var (id, frame) in checkpoint.InlineFrames)
+            frame.Data = parts.GetValueOrDefault(FrameKey(id))
+                ?? throw new InvalidOperationException($"The saved data of inline frame '{id}' is missing");
         // Finished-item chunks by their ForEach, found in one pass over the parts.
         var chunks = parts.Where(part => part.Key.StartsWith("b/", StringComparison.Ordinal))
             .Select(part => (Key: part.Key.Split('/'), part.Value))
@@ -285,6 +292,8 @@ internal sealed class StoredCheckpoint
                         break;
                 }
         }
+        else if (type.Type == typeof(InlineFrameState))
+            type.Properties.Remove(type.Properties.Single(property => property.Name == nameof(InlineFrameState.Data)));
         else if (type.Type == typeof(WaitState))
         {
             // A wait's deadline is the store's (D-35): a run reads it with its inbox before it looks at it, so a
@@ -315,7 +324,7 @@ internal sealed class StoredCheckpoint
     }
 
     /// <summary>A branch as it is stored: the continuation, and the joins, waits and kept answers that are its own.</summary>
-    private sealed class BranchPart
+    internal sealed class BranchPart
     {
         public ContinuationState Continuation { get; set; } = null!;
 

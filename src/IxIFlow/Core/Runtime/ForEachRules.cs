@@ -123,7 +123,7 @@ internal static class ForEachRules
             ]);
 
     private static IEnumerable<IReadOnlyList<WorkflowStep>> Bodies(WorkflowStep step) =>
-        step.ChildScopes().Where(scope => scope.Kind is not ("foreach" or "timeout"))
+        step.ChildScopes().Where(scope => scope.Kind is not ("foreach" or "timeout" or "inline"))
             .Select(scope => scope.Steps);
 
 }

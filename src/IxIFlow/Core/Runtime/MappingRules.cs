@@ -27,7 +27,7 @@ internal static class MappingRules
 
     public static void Validate(IReadOnlyList<WorkflowStep> steps)
     {
-        foreach (var step in ParallelRules.Flatten(steps))
+        foreach (var step in ParallelRules.Flatten(steps, crossInline: false))
         {
             try
             {
@@ -37,7 +37,7 @@ internal static class MappingRules
                         $"Wait default payload has type {payload.GetType().Name}, expected {step.ResumeEventType?.Name ?? "an event type"}");
                 if (step.ActivityType != null)
                     CheckActivity(step.ActivityType, step.InputMappings, step.OutputMappings);
-                if (step.StepType == WorkflowStepType.WorkflowInvocation)
+                if (step.StepType is WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow)
                     CheckWorkflow(step);
                 if (step.ResumeEventType != null && step.ActivityType == null &&
                     step.StepType != WorkflowStepType.WorkflowInvocation)

@@ -34,7 +34,7 @@ internal static class RequestPairing
     {
         var bodies = new List<IReadOnlyList<WorkflowStep>>();
         Collect(root, bodies);
-        var stateEntries = ParallelRules.Flatten(root).SelectMany(step => step.GraphStates)
+        var stateEntries = ParallelRules.Flatten(root, crossInline: false).SelectMany(step => step.GraphStates)
             .ToDictionary(state => (IReadOnlyList<WorkflowStep>)state.Steps, state => state);
         var pairedTriggers = new HashSet<WorkflowStep>();
         var requestNames = new HashSet<string>(StringComparer.Ordinal);
@@ -84,7 +84,7 @@ internal static class RequestPairing
         bodies.Add(body);
         foreach (var step in body)
         {
-            foreach (var scope in step.ChildScopes().OrderBy(scope => scope.Kind switch
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind != "inline").OrderBy(scope => scope.Kind switch
                      {
                          "foreach" => 1, "branch" or "outcome" => 2, _ => 0
                      }))

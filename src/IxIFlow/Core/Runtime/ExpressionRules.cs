@@ -17,7 +17,7 @@ internal static class ExpressionRules
     /// <summary>Checks the rule and returns <paramref name="steps"/>.</summary>
     public static List<WorkflowStep> Checked(List<WorkflowStep> steps)
     {
-        foreach (var step in ParallelRules.Flatten(steps))
+        foreach (var step in ParallelRules.Flatten(steps, crossInline: false))
         {
             try
             {

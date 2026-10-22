@@ -11,7 +11,7 @@ public sealed partial class DebugAdapterSession
 {
     private sealed record FrameHandle(string Thread, InspectionFrame Frame, long Revision, long Generation, long? Cursor);
     private sealed record VariableHandle(string Thread, string Scope, string[] Path, JsonElement Value,
-        long Revision, long Generation, long? Cursor);
+        long Revision, long Generation, long? Cursor, string? DataFrameId);
     private readonly Dictionary<int, FrameHandle> _frames = [];
     private readonly Dictionary<int, VariableHandle> _variables = [];
     private long Revision => _replay?.Current.Revision ?? _inspection!.Revision;
@@ -29,12 +29,12 @@ public sealed partial class DebugAdapterSession
         Check(frame.Revision, frame.Generation, frame.Cursor);
         return frame;
     }
-    private int Handle(string thread, string scope, string[] path, JsonElement value)
+    private int Handle(string thread, string scope, string[] path, JsonElement value, string? dataFrameId = null)
     {
         if (value.ValueKind is not (JsonValueKind.Object or JsonValueKind.Array)) return 0;
         if (_variables.Count >= 10000) throw new ProtocolException("Variable handle limit reached");
         var id = checked(++_nextId);
-        _variables[id] = new(thread, scope, path, value.Clone(), Revision, Generation, Cursor);
+        _variables[id] = new(thread, scope, path, value.Clone(), Revision, Generation, Cursor, dataFrameId);
         return id;
     }
     private InspectionFrame? GraphFrame(string thread, InspectionFrame? frame = null)
@@ -54,6 +54,18 @@ public sealed partial class DebugAdapterSession
         }
         return null;
     }
+    private string? DataFrame(string thread, InspectionFrame? selected = null)
+    {
+        var frames = CurrentThreads().Single(t => t.ContinuationId == thread).Frames;
+        var count = selected == null ? frames.Count : frames.ToList().FindIndex(f => f.ActivationId == selected.ActivationId) + 1;
+        return frames.Take(count).LastOrDefault(f => f.Kind == "InlineWorkflow")?.ActivationId;
+    }
+    private JsonElement DataValue(string thread, string? frameId)
+    {
+        var data = _replay == null ? _inspection!.Data : _replay.Current.Data;
+        return data?.FirstOrDefault(d => frameId == null ? d.ContinuationId == thread && d.FrameId == null : d.FrameId == frameId)?.Value
+            ?? throw new ProtocolException("Values are unavailable at this replay position");
+    }
     private JsonElement ScopeValue(string thread, string scope, InspectionFrame? frame = null)
     {
         if (scope == "graph")
@@ -65,9 +77,7 @@ public sealed partial class DebugAdapterSession
         }
         if (scope == "data")
         {
-            var data = _replay == null ? _inspection!.Data : _replay.Current.Data;
-            return data?.FirstOrDefault(d => d.ContinuationId == thread)?.Value
-                ?? throw new ProtocolException("Values are unavailable at this replay position");
+            return DataValue(thread, DataFrame(thread, frame));
         }
         if (_replay != null) throw new ProtocolException("Historical scope values are unavailable");
         return scope switch
@@ -89,7 +99,7 @@ public sealed partial class DebugAdapterSession
         {
             if (scope == "graph" && GraphFrame(frame.Thread, frame.Frame) == null) continue;
             var reference = 0;
-            try { reference = Handle(frame.Thread, scope, [], ScopeValue(frame.Thread, scope, frame.Frame)); }
+            try { reference = Handle(frame.Thread, scope, [], ScopeValue(frame.Thread, scope, frame.Frame), DataFrame(frame.Thread, frame.Frame)); }
             catch (ProtocolException) { }
             scopes.Add(new { name, variablesReference = reference, expensive = false });
         }
@@ -101,9 +111,9 @@ public sealed partial class DebugAdapterSession
         JsonValueKind.Array => value.EnumerateArray().Select((v, i) => (i.ToString(System.Globalization.CultureInfo.InvariantCulture), v)),
         _ => []
     };
-    private object Variable(string name, JsonElement value, string thread, string scope, string[] path) => new
+    private object Variable(string name, JsonElement value, string thread, string scope, string[] path, string? dataFrameId = null) => new
     {
-        name, value = Display(value), type = value.ValueKind.ToString(), variablesReference = Handle(thread, scope, path, value),
+        name, value = Display(value), type = value.ValueKind.ToString(), variablesReference = Handle(thread, scope, path, value, dataFrameId),
         evaluateName = scope + string.Concat(path.Select(p => int.TryParse(p, out _) ? $"[{p}]" : "." + p)),
         namedVariables = value.ValueKind == JsonValueKind.Object ? (int?)value.EnumerateObject().Count() : null,
         indexedVariables = value.ValueKind == JsonValueKind.Array ? (int?)value.GetArrayLength() : null,
@@ -126,7 +136,7 @@ public sealed partial class DebugAdapterSession
         if (filter == "indexed" && handle.Value.ValueKind != JsonValueKind.Array || filter == "named" && handle.Value.ValueKind == JsonValueKind.Array)
             return new { variables = Array.Empty<object>() };
         return new { variables = Children(handle.Value).Skip(start).Take(Math.Min(1000, count))
-            .Select(c => Variable(c.Name, c.Value, handle.Thread, handle.Scope, [.. handle.Path, c.Name])).ToArray() };
+            .Select(c => Variable(c.Name, c.Value, handle.Thread, handle.Scope, [.. handle.Path, c.Name], handle.DataFrameId)).ToArray() };
     }
     private async Task<object> SetVariableAsync(JObject args, CancellationToken token)
     {
@@ -136,19 +146,19 @@ public sealed partial class DebugAdapterSession
         var name = Required(args, "name");
         if (!Children(handle.Value).Any(c => c.Name == name)) throw new ProtocolException("Unknown variable");
         var value = JsonSerializer.Deserialize<JsonElement>(Required(args, "value"));
-        await EditAsync(handle.Thread, handle.Scope, [.. handle.Path, name], value, token);
+        await EditAsync(handle.Thread, handle.Scope, [.. handle.Path, name], value, token, handle.DataFrameId);
         await InspectAsync(token);
-        var safeValue = ScopeValue(handle.Thread, handle.Scope);
+        var safeValue = handle.Scope == "data" ? DataValue(handle.Thread, handle.DataFrameId) : ScopeValue(handle.Thread, handle.Scope);
         foreach (var part in handle.Path.Append(name)) safeValue = Child(safeValue, part);
         return new { value = Display(safeValue), variablesReference = 0 };
     }
-    private async Task EditAsync(string thread, string scope, string[] path, JsonElement value, CancellationToken token)
+    private async Task EditAsync(string thread, string scope, string[] path, JsonElement value, CancellationToken token, string? dataFrameId = null)
     {
         if (_replay != null || scope != "data" || _inspection!.Summary.Status != WorkflowStatus.Paused)
             throw new ProtocolException("Only paused workflow data is editable");
         await AuthorizeAsync(DebugOperation.Edit, token);
         await _operations.EditDataAsync(_instanceId!, Guid.NewGuid().ToString("N"), _inspection.Revision,
-            new(_inspection.DebugState.PauseGeneration, thread), [new(path, value)], _endpoint.Actor, token, _incarnation);
+            new(_inspection.DebugState.PauseGeneration, thread, dataFrameId), [new(path, value)], _endpoint.Actor, token, _incarnation);
         ClearHandles();
         Emit<InvalidatedEvent>(new { areas = new[] { "variables", "stacks" } });
     }
@@ -169,16 +179,16 @@ public sealed partial class DebugAdapterSession
         if (edit)
         {
             var replacement = JsonSerializer.Deserialize<JsonElement>(Required(args, "value"));
-            await EditAsync(thread, scope, path, replacement, token);
+            await EditAsync(thread, scope, path, replacement, token, DataFrame(thread, frame?.Frame));
             await InspectAsync(token);
-            var safeValue = ScopeValue(thread, scope);
+            var safeValue = ScopeValue(thread, scope, frame?.Frame);
             foreach (var part in path) safeValue = Child(safeValue, part);
             return new { value = Display(safeValue), variablesReference = 0 };
         }
         var value = ScopeValue(thread, scope, frame?.Frame);
         foreach (var part in path)
             value = Child(value, part);
-        return new { result = Display(value), type = value.ValueKind.ToString(), variablesReference = Handle(thread, scope, path, value) };
+        return new { result = Display(value), type = value.ValueKind.ToString(), variablesReference = Handle(thread, scope, path, value, DataFrame(thread, frame?.Frame)) };
     }
     private static JsonElement Child(JsonElement value, string part) =>
         value.ValueKind == JsonValueKind.Array && int.TryParse(part, out var index) && index >= 0 && index < value.GetArrayLength()

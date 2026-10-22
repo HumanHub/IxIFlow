@@ -14,6 +14,9 @@ public sealed class DebugStepLocationTests
     [Fact]
     public void EveryStepKindHasACatalogAddressAuthorIdentityAndCallerLocation()
     {
+        var callee = Workflow.Create<Data>("LocationInline").Build();
+        var pin = new WorkflowInlinePin(callee.Name, callee.Version,
+            WorkflowDefinitionValidator.Inspect(callee), WorkflowDefinitionValidator.GetContract(callee).Hash);
         var definition = Workflow.Create<Data>("StepLocations")
             .Delay(TimeSpan.FromSeconds(1))
             .Step<Noop>().WithId("first")
@@ -30,6 +33,7 @@ public sealed class DebugStepLocationTests
             .Flowchart(f => f.Start("start").Node("start", edges => edges.Always("done")).Node("done"))
             .StateMachine(m => m.Start("waiting").State("waiting", s => s
                 .On<Go>("go", "done").OnActivity<Noop>("done")).State("done", s => s.Final()))
+            .Use<Data>(() => Workflow.Create<Data>("LocationInline").Build(), pin)
             .Build();
         var table = definition.StepTable;
         Assert.Same(table, definition.StepTable);

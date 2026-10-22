@@ -25,14 +25,14 @@ internal sealed partial class HostedWorkflowOperations
     public async Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
     {
         var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
-        return await WithDebugReceiptAsync(accepted => host.ReadAsync(client =>
+        return await WithDebugRecoveryAsync(accepted => host.ReadAsync(client =>
             client.RequestDebugAsync(instanceId, DebugCommandKind.Pause, actor, cancellationToken, incarnation, accepted)));
     }
 
     public async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
     {
         var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
-        return await WithDebugReceiptAsync(async accepted =>
+        return await WithDebugRecoveryAsync(async accepted =>
         {
             DebugCommandReceipt? receipt = null;
             await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor,
@@ -44,7 +44,7 @@ internal sealed partial class HostedWorkflowOperations
     public async Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
     {
         var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
-        await WithDebugReceiptAsync(accepted => host.ReadAsync(client =>
+        await WithDebugRecoveryAsync(accepted => host.ReadAsync(client =>
             client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor, cancellationToken, incarnation, accepted)));
     }
 
@@ -54,7 +54,7 @@ internal sealed partial class HostedWorkflowOperations
         var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
         ArgumentException.ThrowIfNullOrWhiteSpace(continuationId);
         if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
-        return await WithDebugReceiptAsync(async accepted =>
+        return await WithDebugRecoveryAsync(async accepted =>
         {
             DebugCommandReceipt? receipt = null;
             await host.ReadAsync(client => client.RequestStepAsync(instanceId, continuationId, kind, actor,
@@ -77,6 +77,14 @@ internal sealed partial class HostedWorkflowOperations
         var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
         return await WithDebugReceiptAsync(accepted => host.ReadAsync(client =>
             client.SetBreakpointsAsync(instanceId, breakpoints, actor, cancellationToken, incarnation, accepted)));
+    }
+
+    private Task<WorkflowExecutionResult> WithDebugRecoveryAsync(
+        Func<Action<DebugCommandReceipt>, Task<WorkflowExecutionResult>> operation)
+    {
+        DebugCommandReceipt? receipt = null;
+        return WithDebugReceiptAsync(accepted => host.WithDebugCommandResultAsync(() => receipt,
+            () => operation(value => { receipt = value; accepted(value); })));
     }
 
     private async Task<T> WithDebugReceiptAsync<T>(Func<Action<DebugCommandReceipt>, Task<T>> operation)

@@ -11,10 +11,14 @@ internal sealed class WorkflowScopeCatalog
     private readonly Dictionary<(WorkflowStep Step, string Kind, string? Key), string> _scopeIds = new();
     private readonly Dictionary<(WorkflowStep Saga, WorkflowStep Source), string> _compensationScopeIds = new();
     private readonly Dictionary<WorkflowStep, string> _ids = new();
+    private readonly Dictionary<WorkflowStep, string> _authorIds = new();
+    public string AuthorId(WorkflowStep step) => _authorIds[step];
     private readonly Dictionary<ItemScope, string> _handles = new(ReferenceEqualityComparer.Instance);
 
     public WorkflowScopeCatalog(WorkflowDefinition definition)
     {
+        InlineConstruction.Cataloged(definition);
+        RootDataType = definition.WorkflowDataType;
         AddScope("root", definition.Steps);
         StructureHash = ComputeStructureHash(definition);
         StepTable = new(this);
@@ -23,6 +27,7 @@ internal sealed class WorkflowScopeCatalog
 
     internal IEnumerable<KeyValuePair<string, WorkflowStep>> AllSteps => _steps;
 
+    public Type? RootDataType { get; }
     public string StructureHash { get; }
     public StepTable StepTable { get; }
     public GraphTable GraphTable { get; }
@@ -50,6 +55,7 @@ internal sealed class WorkflowScopeCatalog
         ScopeId(graph, "node", key + "/to/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture));
     public string StateScope(WorkflowStep graph, string key) => ScopeId(graph, "state", key);
     public string StateExitScope(WorkflowStep graph, string key) => ScopeId(graph, "state", key + "/exit");
+    public string InlineScope(WorkflowStep step) => ScopeId(step, "inline");
     public string SequenceScope(WorkflowStep step) => ScopeId(step, "sequence");
     public string ThenScope(WorkflowStep step) => ScopeId(step, "then");
     public string ElseScope(WorkflowStep step) => ScopeId(step, "else");
@@ -76,7 +82,7 @@ internal sealed class WorkflowScopeCatalog
         return id;
     }
 
-    private void AddScope(string id, IReadOnlyList<WorkflowStep> steps)
+    private void AddScope(string id, IReadOnlyList<WorkflowStep> steps, string? authorPrefix = null)
     {
         _scopes.Add(id, steps);
         for (var index = 0; index < steps.Count; index++)
@@ -84,6 +90,8 @@ internal sealed class WorkflowScopeCatalog
             var step = steps[index];
             var stepId = $"{id}/{index}";
             _steps.Add(stepId, step);
+            _authorIds.TryAdd(step, authorPrefix + step.Id);
+            InlineConstruction.Cataloged(step);
             if (!_ids.TryAdd(step, stepId))
                 throw WorkflowBuildError.Invalid(step, $"Step '{step.Id}' belongs to two scopes");
             if (step.ForEachItem != null && !_handles.TryAdd(step.ForEachItem, stepId))
@@ -91,14 +99,15 @@ internal sealed class WorkflowScopeCatalog
                     $"{step.ForEachItem} belongs to two ForEach steps, '{_handles[step.ForEachItem]}' and '{stepId}'");
             foreach (var scope in step.ChildScopes())
             {
-                AddScope(ScopeId(step, scope.Kind, scope.Key), scope.Steps);
+                AddScope(ScopeId(step, scope.Kind, scope.Key), scope.Steps,
+                    scope.Kind == "inline" ? AuthorId(step) + "/" : authorPrefix);
                 if (scope.Kind == "catch" && step.StepType == WorkflowStepType.Saga)
-                    AddSagaCompensations(step);
+                    AddSagaCompensations(step, authorPrefix);
             }
         }
     }
 
-    private void AddSagaCompensations(WorkflowStep saga)
+    private void AddSagaCompensations(WorkflowStep saga, string? authorPrefix)
     {
         foreach (var source in SagaActivities(saga.SequenceSteps))
         {
@@ -122,7 +131,7 @@ internal sealed class WorkflowScopeCatalog
                     ["IsCompensationActivity"] = true
                 }
             }).ToList() ?? [];
-            AddScope(CompensationScope(saga, source), steps);
+            AddScope(CompensationScope(saga, source), steps, authorPrefix);
         }
     }
 
@@ -145,9 +154,11 @@ internal sealed class WorkflowScopeCatalog
         // adding an empty branch changes the topology even when it adds no steps.
         var manifest = new
         {
-            Format = 3,
+            Format = 4,
             Data = WorkflowTypeIdentity.StableName(definition.WorkflowDataType),
-            Combiners = ParallelRules.CombinerSignature(definition.WorkflowDataType),
+            DataTypes = _steps.Values.Select(step => step.WorkflowDataType).Prepend(definition.WorkflowDataType)
+                .OfType<Type>().Distinct().OrderBy(WorkflowTypeIdentity.StableName, StringComparer.Ordinal)
+                .Select(type => new { Type = WorkflowTypeIdentity.StableName(type), Combiners = ParallelRules.CombinerSignature(type) }),
             Scopes = _scopes.OrderBy(pair => pair.Key, StringComparer.Ordinal)
                 .Select(pair => new { Id = pair.Key, Count = pair.Value.Count }),
             Steps = _steps.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair =>
@@ -162,7 +173,7 @@ internal sealed class WorkflowScopeCatalog
                     Activity = WorkflowTypeIdentity.StableName(step.ActivityType),
                     Workflow = WorkflowTypeIdentity.StableName(step.WorkflowType),
                     InvokedData = WorkflowTypeIdentity.StableName(step.InvokedDataType),
-                    step.WorkflowName, step.WorkflowVersion, step.CancelWithParent,
+                    step.WorkflowName, step.WorkflowVersion, step.CancelWithParent, step.InlineStructureHash,
                     Event = WorkflowTypeIdentity.StableName(step.ResumeEventType),
                     WaitKey = step.StepMetadata.GetValueOrDefault("WaitKey") as string,
                     Timeout = step.WaitTimeout?.Ticks, Delay = step.DelayDuration?.Ticks,

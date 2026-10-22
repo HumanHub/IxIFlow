@@ -474,8 +474,7 @@ internal sealed class ActivityAttempts(
             activity.Continuation.PendingActivity?.Id));
         checkpoint.Touch(activity.Continuation);
         // The branch's copy may have changed while its activity ran; it is recorded at the next commit.
-        activity.Continuation.DataChanged = activity.Continuation.ParentJoinId != null;
-        if (activity.Continuation.ParentJoinId == null) checkpoint.RootDataChanged = true;
+        checkpoint.MarkDataChanged(activity.Continuation);
         try
         {
             var outcome = await activity.Task;
@@ -528,8 +527,8 @@ internal sealed class ActivityAttempts(
                         $"Activity returned, but its saga output could not be saved: {error.Message}", error);
                     return;
                 }
-                if (activity.Continuation.ParentJoinId == null && activity.Step.OutputMappings.Any(m => m.Direction == PropertyMappingDirection.Output))
-                    checkpoint.RootDataChanged = true;
+                if (activity.Step.OutputMappings.Any(m => m.Direction == PropertyMappingDirection.Output))
+                    checkpoint.MarkDataChanged(activity.Continuation);
                 if (activity.Prepared != null)
                     await activity.Prepared.ApplyOutputsAsync();
                 // A child's outcome is discarded while its branch unwinds outside cleanup (D-17).

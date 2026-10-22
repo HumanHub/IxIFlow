@@ -12,7 +12,7 @@ public sealed class StepTable : System.Collections.Generic.IReadOnlyList<StepTab
     internal StepTable(WorkflowScopeCatalog catalog)
     {
         _entries = catalog.AllSteps.Select(pair => new StepTableEntry(
-            pair.Key, pair.Value.Id, pair.Value.Name, pair.Value.StepType,
+            pair.Key, catalog.AuthorId(pair.Value), pair.Value.Name, pair.Value.StepType,
             pair.Key[..pair.Key.LastIndexOf('/')], pair.Value.SourceLocation)).ToArray();
     }
     public int Count => _entries.Length;

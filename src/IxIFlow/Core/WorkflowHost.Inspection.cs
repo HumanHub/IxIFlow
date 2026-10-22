@@ -103,8 +103,10 @@ public sealed partial class WorkflowHost
             checkpoint.RootData = JsonSerializer.Deserialize(await reader.ReadAsync(instance.WorkflowDataJson),
                 WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)!)!;
             foreach (var branch in checkpoint.Continuations) await reader.HydrateAsync(branch.DataChanges);
+            foreach (var frame in checkpoint.InlineFrames.Values) await reader.ReadAsync(frame.Data);
             var threads = InspectionProjection.Threads(instance, checkpoint, scopes, Now);
             var debug = checkpoint.Debug;
+            var liveFrames = checkpoint.Continuations.SelectMany(c => c.Stack).Select(f => f.ActivationId).ToHashSet(StringComparer.Ordinal);
             var result = new InstanceInspection(new(instance.InstanceId, instance.WorkflowName, instance.WorkflowVersion,
                 instance.Status, instance.ParentInstanceId, instance.CreatedAt, instance.CompletedAt,
                 InspectionRedactionPolicy.Default.Reason(checkpoint.ResultDiagnostic))
@@ -121,8 +123,17 @@ public sealed partial class WorkflowHost
                 }).ToArray(),
                 checkpoint.Waits.Select(w => new InspectionWait(WaitReference.Of(instanceId, w.Id), w.ContinuationId,
                     w.StepId, w.TableKind, w.Key, w.DeadlineUtc, w.ChildWorkflowId)).ToArray(),
-                checkpoint.Continuations.Select(c => new InspectionData(c.Id,
-                    InspectionRedactionPolicy.Default.Value(checkpoint.DataOf(c), services))).ToArray());
+                checkpoint.Continuations.Select(c =>
+                {
+                    object data;
+                    // A continuation's own copy is below every inline frame on its stack.
+                    if (c.ParentJoinId == null) data = checkpoint.RootData;
+                    else data = c.Data ?? BranchData.Rebuild(checkpoint.Baseline(checkpoint.JoinOf(c)), c.DataChanges ?? []);
+                    return new InspectionData(c.Id, InspectionRedactionPolicy.Default.Value(data, services))
+                        { DataType = WorkflowTypeIdentity.SavedName(data.GetType()) };
+                }).Concat(checkpoint.InlineFrames.Where(pair => liveFrames.Contains(pair.Key)).Select(pair => new InspectionData(pair.Value.OwnerContinuationId,
+                    InspectionRedactionPolicy.Default.Value(pair.Value.Value, services))
+                    { FrameId = pair.Key, DataType = pair.Value.DataType })).ToArray());
             return InspectionPrivacy.Clean(result, WaitIds(instance, checkpoint));
         }
 

@@ -126,6 +126,7 @@ internal sealed partial class TraceBuffer
         CapturePositions(entry.Timestamp);
         var (stepId, continuationId) = entry.Payload switch
         {
+            InlineTrace p => (p.StepId, p.ContinuationId),
             GraphTrace p => (p.StepId, p.ContinuationId),
             ControlFlowTrace p => (p.StepId, p.ContinuationId),
             ConditionTrace p => (p.StepId, p.ContinuationId),

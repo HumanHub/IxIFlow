@@ -45,6 +45,8 @@ public sealed partial class WorkflowHost
             await using var owner = await AcquireAsync(instance, signals, ExecutionClaimKind.Operator);
             if (owner == null)
             {
+                // Recovery refusals and all other edit failures leave through the enclosing
+                // accepted-command result guard. Direct edits retain this refusal contract.
                 var concurrent = (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId);
                 return EditReceipt(concurrent, editId, request, actor)
                     ?? throw EditRefused("The instance is owned by another host; retry the same edit ID");
@@ -82,15 +84,27 @@ public sealed partial class WorkflowHost
             {
                 checkpoint.RootData = BranchData.Copy(await reader.ReadAsync(current.WorkflowDataJson), definition.WorkflowDataType);
                 foreach (var descendant in checkpoint.Continuations) await reader.HydrateAsync(descendant.DataChanges);
+                foreach (var frame in checkpoint.InlineFrames.Values) await reader.ReadAsync(frame.Data);
                 var branch = request.Target.ContinuationId is { } id ? checkpoint.ContinuationById(id) : null;
                 if (request.Target.ContinuationId != null && (branch == null ||
                     branch.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled))
                     throw EditRefused("The selected continuation is not live");
-                var data = branch == null ? checkpoint.RootData : checkpoint.DataOf(branch);
-                var patched = BranchData.Patch(data, request.Patches);
-                if (branch?.ParentJoinId != null)
+                InlineFrameState? inline = null;
+                if (request.Target.FrameId is { } frameId)
                 {
-                    branch.DataChanges = BranchData.Changes(checkpoint.DataOf(checkpoint.ForkParent(branch)), patched);
+                    if (!checkpoint.InlineFrames.TryGetValue(frameId, out inline) ||
+                        !checkpoint.Continuations.Any(c => c.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled) &&
+                            (branch == null || c == branch) && c.Stack.Any(f => f.ActivationId == frameId)))
+                        throw EditRefused("The selected inline frame is not live");
+                }
+                var data = inline?.Value ?? (branch?.ParentJoinId != null
+                    ? branch.Data ??= BranchData.Rebuild(checkpoint.Baseline(checkpoint.JoinOf(branch)), branch.DataChanges ?? [])
+                    : checkpoint.RootData);
+                var patched = BranchData.Patch(data, request.Patches);
+                if (inline != null) { inline.Runtime = patched; inline.Changed = true; }
+                else if (branch?.ParentJoinId != null)
+                {
+                    branch.DataChanges = BranchData.Changes(checkpoint.Baseline(checkpoint.JoinOf(branch)), patched);
                     branch.DataChanged = false;
                 }
                 else checkpoint.RootData = patched;

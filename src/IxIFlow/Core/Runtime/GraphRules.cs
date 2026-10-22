@@ -22,7 +22,7 @@ internal static class GraphRules
                 else Machine(step);
                 continue;
             }
-            foreach (var scope in step.ChildScopes())
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind != "inline"))
                 Body(scope.Steps, graph, leavesNode && scope.Kind == "timeout");
         }
     }

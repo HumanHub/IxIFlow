@@ -119,7 +119,7 @@ internal static class SagaRules
         {
             if (step.StepType == WorkflowStepType.Saga)
                 yield return step;
-            foreach (var scope in step.ChildScopes().OrderBy(scope => scope.Kind switch
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind != "inline").OrderBy(scope => scope.Kind switch
                      {
                          "foreach" => 1, "branch" or "outcome" => 2, _ => 0
                      }))

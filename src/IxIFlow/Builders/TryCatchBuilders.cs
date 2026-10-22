@@ -213,6 +213,28 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         return this;
     }
 
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TUsedData> Use<TWorkflow, TUsedData>(
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TUsedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TWorkflow : IWorkflow<TUsedData>, new()
+        where TUsedData : class
+    {
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
+            .Use<TWorkflow, TUsedData>(configure, sourcePath: sourcePath, sourceLine: sourceLine);
+        CaptureFaults(steps[^1]);
+        return new CatchWorkflowBuilder<TWorkflowData, TFault, TUsedData>(steps, exceptionType);
+    }
+
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TUsedData> Use<TUsedData>(
+        Func<WorkflowDefinition> callee, WorkflowInlinePin pin,
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TUsedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TUsedData : class
+    {
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
+            .Use<TUsedData>(callee, pin, configure, sourcePath: sourcePath, sourceLine: sourceLine);
+        CaptureFaults(steps[^1]);
+        return new CatchWorkflowBuilder<TWorkflowData, TFault, TUsedData>(steps, exceptionType);
+    }
+
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TInvokedData> Invoke<TWorkflow, TInvokedData>(
         Action<IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TWorkflow : IWorkflow<TInvokedData>
@@ -358,7 +380,7 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
     private static void CaptureFaults(WorkflowStep step)
     {
         step.Runtime = step.Runtime.ForFault<TFault>();
-        foreach (var child in step.ChildScopes().Where(scope => scope.Kind != "catch")
+        foreach (var child in step.ChildScopes().Where(scope => scope.Kind is not ("catch" or "inline"))
                      .SelectMany(scope => scope.Steps))
             CaptureFaults(child);
     }
