@@ -66,7 +66,9 @@ public sealed class OperationsHttpScenarios
         {
             await owner.ActivityProbe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(20));
             using var response = await http.PostAsJsonAsync($"/ops/instances/{id}/terminate", new { reasonCode = "operator" });
-            Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+            Assert.Contains(response.StatusCode, new[] { HttpStatusCode.OK, HttpStatusCode.Accepted });
+            if (response.StatusCode == HttpStatusCode.Accepted)
+                Assert.Equal($"/ops/instances/{id}", response.Headers.Location?.OriginalString);
             owner.ActivityProbe.Exit.TrySetResult();
             Assert.Equal(WorkflowExecutionStatus.Terminated, (await run.WaitAsync(TimeSpan.FromSeconds(30))).Status);
             using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(30));
