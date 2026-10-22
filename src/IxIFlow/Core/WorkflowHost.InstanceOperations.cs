@@ -638,7 +638,7 @@ public sealed partial class WorkflowHost
         public async Task<WorkflowExecutionResult> TakeEventAsync(string instanceId, string eventId,
             CancellationToken cancellationToken)
         {
-            var result = await ContinueAsync(instanceId, release: false, cancellationToken, forEvent: true);
+            var result = await ContinueAsync(instanceId, release: false, cancellationToken, eventId: eventId);
             result.Event = await ReadEventAsync(instanceId, eventId);
             return result;
         }
@@ -731,10 +731,10 @@ public sealed partial class WorkflowHost
             CancellationToken cancellationToken, Guid? expectedIncarnation = null) =>
             ContinueAsync(instanceId, release: true, cancellationToken, actor: actor ?? _defaultActor, expectedIncarnation: expectedIncarnation);
 
-        // With forEvent, an instance with nothing to run is answered as it is saved: another run took the
-        // event already, or it was stored for an instance that is finished or stopped.
+        // An event caller observes the saved outcome once another owner has decided its event
+        // and gone idle. It must not claim unrelated work that became due during the handoff.
         private async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, bool release,
-            CancellationToken cancellationToken, bool forEvent = false, string? actor = null, Guid? expectedIncarnation = null,
+            CancellationToken cancellationToken, string? eventId = null, string? actor = null, Guid? expectedIncarnation = null,
             DebugCommandReceipt? debugCommand = null)
         {
             InstanceIds.Validate(instanceId);
@@ -770,8 +770,16 @@ public sealed partial class WorkflowHost
                 : WorkflowDefinitionValidator.ForExecution(checkedDefinition);
             if (checkedScopes != null && checkedCheckpoint!.StructureHash != checkedScopes.StructureHash)
                 return Rejected(instanceId, checkedScopes.Mismatch(checkedDefinition!, checkedCheckpoint.StructureHash));
+            if (eventId != null && instance != null && instance.Status != WorkflowStatus.Running &&
+                await ReadEventAsync(instanceId, eventId) is { Outcome: not EventOutcome.Pending })
+            {
+                // The event read may see a newer commit than the first instance read.
+                var decided = await _store.GetWorkflowInstanceAsync(instanceId);
+                RequireIncarnation(decided, instance.Incarnation);
+                return await ReadResultAsync(decided!, cancellationToken);
+            }
             // Recovery repeats a finished instance's saved result, as starting it again does.
-            if (!release && !forEvent && instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
+            if (!release && eventId == null && instance != null && WorkflowStoreRules.IsTerminal(instance.Status))
                 return await ReadResultAsync(instance, cancellationToken);
             var cancellationReason = await _store.GetCancellationRequestAsync(instanceId);
             var debugState = (await _store.GetDebugStatesAsync([instanceId])).GetValueOrDefault(instanceId);
@@ -807,7 +815,7 @@ public sealed partial class WorkflowHost
             // Another run may have decided the event since the instance was read, so it is read again.
             if (!canRecover || !HasStructuredCheckpoint(instance))
                 return debugCommand != null ? await ReadResultAsync(instance!, cancellationToken)
-                    : forEvent && await ReadAsync(instanceId, cancellationToken) is { } latest ? latest
+                    : eventId != null && await ReadAsync(instanceId, cancellationToken) is { } latest ? latest
                     : Rejected(instanceId, release
                         ? "The workflow instance is not stopped for an operator"
                         : "The workflow instance has no interrupted execution to recover");
@@ -832,7 +840,7 @@ public sealed partial class WorkflowHost
             using var signals = Executor.PrepareAssignment(Guid.NewGuid());
             using var recycle = _control.Register(signals.AssignmentId, Executor.Deliver);
             await using var owner = await AcquireAsync(instance, signals,
-                release || !forEvent && instance.Status == WorkflowStatus.NeedsResolution
+                release || eventId == null && instance.Status == WorkflowStatus.NeedsResolution
                     ? ExecutionClaimKind.Operator : ExecutionClaimKind.Runnable);
             if (owner == null)
                 return Busy(instanceId);
@@ -859,7 +867,7 @@ public sealed partial class WorkflowHost
             var stopCleared = checkpoint.OperatorStop != null;
             return await AssignAsync(instance, assignment, signals, cancellationToken,
                 new RecoveryPreparation([], newCancellation ? cancellationReason : null,
-                    stopCleared, release, actor) { ReactivateWaitingActivities = !forEvent || stopCleared }, checkpoint);
+                    stopCleared, release, actor) { ReactivateWaitingActivities = eventId == null || stopCleared }, checkpoint);
         }
 
         // An idle instance has work when an event waits for it or the store finds one of its deadlines due

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -214,12 +213,10 @@ public static class WorkflowOperationsExtensions
     private static async Task<IResult> MutateAsync(HttpContext http, string id, WorkflowOperationsOptions options,
         Func<Task<WorkflowOperation>> submit)
     {
-        var started = Stopwatch.GetTimestamp();
         var operation = await submit(); // No 202 until the decision is committed.
-        var remaining = options.MutationWait - Stopwatch.GetElapsedTime(started);
-        if (!operation.Completion.IsCompleted && remaining > TimeSpan.Zero)
+        if (!operation.Completion.IsCompleted && options.MutationWait > TimeSpan.Zero)
         {
-            try { return Results.Ok(await operation.Completion.WaitAsync(remaining, http.RequestAborted)); }
+            try { return Results.Ok(await operation.Completion.WaitAsync(options.MutationWait, http.RequestAborted)); }
             catch (TimeoutException) { }
         }
         if (operation.Completion.IsCompleted) return Results.Ok(await operation.Completion);
