@@ -12,6 +12,9 @@
 | Try/Catch/Finally with typed faults | Failed quote | [failed-quote.workflow.yaml](IxIFlow.Samples/Definitions/failed-quote.workflow.yaml) | [FailedQuote.cs](IxIFlow.Samples/FailedQuote.cs) |
 | Sagas, reverse compensation and retry | Payment recipe; activity attempt history | [retry-quote.workflow.yaml](IxIFlow.Samples/Definitions/retry-quote.workflow.yaml), [saga-payment.workflow.yaml](IxIFlow.Samples/Definitions/saga-payment.workflow.yaml) | [Payments.cs](IxIFlow.Recipes/Payments.cs), [RetryQuote.cs](IxIFlow.Samples/RetryQuote.cs) |
 | Delays | Reminder | [reminder.workflow.yaml](IxIFlow.Samples/Definitions/reminder.workflow.yaml) | [Reminder.cs](IxIFlow.Samples/Reminder.cs) |
+| Flowcharts, ordered guards and cycles | Stock routing | [stock-flowchart.yaml](IxIFlow.Samples/Definitions/stock-flowchart.yaml) | [Flowcharts.cs](IxIFlow.Samples/Flowcharts.cs) |
+| State entry, exit, replies, timers, events and transition actions | Order approval | [approval-state-machine.yaml](IxIFlow.Samples/Definitions/approval-state-machine.yaml) | [StateMachines.cs](IxIFlow.Samples/StateMachines.cs) |
+| Code-activity triggers racing an event listener | Automated review | [activity-trigger-state-machine.yaml](IxIFlow.Samples/Definitions/activity-trigger-state-machine.yaml) | [ActivityTriggers.cs](IxIFlow.Samples/ActivityTriggers.cs) |
 | Workflow clock | Reusable quote | [reusable.workflow.yaml](IxIFlow.Samples/Definitions/reusable.workflow.yaml), using a C# expression asset | [Reusable.cs](IxIFlow.Samples/Reusable.cs) |
 | Requests, reply tokens, subjects, deadlines and timeout paths | Wait and reply recipes | [approval.workflow.yaml](IxIFlow.Samples/Definitions/approval.workflow.yaml), [saga-payment.workflow.yaml](IxIFlow.Samples/Definitions/saga-payment.workflow.yaml) | [Approvals.cs](IxIFlow.Recipes/Approvals.cs), [Payments.cs](IxIFlow.Recipes/Payments.cs), [Shipping.cs](IxIFlow.Recipes/Shipping.cs) |
 | Cancellation and child request routing | Fraud and child approval recipes | C# only: cancellation and runtime routing use application client APIs | [FraudAndChildren.cs](IxIFlow.Recipes/FraudAndChildren.cs) |
@@ -23,6 +26,8 @@
 | Recoverable activity and operator resolution | Reservation | [reservation.workflow.yaml](IxIFlow.Samples/Definitions/reservation.workflow.yaml); operator client calls are C# only | [Recovery.cs](IxIFlow.Samples/Recovery.cs) |
 
 ## Run the samples
+
+The three graph YAML files use explicit `IxIFlowWorkflow` items in the generator test project. [GraphSampleParityTests.cs](../tests/IxIFlow.Generators.Tests/GraphSampleParityTests.cs) compiles them and compares hashes and execution against the fluent examples. Automatic sample discovery continues to use the `.workflow.yaml` suffix.
 
 With the .NET 10 SDK, run from the repository root:
 

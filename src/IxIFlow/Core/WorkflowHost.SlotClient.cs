@@ -169,6 +169,7 @@ public sealed partial class WorkflowHost
 
         public Task<InstanceInspection?> InspectAsync(string id, CancellationToken token) => _runner.InspectAsync(id, token);
         public Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string id, CancellationToken token) => _runner.GetStepTableAsync(id, token);
+        public Task<IReadOnlyList<GraphTableEntry>> GetGraphTableAsync(string id, CancellationToken token) => _runner.GetGraphTableAsync(id, token);
         public Task<TraceReplay> OpenReplayAsync(string id, int maxEntries, CancellationToken token) => _runner.OpenReplayAsync(id, maxEntries, token);
         public Task<string?> GetSourceAsync(string id, string path, CancellationToken token) => _runner.GetSourceAsync(id, path, token);
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string id, long afterSequence, int limit,

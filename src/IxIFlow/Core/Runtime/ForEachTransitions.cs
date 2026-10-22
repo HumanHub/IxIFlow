@@ -67,7 +67,7 @@ internal static class ForEachTransitions
         {
             continuation.Stack.Add(new ScopePosition
             {
-                ScopeId = scopes.ForEachScope(step),
+                ScopeId = scopes.ForEachScope(step), Kind = FrameKind.Item,
                 ForEachIndex = state.Next,
                 EntryPrevious = continuation.Previous,
                 RuntimeEntryPrevious = continuation.RuntimePrevious,
@@ -132,7 +132,7 @@ internal static class ForEachTransitions
             Data = BranchData.Copy(snapshot, checkpoint.DataOf(parent).GetType()),
             InheritedItems = inherited,
             Previous = parent.RuntimePrevious != null ? SerializedValue.From(parent.RuntimePrevious) : parent.Previous,
-            Stack = [new ScopePosition { ScopeId = scopes.ForEachScope(step), ForEachIndex = index }]
+            Stack = [new ScopePosition { ScopeId = scopes.ForEachScope(step), Kind = FrameKind.Item, ForEachIndex = index }]
         };
         SteppingPolicy.Forked(checkpoint, parent, child);
         join.ChildContinuationIds.Add(child.Id);

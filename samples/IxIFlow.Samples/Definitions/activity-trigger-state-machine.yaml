@@ -1,0 +1,23 @@
+workflow: {name: AutomatedReview, dataType: IxIFlow.Samples.ActivityTriggers+Review}
+definitions:
+  - kind: stateMachine
+    id: review
+    start: pending
+    states:
+      - key: pending
+        transitions:
+          - activity: IxIFlow.Samples.ActivityTriggers+CheckRisk
+            input: [{target: OrderId, from: {path: workflow.OrderId}}]
+            output: [{source: Approved, to: {path: workflow.Approved}}]
+            cases:
+              - {when: {path: previousStep.Approved}, to: approved}
+              - {to: manual}
+          - on: decision
+            event: IxIFlow.Samples.ActivityTriggers+Decision
+            output: [{source: Approved, to: {path: workflow.Approved}}]
+            cases:
+              - {when: {path: previousStep.Approved}, to: approved}
+              - {to: manual}
+          - {after: '1.00:00:00', to: manual}
+      - {key: approved, final: true}
+      - {key: manual, final: true}

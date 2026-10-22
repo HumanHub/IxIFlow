@@ -140,7 +140,8 @@ public sealed class TraceReplay
             positions.Add(new(stored.Sequence, entry.Timestamp, entry.Clock, revision, status,
                 problems.Length == 0, problems, threads.Values.OrderBy(t => t.Sequence).ToArray(), checkpoint));
             stops.Add(entry.EntryType is TraceEntryType.StepEntered or TraceEntryType.ActivityStarted or TraceEntryType.ConditionTaken or
-                TraceEntryType.LoopIteration or TraceEntryType.ForEachItemStarted ? entry.StepId : null);
+                TraceEntryType.LoopIteration or TraceEntryType.ForEachItemStarted or TraceEntryType.NodeEntered or
+                TraceEntryType.StateEntered or TraceEntryType.ExitEntered or TraceEntryType.ActionEntered ? entry.StepId : null);
         }
         if (positions.Count == 0)
         {

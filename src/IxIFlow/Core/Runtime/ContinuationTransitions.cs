@@ -60,17 +60,29 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     {
         var due = checkpoint.Waits.Where(wait => wait.ChildWorkflowId == null &&
             SteppingPolicy.Allows(checkpoint, wait.ContinuationId) && checkpoint.Inbox.IsDue(wait.Id)).ToArray();
-        foreach (var wait in due)
+        var processed = false;
+        foreach (var wait in due.OrderBy(wait => wait.ContinuationId, StringComparer.Ordinal)
+                     .ThenBy(wait => scopes.Step(wait.StepId).StepType == WorkflowStepType.Trigger
+                         ? int.Parse(wait.StepId.Split('/')[^2], System.Globalization.CultureInfo.InvariantCulture) : -1))
         {
+            if (!checkpoint.Waits.Contains(wait)) continue;
+            processed = true;
             var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
             checkpoint.Touch(continuation);
             var step = scopes.Step(wait.StepId);
             if (continuation.Status != ContinuationStatus.Waiting ||
-                step.StepType != WorkflowStepType.Delay && step.TimeoutSteps.Count == 0)
+                step.StepType is not (WorkflowStepType.Delay or WorkflowStepType.Trigger) && step.TimeoutSteps.Count == 0)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "A due wait has no active timeout branch");
             checkpoint.RemoveWaits(item => item == wait, WaitCloseReason.TimedOut);
             continuation.Status = ContinuationStatus.Active;
+            if (step.StepType == WorkflowStepType.Trigger)
+            {
+                GraphTransitions.TriggerFired(checkpoint, continuation);
+                continuation.AcceptedWait = new AcceptedWaitState { StepId = wait.StepId, WaitId = wait.Id };
+                checkpoint.Trace.Timeout(step, continuation, wait.Id, null);
+                continue;
+            }
             if (step.StepType == WorkflowStepType.Delay)
             {
                 checkpoint.Trace.Timeout(step, continuation, wait.Id, null);
@@ -82,7 +94,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             checkpoint.Trace.Timeout(step, continuation, wait.Id, scopes.TimeoutScope(step));
             EnterTimeoutPath(scopes, continuation, step);
         }
-        return due.Length != 0;
+        return processed;
     }
 
     private static void EnterTimeoutPath(WorkflowScopeCatalog scopes, ContinuationState continuation,
@@ -106,7 +118,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         ExecutionCheckpoint checkpoint,
         ContinuationState continuation,
         int maxActiveBranches,
-        int maxForEachItems)
+        int maxForEachItems,
+        int maxGraphTransitionsPerPass = ExecutionLimits.DefaultMaxGraphTransitionsPerPass)
     {
         checkpoint.Touch(continuation);
         var workflowData = checkpoint.DataOf(continuation);
@@ -116,11 +129,21 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         {
             var acceptedPosition = continuation.Stack[^1];
             var acceptedStep = scopes.Steps(acceptedPosition.ScopeId)[acceptedPosition.NextStepIndex];
+            if (acceptedStep.StepType == WorkflowStepType.Arm && GraphTransitions.Accepts(scopes, continuation, accepted.StepId))
+            {
+                GraphTransitions.Arm(scopes, checkpoint, continuation, acceptedStep, services, Now, StoreNow(checkpoint), maxActiveBranches);
+                return;
+            }
+            if (acceptedStep.StepType == WorkflowStepType.Listen && GraphTransitions.Accepts(scopes, continuation, accepted.StepId))
+            {
+                GraphTransitions.Listen(scopes, checkpoint, continuation, acceptedStep, services, Now, StoreNow(checkpoint));
+                return;
+            }
             if (scopes.Id(acceptedStep) != accepted.StepId)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "The accepted event does not match its saved wait");
             continuation.AcceptedWait = null;
-            var @event = accepted.Event.Read(services)
+            var @event = accepted.Event?.Read(services)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "The accepted event could not be restored");
             // A saga retry asks again, so a request's answer is not kept for replay.
@@ -137,6 +160,9 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var steps = scopes.Steps(position.ScopeId);
         if (position.NextStepIndex == steps.Count)
         {
+            GraphTransitions.CheckExit(continuation, position, maxGraphTransitionsPerPass);
+            if (position.Kind == FrameKind.Listen)
+                GraphTransitions.ReturnReplies(checkpoint, continuation, position, restoreReceipt: false);
             continuation.Stack.RemoveAt(continuation.Stack.Count - 1);
             if (position.RestorePreviousOnExit)
             {
@@ -159,6 +185,12 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 if (position.ExitParentScopeOnExit)
                 {
                     parent.NextStepIndex = scopes.Steps(parent.ScopeId).Count;
+                    if (parent.Kind == FrameKind.Node || parent.Kind == FrameKind.State &&
+                        scopes.Steps(parent.ScopeId)[^1].StepType == WorkflowStepType.Arm)
+                    {
+                        parent.NextStepIndex--;
+                        continuation.SetPrevious(null);
+                    }
                     return;
                 }
                 var currentStep = scopes.Steps(parent.ScopeId)[parent.NextStepIndex];
@@ -173,7 +205,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     // The ForEach runs its next item, or completes, when it is advanced again.
                 }
                 else if (!TryScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation) &&
-                         !SagaScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation))
+                         !SagaScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation) &&
+                         !GraphTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation))
                     parent.NextStepIndex++;
             }
             return;
@@ -182,6 +215,42 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var step = steps[position.NextStepIndex];
         switch (step.StepType)
         {
+            case WorkflowStepType.Flowchart:
+            case WorkflowStepType.StateMachine:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
+                GraphTransitions.Enter(scopes, checkpoint, continuation, position, step);
+                break;
+
+            case WorkflowStepType.Enter:
+                GraphTransitions.TraceEntry(scopes, checkpoint, continuation, step);
+                position.NextStepIndex++;
+                break;
+
+            case WorkflowStepType.Decision:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
+                GraphTransitions.Decide(scopes, checkpoint, continuation, step, services);
+                break;
+
+            case WorkflowStepType.Arm:
+                GraphTransitions.Arm(scopes, checkpoint, continuation, step, services, Now, StoreNow(checkpoint), maxActiveBranches);
+                break;
+
+            case WorkflowStepType.Listen:
+                GraphTransitions.Listen(scopes, checkpoint, continuation, step, services, Now, StoreNow(checkpoint));
+                break;
+
+            case WorkflowStepType.Fire:
+                GraphTransitions.Fire(scopes, checkpoint, continuation, step);
+                break;
+
+            case WorkflowStepType.Trigger:
+                GraphTransitions.Trigger(scopes, checkpoint, continuation, step);
+                break;
+
+            case WorkflowStepType.Edge:
+                GraphTransitions.Edge(scopes, checkpoint, continuation, step);
+                break;
+
             case WorkflowStepType.Sequence:
                 checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 continuation.Stack.Add(new ScopePosition
@@ -427,19 +496,20 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         continuation.Status = ContinuationStatus.Waiting;
     }
 
-    private static void Fork(WorkflowScopeCatalog scopes, WorkflowStep step, ExecutionCheckpoint checkpoint,
-        ContinuationState parent, int maxActiveBranches)
+    internal static void Fork(WorkflowScopeCatalog scopes, WorkflowStep step, ExecutionCheckpoint checkpoint,
+        ContinuationState parent, int maxActiveBranches, IReadOnlyList<(string Scope, FrameKind Kind)>? graphBranches = null)
     {
-        if (step.ParallelBranches.Count == 0)
+        var count = graphBranches?.Count ?? step.ParallelBranches.Count;
+        if (count == 0)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Parallel step '{step.Id}' has no branches");
-        EnsureBranchesFit(checkpoint, step.ParallelBranches.Count, maxActiveBranches, leaving: parent);
+        EnsureBranchesFit(checkpoint, count, maxActiveBranches, leaving: parent);
 
         var join = new ParallelJoinState
         {
             StepId = scopes.Id(step),
             ParentContinuationId = parent.Id,
-            Mode = step.ParallelJoinMode
+            Mode = graphBranches != null ? ParallelJoinMode.WaitAny : step.ParallelJoinMode
         };
         checkpoint.Joins.Add(join);
         parent.Status = ContinuationStatus.Joining;
@@ -449,7 +519,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var forkData = checkpoint.DataOf(parent);
         var snapshot = BranchData.Snapshot(forkData);
         var previous = parent.RuntimePrevious != null ? SerializedValue.From(parent.RuntimePrevious) : parent.Previous;
-        for (var index = 0; index < step.ParallelBranches.Count; index++)
+        for (var index = 0; index < count; index++)
         {
             var child = new ContinuationState
             {
@@ -458,7 +528,12 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 Data = BranchData.Copy(snapshot, forkData.GetType()),
                 InheritedItems = ForEachTransitions.Inherited(scopes, parent),
                 Previous = previous,
-                Stack = [new ScopePosition { ScopeId = scopes.BranchScope(step, index) }]
+                Stack = [new ScopePosition
+                {
+                    ScopeId = graphBranches?[index].Scope ?? scopes.BranchScope(step, index),
+                    Kind = graphBranches?[index].Kind ?? FrameKind.Body,
+                    EntryPrevious = graphBranches != null ? previous : null
+                }]
             };
             SteppingPolicy.Forked(checkpoint, parent, child);
             join.ChildContinuationIds.Add(child.Id);
@@ -489,7 +564,22 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     public static bool NotifyCompletedBranches(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint)
     {
         var changed = false;
-        foreach (var child in checkpoint.Continuations.Where(c => c.PendingJoinFrame != null).ToArray())
+        // An Arm decides once over the whole eligible batch, in its persisted declaration order.
+        // Other joins keep their ordinary notification order and completion policy.
+        foreach (var join in checkpoint.Joins.Where(j => scopes.Step(j.StepId).StepType == WorkflowStepType.Arm &&
+                     !j.IsCompleting && j.WinningChildId == null && !j.ResumeParentWithoutAdvance &&
+                     SteppingPolicy.AllowsJoin(checkpoint, j)))
+        {
+            var winner = checkpoint.BranchesOf(join).FirstOrDefault(c => c.PendingJoinFrame != null);
+            if (winner == null) continue;
+            checkpoint.Touch(winner);
+            var frame = winner.PendingJoinFrame!;
+            winner.PendingJoinFrame = null;
+            CompleteJoin(scopes, checkpoint, winner, frame);
+            changed = true;
+        }
+        var pending = checkpoint.Continuations.Where(c => c.PendingJoinFrame != null).ToArray();
+        foreach (var child in pending)
         {
             var join = checkpoint.Joins.SingleOrDefault(j => j.Id == child.ParentJoinId);
             if (join == null || !SteppingPolicy.AllowsJoin(checkpoint, join)) continue;
@@ -497,7 +587,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             var frame = child.PendingJoinFrame!;
             child.PendingJoinFrame = null;
             ForEachTransitions.BranchFinished(scopes, checkpoint, child, frame);
-            CompleteJoin(scopes, checkpoint, child);
+            CompleteJoin(scopes, checkpoint, child, frame);
             changed = true;
         }
         return changed;
@@ -506,7 +596,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     private static void CompleteJoin(
         WorkflowScopeCatalog scopes,
         ExecutionCheckpoint checkpoint,
-        ContinuationState child)
+        ContinuationState child, ScopePosition frame)
     {
         if (child.ParentJoinId == null)
             return;
@@ -517,6 +607,24 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         // The join is its parent's; branches it cancels are marked as they are.
         checkpoint.TouchOwner(join.ParentContinuationId);
         var children = checkpoint.BranchesOf(join);
+        if (scopes.Step(join.StepId).StepType == WorkflowStepType.Arm)
+        {
+            if (join.WinningChildId != null || join.ResumeParentWithoutAdvance) return;
+            join.WinningChildId = child.Id;
+            GraphTransitions.BranchFinished(checkpoint, join, frame);
+            join.IsCompleting = true;
+            foreach (var sibling in children)
+            {
+                var listener = sibling.Stack.FirstOrDefault(f => f.Kind == FrameKind.Listen) ??
+                    (sibling.PendingJoinFrame is { Kind: FrameKind.Listen } held ? held : null);
+                // The winning frame has already left PendingJoinFrame in this notification.
+                if (sibling == child && frame.Kind == FrameKind.Listen) listener = frame;
+                if (listener != null)
+                    GraphTransitions.ReturnReplies(checkpoint, sibling, listener, restoreReceipt: sibling != child);
+                if (sibling.Status != ContinuationStatus.Completed) CancelTree(checkpoint, sibling);
+            }
+            return;
+        }
         if (scopes.Step(join.StepId) is { StepType: WorkflowStepType.ForEach } forEach)
         {
             CompleteItemJoin(scopes, checkpoint, join, forEach, children);
@@ -605,6 +713,10 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
             return;
         checkpoint.Touch(continuation);
+        // Cleanup continues at its current pick after cancellation, including a selected Arm winner.
+        // Only an abandoned activation discards its speculative fire.
+        if (!IsCleanup(continuation))
+            foreach (var frame in continuation.Stack) if (frame.Graph != null) frame.Graph.Fired = null;
         continuation.ItemUnwindCause ??= cause;
         var first = !continuation.CancellationUnwind;
         continuation.CancellationUnwind = true;
@@ -698,7 +810,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var order = join.ChildContinuationIds.Select((id, index) => (id, index))
             .ToDictionary(item => item.id, item => item.index, StringComparer.Ordinal);
         JsonNode? baselineNode = null;
-        var completed = children.Where(item => item.Status == ContinuationStatus.Completed)
+        var completed = children.Where(item => item.Status == ContinuationStatus.Completed &&
+                (scopes.Step(join.StepId).StepType != WorkflowStepType.Arm || item.Id == join.WinningChildId))
             .OrderBy(item => order[item.Id])
             .Select(item =>
             {
@@ -723,6 +836,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (scopes.Step(join.StepId).StepType == WorkflowStepType.ForEach)
             (frame.ForEach ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 "A ForEach join finished without its saved list")).Joined = true;
+        else if (scopes.Step(join.StepId).StepType == WorkflowStepType.Arm)
+            frame.ArmOccurrence++;
         else
             frame.NextStepIndex++;
     }
@@ -763,9 +878,9 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             var finishingCleanup = ownCleanup || inheritedCleanup;
             // A join that ends through its own failure, or whose parent is unwinding outside cleanup, merges
             // nothing; a join inside cleanup merges into its branch's copy even while a failure unwinds.
-            var merges = !join.ResumeParentWithoutAdvance &&
-                         (checkpoint.UnhandledError == null ? !parent.CancellationUnwind || finishingCleanup
-                             : finishingCleanup);
+            var merges = Merges(checkpoint, join);
+            if (!merges && scopes.Step(join.StepId).StepType == WorkflowStepType.Arm)
+                foreach (var frame in parent.Stack) if (frame.Graph != null) frame.Graph.Fired = null;
             JoinConflictException? conflict = null;
             if (merges)
             {
@@ -812,6 +927,15 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             }
         }
         return completed;
+    }
+
+    // Shared with recovery preparation: an unwound join must not read discarded branch data either.
+    internal static bool Merges(ExecutionCheckpoint checkpoint, ParallelJoinState join)
+    {
+        var parent = ParentOf(checkpoint, join);
+        var cleanup = IsCleanup(parent) || InsideCleanup(checkpoint, parent);
+        return !join.ResumeParentWithoutAdvance &&
+               (checkpoint.UnhandledError == null ? !parent.CancellationUnwind || cleanup : cleanup);
     }
 
     private static bool IsCleanup(ContinuationState continuation) =>
@@ -912,6 +1036,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             }
             join.IsCompleting = true;
             join.ResumeParentWithoutAdvance = true;
+            var graphParent = checkpoint.ContinuationById(join.ParentContinuationId)!;
+            foreach (var frame in graphParent.Stack) if (frame.Graph != null) frame.Graph.Fired = null;
             foreach (var branch in checkpoint.BranchesOf(join))
                 CancelTree(checkpoint, branch, branch == continuation ? ItemEndCause.Failed : ItemEndCause.Cancelled);
             continuation = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
@@ -1021,6 +1147,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             }
             foreach (var frame in continuation.Stack)
             {
+                if (frame.Graph != null) frame.Graph.PassEntries = 0;
                 if (frame is { RuntimeEntryPrevious: not null, EntryPrevious: null })
                 {
                     frame.EntryPrevious = SerializedValue.From(frame.RuntimeEntryPrevious);

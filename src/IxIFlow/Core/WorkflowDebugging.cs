@@ -5,14 +5,18 @@ namespace IxIFlow.Core;
 public enum DebugCommandKind { Pause, Continue, SetBreakpoints, Step, EditData }
 public enum DebugStepKind { Over, Into, Out, Run }
 
-/// <summary>A pick occurrence, including progress through repeated loop and item visits.</summary>
+/// <summary>A pick occurrence, including repeated loop, item and Arm visits.</summary>
 public sealed record DebugStepPosition(string ActivationId, int StepIndex, int Iteration,
-    int ItemCursor, bool ItemsJoined);
+    int ItemCursor, bool ItemsJoined, long ArmOccurrence = 0);
 
 /// <summary>The durable origin and the continuations admitted by one isolated step.</summary>
 public sealed record DebugStepping(string ContinuationId, DebugStepKind Kind, DebugStepPosition Origin,
     IReadOnlyList<string> OriginScopes, IReadOnlyList<string> EligibleContinuations,
-    string CommandId, string Actor, bool Started = false);
+    string CommandId, string Actor, bool Started = false)
+{
+    /// <summary>The enclosing graph of a step originating within a node or state; null for a graph-step origin.</summary>
+    public string? OriginGraph { get; init; }
+}
 public enum DebugCommandStatus { Accepted, AlreadyAccepted, StaleGeneration, InvalidState, NotFound }
 
 /// <summary>A durable ordered command. Acknowledgement is the revision that applied it.</summary>

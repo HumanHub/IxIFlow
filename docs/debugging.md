@@ -39,6 +39,12 @@ Events for existing waits are appended while paused and remain pending until con
 
 ## Stepping
 
+Flowcharts expose executable `Enter`, `Decision` and `Edge` picks. A node breakpoint resolves to its generated `graph-id/node-key/enter` author ID. Decisions and edges use `/decision` and `/to/index`. Their breakpoint conditions read the node body's last previous type. On an explicit timeout landing the decision's previous is null, so a condition reading its members reports `BPC002`.
+
+Into at a decision stops at its selected edge, then at the target node's entry. Over originating inside a graph follows those same picks across node activations; Over on the graph step runs the whole graph. Out inside a node stops after that node activation is gone, at the next node entry or the step after the graph.
+
+Inspection frames report `Kind`, derived graph `Phase`, `Visit` and the incoming edge `Via`; snapshots use the same names and include the graph visit. `NodeEntered` records the executable entry with its frame already pushed. `TransitionTaken` records only selection and never creates a replay stop. A decision with no matching edge therefore has one replay stop, followed by selection and graph completion records. Full tracing includes these graph records; activity-only tracing omits them.
+
 Choose a live continuation from `IWorkflowClient.GetSnapshotAsync`: its `ExecutionPointer.PointerId` is the continuation ID. A committed pause is required. The application authorizes the instance and operation before issuing the command.
 
 <!-- snippet: samples/IxIFlow.Samples/DebuggingExamples.cs#step -->
@@ -191,3 +197,26 @@ Each edit atomically records a `DataEdited` trace entry with the caller-supplied
 ## Inspection and replay
 
 See [Inspection and replay](inspection-and-replay.md) for saved checkpoint projections, sequence-paged trace reads, forward and backward navigation, cursor breakpoints and access requirements.
+
+
+## Native state-machine picks
+
+Each state has real catalog steps: `state/{key}/0` is entry `Enter`; non-final entry ends at `Arm`. Optional exit is `state/{key}/exit`, transition `i` is `state/{key}/on/{i}/0`, and alternative `j` starts at `state/{key}/on/{i}/case/{j}/0`. These paths sit under the machine's catalog ID. Generated author IDs under a machine named with `WithId("approval")` include `approval/pending/enter`, `approval/pending/arm`, `approval/pending/exit/enter`, `approval/pending/on/0` and `approval/pending/on/0/case/0`. A transition's `Trigger` breakpoint stops after exit; the case `Edge` breakpoint stops before its action.
+
+Every exposed `Arm` pick has the machine's hydrated incoming previous value, even after an entry activity of a different type, event acceptance, timer fire, recovery or false guards. Conditional breakpoints compile against that incoming type. The accepted event is available at the later `Trigger` and case picks; timer and immediate picks retain the incoming type. Exit always reads the incoming value.
+
+A state activation persists while armed. Its durable `ArmOccurrence` starts at 1, advances at native fire, bound-reply acceptance or a successful activity-trigger join, and advances again if guards fail and the state returns to arbitration. Preparation, condition-evaluation commits and recovery preserve the generation. Stops, pending evaluations, command-created skip-once records, stepping origins and inspection/replay positions all carry it. Continuing skips only the stopped generation; a later arrival at the same activation and index is counted and can stop again. Recovery of an acknowledged conditional evaluation retains its original hit count and time.
+
+Into and Over at native `Arm` report `Blocked` while waiting. When a trigger fires, stepping stops at the new guard-ready `Arm` before guard evaluation. The next step reaches exit `Enter`, the chosen `Trigger`, or the next re-arm occurrence. Over originating on the machine step runs the whole machine; Over originating inside it follows the real graph picks. Out from entry leaves the state activation, including its exit and action, and stops at the next state's entry or the step after the machine.
+
+Inspection names the state and visit and shows `State`, `StateExit`, `Transition` and `Case` frame kinds with derived phases. An armed thread points at `Arm`; open waits point at their trigger steps. Replay stops use `StateEntered`, `ExitEntered`, `ActionEntered` and ordinary `StepEntered` records for `Arm` and `Trigger`. `TransitionTaken` records selection only, before exit, and never creates an early edge stop. `StateArmed`, `StateExited`, `TimerFired` and `GraphCompleted` likewise provide history without executable stops. Trace position snapshots retain each repeated `Arm` generation.
+
+Graph inspection frames also expose `GraphId`, `Node` (the current node or state key), `Visit`, `Via` and `Pending`. `Pending` contains only the selected edge, trigger, target and cause, never its payload. These fields travel with recorded thread positions, so replay can show the historical choice without reading live values. Execution snapshot frame state includes `GraphId`, `Node`, `PendingVia`, `PendingTrigger`, `PendingTarget` and `PendingCause` alongside its phase and visit. DAP preserves graph frame names and presents the same metadata in a read-only Graph scope; see [Attach the workflow debugger](debug-adapter.md).
+
+YAML node and state locations map to `Enter`; transition locations map to `Trigger`, with distinct case-edge locations for action entry. Generated `Arm` and listener picks use the state location. Activity `Fire` uses the trigger location and an author id ending `/run/fire`; listener `Fire` ends `/listen/fire`. Each dispatched Fire is an executable replay stop. Repeated Arm stops retain their occurrence even when their catalog id and state activation are unchanged.
+
+Read `definition.GraphTable` or `IWorkflowOperations.GetGraphTableAsync(instanceId)` alongside StepTable to draw nodes, states, ordered transitions and cases. Its ids join directly to inspection frames, open-wait trigger ids and trace edges. Selection traces animate edges; executable entry traces establish replay stops.
+
+Activity-trigger states add `state/{key}/on/{i}/run`, containing the activity at index 0 and `Fire` at index 1. A mixed state also has `state/{key}/listen`, containing `Listen` and `Fire`. Their author IDs end in `/on/{i}/run`, `/on/{i}/run/fire`, `/listen` and `/listen/fire`. Each has its own source location, executable pick and ordinary `StepEntered` replay stop. Run `Fire` exposes the completed activity type. `Listen` exposes the incoming type; its shared `Fire` exposes `object`, containing the accepted event/reply or the incoming value for a timer. Conditions reading event members there use an explicit type test or cast.
+
+Into at a forked `Arm` admits its children and can stop at their activity, `Listen` and `Fire` picks. Over runs the fork through loser settlement and stops at the parent's next `Arm` occurrence before guards, even though the activation and cursor are unchanged. A held branch completion remains pending until its join is eligible; several held completions select one winner in declaration order. Inspection shows `Run` and `Listen` branch frames and the parent joining while a losing activity awaits resolution. Joining, re-preparation and late branch notifications never create an extra `Arm` occurrence. Replay uses the recorded `Fire` picks and post-join `Arm`, while selection and join history remain non-executable.

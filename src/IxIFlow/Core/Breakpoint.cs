@@ -35,9 +35,7 @@ public static class BreakpointResolver
             {
                 ArgumentException.ThrowIfNullOrWhiteSpace(source.Path);
                 ArgumentOutOfRangeException.ThrowIfNegativeOrZero(source.Line);
-                step = definition.StepTable.Where(s => ParseSource(s.SourceLocation) is { } location &&
-                        SamePath(location.Path, source.Path) && location.Line >= source.Line)
-                    .OrderBy(s => ParseSource(s.SourceLocation)!.Line).FirstOrDefault();
+                step = AtSource(definition.StepTable, source.Path, source.Line);
             }
             else
             {
@@ -55,6 +53,13 @@ public static class BreakpointResolver
                 VerifiedSource = ParseSource(step.SourceLocation), StructureHash = scopes.StructureHash, HitCount = 0 };
         }).ToArray();
     }
+
+    // Stable catalog order breaks same-line ties: node/state Enter precedes Decision/Arm,
+    // and a Trigger precedes its case Edge and generated activity/Fire picks.
+    internal static StepTableEntry? AtSource(IReadOnlyList<StepTableEntry> steps, string path, int line) =>
+        steps.Select(s => (Step: s, Source: ParseSource(s.SourceLocation)))
+            .Where(s => s.Source != null && SamePath(s.Source.Path, path) && s.Source.Line >= line)
+            .OrderBy(s => s.Source!.Line).Select(s => s.Step).FirstOrDefault();
 
     internal static bool Matches(string? condition, long count)
     {
@@ -77,14 +82,18 @@ public static class BreakpointResolver
         left.Replace('\\', '/'), right.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase);
 }
 
-/// <summary>A stopped occurrence; activation and iteration distinguish repeated visits to a step.</summary>
+/// <summary>A stopped occurrence; activation, iteration and Arm generation distinguish repeated visits.</summary>
 public sealed record BreakpointStop(string BranchId, string StepId, string BreakpointId,
     string ActivationId, int Iteration, long HitCount, DateTime HitAtUtc)
 {
+    public long ArmOccurrence { get; init; }
     public string? Reason { get; init; }
     public IReadOnlyList<BreakpointConditionDiagnostic> Diagnostics { get; init; } = [];
 }
 
 /// <summary>A counted occurrence awaiting condition evaluation, committed before evaluation starts.</summary>
 public sealed record BreakpointEvaluation(string BranchId, string StepId, string ActivationId,
-    int Iteration, DateTime HitAtUtc);
+    int Iteration, DateTime HitAtUtc)
+{
+    public long ArmOccurrence { get; init; }
+}

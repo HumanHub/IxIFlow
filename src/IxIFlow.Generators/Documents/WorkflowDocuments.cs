@@ -124,6 +124,91 @@ public abstract record WorkflowStepDocument : DocumentNode
     public string Kind { get; init; } = string.Empty;
     [Description("The explicit step name used by the fluent definition.")]
     public string? Name { get; init; }
+
+    /// <summary>Child bodies in document traversal order, including declared empty bodies.</summary>
+    public IEnumerable<(string Kind, string? Key, List<WorkflowStepDocument> Steps)> ChildScopes()
+    {
+        switch (this)
+        {
+            case FlowchartStepDocument:
+            case StateMachineStepDocument:
+                foreach (var child in GraphChildScopes())
+                    yield return (child.Kind, child.Key, child.Steps);
+                break;
+            case SequenceStepDocument sequence:
+                yield return ("sequence", null, sequence.Steps);
+                break;
+            case ConditionalStepDocument condition:
+                yield return ("then", null, condition.Then);
+                yield return ("else", null, condition.Else);
+                break;
+            case ForEachStepDocument each:
+                yield return ("foreach", null, each.Steps);
+                break;
+            case WaitStepDocument { OnTimeout: { } timeout }:
+                yield return ("timeout", null, timeout);
+                break;
+            case ParallelStepDocument parallel:
+                for (var index = 0; index < parallel.Branches.Count; index++)
+                    yield return ("branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), parallel.Branches[index].Steps);
+                break;
+            case LoopStepDocument loop:
+                yield return ("loop", null, loop.Steps);
+                break;
+            case TryStepDocument attempt:
+                yield return ("sequence", null, attempt.Steps);
+                for (var index = 0; index < attempt.Catches.Count; index++)
+                    yield return ("catch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), attempt.Catches[index].Steps);
+                if (attempt.Finally != null)
+                    yield return ("finally", null, attempt.Finally);
+                break;
+            case SagaStepDocument saga:
+                yield return ("sequence", null, saga.Steps);
+                for (var index = 0; index < saga.OnError.Count; index++)
+                    yield return ("catch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), saga.OnError[index].Steps);
+                break;
+            case OutcomeStepDocument outcome:
+                for (var index = 0; index < outcome.Branches.Count; index++)
+                    yield return ("outcome", index.ToString(System.Globalization.CultureInfo.InvariantCulture), outcome.Branches[index].Steps);
+                if (outcome.Default != null)
+                    yield return ("outcome", outcome.Branches.Count.ToString(System.Globalization.CultureInfo.InvariantCulture), outcome.Default);
+                break;
+        }
+    }
+
+    // Source paths follow declaration indices even when graph keys are invalid or duplicated.
+    internal IEnumerable<(string Kind, string? Key, List<WorkflowStepDocument> Steps, string Path, bool Entry)> GraphChildScopes()
+    {
+        if (this is FlowchartStepDocument graph)
+        {
+            for (var i = 0; i < graph.Nodes.Count; i++)
+                yield return ("node", graph.Nodes[i].Key, graph.Nodes[i].Steps, $".nodes[{i}].steps", true);
+        }
+        else if (this is StateMachineStepDocument machine)
+        {
+            for (var i = 0; i < machine.States.Count; i++)
+            {
+                var state = machine.States[i];
+                var path = $".states[{i}]";
+                yield return ("state", state.Key, state.Entry, path + ".entry", !state.Final);
+                if (state.Exit != null) yield return ("state", state.Key + "/exit", state.Exit, path + ".exit", false);
+                for (var j = 0; j < state.Transitions.Count; j++)
+                {
+                    var transition = state.Transitions[j];
+                    var triggerPath = $"{path}.transitions[{j}]";
+                    if (transition.Cases == null)
+                        yield return ("state", state.Key + "/on/" + j + "/case/0", transition.Steps, triggerPath + ".steps", false);
+                    else
+                    {
+                        // Keep both authored forms reachable; validation diagnoses their conflict.
+                        yield return ("state", state.Key + "/on/" + j + "/steps", transition.Steps, triggerPath + ".steps", false);
+                        for (var k = 0; k < transition.Cases.Count; k++)
+                            yield return ("state", state.Key + "/on/" + j + "/case/" + k, transition.Cases[k].Steps, $"{triggerPath}.cases[{k}].steps", false);
+                    }
+                }
+            }
+        }
+    }
 }
 
 [Description("An activity invocation with defaults and input and output mappings.")]

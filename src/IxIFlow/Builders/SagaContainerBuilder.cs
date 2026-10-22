@@ -53,6 +53,23 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
     // Delegate all IWorkflowBuilder methods to the real workflow builder
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name) => _workflowBuilder.Named(name);
 
+    /// <summary>Runs a flowchart after the completed saga container.</summary>
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Flowchart(
+        Action<FlowchartBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        _workflowBuilder.Flowchart(configure, sourcePath, sourceLine);
+
+    /// <summary>Runs a native state machine, retaining the incoming previous value.</summary>
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> StateMachine(
+        Action<StateMachineBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        _workflowBuilder.StateMachine(configure, sourcePath, sourceLine);
+
+    /// <summary>Selects the destination of an enclosing node's timeout path.</summary>
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Transition(string? to,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        _workflowBuilder.Transition(to, sourcePath, sourceLine);
+
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Delay(TimeSpan duration, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
         _workflowBuilder.Delay(duration, sourcePath: sourcePath, sourceLine: sourceLine);
 

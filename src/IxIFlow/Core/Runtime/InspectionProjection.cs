@@ -26,9 +26,15 @@ internal static class InspectionProjection
                 var owner = parent == null ? null : scopes.Steps(parent.ScopeId).ElementAtOrDefault(parent.NextStepIndex);
                 var iteration = owner?.StepType == WorkflowStepType.Loop ? parent!.LoopIterationCount : frame.LoopIterationCount;
                 var saved = before.Frames[index];
+                var graph = GraphFrameInfo.Of(scopes, continuation, index, checkpoint);
+                var kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen
+                    ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId;
                 if (saved.ActivationId != frame.ActivationId || saved.ScopeId != frame.ScopeId ||
                     saved.ParentActivationId != parent?.ActivationId || saved.NextStepIndex != frame.NextStepIndex ||
-                    saved.LoopIteration != iteration || saved.ForEachItemIndex != frame.ForEachIndex) return false;
+                    saved.LoopIteration != iteration || saved.ForEachItemIndex != frame.ForEachIndex ||
+                    saved.Kind != kind || saved.Phase != graph?.Phase ||
+                    saved.ArmOccurrence != frame.ArmOccurrence || saved.Visit != graph?.Visit || saved.Via != graph?.Via ||
+                    saved.GraphId != graph?.GraphId || saved.Node != graph?.Node || saved.Pending != graph?.Pending) return false;
             }
         }
         return count == positions.Count;
@@ -56,8 +62,13 @@ internal static class InspectionProjection
                 var name = owner?.Name ?? frame.ScopeId;
                 if (owner?.StepType == WorkflowStepType.Loop) name += $" (iteration {iteration})";
                 if (frame.ForEachIndex is { } itemIndex) name += $" (item {itemIndex})";
-                frames.Add(new(frame.ActivationId, name, owner?.StepType.ToString() ?? frame.ScopeId,
-                    frame.ScopeId, parent?.ActivationId, frame.NextStepIndex, iteration, frame.ForEachIndex));
+                var graph = GraphFrameInfo.Of(scopes, continuation, index, checkpoint);
+                var kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen
+                    ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId;
+                frames.Add(new(frame.ActivationId, graph?.Name ?? name, kind,
+                    frame.ScopeId, parent?.ActivationId, frame.NextStepIndex, iteration, frame.ForEachIndex)
+                { Phase = graph?.Phase, Visit = graph?.Visit, Via = graph?.Via, ArmOccurrence = frame.ArmOccurrence,
+                    GraphId = graph?.GraphId, Node = graph?.Node, Pending = graph?.Pending });
             }
             threads.Add(new(continuation.Id,
                 continuation.ParentJoinId == null ? "Root" : $"Branch {continuation.Sequence} ({continuation.ForkActivationId})",

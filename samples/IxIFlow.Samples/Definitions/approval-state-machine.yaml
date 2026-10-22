@@ -1,0 +1,27 @@
+workflow: {name: ApproveOrder, dataType: IxIFlow.Samples.StateMachines+Approval}
+definitions:
+  - kind: stateMachine
+    id: approval
+    start: pending
+    states:
+      - key: pending
+        entry: [{kind: request, activity: IxIFlow.Samples.StateMachines+SendApprovalMail, key: decision}]
+        exit: [{kind: activity, activity: IxIFlow.Samples.StateMachines+LogExit}]
+        transitions:
+          - reply: decision
+            event: IxIFlow.Samples.StateMachines+Decision
+            output: [{source: Approved, to: {path: workflow.Approved}}]
+            cases:
+              - when: {path: previousStep.Approved}
+                to: approved
+                steps: [{kind: activity, activity: IxIFlow.Samples.StateMachines+RecordDecision}]
+              - to: rejected
+          - after: '3.00:00:00'
+            to: escalated
+          - on: cancel
+            event: IxIFlow.Samples.StateMachines+CancelRequested
+            to: cancelled
+      - {key: approved, final: true, entry: [{kind: activity, activity: IxIFlow.Samples.StateMachines+Notify}]}
+      - {key: rejected, final: true}
+      - {key: escalated, final: true}
+      - {key: cancelled, final: true}

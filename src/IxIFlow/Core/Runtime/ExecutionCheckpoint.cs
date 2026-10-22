@@ -185,9 +185,9 @@ internal sealed class ExecutionCheckpoint
         if (checkpoint.StoredTrunk)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 "The execution state was read without its branches and lists");
-        // Each branch names its join; a join lists them in the order they started, which is the saved order.
+        // The saved admission sequence is the join's durable child order, independent of part order.
         var joins = checkpoint.Joins.ToDictionary(join => join.Id, StringComparer.Ordinal);
-        foreach (var branch in checkpoint.Continuations)
+        foreach (var branch in checkpoint.Continuations.OrderBy(branch => branch.Sequence))
             if (branch.ParentJoinId != null && joins.TryGetValue(branch.ParentJoinId, out var join))
                 join.ChildContinuationIds.Add(branch.Id);
         // Every wait in a saved checkpoint was committed with it.
@@ -214,9 +214,9 @@ internal sealed class ExecutionCheckpoint
         if (root.ValueKind != JsonValueKind.Object ||
             !root.TryGetProperty(nameof(Runtime), out var runtime) || runtime.GetString() != "structured-v2" ||
             !root.TryGetProperty(nameof(SchemaVersion), out savedVersion) ||
-            savedVersion.ValueKind != JsonValueKind.Number || !savedVersion.TryGetInt32(out var number) || number != 4)
+            savedVersion.ValueKind != JsonValueKind.Number || !savedVersion.TryGetInt32(out var number) || number != WorkflowDefinitionValidator.CheckpointContractVersion)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
-                $"Unsupported execution checkpoint version '{version}'; expected 4. " +
+                $"Unsupported execution checkpoint version '{version}'; expected {WorkflowDefinitionValidator.CheckpointContractVersion}. " +
                 "Saved instances from earlier builds cannot be read; no migration is available");
     }
 
@@ -773,8 +773,49 @@ internal sealed class ActivityInputValue
         problem.GetBaseException().Message, problem);
 }
 
+internal enum FrameKind { Body, Item, Node, Edge, State, StateExit, Transition, Case, Run, Listen }
+
+internal sealed class GraphState
+{
+    public string Node { get; set; } = "";
+    public long Visits { get; set; }
+    public string? Via { get; set; }
+    public GraphPending? Pending { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GraphFired? Fired { get; set; }
+    [JsonIgnore]
+    public int PassEntries { get; set; }
+}
+
+internal sealed class GraphFired
+{
+    public string Trigger { get; set; } = "";
+    public SerializedValue? Event { get; set; }
+    public BoundReplyState? Reply { get; set; }
+}
+
+internal sealed class GraphPending
+{
+    public string? Trigger { get; set; }
+    public SerializedValue? Event { get; set; }
+    public string Via { get; set; } = "";
+    public string? Target { get; set; }
+    public TransitionCause Cause { get; set; }
+}
+
 internal sealed class ScopePosition
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public FrameKind Kind { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GraphState? Graph { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public GraphFired? Fired { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public long ArmOccurrence { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Node { get; set; }
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool CompensationFailed { get; set; }
 
@@ -999,14 +1040,16 @@ internal sealed class ParallelJoinState
     public string ParentContinuationId { get; set; } = "";
 
     /// <summary>
-    /// The join's branches, in the order they started. Not saved: each branch names its join, and reading a
-    /// checkpoint lists them again.
+    /// The join's branches in declaration/admission order, rebuilt from their persisted Sequence.
+    /// Keeping this derived avoids rewriting an O(N) child list on every ordinary item commit.
     /// </summary>
     [JsonIgnore]
     public List<string> ChildContinuationIds { get; set; } = [];
     public ParallelJoinMode Mode { get; set; }
     public bool IsCompleting { get; set; }
     public bool ResumeParentWithoutAdvance { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? WinningChildId { get; set; }
 
     /// <summary>Set when a provisional merge found branches in conflict; the join fails with it.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -1096,7 +1139,7 @@ internal sealed class BoundReplyState
 internal sealed class AcceptedWaitState
 {
     public string StepId { get; set; } = "";
-    public SerializedValue Event { get; set; } = new();
+    public SerializedValue? Event { get; set; }
 
     /// <summary>The inbox event this is.</summary>
     public string EventId { get; set; } = "";

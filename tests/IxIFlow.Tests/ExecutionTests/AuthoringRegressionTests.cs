@@ -46,7 +46,7 @@ public sealed class AuthoringRegressionTests
             .Try(body => body.Step<SyntaxTests.WorkflowBuilderIdentityTests.StartActivity>())
             .Catch<InvalidOperationException>(body => body.Step<SyntaxTests.WorkflowBuilderIdentityTests.StartActivity>())
             .Build();
-        const string expected = "64C56A809F112A9DD3CF4AD0645A9041828CC2C5B6A9EB2DEBE8A215BAC98F10";
+        const string expected = "F62133B6BDDA3940D15E6E5FC246C3AA81FC66C13CBB466B048F84FDAE1A4796";
         Assert.Equal(expected, new WorkflowScopeCatalog(definition).StructureHash);
         foreach (var step in ParallelRules.Flatten(definition.Steps))
         {
@@ -309,7 +309,7 @@ public sealed class AuthoringRegressionTests
                     .Combine<int, Sum<int>>(data => data.Total))
             .Build();
         var structureHash = new WorkflowScopeCatalog(definition).StructureHash;
-        Assert.True(structureHash == "53A44D25847F346A080908D32E1B97CA7EB88D9CE055B1F9C596777D80CCF9F7", structureHash);
+        Assert.True(structureHash == "FE608B8D4B15DD2F3BB6C311D66D9FF8D0C0D487A54968C3AE602D4E6B64A25C", structureHash);
     }
 
     private sealed class CountingCondition : System.Linq.Expressions.Expression

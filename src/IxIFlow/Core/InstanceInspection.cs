@@ -23,8 +23,24 @@ public sealed record InspectionDebugState(long PauseGeneration, long AppliedOrde
 public sealed record InspectionThread(string ContinuationId, string Name, string? ParentContinuationId,
     string? ParentJoinId, int Sequence, string? ForkActivationId, string StepId, string AuthorStepId,
     int StepIndex, string Status, string FrameId, IReadOnlyList<InspectionFrame> Frames);
+/// <summary>A saved scope position, including graph phase and visit metadata.</summary>
 public sealed record InspectionFrame(string ActivationId, string Name, string Kind, string ScopeId,
-    string? ParentActivationId, int NextStepIndex, int LoopIteration, int? ForEachItemIndex);
+    string? ParentActivationId, int NextStepIndex, int LoopIteration, int? ForEachItemIndex)
+{
+    /// <summary>The derived graph phase, when this frame belongs to a graph.</summary>
+    public string? Phase { get; init; }
+    public long ArmOccurrence { get; init; }
+    /// <summary>The entry count of the enclosing graph activation.</summary>
+    public long? Visit { get; init; }
+    /// <summary>The edge that entered the current node; null for the start.</summary>
+    public string? Via { get; init; }
+    /// <summary>The enclosing graph's catalog step and current node or state key.</summary>
+    public string? GraphId { get; init; }
+    public string? Node { get; init; }
+    /// <summary>The selected choice, without its event or activity payload.</summary>
+    public InspectionGraphChoice? Pending { get; init; }
+}
+public sealed record InspectionGraphChoice(string Via, string? Trigger, string? Target, string Cause);
 public sealed record InspectionAttempt(string ContinuationId, string InvocationId, string StepId,
     string? AttemptId, string? Kind, string? Host, DateTime StartedAtUtc, string? Reason);
 public sealed record InspectionWait(string WaitRef, string ContinuationId, string StepId, WaitKind Kind,

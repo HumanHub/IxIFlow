@@ -37,8 +37,32 @@ public sealed partial class DebugAdapterSession
         _variables[id] = new(thread, scope, path, value.Clone(), Revision, Generation, Cursor);
         return id;
     }
-    private JsonElement ScopeValue(string thread, string scope)
+    private InspectionFrame? GraphFrame(string thread, InspectionFrame? frame = null)
     {
+        var threads = CurrentThreads();
+        InspectionThread? current = threads.Single(t => t.ContinuationId == thread);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        while (current != null && visited.Add(current.ContinuationId))
+        {
+            var frames = current.Frames;
+            var index = frame == null ? frames.Count - 1 : frames.ToList().FindIndex(f => f.ActivationId == frame.ActivationId);
+            var graph = frames.Take(index + 1).LastOrDefault(f => f.GraphId != null);
+            if (graph != null) return graph;
+            // Ordinary fork stacks omit enclosing frames; use parents from the same live/replay position.
+            current = threads.SingleOrDefault(t => t.ContinuationId == current.ParentContinuationId);
+            frame = null;
+        }
+        return null;
+    }
+    private JsonElement ScopeValue(string thread, string scope, InspectionFrame? frame = null)
+    {
+        if (scope == "graph")
+        {
+            var graph = GraphFrame(thread, frame) ?? throw new ProtocolException("No graph in the selected frame");
+            return JsonSerializer.SerializeToElement(new { id = graph.GraphId, node = graph.Node,
+                phase = graph.Phase, visit = graph.Visit, armOccurrence = graph.ArmOccurrence,
+                via = graph.Via, pending = graph.Pending });
+        }
         if (scope == "data")
         {
             var data = _replay == null ? _inspection!.Data : _replay.Current.Data;
@@ -61,10 +85,11 @@ public sealed partial class DebugAdapterSession
         var frame = Frame(args.Value<int>("frameId"));
         var scopes = new List<object>();
         foreach (var (name, scope) in new[] { ("Workflow data", "data"), ("Previous step (unavailable)", "previous"),
-            ("Item", "item"), ("Attempt", "attempt"), ("Waits", "waits") })
+            ("Item", "item"), ("Attempt", "attempt"), ("Waits", "waits"), ("Graph", "graph") })
         {
+            if (scope == "graph" && GraphFrame(frame.Thread, frame.Frame) == null) continue;
             var reference = 0;
-            try { reference = Handle(frame.Thread, scope, [], ScopeValue(frame.Thread, scope)); }
+            try { reference = Handle(frame.Thread, scope, [], ScopeValue(frame.Thread, scope, frame.Frame)); }
             catch (ProtocolException) { }
             scopes.Add(new { name, variablesReference = reference, expensive = false });
         }
@@ -127,7 +152,7 @@ public sealed partial class DebugAdapterSession
         ClearHandles();
         Emit<InvalidatedEvent>(new { areas = new[] { "variables", "stacks" } });
     }
-    private static readonly Regex PathExpression = new(@"^(data|WorkflowData|previous|item|attempt|waits)(\.[A-Za-z_][A-Za-z0-9_]*|\[(0|[1-9][0-9]*)\])*$", RegexOptions.CultureInvariant);
+    private static readonly Regex PathExpression = new(@"^(data|WorkflowData|previous|item|attempt|waits|graph)(\.[A-Za-z_][A-Za-z0-9_]*|\[(0|[1-9][0-9]*)\])*$", RegexOptions.CultureInvariant);
     private static (string Scope, string[] Path) ParsePath(string expression)
     {
         if (expression.Length > 4096 || !PathExpression.IsMatch(expression)) throw new ProtocolException("Evaluate accepts scope paths only");
@@ -150,7 +175,7 @@ public sealed partial class DebugAdapterSession
             foreach (var part in path) safeValue = Child(safeValue, part);
             return new { value = Display(safeValue), variablesReference = 0 };
         }
-        var value = ScopeValue(thread, scope);
+        var value = ScopeValue(thread, scope, frame?.Frame);
         foreach (var part in path)
             value = Child(value, part);
         return new { result = Display(value), type = value.ValueKind.ToString(), variablesReference = Handle(thread, scope, path, value) };

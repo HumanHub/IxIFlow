@@ -25,13 +25,22 @@ internal static class ParallelRules
     {
         var all = Flatten(steps).ToList();
         var parallel = all.Where(step => step.StepType == WorkflowStepType.Parallel ||
-                                         step is { StepType: WorkflowStepType.ForEach, ForEachParallel: true }).ToList();
+                                         step is { StepType: WorkflowStepType.ForEach, ForEachParallel: true } ||
+                                         step.StepType == WorkflowStepType.StateMachine && step.GraphStates.Any(state =>
+                                             state.Transitions.Any(t => t.Steps[0].TriggerKind == TriggerKind.Activity))).ToList();
         foreach (var dataType in all.Select(step => step.WorkflowDataType).OfType<Type>().Distinct())
             WorkflowBuildError.Check(parallel.FirstOrDefault(step => step.WorkflowDataType == dataType) ??
                 all.First(step => step.WorkflowDataType == dataType), () =>
                 { BranchData.Validate(dataType, branches: parallel.Any(step => step.WorkflowDataType == dataType)); return true; });
         foreach (var step in parallel)
-            if (step.ParallelJoinMode == ParallelJoinMode.WaitAny)
+            if (step.StepType == WorkflowStepType.StateMachine)
+            {
+                foreach (var state in step.GraphStates.Where(state => state.Transitions.Any(t => t.Steps[0].TriggerKind == TriggerKind.Activity)))
+                    foreach (var transition in state.Transitions)
+                        _ = Writes(step, transition.RunSteps.Count > 0 ? transition.RunSteps : transition.Steps,
+                            waitAny: true).ToList();
+            }
+            else if (step.ParallelJoinMode == ParallelJoinMode.WaitAny)
             {
                 // One branch is merged, so branches may write the same data, but every write must reach it.
                 var bodies = step.StepType == WorkflowStepType.Parallel ? step.ParallelBranches : [step.ForEachBodySteps];
@@ -75,7 +84,7 @@ internal static class ParallelRules
 
     // The workflow data paths a branch body can write, including nested bodies and joins, as the JSON paths
     // the join merges them at (BranchData.MergePath); a write the join merges per key is left out (null).
-    private static IEnumerable<List<string>?> Writes(WorkflowStep parallel, IReadOnlyList<WorkflowStep> body)
+    private static IEnumerable<List<string>?> Writes(WorkflowStep parallel, IReadOnlyList<WorkflowStep> body, bool waitAny = false)
     {
         var dataType = parallel.WorkflowDataType;
         foreach (var step in Flatten(body))
@@ -83,7 +92,7 @@ internal static class ParallelRules
             foreach (var mapping in Mappings(step).Where(mapping => mapping.Direction == PropertyMappingDirection.Output))
             {
                 // Under WaitAny nothing is compared, so a target the rules cannot name is the author's.
-                if (mapping.TargetPath == null && parallel.ParallelJoinMode == ParallelJoinMode.WaitAny)
+                if (mapping.TargetPath == null && (waitAny || parallel.ParallelJoinMode == ParallelJoinMode.WaitAny))
                     continue;
                 if (mapping.TargetPath == null)
                     throw WorkflowBuildError.Invalid(step,
@@ -126,15 +135,12 @@ internal static class ParallelRules
         foreach (var step in steps)
         {
             yield return step;
-            var nested = new IReadOnlyList<WorkflowStep>[]
-                {
-                    step.SequenceSteps, step.ThenSteps, step.ElseSteps, step.LoopBodySteps, step.FinallySteps,
-                    step.CatchBlocks, step.TimeoutSteps, step.ForEachBodySteps
-                }
-                .Concat(step.ParallelBranches)
-                .Concat(step.OutcomeBranches.Select(branch => branch.Steps));
-            foreach (var body in nested)
-                foreach (var inner in Flatten(body))
+            // Keep validation order: catches precede timeouts, and item bodies follow both.
+            foreach (var scope in step.ChildScopes().OrderBy(scope => scope.Kind switch
+                     {
+                         "timeout" => 1, "foreach" => 2, "branch" or "outcome" => 3, _ => 0
+                     }))
+                foreach (var inner in Flatten(scope.Steps))
                     yield return inner;
         }
     }

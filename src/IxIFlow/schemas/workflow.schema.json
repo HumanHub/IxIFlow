@@ -460,6 +460,9 @@
         "kind": {
           "type": "string",
           "enum": [
+            "flowchart",
+            "stateMachine",
+            "transition",
             "activity",
             "activityRef",
             "stepRef",
@@ -484,6 +487,51 @@
         }
       },
       "allOf": [
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "flowchart"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/flowchartStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "stateMachine"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/stateMachineStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "transition"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/transitionStep"
+          }
+        },
         {
           "if": {
             "required": [
@@ -772,6 +820,631 @@
       ],
       "required": [
         "kind"
+      ]
+    },
+    "flowchartStep": {
+      "type": "object",
+      "description": "A flowchart of keyed bodies and ordered first-match edges.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "flowchart",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "start": {
+          "type": "string",
+          "description": "The key of the first node."
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/flowchartNode"
+          },
+          "description": "The nodes, addressed by ordinal key rather than declaration position."
+        }
+      },
+      "required": [
+        "kind",
+        "start",
+        "nodes"
+      ]
+    },
+    "flowchartNode": {
+      "type": "object",
+      "description": "A keyed flowchart body, optional switch selector and ordered edges.",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "The unique nonempty node key, without slashes; end is reserved."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The display name, excluded from structure identity."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "The node body, whose last value is available to its decision."
+        },
+        "switch": {
+          "$ref": "#/definitions/expression",
+          "description": "A pure selector matched against case labels, instead of when guards."
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/flowchartEdge"
+          },
+          "description": "Edges in first-match order; an unguarded fallback must be last."
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "switch"
+            ]
+          },
+          "then": {
+            "properties": {
+              "transitions": {
+                "items": {
+                  "not": {
+                    "required": [
+                      "when"
+                    ]
+                  },
+                  "properties": {
+                    "default": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "transitions": {
+                "items": {
+                  "not": {
+                    "required": [
+                      "case"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "flowchartEdge": {
+      "type": "object",
+      "description": "A guarded edge, a switch case, or the last fallback edge.",
+      "additionalProperties": false,
+      "properties": {
+        "when": {
+          "$ref": "#/definitions/expression",
+          "description": "A pure Boolean guard, available only without switch."
+        },
+        "case": {
+          "description": "A scalar literal or build-time expression matched against the node\u0027s switch value.",
+          "anyOf": [
+            {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            },
+            {
+              "$ref": "#/definitions/expression"
+            }
+          ]
+        },
+        "default": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Overrides the inferred fallback flag: true selects Otherwise, false selects Always. Used to preserve the fluent edge\u0027s exact structure."
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The destination key; end or null completes the graph."
+        }
+      },
+      "required": [
+        "to"
+      ],
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "when",
+              "case"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "default",
+              "when"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "default",
+              "case"
+            ]
+          }
+        }
+      ]
+    },
+    "stateMachineStep": {
+      "type": "object",
+      "description": "A state machine with keyed entry and exit bodies and ordered triggers.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "stateMachine",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "start": {
+          "type": "string",
+          "description": "The key of the first state."
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/state"
+          },
+          "description": "The states, addressed by ordinal key rather than declaration position."
+        }
+      },
+      "required": [
+        "kind",
+        "start",
+        "states"
+      ]
+    },
+    "state": {
+      "type": "object",
+      "description": "A state with entry, exit and transitions, or a final state with entry only.",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "The unique nonempty state key, without slashes; end is reserved."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The display name, excluded from structure identity."
+        },
+        "final": {
+          "type": "boolean",
+          "description": "Whether completing entry completes the state machine.",
+          "default": false
+        },
+        "entry": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Steps run once on each state visit."
+        },
+        "exit": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Steps run after selection and before the transition action. An empty array declares an exit scope; omission declares none."
+        },
+        "transitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/stateTransition"
+          },
+          "description": "Triggers in arbitration order."
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "final"
+            ],
+            "properties": {
+              "final": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "exit"
+              ]
+            },
+            "properties": {
+              "transitions": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "stateTransition": {
+      "type": "object",
+      "description": "One event, reply, duration or code-activity trigger, or an immediate transition; either a destination or ordered cases.",
+      "additionalProperties": false,
+      "properties": {
+        "when": {
+          "$ref": "#/definitions/expression",
+          "description": "A pure Boolean guard reading the fired value, or incoming value for timers and immediate transitions."
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The destination key; end or null completes the machine."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "The action steps, run after exit with the fired value as previousStep."
+        },
+        "on": {
+          "type": "string",
+          "description": "The keyed event name; requires event."
+        },
+        "reply": {
+          "type": "string",
+          "description": "The name of a request directly in this state\u0027s entry; requires event."
+        },
+        "event": {
+          "type": "string",
+          "description": "The event or reply CLR type or catalog key."
+        },
+        "after": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/definitions/expression"
+            }
+          ],
+          "description": "A positive invariant TimeSpan string or a pure expression returning TimeSpan."
+        },
+        "activity": {
+          "type": "string",
+          "description": "One code activity to race against the other triggers."
+        },
+        "activityVersion": {
+          "type": "string",
+          "description": "The activity contract version, when supplied."
+        },
+        "matches": {
+          "$ref": "#/definitions/expression",
+          "description": "An intake predicate for event and reply triggers, reading event and workflow."
+        },
+        "defaultPayload": {
+          "description": "The suggested event or reply payload when armed."
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Inputs from workflow and the graph\u0027s incoming previousStep."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Outputs from the event, reply or completed activity into workflow data."
+        },
+        "cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/stateCase"
+          },
+          "description": "Ordered guarded alternatives instead of a direct to, when and steps.",
+          "minItems": 1
+        }
+      },
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "required": [
+                "to"
+              ],
+              "not": {
+                "required": [
+                  "cases"
+                ]
+              }
+            },
+            {
+              "required": [
+                "cases"
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "to"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "when"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "steps"
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "required": [
+                  "on"
+                ]
+              },
+              {
+                "required": [
+                  "reply"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "required": [
+              "event"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "event"
+                  ]
+                },
+                {
+                  "required": [
+                    "matches"
+                  ]
+                },
+                {
+                  "required": [
+                    "defaultPayload"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "required": [
+                "activity"
+              ]
+            }
+          },
+          "then": {
+            "properties": {
+              "activityVersion": {
+                "const": ""
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "on"
+                  ]
+                },
+                {
+                  "required": [
+                    "reply"
+                  ]
+                },
+                {
+                  "required": [
+                    "activity"
+                  ]
+                }
+              ]
+            }
+          },
+          "then": {
+            "properties": {
+              "input": {
+                "maxItems": 0
+              },
+              "output": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "on",
+              "reply"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "on",
+              "after"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "on",
+              "activity"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "reply",
+              "after"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "reply",
+              "activity"
+            ]
+          }
+        },
+        {
+          "not": {
+            "required": [
+              "after",
+              "activity"
+            ]
+          }
+        }
+      ]
+    },
+    "stateCase": {
+      "type": "object",
+      "description": "A guarded destination with an optional transition action.",
+      "additionalProperties": false,
+      "properties": {
+        "when": {
+          "$ref": "#/definitions/expression",
+          "description": "A pure Boolean guard reading the fired value, or incoming value for timers and immediate transitions."
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The destination key; end or null completes the machine."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "The action steps, run after exit with the fired value as previousStep."
+        }
+      },
+      "required": [
+        "to"
+      ]
+    },
+    "transitionStep": {
+      "type": "object",
+      "description": "An explicit destination ending a timeout path that leaves a node or non-final state entry.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "transition",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The destination key; end or null completes the graph."
+        }
+      },
+      "required": [
+        "to"
       ]
     },
     "activityStep": {

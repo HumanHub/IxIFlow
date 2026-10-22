@@ -17,8 +17,16 @@ internal static class WorkflowValueBinding
         var typedPrevious = step.StepMetadata.ContainsKey("IsSagaStep") &&
             step.PreviousStepDataType?.IsInstanceOfType(previous) == true;
         var factory = typedPrevious ? step.Runtime.PreviousEventContext! : step.Runtime.EventContext!;
-        var context = factory(new MappingContextValues(workflowData, previous, Event: @event));
-        return step.CompiledCondition((items ?? ItemValues.None).On(context));
+        var context = (items ?? ItemValues.None).On(factory(new MappingContextValues(workflowData, previous, Event: @event)));
+        try
+        {
+            return step.CompiledCondition(context);
+        }
+        catch (Exception error)
+        {
+            WorkflowEngineException.FromWorkflowCode(error);
+            throw;
+        }
     }
 
     public static void ApplyEventOutputs<TEvent>(WorkflowStep step, TEvent @event, object workflowData,
@@ -34,7 +42,16 @@ internal static class WorkflowValueBinding
             var assign = mapping.TargetAssignmentFunction
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Wait output '{mapping.TargetProperty}' has no assignment");
-            assign(context, property.GetValue(@event));
+            var value = property.GetValue(@event);
+            try
+            {
+                assign(context, value);
+            }
+            catch (Exception error)
+            {
+                WorkflowEngineException.FromWorkflowCode(error);
+                throw;
+            }
         }
     }
 

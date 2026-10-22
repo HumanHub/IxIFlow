@@ -243,6 +243,27 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
         return this;
     }
 
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Flowchart(
+        Action<FlowchartBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
+            .Flowchart(configure, sourcePath: sourcePath, sourceLine: sourceLine);
+        CaptureFaults(steps[^1]);
+        return this;
+    }
+
+    /// <summary>Runs a native state machine, retaining the incoming previous value.</summary>
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> StateMachine(
+        Action<StateMachineBuilder<TWorkflowData, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty)
+            .StateMachine(configure, sourcePath: sourcePath, sourceLine: sourceLine);
+        CaptureFaults(steps[^1]);
+        return this;
+    }
+
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> If(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, bool>> condition,
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> then,
@@ -325,10 +346,8 @@ public sealed class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepDat
     private static void CaptureFaults(WorkflowStep step)
     {
         step.Runtime = step.Runtime.ForFault<TFault>();
-        foreach (var child in new[] { step.SequenceSteps, step.ThenSteps, step.ElseSteps,
-                     step.LoopBodySteps, step.ForEachBodySteps, step.FinallySteps, step.TimeoutSteps }
-                     .Concat(step.ParallelBranches).Concat(step.OutcomeBranches.Select(branch => branch.Steps))
-                     .SelectMany(body => body))
+        foreach (var child in step.ChildScopes().Where(scope => scope.Kind != "catch")
+                     .SelectMany(scope => scope.Steps))
             CaptureFaults(child);
     }
 

@@ -164,7 +164,8 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
                 continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
         }
         catch (Exception error) when (error is not OutOfMemoryException &&
-                                      error is not WorkflowEngineException { Kind: WorkflowErrorKind.PayloadUnavailable })
+                                      !(WorkflowEngineException.IsEngineFailure(error) &&
+                                        error is WorkflowEngineException { Kind: WorkflowErrorKind.PayloadUnavailable }))
         {
             return false;
         }
@@ -204,8 +205,12 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             EventId = stored.EventId,
             WaitId = wait.Id
         };
+        if (wait.IsReply)
+            GraphTransitions.RetainReply(continuation, wait, continuation.AcceptedWait.Event!, stored.EventId);
         continuation.Status = ContinuationStatus.Active;
         checkpoint.RemoveWaits(item => item.Id == wait.Id, WaitCloseReason.Answered);
+        if (scopes.Step(wait.StepId).StepType == WorkflowStepType.Trigger)
+            GraphTransitions.TriggerFired(checkpoint, continuation);
         checkpoint.Inbox.Settle(new EventSettlement(stored.EventId, EventOutcome.Consumed, wait.Id));
     }
 
@@ -216,7 +221,8 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             return false;
         var position = continuation.Stack[^1];
         var steps = scopes.Steps(position.ScopeId);
-        return position.NextStepIndex < steps.Count && scopes.Id(steps[position.NextStepIndex]) == wait.StepId;
+        return position.NextStepIndex < steps.Count && (scopes.Id(steps[position.NextStepIndex]) == wait.StepId ||
+            GraphTransitions.Accepts(scopes, continuation, wait.StepId));
     }
 
     private void Reject(WorkflowInstance instance, ExecutionCheckpoint checkpoint, StoredWorkflowEvent stored,

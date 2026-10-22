@@ -48,7 +48,7 @@ public static class WorkflowYamlSerializer
             {
                 if (int.TryParse(scalar.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer)) return integer;
             }
-            else if (type == typeof(bool) && bool.TryParse(scalar.Value, out var flag)) return flag;
+            else if ((type == typeof(bool) || type == typeof(bool?)) && bool.TryParse(scalar.Value, out var flag)) return flag;
             throw Invalid(type, node);
         }
         if (type.IsArray && node is YamlSequenceNode array)
@@ -95,7 +95,10 @@ public static class WorkflowYamlSerializer
         foreach (var property in DocumentModel.GetMembers(type))
             if (entries.TryGetValue(DocumentModel.GetName(property), out var child))
             {
-                var memberValue = ReadValue(property.PropertyType, child);
+                var memberValue = child is YamlMappingNode &&
+                    (type == typeof(StateTransitionDocument) && property.Name == nameof(StateTransitionDocument.After) ||
+                     type == typeof(FlowchartEdgeDocument) && property.Name == nameof(FlowchartEdgeDocument.Case))
+                    ? ReadValue(typeof(ExpressionDocument), child) : ReadValue(property.PropertyType, child);
                 var values = DocumentModel.GetValues(type, property.Name);
                 if (memberValue is string choice && values.Count > 0 && !values.Contains(choice))
                     throw new YamlException(child.Start, child.End, $"{(property.Name == nameof(WorkflowDocument.SchemaVersion) ? "Unsupported schema version" : "Unknown " + DocumentModel.GetName(property))} '{choice}'; use {string.Join(", ", values)}");
@@ -153,8 +156,13 @@ public static class WorkflowYamlSerializer
         {
             var mapping = new YamlMappingNode();
             foreach (var key in DocumentModel.GetKeys(value.GetType()))
+            {
+                if (value is StateTransitionDocument { Cases: not null } && key.Name is "to" or "when" or "steps") continue;
                 if (key.IsDiscriminator) mapping.Add(key.Name, DocumentModel.GetKind(value.GetType())!.Kind);
                 else if (key.Member?.GetValue(value) is { } child) mapping.Add(key.Name, ToYaml(child));
+                else if (key.Name == "to" || key.Name == "case" && ((DocumentNode)value).Members.ContainsKey(key.Name))
+                    mapping.Add(key.Name, ToYaml(null));
+            }
             return mapping;
         }
         if (value is IDictionary dictionary)

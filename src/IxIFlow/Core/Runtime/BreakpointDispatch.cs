@@ -12,11 +12,11 @@ internal static class BreakpointDispatch
         {
             checkpoint.Debug = debug = debug with { SkipOnce = debug.SkipOnce.Where(s => s.BranchId != branch.Id).ToArray() };
             if (skip.StepId == stepId && skip.ActivationId == position.ActivationId &&
-                skip.Iteration == position.LoopIterationCount) return false;
+                skip.Iteration == position.LoopIterationCount && skip.ArmOccurrence == position.ArmOccurrence) return false;
         }
         var evaluation = debug.Evaluation;
         if (evaluation != null && (evaluation.BranchId != branch.Id || evaluation.StepId != stepId ||
-            evaluation.ActivationId != position.ActivationId || evaluation.Iteration != position.LoopIterationCount))
+            evaluation.ActivationId != position.ActivationId || evaluation.Iteration != position.LoopIterationCount || evaluation.ArmOccurrence != position.ArmOccurrence))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Pending breakpoint occurrence differs");
         var breakpoints = evaluation != null ? debug.Breakpoints : debug.Breakpoints.Select(b =>
         {
@@ -29,7 +29,7 @@ internal static class BreakpointDispatch
             BreakpointResolver.Matches(b.HitCondition, b.HitCount)).ToArray();
         if (evaluation == null && candidates.Any(b => b.Condition != null))
         {
-            evaluation = new(branch.Id, stepId, position.ActivationId, position.LoopIterationCount, now);
+            evaluation = new(branch.Id, stepId, position.ActivationId, position.LoopIterationCount, now) { ArmOccurrence = position.ArmOccurrence };
             checkpoint.Debug = debug = debug with { Breakpoints = breakpoints, Evaluation = evaluation };
             // No condition is invoked until its count and time have been acknowledged together.
             await persist();
@@ -79,7 +79,7 @@ internal static class BreakpointDispatch
             if (stop == null || reason != null && stop.Reason == null)
             {
                 stop = new(branch.Id, stepId, breakpoint.Id, position.ActivationId, position.LoopIterationCount,
-                    breakpoint.HitCount, hitAt) { Reason = reason, Diagnostics = diagnostics };
+                    breakpoint.HitCount, hitAt) { Reason = reason, Diagnostics = diagnostics, ArmOccurrence = position.ArmOccurrence };
                 failure = evaluationError;
             }
         }

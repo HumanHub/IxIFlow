@@ -8,7 +8,7 @@ internal sealed class WorkflowScopeCatalog
 {
     private readonly Dictionary<string, IReadOnlyList<WorkflowStep>> _scopes = new();
     private readonly Dictionary<string, WorkflowStep> _steps = new();
-    private readonly Dictionary<(WorkflowStep Step, string Kind, int Index), string> _scopeIds = new();
+    private readonly Dictionary<(WorkflowStep Step, string Kind, string? Key), string> _scopeIds = new();
     private readonly Dictionary<(WorkflowStep Saga, WorkflowStep Source), string> _compensationScopeIds = new();
     private readonly Dictionary<WorkflowStep, string> _ids = new();
     private readonly Dictionary<ItemScope, string> _handles = new(ReferenceEqualityComparer.Instance);
@@ -18,12 +18,14 @@ internal sealed class WorkflowScopeCatalog
         AddScope("root", definition.Steps);
         StructureHash = ComputeStructureHash(definition);
         StepTable = new(this);
+        GraphTable = new(this);
     }
 
     internal IEnumerable<KeyValuePair<string, WorkflowStep>> AllSteps => _steps;
 
     public string StructureHash { get; }
     public StepTable StepTable { get; }
+    public GraphTable GraphTable { get; }
 
     public IReadOnlyCollection<PropertyInfo> FaultProperties(Type exceptionType) => _steps.Values
         .Where(step => step.StepType == WorkflowStepType.CatchBlock &&
@@ -43,6 +45,11 @@ internal sealed class WorkflowScopeCatalog
             $"Step '{stepId}' was not found in the registered workflow definition");
 
     public string Id(WorkflowStep step) => _ids[step];
+    public string NodeScope(WorkflowStep graph, string key) => ScopeId(graph, "node", key);
+    public string EdgeScope(WorkflowStep graph, string key, int index) =>
+        ScopeId(graph, "node", key + "/to/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    public string StateScope(WorkflowStep graph, string key) => ScopeId(graph, "state", key);
+    public string StateExitScope(WorkflowStep graph, string key) => ScopeId(graph, "state", key + "/exit");
     public string SequenceScope(WorkflowStep step) => ScopeId(step, "sequence");
     public string ThenScope(WorkflowStep step) => ScopeId(step, "then");
     public string ElseScope(WorkflowStep step) => ScopeId(step, "else");
@@ -58,14 +65,14 @@ internal sealed class WorkflowScopeCatalog
     public string FinallyScope(WorkflowStep step) => ScopeId(step, "finally");
     public string TimeoutScope(WorkflowStep step) => ScopeId(step, "timeout");
     public string CatchBodyScope(WorkflowStep catchBlock) => SequenceScope(catchBlock);
-    public string BranchScope(WorkflowStep step, int index) => ScopeId(step, "branch", index);
-    public string OutcomeScope(WorkflowStep step, int index) => ScopeId(step, "outcome", index);
+    public string BranchScope(WorkflowStep step, int index) => ScopeId(step, "branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    public string OutcomeScope(WorkflowStep step, int index) => ScopeId(step, "outcome", index.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
-    private string ScopeId(WorkflowStep step, string kind, int index = -1)
+    private string ScopeId(WorkflowStep step, string kind, string? childKey = null)
     {
-        var key = (step, kind, index);
+        var key = (step, kind, childKey);
         if (!_scopeIds.TryGetValue(key, out var id))
-            _scopeIds.Add(key, id = index < 0 ? $"{Id(step)}/{kind}" : $"{Id(step)}/{kind}/{index}");
+            _scopeIds.Add(key, id = childKey == null ? $"{Id(step)}/{kind}" : $"{Id(step)}/{kind}/{childKey}");
         return id;
     }
 
@@ -82,20 +89,12 @@ internal sealed class WorkflowScopeCatalog
             if (step.ForEachItem != null && !_handles.TryAdd(step.ForEachItem, stepId))
                 throw WorkflowBuildError.Invalid(step,
                     $"{step.ForEachItem} belongs to two ForEach steps, '{_handles[step.ForEachItem]}' and '{stepId}'");
-            AddScope(SequenceScope(step), step.SequenceSteps);
-            AddScope(ThenScope(step), step.ThenSteps);
-            AddScope(ElseScope(step), step.ElseSteps);
-            AddScope(LoopScope(step), step.LoopBodySteps);
-            AddScope(ForEachScope(step), step.ForEachBodySteps);
-            AddScope(FinallyScope(step), step.FinallySteps);
-            AddScope(TimeoutScope(step), step.TimeoutSteps);
-            AddScope($"{stepId}/catch", step.CatchBlocks);
-            if (step.StepType == WorkflowStepType.Saga)
-                AddSagaCompensations(step);
-            for (var branchIndex = 0; branchIndex < step.ParallelBranches.Count; branchIndex++)
-                AddScope(BranchScope(step, branchIndex), step.ParallelBranches[branchIndex]);
-            for (var outcomeIndex = 0; outcomeIndex < step.OutcomeBranches.Count; outcomeIndex++)
-                AddScope(OutcomeScope(step, outcomeIndex), step.OutcomeBranches[outcomeIndex].Steps);
+            foreach (var scope in step.ChildScopes())
+            {
+                AddScope(ScopeId(step, scope.Kind, scope.Key), scope.Steps);
+                if (scope.Kind == "catch" && step.StepType == WorkflowStepType.Saga)
+                    AddSagaCompensations(step);
+            }
         }
     }
 
@@ -134,8 +133,8 @@ internal sealed class WorkflowScopeCatalog
             if (step.StepType == WorkflowStepType.Activity &&
                 step.StepMetadata.ContainsKey("IsSagaStep"))
                 yield return step;
-            foreach (var branch in step.OutcomeBranches)
-                foreach (var nested in SagaActivities(branch.Steps))
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind == "outcome"))
+                foreach (var nested in SagaActivities(scope.Steps))
                     yield return nested;
         }
     }
@@ -146,7 +145,7 @@ internal sealed class WorkflowScopeCatalog
         // adding an empty branch changes the topology even when it adds no steps.
         var manifest = new
         {
-            Format = 1,
+            Format = 3,
             Data = WorkflowTypeIdentity.StableName(definition.WorkflowDataType),
             Combiners = ParallelRules.CombinerSignature(definition.WorkflowDataType),
             Scopes = _scopes.OrderBy(pair => pair.Key, StringComparer.Ordinal)
@@ -168,6 +167,16 @@ internal sealed class WorkflowScopeCatalog
                     WaitKey = step.StepMetadata.GetValueOrDefault("WaitKey") as string,
                     Timeout = step.WaitTimeout?.Ticks, Delay = step.DelayDuration?.Ticks,
                     step.ParallelJoinMode, step.LoopType,
+                    step.Target, step.IsDefault, step.Explicit, step.TriggerKind,
+                    After = Shape(step.AfterExpression),
+                    EdgeLabel = OutcomeBranchSignature(new WorkflowOutcomeBranch { Value = step.EdgeLabel }),
+                    Graph = step.StepType is WorkflowStepType.Flowchart or WorkflowStepType.StateMachine ? new
+                    {
+                        Kind = step.StepType, Start = step.GraphStart,
+                        Nodes = step.GraphNodes.Select(node => new { node.Key, Final = false })
+                            .Concat(step.GraphStates.Select(state => new { state.Key, state.Final }))
+                            .OrderBy(node => node.Key, StringComparer.Ordinal)
+                    } : null,
                     Exception = WorkflowTypeIdentity.StableName(step.ExceptionType),
                     Fault = WorkflowTypeIdentity.StableName(step.FaultType),
                     Condition = Shape(step.ConditionExpression),

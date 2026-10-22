@@ -23,7 +23,16 @@ internal static class WaitSuggestions
         {
             var context = (items ?? ItemValues.None).On((mapping.ContextFactory ?? step.Runtime.Context)(values));
             var property = eventType.GetProperty(mapping.TargetProperty)!;
-            var value = mapping.SourceFunction(context);
+            object? value;
+            try
+            {
+                value = mapping.SourceFunction(context);
+            }
+            catch (Exception error)
+            {
+                WorkflowEngineException.FromWorkflowCode(error);
+                throw;
+            }
             property.SetValue(payload, value);
             mapped[property.Name] = value;
         }

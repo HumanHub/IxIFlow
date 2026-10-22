@@ -63,9 +63,17 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
             await Reader.HydrateAsync(continuation.AcceptedWait);
         }
         await Reader.HydrateAsync(continuation.InheritedItems);
+        // Bound replies and branch fires move by reference. Their eventual readers prepare
+        // AcceptedWait or the parent's selected Graph.Fired.Event, without loading losing receipts.
         for (var index = 0; index < continuation.Stack.Count; index++)
         {
             var frame = continuation.Stack[index];
+            if (frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen)
+                await Reader.HydrateAsync(frame.EntryPrevious);
+            await Reader.HydrateAsync(frame.Graph?.Pending?.Event);
+            // Reply matching does not read the selected fire while its parent is still Joining.
+            // Keep it by reference until the parent dispatches Arm after the join settles.
+            if (restoreInputs) await Reader.HydrateAsync(frame.Graph?.Fired?.Event);
             if (frame.ForEachIndex is { } item && index > 0 && continuation.Stack[index - 1].ForEach is { } owner)
                 await Reader.ReadAsync(owner.Items[item]);
             if (restoreInputs && index == continuation.Stack.Count - 1 && frame.ForEach is { } list &&
