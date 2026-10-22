@@ -17,6 +17,17 @@ internal sealed partial class TraceBuffer
         });
     }
 
+    public void Fault(WorkflowStep step, ContinuationState continuation, SerializedException error, bool rethrow,
+        WorkflowFaultLocation current)
+    {
+        var kind = rethrow ? TraceEntryType.FaultRethrown : TraceEntryType.FaultRaised;
+        var now = _time.GetUtcNow().UtcDateTime;
+        if (Accepts(kind, now)) Add(new ExecutionTraceEntry { Timestamp = now, EntryType = kind,
+            Payload = new FaultTrace(_scopes!.Id(step), step.StepType, continuation.Id, error.Type,
+                error.OriginalFaultLocation, current)
+                { DeclaredExceptionType = step.StepType == WorkflowStepType.Throw ? WorkflowTypeIdentity.SavedName(step.ExceptionType!) : null } });
+    }
+
     public void Condition(WorkflowStep step, ContinuationState continuation, int index, string scopeId,
         ConditionPath path)
     {

@@ -13,6 +13,12 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
     : IWorkflowBuilder<TWorkflowData>
     where TWorkflowData : class
 {
+    public IWorkflowBuilder<TWorkflowData, object> Throw<TException>(Expression<Func<WorkflowContext<TWorkflowData, object>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception =>
+        new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs).Throw(value, sourcePath, sourceLine);
+    public IWorkflowBuilder<TWorkflowData, object> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs).Rethrow(sourcePath, sourceLine);
+
     private readonly List<WorkflowStep> _steps = new();
     private List<string>? declaredInputs;
     private List<string>? declaredOutputs;
@@ -227,6 +233,26 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     where TWorkflowData : class
     where TPreviousStepData : class
 {
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Throw<TException>(Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var evaluate = value.Compile();
+        var step = Core.Runtime.ThrowConstruction.Leaf<TWorkflowData, TPreviousStepData>(WorkflowStepType.Throw, sourcePath, sourceLine);
+        step.ExceptionType = typeof(TException);
+        step.ExceptionExpression = value;
+        step.ExceptionFactoryReturnType = value.ReturnType;
+        step.ExceptionFactory = context => evaluate((WorkflowContext<TWorkflowData, TPreviousStepData>)context);
+
+        _steps.Add(step);
+        return this;
+    }
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        _steps.Add(Core.Runtime.ThrowConstruction.Leaf<TWorkflowData, TPreviousStepData>(WorkflowStepType.Rethrow, sourcePath, sourceLine));
+        return this;
+    }
+
     protected readonly List<WorkflowStep> _steps = steps;
     internal List<WorkflowStep> Steps => _steps;
     private readonly List<WorkflowDemand> _demands = demands ?? [];

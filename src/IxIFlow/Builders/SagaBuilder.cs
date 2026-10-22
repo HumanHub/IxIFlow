@@ -17,6 +17,26 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
     where TWorkflowData : class
     where TPreviousStepData : class
 {
+    public ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Throw<TException>(Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var evaluate = value.Compile();
+        var step = Core.Runtime.ThrowConstruction.Leaf<TWorkflowData, TPreviousStepData>(WorkflowStepType.Throw, sourcePath, sourceLine);
+        step.ExceptionType = typeof(TException);
+        step.ExceptionExpression = value;
+        step.ExceptionFactoryReturnType = value.ReturnType;
+        step.ExceptionFactory = context => evaluate((WorkflowContext<TWorkflowData, TPreviousStepData>)context);
+
+        _steps.Add(step);
+        return this;
+    }
+    public ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        _steps.Add(Core.Runtime.ThrowConstruction.Leaf<TWorkflowData, TPreviousStepData>(WorkflowStepType.Rethrow, sourcePath, sourceLine));
+        return this;
+    }
+
     private readonly List<SagaStepInfo> _sagaSteps = sagaSteps ?? throw new ArgumentNullException(nameof(sagaSteps));
     private readonly List<WorkflowStep> _steps = steps ?? throw new ArgumentNullException(nameof(steps));
 

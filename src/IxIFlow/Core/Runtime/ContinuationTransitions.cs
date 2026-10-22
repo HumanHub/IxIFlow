@@ -121,6 +121,22 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         int maxForEachItems,
         int maxGraphTransitionsPerPass = ExecutionLimits.DefaultMaxGraphTransitionsPerPass)
     {
+        using var boundary = new FaultCapture.Boundary(checkpoint);
+        try
+        {
+            AdvanceCore(scopes, checkpoint, continuation, maxActiveBranches, maxForEachItems, maxGraphTransitionsPerPass);
+        }
+        catch (Exception error) when (!WorkflowEngineException.IsEngineFailure(error) && error is not ResourceLimitExceededException)
+        {
+            _ = SerializedException.Capture(error, scopes, checkpoint, continuation,
+                newOccurrence: !boundary.IsPropagation(error));
+            throw;
+        }
+    }
+
+    private void AdvanceCore(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, int maxActiveBranches, int maxForEachItems, int maxGraphTransitionsPerPass)
+    {
         checkpoint.Touch(continuation);
         var workflowData = checkpoint.DataOf(continuation);
         // A branch's copy may change in any transition; its changes are recorded at the next commit.
@@ -220,6 +236,33 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         var step = steps[position.NextStepIndex];
         switch (step.StepType)
         {
+            case WorkflowStepType.Throw:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
+                Exception? raised;
+                var factoryReturned = false;
+                var throwContext = WorkflowValueBinding.EvaluationContext(step, workflowData,
+                    continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation),
+                    TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes));
+                try
+                {
+                    raised = step.ExceptionFactory!(throwContext);
+                    factoryReturned = true;
+                }
+                catch (Exception factoryError) { raised = WorkflowEngineException.FromWorkflowCode(factoryError); }
+                if (factoryReturned && (raised == null || raised.GetType() != step.ExceptionType))
+                    raised = new InvalidOperationException("The Throw factory must return a non-null instance of its declared concrete exception type");
+                var saved = SerializedException.Capture(raised!, scopes, checkpoint, continuation, newOccurrence: true);
+                checkpoint.Trace.Fault(step, continuation, saved, false, SerializedException.Location(scopes, checkpoint, continuation)!);
+                saved.Propagate(checkpoint);
+                break;
+
+            case WorkflowStepType.Rethrow:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
+                var original = TryScopeTransitions.RethrowError(scopes, checkpoint, continuation, step);
+                checkpoint.Trace.Fault(step, continuation, original, true, SerializedException.Location(scopes, checkpoint, continuation)!);
+                original.Propagate(checkpoint);
+                break;
+
             case WorkflowStepType.InlineWorkflow:
                 InlineTransitions.Enter(scopes, checkpoint, continuation, step, services);
                 break;
@@ -1025,7 +1068,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             var join = checkpoint.Joins.SingleOrDefault(j => j.Id == branch.ParentJoinId);
             if (join != null && !SteppingPolicy.AllowsJoin(checkpoint, join)) continue;
             checkpoint.Touch(branch);
-            var error = branch.DeferredFailure!.ForPropagation();
+            var error = branch.DeferredFailure!.ForPropagation(checkpoint);
             branch.DeferredFailure = null;
             if (!CaptureFailure(scopes, checkpoint, branch, error, allowStepRetry: false)) throw error;
             changed = true;
@@ -1036,8 +1079,10 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
     public bool CaptureFailure(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, Exception error, bool allowStepRetry = true)
     {
+        checkpoint.FailureBoundary?.Clear();
         if (WorkflowEngineException.IsEngineFailure(error))
             return false;
+        var captured = SerializedException.Capture(error, scopes, checkpoint, continuation, newOccurrence: false);
         checkpoint.Touch(continuation);
         // A failed attempt's inputs are kept only for a retry of its step.
         var retryInputs = continuation.RetryInputs;
@@ -1066,7 +1111,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             if (cleanupBoundary >= 0 &&
                 CaptureScopeFailure(scopes, checkpoint, continuation, error, cleanupBoundary))
                 return true;
-            checkpoint.UnhandledError ??= SerializedException.From(error);
+            checkpoint.UnhandledError ??= captured;
             checkpoint.RuntimeUnhandledError ??= error;
             TryScopeTransitions.AbortFailedFinally(checkpoint, continuation);
             TryScopeTransitions.ContinueCancellation(scopes, checkpoint, continuation);
@@ -1082,8 +1127,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             if (continuation.ParentJoinId == null)
             {
                 if (!checkpoint.Joins.Any(join => join.IsCompleting))
+                {
+                    checkpoint.FailureBoundary?.Propagating(error);
                     return false;
-                checkpoint.UnhandledError = SerializedException.From(error);
+                }
+                checkpoint.UnhandledError = captured;
                 checkpoint.RuntimeUnhandledError = error;
                 continuation.Status = ContinuationStatus.Joining;
                 CancelAncestorJoins(checkpoint, continuation);
@@ -1095,7 +1143,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             {
                 // Propagating a branch failure would cancel its held siblings and unwind its parent.
                 // Persist it on the selected branch until the owning join can advance.
-                continuation.DeferredFailure = SerializedException.From(error);
+                continuation.DeferredFailure = captured;
                 continuation.Status = ContinuationStatus.WaitingResolution;
                 return true;
             }

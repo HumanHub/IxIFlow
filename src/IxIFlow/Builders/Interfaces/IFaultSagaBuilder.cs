@@ -9,6 +9,11 @@ public interface IFaultSagaActivityBuilder<TData, TFault, TPrevious> where TPrev
         Expression<Func<FaultContext<TData, TFault, TPrevious>, TValue>> target,
         Expression<Func<FaultContext<TData, TFault, TPrevious>, TValue>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+    /// <summary>Raises a business exception constructed from the current context.</summary>
+    IFaultSagaActivityBuilder<TData, TFault, TPrevious> Throw<TException>(Expression<Func<FaultContext<TData, TFault, TPrevious>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
+    /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
+    IFaultSagaActivityBuilder<TData, TFault, TPrevious> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     IFaultSagaActivityBuilder<TData, TFault, TPrevious> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
     IFaultSagaActivityBuilder<TData, TFault, TActivity> Step<TActivity>(Action<FaultSagaActivitySetup<TData, TFault, TActivity, TPrevious>>? configure = null,

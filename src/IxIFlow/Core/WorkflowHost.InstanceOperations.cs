@@ -280,7 +280,7 @@ public sealed partial class WorkflowHost
                 ? await registry.AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, pending.ChildBundleDigest, cancellationToken) : null;
             var childDataType = childDefinitionLease?.Definition.WorkflowDataType ?? (step.StepType == WorkflowStepType.WorkflowInvocation
                 ? await ResolveChildDataTypeAsync(step) : null);
-            var decision = PrepareResolution(scopes, step, resolution, childDataType, _defaultActor);
+            var decision = PrepareResolution(scopes, checkpoint, continuation, step, resolution, childDataType, _defaultActor);
             var dataType = WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Workflow data type '{instance.WorkflowDataType}' is unavailable");
@@ -429,7 +429,8 @@ public sealed partial class WorkflowHost
         }
 
         private static ActivityResolutionState PrepareResolution(WorkflowScopeCatalog scopes,
-            WorkflowStep step, ActivityResolution resolution, Type? childDataType, string? defaultActor)
+            ExecutionCheckpoint checkpoint, ContinuationState continuation, WorkflowStep step,
+            ActivityResolution resolution, Type? childDataType, string? defaultActor)
         {
             var decision = new ActivityResolutionState
             {
@@ -441,8 +442,7 @@ public sealed partial class WorkflowHost
             if (resolution.Kind == ActivityResolutionKind.Failed)
             {
                 var error = resolution.Error ?? new InvalidOperationException(resolution.Note);
-                decision.Failure = SerializedException.From(error,
-                    scopes.FaultProperties(SerializedException.CatchType(error)));
+                decision.Failure = SerializedException.Capture(error, scopes, checkpoint, continuation, newOccurrence: true);
                 return decision;
             }
 

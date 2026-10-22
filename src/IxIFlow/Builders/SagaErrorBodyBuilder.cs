@@ -24,6 +24,26 @@ public sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepDat
         return this;
     }
 
+    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Throw<TException>(Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var evaluate = value.Compile();
+        var step = Core.Runtime.ThrowConstruction.Leaf<TWorkflowData, TPreviousStepData>(WorkflowStepType.Throw, sourcePath, sourceLine);
+        step.ExceptionType = typeof(TException);
+        step.ExceptionExpression = value;
+        step.ExceptionFactoryReturnType = value.ReturnType;
+        step.ExceptionFactory = context => evaluate((FaultContext<TWorkflowData, TFault, TPreviousStepData>)context);
+        CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>.CaptureFaults(step);
+        steps.Add(step);
+        return this;
+    }
+    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        steps.Add(Core.Runtime.ThrowConstruction.Leaf<TWorkflowData, TPreviousStepData>(WorkflowStepType.Rethrow, sourcePath, sourceLine));
+        return this;
+    }
+
     public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Switch<TValue>(
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> selector,
         Action<SwitchCases<TValue, ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>>> configure,

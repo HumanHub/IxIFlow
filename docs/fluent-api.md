@@ -264,3 +264,31 @@ The target must be a writable serialized property, array/list element or diction
 Both expressions follow workflow purity rules. Values can read the incoming previous value, lexical items and `ctx.Index(item)`, the workflow clock, and a typed `ctx.Fault` in Catch descendants. Fresh replacement objects and collections are allowed. Receivers, indices and the value are evaluated once, in that order. Assignment retains the previous value and participates in parallel conflict/combiner and ForEach result-destination checks.
 
 Assign advances as a pure control step. The next ordinary checkpoint saves its data and cursor together; a restart before that boundary recomputes from the last committed data. Saga retries reapply assignments without automatically undoing data changes. Direct writes and recognized mutators in expressions are rejected; the source analyzer also follows visible helpers, accessors and operators with bounded analysis. Opaque external code, virtual dispatch and arbitrary setter behavior remain the author's responsibility.
+
+## Raising and propagating business errors
+
+Use `Throw<PaymentException>(ctx => new PaymentException("Declined") { Code = ctx.WorkflowData.Code })`
+wherever a body accepts steps. The type must be a concrete business exception; engine, cancellation and saga
+control exceptions are rejected. Constructor arguments and initializers may read workflow data, the incoming
+previous value, items and a lexically enclosing Catch fault. The factory retains the previous value and creates
+no activity attempt. A null or different concrete result, or a factory failure, follows ordinary Catch and saga routing.
+
+`Rethrow()` takes no arguments and binds to the nearest lexically enclosing Try Catch, including nested bodies
+and parallel branches. Build rejects it at the root, in a sibling Finally or in a saga error handler without such
+a Catch. Invoked and inline workflow definitions start their own lexical scope. Rethrow preserves the original
+error type, message, declared properties and workflow location across recovery; changing the Catch DTO does not
+change the error. Diagnostic CLR stacks are not a durable contract.
+
+In YAML use `kind: throw`, `exception: PaymentException`, and `value: {kind: function, function: declined}`.
+The referenced C# expression asset constructs the exception and may include property initializers. Use
+`{kind: rethrow}` inside a Catch, without exception or value arguments.
+
+Factories obey expression purity rules: no external clocks, environment, random values, I/O, waits or mutations
+of existing state. Initializing fresh objects is allowed. Build checks direct expression operations and recognized
+mutators; the analyzer also follows source-visible helpers with bounded alias analysis. Opaque helpers, virtual
+implementations and user setters remain the author's responsibility. Debugger stepping stops at an eligible
+handler or cleanup pick, completes propagation, or saves a Blocked pause at a held join. Continue releases that
+restriction. Privileged inspection exposes the classified, read-only Catch DTO, never the CLR exception.
+
+The [fluent example](../samples/IxIFlow.Samples/ThrowAndRethrow.cs) and its
+[YAML definition](../samples/IxIFlow.Samples/Definitions/throw-and-rethrow.workflow.yaml) form the same executable workflow.

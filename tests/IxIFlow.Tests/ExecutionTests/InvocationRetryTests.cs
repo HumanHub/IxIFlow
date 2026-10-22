@@ -391,9 +391,11 @@ public sealed class InvocationRetryTests
         var scopes = new WorkflowScopeCatalog(definition);
         var continuation = new ContinuationState { Stack = [new ScopePosition { ScopeId = "root", NextStepIndex = 1,
             SagaState = new SagaScopeState() }, new ScopePosition { ScopeId = scopes.SagaScope(definition.Steps[1]) }] };
-        var saved = SerializedException.From(new NonRestorable(42));
+        var saved = SerializedException.Capture(new NonRestorable(42), new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true);
         Assert.False(saved.IsRestorable);
-        var decision = StepErrorPolicies.Handle(scopes, new ExecutionCheckpoint(), continuation, saved.ForPropagation(), Origin.UtcDateTime, null);
+        saved = JsonSerializer.Deserialize<SerializedException>(JsonSerializer.Serialize(saved))!;
+        var error = Assert.IsType<DurableWorkflowException>(saved.ForPropagation(new ExecutionCheckpoint()));
+        var decision = StepErrorPolicies.Handle(scopes, new ExecutionCheckpoint(), continuation, error, Origin.UtcDateTime, null);
         Assert.Equal(StepFailureAction.Ignore, decision.Action);
         Assert.Equal(1, continuation.Stack[^1].NextStepIndex);
     }

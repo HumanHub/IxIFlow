@@ -181,7 +181,7 @@ internal sealed class ActivityAttempts(
         span?.SetTag(Telemetry.AttemptId, attempt.Id);
         span?.SetTag(Telemetry.AttemptNumber, pending.Attempts.Count);
         var task = Telemetry.AttemptEndedAsync(ObserveActivityAsync(prepared, isRecovery, recoveryState,
-            pending.Resolution, skipCancelledRecovery, pending.Inputs, activityCancellation.Token), span, instance, activityType,
+            pending.Resolution, skipCancelledRecovery, pending.Inputs, checkpoint, activityCancellation.Token), span, instance, activityType,
             System.Diagnostics.Stopwatch.GetTimestamp());
         return new RunningActivity(continuation, step, task, activityCancellation,
             prepared, continuation.Stack[^1].NextStepIndex);
@@ -194,13 +194,14 @@ internal sealed class ActivityAttempts(
         ActivityResolutionState? operatorResolution,
         bool skipCancelledRecovery,
         ActivityInputSnapshot inputs,
+        ExecutionCheckpoint checkpoint,
         CancellationToken cancellationToken)
     {
         if (operatorResolution?.Kind == ActivityResolutionKind.Completed)
             return ActivityRunResult.Returned(prepared.Activity);
         if (operatorResolution?.Kind == ActivityResolutionKind.Failed)
-            return ActivityRunResult.Threw(operatorResolution.Failure?.ForPropagation()
-                ?? new InvalidOperationException(operatorResolution.Note));
+            return ActivityRunResult.Propagated(operatorResolution.Failure
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Failed resolution has no saved failure"), checkpoint);
         if (isRecovery)
         {
             ActivityRecoveryResolution resolution;
@@ -336,8 +337,8 @@ internal sealed class ActivityAttempts(
                 output = JsonSerializer.Deserialize(JsonSerializer.Serialize(output), target);
             return Settles(decision.Kind == ActivityResolutionKind.Completed
                 ? ActivityRunResult.Returned(output)
-                : ActivityRunResult.Threw(decision.Failure?.ForPropagation()
-                    ?? new InvalidOperationException(decision.Note)));
+                : ActivityRunResult.Propagated(decision.Failure
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Failed resolution has no saved failure"), checkpoint));
         }
         if (continuation.AcceptedWait is { } accepted && accepted.StepId == scopes.Id(step) && pending != null)
         {
@@ -360,7 +361,7 @@ internal sealed class ActivityAttempts(
             await host.Reader.ReadAsync(completed.DataJson);
             // Failures belong to the parent's catch contract, just as outputs belong to its
             // declared child-data contract. Restore saved types under the parent scope.
-            var outcome = completed.Outcome(step.InvokedDataType ?? dataType);
+            var outcome = completed.Outcome(step.InvokedDataType ?? dataType, checkpoint);
             return Settles(outcome);
         }
         if (pending != null)
@@ -443,7 +444,7 @@ internal sealed class ActivityAttempts(
         {
             using var childTypeScope = childDefinitionLease?.EnterTypes();
             var prepared = WorkflowInstances.Start(childDefinition, data, instance, pending.ChildWorkflowId!,
-                Guid.NewGuid().ToString("N"), Now);
+                Guid.NewGuid().ToString("N"), Now, scopes.FaultPropertyKeys.Concat(checkpoint.InvocationFaultProperties));
             var child = prepared.Child!;
             child.WorkflowDataJson = host.Payloads.Store(child.WorkflowDataJson);
             prepared = new(prepared.ChildInstanceId, System.Text.Json.JsonSerializer.Serialize(child), prepared.ParentWaitId)
@@ -539,6 +540,9 @@ internal sealed class ActivityAttempts(
 
             if (outcome.Kind == ActivityRunKind.Threw)
             {
+                if (outcome.Error != null && !WorkflowEngineException.IsEngineFailure(outcome.Error))
+                    _ = SerializedException.Capture(outcome.Error, scopes, checkpoint, activity.Continuation,
+                        newOccurrence: outcome.FailureOccurrence == FailureOccurrence.Raised);
                 // The attempt records how it ended, and the note it left, for the attempts after it (D-37).
                 if (activity.Continuation.PendingActivity is { Attempts.Count: > 0 } ending)
                     RecordFailure(ending.Attempts[^1], outcome.Error, activity.Prepared?.Context.Attempt.Note);
@@ -602,6 +606,8 @@ internal sealed class ActivityAttempts(
             }
             catch (Exception error)
             {
+                if (!WorkflowEngineException.IsEngineFailure(error))
+                    _ = SerializedException.Capture(error, scopes, checkpoint, activity.Continuation, newOccurrence: true);
                 MarkActivityEnd(activity, instance, checkpoint, "OutputFailed", error);
                 throw;
             }
@@ -699,7 +705,7 @@ internal sealed class ActivityAttempts(
             policyAttempt.EndedAtUtc = Now;
             policyAttempt.Phase = "Ended";
             policyAttempt.Disposition = observation;
-            policyAttempt.Failure = error == null ? null : SerializedException.From(error);
+            policyAttempt.Failure = error == null ? null : SerializedException.From(error, checkpoint: checkpoint);
             policyAttempt.Diagnostic = diagnostic;
             running.Continuation.PendingActivity = null;
             if (error == null || running.ActivityReturned || Unwinding(running.Continuation))
@@ -743,18 +749,23 @@ internal sealed class ActivityAttempts(
 }
 
 internal enum ActivityRunKind { Returned, Threw, Unresolved, Skipped }
+internal enum FailureOccurrence { Raised, Propagated }
 
 internal sealed record ActivityRunResult(
     ActivityRunKind Kind,
     object? Output = null,
     Exception? Error = null,
-    string? Reason = null)
+    string? Reason = null,
+    FailureOccurrence FailureOccurrence = FailureOccurrence.Raised)
 {
     public static ActivityRunResult Returned(object? output) =>
         new(ActivityRunKind.Returned, Output: output);
     // A thrown result is always the step's own failure; engine failures fault the activity task instead.
     public static ActivityRunResult Threw(Exception error) =>
         new(ActivityRunKind.Threw, Error: WorkflowEngineException.FromWorkflowCode(error));
+    public static ActivityRunResult Propagated(SerializedException failure, ExecutionCheckpoint checkpoint) =>
+        new(ActivityRunKind.Threw, Error: WorkflowEngineException.FromWorkflowCode(failure.ForPropagation(checkpoint)),
+            FailureOccurrence: FailureOccurrence.Propagated);
     public static ActivityRunResult Unresolved(string reason, Exception? error = null) =>
         new(ActivityRunKind.Unresolved, Reason: reason, Error: error);
     public static ActivityRunResult Skipped() => new(ActivityRunKind.Skipped);

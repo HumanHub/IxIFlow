@@ -10,6 +10,53 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class SerializedException
 {
+    public WorkflowFaultLocation? OriginalFaultLocation { get; set; }
+    public bool HasDurableProperties { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    private Exception? LiveError { get; set; }
+
+    internal static SerializedException Capture(Exception error, WorkflowScopeCatalog scopes,
+        ExecutionCheckpoint checkpoint, ContinuationState? continuation, bool newOccurrence)
+    {
+        var exceptionType = CatchType(error);
+        var properties = scopes.FaultProperties(exceptionType).Concat(Hierarchy(exceptionType)
+            .SelectMany(type => type.GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly))
+            .Where(property => checkpoint.InvocationFaultProperties.Contains(FaultProjection.PropertyKey(property))))
+            .DistinctBy(FaultProjection.PropertyKey).ToArray();
+        if (!newOccurrence)
+        {
+            var known = From(error, checkpoint);
+            // Invocation contracts were supplied at child start. Propagation never repairs a saved envelope.
+            foreach (var property in properties)
+                if (!known.Properties.ContainsKey(FaultProjection.PropertyKey(property)))
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                        $"Saved exception property '{property.Name}' is unavailable");
+            return known;
+        }
+        var saved = Serialize(error, properties);
+        saved.HasDurableProperties = true;
+        saved.LiveError = error;
+        saved.OriginalFaultLocation = Location(scopes, checkpoint, continuation);
+        checkpoint.CapturedFaults[error] = saved;
+        return saved;
+    }
+
+    private static IEnumerable<Type> Hierarchy(Type type)
+    {
+        for (Type? current = type; current != null; current = current.BaseType) yield return current;
+    }
+
+    internal static WorkflowFaultLocation? Location(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState? continuation)
+    {
+        var frame = continuation?.Stack.LastOrDefault();
+        if (frame == null) return null;
+        var step = scopes.Steps(frame.ScopeId).ElementAtOrDefault(frame.NextStepIndex);
+        var attempt = continuation!.PendingActivity?.Attempts.LastOrDefault()?.Id ??
+            InvocationRecords.Active(checkpoint, continuation)?.Attempts.LastOrDefault()?.Id;
+        return new(step == null ? frame.ScopeId : scopes.Id(step), continuation!.Id, frame.ActivationId, attempt);
+    }
+
     public string Type { get; set; } = "";
     public string Message { get; set; } = "";
     public bool IsRestorable { get; set; } = true;
@@ -22,23 +69,25 @@ internal sealed class SerializedException
     public Dictionary<string, SavedExceptionProperty> Properties { get; set; } = [];
 
     public static SerializedException FromForCatch(Exception error, Type catchType, Type faultType,
-        IReadOnlyCollection<PropertyInfo>? faultProperties = null)
+        ExecutionCheckpoint checkpoint)
     {
         var projection = FaultProjection.For(catchType, faultType);
-        if (error is DurableWorkflowException carried)
-            return carried.Saved.WithFault(projection.Capture(carried.Saved), catchType);
-        var fault = projection.Capture(error);
-        var saved = From(error, faultProperties);
-        saved.Fault = SerializedValue.From(fault);
-        saved.FaultCatchType = WorkflowTypeIdentity.SavedName(catchType);
-        return saved;
+        var saved = From(error, checkpoint);
+        return saved.WithFault(projection.Capture(saved), catchType);
     }
 
-    public static SerializedException From(Exception error,
-        IReadOnlyCollection<PropertyInfo>? faultProperties = null)
+    public static SerializedException From(Exception error, ExecutionCheckpoint checkpoint)
     {
         if (error is DurableWorkflowException carried)
             return carried.Saved;
+        return checkpoint.CapturedFaults.TryGetValue(error, out var captured) ? captured
+            : throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                "The failure has no captured occurrence");
+    }
+
+    private static SerializedException Serialize(Exception error, IReadOnlyCollection<PropertyInfo> faultProperties)
+    {
+        var properties = CaptureFaultProperties(error, faultProperties);
         var constructors = error.GetType().GetConstructors()
             .OrderByDescending(constructor => constructor.GetParameters().Length);
         var failureReason = "no public constructor can rebuild the exception";
@@ -58,7 +107,9 @@ internal sealed class SerializedException
                 IsPolicyTermination = error is SagaTerminatedException { IsPolicyTermination: true },
                 Type = WorkflowTypeIdentity.SavedName(error.GetType()),
                 Message = error.Message,
-                Arguments = arguments
+                Arguments = arguments,
+                HasDurableProperties = faultProperties != null,
+                Properties = properties
             };
             try
             {
@@ -78,21 +129,39 @@ internal sealed class SerializedException
             Type = WorkflowTypeIdentity.SavedName(error.GetType()),
             Message = error.Message,
             IsRestorable = false,
+            HasDurableProperties = faultProperties != null,
             RestorationFailureReason = roundTripFailureReason ?? failureReason,
-            Properties = CaptureFaultProperties(error, faultProperties)
+            Properties = properties
         };
     }
 
-    public Exception ForPropagation() => IsRestorable
-        ? Restore()
-        : new DurableWorkflowException(this);
+    // Exception-valued activity inputs are copied as values, rather than raised as failures.
+    internal static SerializedException ForInputValue(Exception value) => Serialize(value, []);
+
+    public Exception ForPropagation(ExecutionCheckpoint checkpoint)
+    {
+        var error = LiveError ?? (IsRestorable ? Restore() : new DurableWorkflowException(this));
+        checkpoint.CapturedFaults[error] = this;
+        return error;
+    }
+
+    public void Propagate(ExecutionCheckpoint checkpoint)
+    {
+        var error = ForPropagation(checkpoint);
+        checkpoint.FailureBoundary?.Propagating(error);
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
+    }
 
     public static Type CatchType(Exception error) => error is DurableWorkflowException carried
-        ? WorkflowTypeIdentity.Resolve(carried.Saved.Type) ?? error.GetType()
+        ? WorkflowTypeIdentity.Resolve(carried.Saved.Type) ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+            $"Saved exception type '{carried.Saved.Type}' is unavailable")
         : error.GetType();
 
     private SerializedException WithFault(object fault, Type catchType) => new()
     {
+        OriginalFaultLocation = OriginalFaultLocation,
+        HasDurableProperties = HasDurableProperties,
+        LiveError = LiveError,
         IsPolicyTermination = IsPolicyTermination,
         Type = Type,
         Message = Message,
@@ -126,6 +195,10 @@ internal sealed class SerializedException
             }
             catch (Exception captureError)
             {
+                var failure = captureError;
+                while (failure is TargetInvocationException { InnerException: { } inner }) failure = inner;
+                if (WorkflowEngineException.IsEngineFailure(failure) || failure is ResourceLimitExceededException)
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw();
                 values[key] = new SavedExceptionProperty
                 {
                     Error = captureError.GetBaseException().Message
@@ -180,7 +253,7 @@ internal sealed class SerializedException
                 {
                     Type = WorkflowTypeIdentity.SavedName(parameter.ParameterType),
                     Json = value is Exception ? "null" : JsonSerializer.Serialize(value, parameter.ParameterType),
-                    InnerException = value is Exception nested ? From(nested) : null
+                    InnerException = value is Exception nested ? Serialize(nested, []) : null
                 });
             }
             catch (Exception captureFailure)

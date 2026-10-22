@@ -10,6 +10,7 @@ public sealed record ReplayPosition(long Sequence, DateTime? Timestamp, TraceClo
 {
     /// <summary>Only an explicitly attached checkpoint at this exact revision can supply values.</summary>
     public IReadOnlyList<InspectionData>? Data { get; init; }
+    public IReadOnlyList<InspectionCatchFault>? CatchFaults { get; init; }
     public IReadOnlyList<InvocationTrace> Invocations { get; init; } = [];
     public IReadOnlyList<ActivityResolutionTrace> Resolutions { get; init; } = [];
 }
@@ -23,6 +24,7 @@ public sealed class TraceReplay
     private readonly HashSet<string> _breakpoints = new(StringComparer.Ordinal);
     private int _index;
     private readonly Dictionary<long, IReadOnlyList<InspectionData>> _data = [];
+    private readonly Dictionary<long, IReadOnlyList<InspectionCatchFault>> _faults = [];
     private string? _structureHash;
     private string? _instanceId;
     private TraceReplay(ReplayPosition[] positions, string?[] stops, HashSet<string> catalog)
@@ -35,7 +37,7 @@ public sealed class TraceReplay
         {
             var position = _positions[_index];
             if (position.IsCheckpoint && position.Revision is { } revision && _data.TryGetValue(revision, out var data))
-                position = position with { Data = data };
+                position = position with { Data = data, CatchFaults = _faults.GetValueOrDefault(revision) };
             return InspectionPrivacy.Clean(position, []);
         }
     }
@@ -49,6 +51,7 @@ public sealed class TraceReplay
         if (boundary == null || JsonSerializer.Serialize(boundary.Threads) != JsonSerializer.Serialize(inspection.Threads))
             throw new ArgumentException("The checkpoint does not match a recorded revision and position", nameof(inspection));
         _data[inspection.Revision] = InspectionPrivacy.Clean(inspection.Data, []);
+        _faults[inspection.Revision] = InspectionPrivacy.Clean(inspection.CatchFaults, []);
     }
     public bool CanStepForward => _index + 1 < _positions.Length;
     /// <summary>The recorded executable step occurrence at this cursor position, if any.</summary>

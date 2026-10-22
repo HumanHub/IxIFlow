@@ -1,0 +1,22 @@
+{
+  "workflow": {
+    "name": "ThrowConformanceInline",
+    "dataType": "IxIFlow.Tests.Conformance.ThrowScenarios+Data"
+  },
+  "code": {
+    "raise": {
+      "language": "csharp-expression",
+      "source": "new IxIFlow.Tests.Conformance.ThrowScenarios.BusinessError(\"private\") { Code = 73 }"
+    }
+  },
+  "definitions": [
+    {
+      "kind": "throw",
+      "exception": "IxIFlow.Tests.Conformance.ThrowScenarios+BusinessError",
+      "value": {
+        "kind": "function",
+        "function": "raise"
+      }
+    }
+  ]
+}

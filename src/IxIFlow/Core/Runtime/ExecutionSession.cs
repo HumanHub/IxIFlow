@@ -55,6 +55,8 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
     {
         if (!NeedsHydration) return;
         await PrepareDataReadAsync(checkpoint, continuation);
+        await Reader.HydrateAsync(continuation.DeferredFailure);
+        await Reader.HydrateAsync(checkpoint.UnhandledError);
         if (continuation.RuntimePrevious == null) await Reader.HydrateAsync(continuation.Previous);
         if (restoreInputs)
         {
@@ -85,9 +87,9 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
                 await Reader.HydrateAsync(frame.SagaState);
             if (restoreInputs && frame.TryState?.Phase is TryPhase.Catch or TryPhase.Finally)
                 await Reader.HydrateAsync(frame.TryState);
-            if (frame.TryState?.Phase == TryPhase.Catch) await Reader.HydrateAsync(frame.TryState.Error?.Fault);
+            if (frame.TryState?.Phase == TryPhase.Catch) await Reader.HydrateAsync(frame.TryState.Error);
             if (frame.SagaState is { Phase: SagaPhase.Compensating, ErrorHandlerStarted: true })
-                await Reader.HydrateAsync(frame.SagaState.Error?.Fault);
+                await Reader.HydrateAsync(frame.SagaState.Error);
             if (restoreInputs && frame.SagaState is { Phase: SagaPhase.Forward, RetryCount: > 0 } saga &&
                 saga.AcceptedWaitCursor < saga.AcceptedWaits.Count)
             {
@@ -106,9 +108,9 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
                 ancestor = checkpoint.ContinuationById(joinOwner.ParentContinuationId)!;
                 foreach (var frame in ancestor.Stack)
                 {
-                    if (frame.TryState?.Phase == TryPhase.Catch) await Reader.HydrateAsync(frame.TryState.Error?.Fault);
+                    if (frame.TryState?.Phase == TryPhase.Catch) await Reader.HydrateAsync(frame.TryState.Error);
                     if (frame.SagaState is { Phase: SagaPhase.Compensating, ErrorHandlerStarted: true })
-                        await Reader.HydrateAsync(frame.SagaState.Error?.Fault);
+                        await Reader.HydrateAsync(frame.SagaState.Error);
                 }
             }
         }

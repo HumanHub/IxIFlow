@@ -620,7 +620,7 @@ public sealed class WorkflowContractTests
         var saved = (await provider.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId))!;
         Assert.Equal(WorkflowStatus.Failed, saved.Status);
         var error = ExecutionCheckpoint.Read(saved.ExecutionStateJson).UnhandledError!;
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, Assert.IsType<WorkflowEngineException>(error.ForPropagation()).Kind);
+        Assert.Equal(WorkflowErrorKind.InvalidRequest, Assert.IsType<WorkflowEngineException>(error.ForPropagation(new ExecutionCheckpoint())).Kind);
     }
 
     [Fact]

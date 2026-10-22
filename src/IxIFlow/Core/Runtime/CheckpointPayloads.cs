@@ -125,6 +125,13 @@ internal sealed class CheckpointPayloads(ExecutionLimits limits, PayloadBudget b
         }
         return found.OrderBy(r => r.Digest, StringComparer.Ordinal).ToArray();
     }
+    internal static IReadOnlyList<PayloadReference> References<T>(string json)
+    {
+        var found = new HashSet<PayloadReference>();
+        ReadReferences(json, typeof(T), found);
+        return found.OrderBy(r => r.Digest, StringComparer.Ordinal).ToArray();
+    }
+
     private static void ReadReferences(string json, Type type, HashSet<PayloadReference> found)
     {
         var options = new JsonSerializerOptions();

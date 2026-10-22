@@ -1,0 +1,28 @@
+workflow: {name: ThrowAndRethrow, dataType: IxIFlow.Samples.DeclineData}
+code:
+  declined:
+    language: csharp-expression
+    source: 'new IxIFlow.Samples.PaymentDeclinedException("Payment declined") { Code = workflow.Code }'
+definitions:
+  - kind: activity
+    activity: samples.label
+    input: [{target: Value, from: {kind: constant, value: checkout}}]
+  - kind: try
+    steps:
+      - kind: try
+        steps:
+          - kind: throw
+            exception: IxIFlow.Samples.PaymentDeclinedException
+            value: {kind: function, function: declined}
+        catches:
+          - exception: IxIFlow.Samples.PaymentDeclinedException
+            faultType: IxIFlow.Samples.DeclineFault
+            steps: [{kind: rethrow}]
+    catches:
+      - exception: IxIFlow.Samples.PaymentDeclinedException
+        faultType: IxIFlow.Samples.DeclineFault
+        steps:
+          - kind: activity
+            activity: samples.record-decline
+            input: [{target: Code, from: {path: fault.Code}}]
+            output: [{source: Code, to: {path: workflow.RecordedCode}}]

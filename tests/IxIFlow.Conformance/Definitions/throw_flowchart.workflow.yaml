@@ -1,0 +1,71 @@
+{
+  "workflow": {
+    "name": "ThrowConformanceflowchart",
+    "dataType": "IxIFlow.Tests.Conformance.ThrowScenarios+Data"
+  },
+  "code": {
+    "raise": {
+      "language": "csharp-expression",
+      "source": "new IxIFlow.Tests.Conformance.ThrowScenarios.BusinessError(\"private\") { Code = 73 }"
+    }
+  },
+  "definitions": [
+    {
+      "kind": "try",
+      "steps": [
+        {
+          "kind": "flowchart",
+          "start": "one",
+          "nodes": [
+            {
+              "key": "one",
+              "steps": [
+                {
+                  "kind": "throw",
+                  "exception": "IxIFlow.Tests.Conformance.ThrowScenarios+BusinessError",
+                  "value": {
+                    "kind": "function",
+                    "function": "raise"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "catches": [
+        {
+          "exception": "IxIFlow.Tests.Conformance.ThrowScenarios+BusinessError",
+          "faultType": "IxIFlow.Tests.Conformance.ThrowScenarios+CodeFault",
+          "steps": [
+            {
+              "kind": "waitFor",
+              "key": "handler",
+              "event": "IxIFlow.Tests.Conformance.ThrowScenarios+Go"
+            },
+            {
+              "kind": "activity",
+              "activity": "IxIFlow.Tests.Conformance.ThrowScenarios+Read",
+              "input": [
+                {
+                  "target": "Value",
+                  "from": {
+                    "path": "fault.Code"
+                  }
+                }
+              ],
+              "output": [
+                {
+                  "source": "Value",
+                  "to": {
+                    "path": "workflow.Value"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

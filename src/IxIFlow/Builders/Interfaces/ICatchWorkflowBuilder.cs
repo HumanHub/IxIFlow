@@ -15,6 +15,11 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> target,
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+    /// <summary>Raises a business exception constructed from the current context.</summary>
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Throw<TException>(Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
+    /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Named(string name);
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Delay(TimeSpan duration,

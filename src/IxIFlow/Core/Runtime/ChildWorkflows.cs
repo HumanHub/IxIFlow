@@ -18,30 +18,34 @@ internal sealed class ChildCompleted
     public SerializedException? Error { get; set; }
 
     /// <summary>The notice a child's terminal commit carries, or null for an instance with no parent waiting.</summary>
-    public static ParentNotice? NoticeOf(WorkflowInstance instance, ExecutionCheckpoint checkpoint) =>
-        instance is { ParentInstanceId: { } parent, ParentWaitId: { } wait } &&
-        WorkflowStoreRules.IsTerminal(instance.Status)
-            ? new ParentNotice(parent, wait, $"child-completed-{instance.InstanceId}", EventType,
-                JsonSerializer.Serialize(new ChildCompleted
-                {
-                    ChildInstanceId = instance.InstanceId,
-                    Status = instance.Status,
-                    DataJson = instance.Status != WorkflowStatus.Completed ? StoredJson.Inline("")
-                        : instance.WorkflowDataJson,
-                    Error = instance.Status == WorkflowStatus.Failed ? checkpoint.UnhandledError : null
-                })) { PayloadDependencies = instance.Status == WorkflowStatus.Completed && instance.WorkflowDataJson.Reference is { } reference ? [reference] : [] }
-            : null;
+    public static ParentNotice? NoticeOf(WorkflowInstance instance, ExecutionCheckpoint checkpoint)
+    {
+        if (instance is not { ParentInstanceId: { } parent, ParentWaitId: { } wait } ||
+            !WorkflowStoreRules.IsTerminal(instance.Status)) return null;
+        var payload = JsonSerializer.Serialize(new ChildCompleted
+        {
+            ChildInstanceId = instance.InstanceId,
+            Status = instance.Status,
+            DataJson = instance.Status != WorkflowStatus.Completed ? StoredJson.Inline("")
+                : instance.WorkflowDataJson,
+            Error = instance.Status == WorkflowStatus.Failed ? checkpoint.UnhandledError : null
+        });
+        return new ParentNotice(parent, wait, $"child-completed-{instance.InstanceId}", EventType, payload)
+        {
+            PayloadDependencies = CheckpointPayloads.References<ChildCompleted>(payload)
+        };
+    }
 
     /// <summary>
     /// The outcome the parent's invocation step takes from it: the child's data, read as
     /// <paramref name="dataType"/>, when it completed; its own error when it failed; and
     /// <see cref="ChildWorkflowEndedException"/> when it was cancelled, timed out or terminated.
     /// </summary>
-    public ActivityRunResult Outcome(Type dataType) => Status switch
+    public ActivityRunResult Outcome(Type dataType, ExecutionCheckpoint checkpoint) => Status switch
     {
         WorkflowStatus.Completed => ActivityRunResult.Returned(JsonSerializer.Deserialize(DataJson.InlineText, dataType)),
-        WorkflowStatus.Failed => ActivityRunResult.Threw(Error?.ForPropagation()
-            ?? new InvalidOperationException($"Child workflow '{ChildInstanceId}' failed")),
+        WorkflowStatus.Failed => ActivityRunResult.Propagated(Error
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, $"Failed child workflow '{ChildInstanceId}' has no saved failure"), checkpoint),
         _ => ActivityRunResult.Threw(new ChildWorkflowEndedException(ChildInstanceId, Status))
     };
 }

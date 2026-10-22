@@ -63,7 +63,7 @@ public sealed class InvocationRetryCommitScenarios
         var childGrant = await StoreTestSupport.LeaseAsync(store, childId);
         child.Status = WorkflowStatus.Failed;
         var childState = ExecutionCheckpoint.Read(child.ExecutionStateJson);
-        childState.UnhandledError = SerializedException.From(new InvalidOperationException("old child failed"));
+        childState.UnhandledError = SerializedException.Capture(new InvalidOperationException("old child failed"), new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true);
         child.ExecutionStateJson = JsonSerializer.Serialize(childState);
         var ended = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(child, childGrant.Epoch, child.Revision,
             parentNotice: ChildCompleted.NoticeOf(child, childState)));

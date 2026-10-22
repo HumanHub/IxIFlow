@@ -491,6 +491,8 @@
             "try",
             "saga",
             "assign",
+            "throw",
+            "rethrow",
             "switch",
             "delay",
             "request",
@@ -755,6 +757,36 @@
           },
           "then": {
             "$ref": "#/definitions/assignStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "throw"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/throwStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "rethrow"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/rethrowStep"
           }
         },
         {
@@ -2452,6 +2484,68 @@
         "kind",
         "to",
         "value"
+      ]
+    },
+    "throwStep": {
+      "type": "object",
+      "description": "Raises a constructed business exception.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "throw",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "exception": {
+          "type": "string",
+          "description": "The concrete business exception type returned by the factory."
+        },
+        "value": {
+          "$ref": "#/definitions/expression",
+          "description": "The pure expression constructing the exception, including constructor arguments and initializers."
+        }
+      },
+      "required": [
+        "kind",
+        "exception",
+        "value"
+      ]
+    },
+    "rethrowStep": {
+      "type": "object",
+      "description": "Propagates the original error from the nearest lexical Try Catch.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "rethrow",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        }
+      },
+      "required": [
+        "kind"
       ]
     },
     "switchStep": {

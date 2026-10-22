@@ -237,6 +237,7 @@ public sealed class WorkflowExecutor
         checkpoint.Trace.Configure(instance, checkpoint, host.Limits, _time, scopes);
         // Everything logged during the run carries its instance (G-03).
         using var logScope = _logger.BeginScope(LogScope.ForInstance(instance));
+        using var failureBoundary = new FaultCapture.Boundary(checkpoint);
         // A span for the run pass, and the host's count of active runs (D-39).
         using var span = Telemetry.Source.StartActivity($"run {instance.WorkflowName}");
         Telemetry.Tag(span, instance);
@@ -421,7 +422,11 @@ public sealed class WorkflowExecutor
                 }
 
                 if (checkpoint.Debug.Evaluation == null)
+                {
+                    foreach (var deferred in checkpoint.Continuations.Where(c => c.DeferredFailure != null))
+                        await host.PrepareReadAsync(checkpoint, deferred, scopes);
                     uncommitted.NoteIf(_transitions.ProcessDeferredFailures(scopes, checkpoint), instance);
+                }
                 var conflicts = new List<(ContinuationState Parent, JoinConflictException Conflict)>();
                 // Arbitration and reply-receipt transfers move saved references without reading their values.
                 // PrepareReadAsync hydrates the selected fire when its parent eventually dispatches Arm.
@@ -459,6 +464,7 @@ public sealed class WorkflowExecutor
                     var parallel = NextStep(scopes, parent);
                     if (parallel != null)
                         AttachStep(conflict, instance, scopes.Id(parallel), null);
+                    _ = SerializedException.Capture(conflict, scopes, checkpoint, parent, newOccurrence: true);
                     if (!_transitions.CaptureFailure(scopes, checkpoint, parent, conflict))
                         throw conflict;
                 }
@@ -535,7 +541,8 @@ public sealed class WorkflowExecutor
                     var next = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
                     if (next != null && SteppingPolicy.StopAtPick(checkpoint, runnable, scopes.Id(next), Now))
                         break;
-                    if ((debuggingEnabled || checkpoint.Debug.Evaluation != null) && !checkpoint.CancellationRequested && runnable.PendingActivity == null && next != null &&
+                    if (position.TryState?.Phase is not (TryPhase.Catch or TryPhase.Finally) &&
+                        (debuggingEnabled || checkpoint.Debug.Evaluation != null) && !checkpoint.CancellationRequested && runnable.PendingActivity == null && next != null &&
                         await BreakpointDispatch.HitAsync(checkpoint, runnable, definition, scopes.Id(next), Now, _services,
                             () => ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now)))
                         break;
@@ -709,10 +716,7 @@ public sealed class WorkflowExecutor
 
             signals.ThrowIfStopped();
             if (checkpoint.UnhandledError != null && checkpoint.Waits.Count == 0 && checkpoint.Joins.Count == 0)
-                throw checkpoint.RuntimeUnhandledError
-                      ?? (checkpoint.UnhandledError.IsRestorable
-                          ? checkpoint.UnhandledError.Restore()
-                          : new InvalidOperationException(checkpoint.UnhandledError.Message));
+                checkpoint.UnhandledError.Propagate(checkpoint);
 
             if (limitStop != null)
                 return await StopForLimitAsync(instance, checkpoint, checkpoint.RootData, host, scopes, limitStop);
@@ -846,7 +850,9 @@ public sealed class WorkflowExecutor
                 ((WorkflowEngineException)ex).At(instance.InstanceId);
 
             signals.ThrowIfOwnershipLost();
-            checkpoint.UnhandledError ??= SerializedException.From(ex);
+            checkpoint.UnhandledError ??= SerializedException.Capture(ex, scopes, checkpoint,
+                checkpoint.Continuations.FirstOrDefault(c => c.Stack.Count > 0),
+                newOccurrence: !failureBoundary.IsPropagation(ex));
             instance.Status = IsPolicyTermination(ex) ? WorkflowStatus.Terminated : WorkflowStatus.Failed;
             // A reply wait whose scope already ended, such as a saga abandoned in this pass, closed as cancelled.
             checkpoint.CloseEndedRequests();
@@ -950,7 +956,7 @@ public sealed class WorkflowExecutor
                 if (!_transitions.CaptureFailure(scopes, checkpoint, activity.Continuation,
                         error, !activity.ActivityReturned))
                 {
-                    checkpoint.UnhandledError = SerializedException.From(error);
+                    checkpoint.UnhandledError = SerializedException.Capture(error, scopes, checkpoint, activity.Continuation, newOccurrence: false);
                     checkpoint.RuntimeUnhandledError = error;
                     checkpoint.Touch(activity.Continuation);
                     activity.Continuation.Status = ContinuationStatus.Completed;

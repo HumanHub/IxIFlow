@@ -15,6 +15,11 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> target,
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+    /// <summary>Raises a business exception constructed from the current context.</summary>
+    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Throw<TException>(Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
+    /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
+    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Identifies the preceding step and its source.</summary>
     ISagaActivityBuilder<TWorkflowData, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);

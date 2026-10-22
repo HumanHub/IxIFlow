@@ -9,6 +9,12 @@ internal sealed class FaultForEachWorkflowBuilder<TWorkflowData, TFault, TPrevio
     : CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>(steps, exceptionType), IFaultForEachWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
     where TWorkflowData : class where TPreviousStepData : class
 {
+    public new IFaultForEachWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Throw<TException>(Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception
+    { base.Throw(value, sourcePath, sourceLine); return this; }
+    public new IFaultForEachWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    { base.Rethrow(sourcePath, sourceLine); return this; }
+
     public new IFaultForEachWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Named(string name)
     {
         base.Named(name);

@@ -2,12 +2,12 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public sealed partial class ChildScopeBaselineTests
 {
-    // Recaptured from the combined fixture after checkpoint contract 11 / structure hash format 6.
+    // Recaptured from the combined fixture after checkpoint contract 12 / structure hash format 7.
     private const string MainBaseline = """
         [
           {
             "Name": "Empty",
-            "Hash": "D61E5251157DC6EA86D08D57DB18D9636B364B379AC40549BCB59C3BDF87A967",
+            "Hash": "6ADD3148B02CFE56FCB9D1B76C77DD6D8BB1C31FEDE5AE2297321E98FCBE6C69",
             "ScopeIds": [
               "root"
             ],
@@ -15,7 +15,7 @@ public sealed partial class ChildScopeBaselineTests
           },
           {
             "Name": "Every step",
-            "Hash": "C45CF6CB59B4784A419539D613B59D7908BE4DE8C05E1061D216DC360A714132",
+            "Hash": "836E0CC11FB2E846E601FA6063A25C75B72FC6A16ECA04C26B91D0FF9990393B",
             "ScopeIds": [
               "root",
               "root/0/sequence",
@@ -218,7 +218,23 @@ public sealed partial class ChildScopeBaselineTests
               "root/24/foreach",
               "root/24/finally",
               "root/24/timeout",
-              "root/24/catch"
+              "root/24/catch",
+              "root/25/sequence",
+              "root/25/then",
+              "root/25/else",
+              "root/25/loop",
+              "root/25/foreach",
+              "root/25/finally",
+              "root/25/timeout",
+              "root/25/catch",
+              "root/26/sequence",
+              "root/26/then",
+              "root/26/else",
+              "root/26/loop",
+              "root/26/foreach",
+              "root/26/finally",
+              "root/26/timeout",
+              "root/26/catch"
             ],
             "StepIds": [
               "root/0",
@@ -245,12 +261,14 @@ public sealed partial class ChildScopeBaselineTests
               "root/21",
               "root/22",
               "root/23",
-              "root/24"
+              "root/24",
+              "root/25",
+              "root/26"
             ]
           },
           {
             "Name": "Nested bodies",
-            "Hash": "FF41C8C52624063ABFB00EE5841C4B8CEC983962C773F2C57B5C1BDC85518295",
+            "Hash": "47C5BF514FFA291EA165DE953706B019B249D37C7976E7AB74BAC8D6766BAED8",
             "ScopeIds": [
               "root",
               "root/0/sequence",

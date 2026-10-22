@@ -9,6 +9,7 @@ namespace IxIFlow.Core;
 [JsonDerivedType(typeof(ConditionTrace), "condition")]
 [JsonDerivedType(typeof(SwitchTrace), "switch")]
 [JsonDerivedType(typeof(DataAssignedTrace), "assigned")]
+[JsonDerivedType(typeof(FaultTrace), "fault")]
 [JsonDerivedType(typeof(JoinTrace), "join")]
 [JsonDerivedType(typeof(ItemEndTrace), "itemEnd")]
 [JsonDerivedType(typeof(TimeoutTrace), "timeout")]
@@ -37,6 +38,15 @@ public sealed record ThreadPositionTrace(string ContinuationId, InspectionThread
 /// <summary>Identifiers only; item indices start at zero and loop iterations at one.</summary>
 public record ControlFlowTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,
     int? Index = null, string? ScopeId = null, string? JoinId = null) : TracePayload;
+
+/// <summary>The original structural fault site; diagnostic CLR stacks are not persisted.</summary>
+public sealed record WorkflowFaultLocation(string StepId, string ContinuationId, string FrameActivationId, string? AttemptId = null);
+/// <summary>Value-free fault propagation facts.</summary>
+public sealed record FaultTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,
+    string ExceptionType, WorkflowFaultLocation? OriginalLocation, WorkflowFaultLocation CurrentLocation) : TracePayload
+{
+    public string? DeclaredExceptionType { get; init; }
+}
 
 public enum ConditionPath { Then, Else }
 public sealed record ConditionTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,

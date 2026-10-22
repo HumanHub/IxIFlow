@@ -62,13 +62,15 @@ internal static class SteppingPolicy
         if (checkpoint.CancellationRequested || checkpoint.Debug.Stepping is not { } step ||
             branch.PendingActivity != null) return false;
         var position = branch.Stack[^1];
+        // Catch/Finally entry changes phase at the owner; it is not another executable pick.
+        if (position.TryState?.Phase is TryPhase.Catch or TryPhase.Finally) return false;
         var selected = branch.Id == step.ContinuationId;
         var sameOccurrence = selected && Position(position) == step.Origin;
         var stop = step.Kind switch
         {
             DebugStepKind.Into => !sameOccurrence,
             DebugStepKind.Over => selected && (position.ActivationId != step.Origin.ActivationId ||
-                position.NextStepIndex != step.Origin.StepIndex || position.ArmOccurrence != step.Origin.ArmOccurrence) && step.OriginScopes.Contains(position.ActivationId),
+                position.NextStepIndex != step.Origin.StepIndex || position.ArmOccurrence != step.Origin.ArmOccurrence) && (step.OriginScopes.Contains(position.ActivationId) || branch.Stack.All(f => f.ActivationId != step.Origin.ActivationId)),
             DebugStepKind.Out => selected && branch.Stack.All(f => f.ActivationId != step.Origin.ActivationId),
             _ => false
         };

@@ -65,7 +65,7 @@ public sealed class InvocationRetryBudgetTests
             DataType = WorkflowTypeIdentity.SavedName(typeof(BudgetData)),
             ScheduledRetries = 1, SelectedPolicyIndex = 0,
             Attempts = [new() { Number = 1, PreparedAtUtc = now, EndedAtUtc = now, Host = "first",
-                    Phase = "Ended", Failure = SerializedException.From(new InvalidOperationException("input failed")),
+                    Phase = "Ended", Failure = SerializedException.Capture(new InvalidOperationException("input failed"), new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true),
                     Diagnostic = new("InputFailure", "diagnostic"), Disposition = "Retry",
                     SelectedPolicyIndex = 0, Action = StepErrorAction.Retry, RetryAfterUtc = now.AddSeconds(1) },
                 new() { Number = 2, PreparedAtUtc = now.AddSeconds(1), Host = "second",

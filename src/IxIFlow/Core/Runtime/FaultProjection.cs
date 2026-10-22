@@ -88,20 +88,17 @@ internal sealed class FaultProjection
     {
         if (_faultType == typeof(EmptyFault))
             return new EmptyFault();
-        if (error.Fault is { } savedFault && savedFault.Type == WorkflowTypeIdentity.SavedName(_faultType) &&
-            error.FaultCatchType == WorkflowTypeIdentity.SavedName(_exceptionType))
-            return JsonSerializer.Deserialize(savedFault.Json.InlineText, _faultType)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
-                    $"Saved fault '{_faultType.Name}' could not be restored");
-
         var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
         foreach (var (target, source) in _properties)
         {
-            if (!error.Properties.TryGetValue(PropertyKey(source), out var saved))
+            if (!error.Properties.TryGetValue(PropertyKey(source), out var saved) &&
+                source.DeclaringType == typeof(Exception) && source.Name == nameof(Exception.Message))
+            { values[target.Name] = error.Message; continue; }
+            if (saved == null)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"Saved exception property '{source.Name}' is unavailable for fault '{_faultType.Name}'");
             if (saved.Error != null)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                throw new InvalidOperationException(
                     $"Saved exception property '{source.Name}' cannot be projected: {saved.Error}");
             values[target.Name] = JsonSerializer.Deserialize(saved.Json ?? "null", target.PropertyType);
         }

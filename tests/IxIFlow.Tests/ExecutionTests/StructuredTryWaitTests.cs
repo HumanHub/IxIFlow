@@ -1154,8 +1154,8 @@ public class StructuredTryWaitTests
     [Fact]
     public void ExceptionCheckpointVerifiesCustomPropertiesAndInnerExceptions()
     {
-        var saved = SerializedException.From(new InvalidOperationException(
-            "outer", new ApprovalException("custom failure", 42)));
+        var saved = SerializedException.Capture(new InvalidOperationException(
+            "outer", new ApprovalException("custom failure", 42)), new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true);
 
         Assert.True(saved.IsRestorable, saved.RestorationFailureReason);
         var restored = Assert.IsType<InvalidOperationException>(saved.Restore());
@@ -1166,7 +1166,7 @@ public class StructuredTryWaitTests
     [Fact]
     public void ExceptionCheckpointRejectsCustomPropertyOmittedByConstructor()
     {
-        var saved = SerializedException.From(new MutableApprovalException("custom failure") { Code = 42 });
+        var saved = SerializedException.Capture(new MutableApprovalException("custom failure") { Code = 42 }, new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true);
 
         Assert.False(saved.IsRestorable);
         Assert.Contains("Code", saved.RestorationFailureReason);
@@ -1178,7 +1178,7 @@ public class StructuredTryWaitTests
         var error = new InvalidOperationException("business failure");
         error.Data["decision"] = "declined";
 
-        var saved = SerializedException.From(error);
+        var saved = SerializedException.Capture(error, new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true);
 
         Assert.False(saved.IsRestorable);
         Assert.Contains("Data", saved.RestorationFailureReason);

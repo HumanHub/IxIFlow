@@ -8,8 +8,13 @@ public sealed record InstanceInspection(InspectionSummary Summary, long Revision
     IReadOnlyList<InspectionThread> Threads, IReadOnlyList<InspectionAttempt> PendingAttempts,
     IReadOnlyList<InspectionWait> Waits, IReadOnlyList<InspectionData> Data)
 {
+    public IReadOnlyList<InspectionCatchFault> CatchFaults { get; init; } = [];
     public IReadOnlyList<InspectionInvocation> Invocations { get; init; } = [];
 }
+
+/// <summary>A classified, read-only DTO for one live lexical Catch occurrence.</summary>
+public sealed record InspectionCatchFault(string ContinuationId, string FrameId, string CatchId,
+    string FaultType, JsonElement Value, WorkflowFaultLocation? OriginalLocation);
 
 public sealed record InspectionInvocation(string InvocationId, string StepId, string ContinuationId,
     string WorkflowName, int WorkflowVersion, string? DataType, ArtifactDigest? BundleDigest,
@@ -41,6 +46,7 @@ public sealed record InspectionFrame(string ActivationId, string Name, string Ki
     string? ParentActivationId, int NextStepIndex, int LoopIteration, int? ForEachItemIndex)
 {
     public string? DataType { get; init; }
+    public string? RethrowOwnerId { get; init; }
     /// <summary>The derived graph phase, when this frame belongs to a graph.</summary>
     public string? Phase { get; init; }
     public long ArmOccurrence { get; init; }

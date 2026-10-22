@@ -34,6 +34,11 @@ internal sealed class WorkflowScopeCatalog
     public GraphTable GraphTable { get; }
     public SwitchTable SwitchTable { get; }
 
+    public IEnumerable<string> FaultPropertyKeys => _steps.Values
+        .Where(step => step.StepType == WorkflowStepType.CatchBlock && step.FaultType != null)
+        .SelectMany(step => FaultProjection.For(step.ExceptionType!, step.FaultType!).SourceProperties)
+        .Select(FaultProjection.PropertyKey).Distinct(StringComparer.Ordinal);
+
     public IReadOnlyCollection<PropertyInfo> FaultProperties(Type exceptionType) => _steps.Values
         .Where(step => step.StepType == WorkflowStepType.CatchBlock &&
             step.ExceptionType?.IsAssignableFrom(exceptionType) == true && step.FaultType != null)
@@ -84,13 +89,16 @@ internal sealed class WorkflowScopeCatalog
         return id;
     }
 
-    private void AddScope(string id, IReadOnlyList<WorkflowStep> steps, string? authorPrefix = null, string? faultOwner = null)
+    private readonly HashSet<WorkflowStep> _tryCatchOwners = new(ReferenceEqualityComparer.Instance);
+
+    private void AddScope(string id, IReadOnlyList<WorkflowStep> steps, string? authorPrefix = null, string? faultOwner = null, string? rethrowOwner = null)
     {
         _scopes.Add(id, steps);
         for (var index = 0; index < steps.Count; index++)
         {
             var step = steps[index];
             var stepId = $"{id}/{index}";
+            if (step.StepType == WorkflowStepType.Rethrow) step.RethrowOwnerId = rethrowOwner;
             if (step.LexicalFaultType != null) step.LexicalFaultOwnerId = faultOwner;
             _steps.Add(stepId, step);
             _authorIds.TryAdd(step, authorPrefix + step.Id);
@@ -100,11 +108,15 @@ internal sealed class WorkflowScopeCatalog
             if (step.ForEachItem != null && !_handles.TryAdd(step.ForEachItem, stepId))
                 throw WorkflowBuildError.Invalid(step,
                     $"{step.ForEachItem} belongs to two ForEach steps, '{_handles[step.ForEachItem]}' and '{stepId}'");
+            if (step.StepType == WorkflowStepType.TryCatch)
+                foreach (var handler in step.CatchBlocks) _tryCatchOwners.Add(handler);
             foreach (var scope in step.ChildScopes())
             {
                 AddScope(ScopeId(step, scope.Kind, scope.Key), scope.Steps,
                     scope.Kind == "inline" ? AuthorId(step) + "/" : authorPrefix,
-                    scope.Kind == "inline" ? null : step.StepType == WorkflowStepType.CatchBlock ? stepId : faultOwner);
+                    scope.Kind == "inline" ? null : step.StepType == WorkflowStepType.CatchBlock ? stepId : faultOwner,
+                    scope.Kind == "inline" ? null : step.StepType == WorkflowStepType.CatchBlock &&
+                        _tryCatchOwners.Contains(step) ? stepId : rethrowOwner);
                 if (scope.Kind == "catch" && step.StepType == WorkflowStepType.Saga)
                     AddSagaCompensations(step, authorPrefix);
             }
@@ -158,7 +170,7 @@ internal sealed class WorkflowScopeCatalog
         // adding an empty branch changes the topology even when it adds no steps.
         var manifest = new
         {
-            Format = 6,
+            Format = 7,
             Data = WorkflowTypeIdentity.StableName(definition.WorkflowDataType),
             DataTypes = _steps.Values.Select(step => step.WorkflowDataType).Prepend(definition.WorkflowDataType)
                 .OfType<Type>().Distinct().OrderBy(WorkflowTypeIdentity.StableName, StringComparer.Ordinal)
@@ -194,6 +206,9 @@ internal sealed class WorkflowScopeCatalog
                     } : null,
                     Exception = WorkflowTypeIdentity.StableName(step.ExceptionType),
                     Fault = WorkflowTypeIdentity.StableName(step.FaultType),
+                    Factory = Shape(step.ExceptionExpression),
+                    FactoryType = WorkflowTypeIdentity.StableName(step.ExceptionFactoryReturnType),
+                    step.RethrowOwnerId,
                     Condition = Shape(step.ConditionExpression),
                     Outcome = Shape(step.OutcomeExpression),
                     SwitchValueType = WorkflowTypeIdentity.StableName(step.SwitchValueType),

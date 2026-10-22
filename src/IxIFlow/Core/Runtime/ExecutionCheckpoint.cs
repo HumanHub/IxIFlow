@@ -8,6 +8,17 @@ namespace IxIFlow.Core.Runtime;
 
 internal sealed class ExecutionCheckpoint
 {
+    // Associations last for this execution only. Sources replace them for every new fault occurrence;
+    // saved envelopes explicitly reattach themselves when propagated after recovery or unwinding.
+    [JsonIgnore]
+    public Dictionary<Exception, SerializedException> CapturedFaults { get; } = new(ReferenceEqualityComparer.Instance);
+
+    [JsonIgnore]
+    public FaultCapture.Boundary? FailureBoundary { get; set; }
+
+    /// <summary>The caller's property keys, carried through child starts before live faults are captured.</summary>
+    public List<string> InvocationFaultProperties { get; set; } = [];
+
     public List<WorkflowDemand> Demands { get; set; } = [];
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public TimeSpan? HostPinLifetime { get; set; }
@@ -28,7 +39,7 @@ internal sealed class ExecutionCheckpoint
     [JsonRequired]
     public string Runtime { get; set; } = "structured-v2";
     /// <summary>
-    /// The checkpoint contract includes retained invocation parts. A checkpoint in another form is refused
+    /// The checkpoint contract includes complete fault envelopes and original fault locations. A checkpoint in another form is refused
     /// as unsupported rather than read wrongly.
     /// </summary>
     [JsonRequired]
@@ -719,7 +730,7 @@ internal sealed class ActivityInputValue
         {
             if (value is Exception error && !HasConverter(input))
             {
-                var exception = SerializedException.From(error);
+                var exception = SerializedException.ForInputValue(error);
                 return (new ActivityInputValue { Exception = exception }, exception.Restore());
             }
             if (value == null && !HasConverter(input))
@@ -953,13 +964,8 @@ internal sealed class TryScopeState
     [JsonIgnore]
     public Exception? RuntimeError { get; set; }
 
-    public Exception? GetError() => RuntimeError ??= Error?.ForPropagation();
+    public Exception? GetError(ExecutionCheckpoint checkpoint) => Error?.ForPropagation(checkpoint) ?? RuntimeError;
 
-    public void SetError(Exception error)
-    {
-        RuntimeError = error;
-        Error = SerializedException.From(error);
-    }
 }
 
 internal enum SagaPhase
@@ -1004,17 +1010,12 @@ internal sealed class SagaScopeState
     [JsonIgnore]
     public Exception? RuntimeError { get; set; }
 
-    public void SetError(Exception error)
-    {
-        RuntimeError = error;
-        Error = SerializedException.From(error);
-    }
 
-    public Exception? GetError() => RuntimeError ??= Error?.ForPropagation();
+    public Exception? GetError(ExecutionCheckpoint checkpoint) => Error?.ForPropagation(checkpoint) ?? RuntimeError;
 
-    public Exception? GetTerminalError() => ErrorHandlerIndex >= 0 && ErrorAction != null && Error != null
+    public Exception? GetTerminalError(ExecutionCheckpoint checkpoint) => ErrorHandlerIndex >= 0 && ErrorAction != null && Error != null
         ? new SagaFailureException(Error.Type, Error.Message)
-        : GetError();
+        : GetError(checkpoint);
 }
 
 internal sealed class SagaAcceptedWait

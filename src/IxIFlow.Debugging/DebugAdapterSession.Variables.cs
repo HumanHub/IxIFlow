@@ -79,6 +79,23 @@ public sealed partial class DebugAdapterSession
         {
             return DataValue(thread, DataFrame(thread, frame));
         }
+        if (scope == "fault")
+        {
+            var faults = _replay == null ? _inspection!.CatchFaults : _replay.Current.CatchFaults;
+            if (faults == null) throw new ProtocolException("Historical Catch values are unavailable");
+            var current = CurrentThreads().Single(t => t.ContinuationId == thread);
+            var selected = frame;
+            while (true)
+            {
+                var count = selected == null ? current.Frames.Count : current.Frames.ToList().FindIndex(f => f.ActivationId == selected.ActivationId) + 1;
+                var frames = current.Frames.Take(count).Select(f => f.ActivationId).ToHashSet(StringComparer.Ordinal);
+                var fault = faults.LastOrDefault(f => f.ContinuationId == current.ContinuationId && frames.Contains(f.FrameId));
+                if (fault != null) return fault.Value;
+                current = CurrentThreads().SingleOrDefault(t => t.ContinuationId == current.ParentContinuationId);
+                if (current == null) throw new ProtocolException("No Catch in the selected frame");
+                selected = null;
+            }
+        }
         if (_replay != null) throw new ProtocolException("Historical scope values are unavailable");
         return scope switch
         {
@@ -95,7 +112,7 @@ public sealed partial class DebugAdapterSession
         var frame = Frame(args.Value<int>("frameId"));
         var scopes = new List<object>();
         foreach (var (name, scope) in new[] { ("Workflow data", "data"), ("Previous step (unavailable)", "previous"),
-            ("Item", "item"), ("Attempt", "attempt"), ("Waits", "waits"), ("Graph", "graph") })
+            ("Catch fault", "fault"), ("Item", "item"), ("Attempt", "attempt"), ("Waits", "waits"), ("Graph", "graph") })
         {
             if (scope == "graph" && GraphFrame(frame.Thread, frame.Frame) == null) continue;
             var reference = 0;
@@ -162,7 +179,7 @@ public sealed partial class DebugAdapterSession
         ClearHandles();
         Emit<InvalidatedEvent>(new { areas = new[] { "variables", "stacks" } });
     }
-    private static readonly Regex PathExpression = new(@"^(data|WorkflowData|previous|item|attempt|waits|graph)(\.[A-Za-z_][A-Za-z0-9_]*|\[(0|[1-9][0-9]*)\])*$", RegexOptions.CultureInvariant);
+    private static readonly Regex PathExpression = new(@"^(data|WorkflowData|previous|fault|item|attempt|waits|graph)(\.[A-Za-z_][A-Za-z0-9_]*|\[(0|[1-9][0-9]*)\])*$", RegexOptions.CultureInvariant);
     private static (string Scope, string[] Path) ParsePath(string expression)
     {
         if (expression.Length > 4096 || !PathExpression.IsMatch(expression)) throw new ProtocolException("Evaluate accepts scope paths only");

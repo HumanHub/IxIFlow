@@ -6,6 +6,8 @@ public sealed record StepTableEntry(string CatalogId, string AuthorId, string Na
     WorkflowStepType Kind, string ScopePath, string? SourceLocation)
 {
     public AssignmentDescriptor? Assignment { get; init; }
+    public string? ExceptionType { get; init; }
+    public string? RethrowOwnerId { get; init; }
 }
 
 /// <summary>A structural destination and its declared value type.</summary>
@@ -20,8 +22,12 @@ public sealed class StepTable : System.Collections.Generic.IReadOnlyList<StepTab
         _entries = catalog.AllSteps.Select(pair => new StepTableEntry(
             pair.Key, catalog.AuthorId(pair.Value), pair.Value.Name, pair.Value.StepType,
             pair.Key[..pair.Key.LastIndexOf('/')], pair.Value.SourceLocation)
-            { Assignment = pair.Value.Assignment is { } assignment ?
-                new(assignment.TargetPath!, WorkflowTypeIdentity.StableName(assignment.ValueType)) : null }).ToArray();
+            {
+                Assignment = pair.Value.Assignment is { } assignment ?
+                    new(assignment.TargetPath!, WorkflowTypeIdentity.StableName(assignment.ValueType)) : null,
+                ExceptionType = pair.Value.StepType == WorkflowStepType.Throw ? WorkflowTypeIdentity.StableName(pair.Value.ExceptionType) : null,
+                RethrowOwnerId = pair.Value.RethrowOwnerId
+            }).ToArray();
     }
     public int Count => _entries.Length;
     public StepTableEntry this[int index] => _entries[index];

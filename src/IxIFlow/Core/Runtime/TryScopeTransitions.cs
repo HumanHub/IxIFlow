@@ -54,7 +54,7 @@ internal static class TryScopeTransitions
 
         if (state.Phase == TryPhase.Finally)
         {
-            var unhandled = state.GetError();
+            var unhandled = state.GetError(checkpoint);
             var isCancellationCleanup = state.IsCancellationCleanup;
             owner.TryState = null;
             owner.NextStepIndex++;
@@ -64,7 +64,7 @@ internal static class TryScopeTransitions
                 return true;
             }
             if (unhandled != null)
-                throw unhandled;
+                SerializedException.From(unhandled, checkpoint).Propagate(checkpoint);
             return true;
         }
 
@@ -95,24 +95,20 @@ internal static class TryScopeTransitions
         var selectedCatch = catchIndex >= 0 ? step.CatchBlocks[catchIndex] : null;
         SerializedException savedError;
         if (selectedCatch == null)
-            savedError = SerializedException.From(error,
-                scopes.FaultProperties(SerializedException.CatchType(error)));
+            savedError = SerializedException.From(error, checkpoint);
         else
         {
             try
             {
                 savedError = SerializedException.FromForCatch(error,
-                    selectedCatch.ExceptionType!, selectedCatch.FaultType!,
-                    scopes.FaultProperties(SerializedException.CatchType(error)));
+                    selectedCatch.ExceptionType!, selectedCatch.FaultType!, checkpoint);
             }
             catch (Exception projectionError)
             {
                 // The handler cannot receive the fault it declared. Finish this Try's
                 // cleanup, then let an outer handler see the capture failure.
-                error = new InvalidOperationException(
-                    $"Fault projection for '{SerializedException.CatchType(error).Name}' failed: " +
-                    projectionError.GetBaseException().Message);
-                savedError = SerializedException.From(error);
+                error = FaultCapture.ProjectionFailure(error, projectionError);
+                savedError = SerializedException.Capture(error, scopes, checkpoint, continuation, newOccurrence: true);
                 catchIndex = -1;
             }
         }
@@ -158,6 +154,21 @@ internal static class TryScopeTransitions
         return -1;
     }
 
+    internal static SerializedException RethrowError(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+        ContinuationState continuation, WorkflowStep step)
+    {
+        while (true)
+        {
+            foreach (var frame in continuation.Stack.AsEnumerable().Reverse())
+                if (frame.TryState is { Phase: TryPhase.Catch } state &&
+                    scopes.Id(scopes.Steps(frame.ScopeId)[frame.NextStepIndex].CatchBlocks[state.CatchIndex]) == step.RethrowOwnerId)
+                    return state.Error ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The bound Catch has no saved error");
+            if (continuation.ParentJoinId == null)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The bound Catch occurrence is unavailable");
+            continuation = checkpoint.ForkParent(continuation);
+        }
+    }
+
     public static object? CatchFault(ExecutionCheckpoint checkpoint, ContinuationState continuation,
         IServiceProvider services, WorkflowStep? expressionStep = null, WorkflowScopeCatalog? scopes = null)
     {
@@ -187,15 +198,14 @@ internal static class TryScopeTransitions
         RejectUnrestorable(checkpoint.UnhandledError);
         while (true)
         {
+            RejectUnrestorable(continuation.DeferredFailure);
             foreach (var frame in continuation.Stack)
             {
                 var tryState = frame.TryState;
-                if (tryState?.Phase != TryPhase.Finally)
-                    RejectUnrestorable(tryState?.Error, tryState?.Phase == TryPhase.Catch);
+                RejectUnrestorable(tryState?.Error);
                 var saga = frame.SagaState;
-                RejectUnrestorable(saga?.Error,
-                    saga?.Phase == SagaPhase.Compensating && saga.ErrorHandlerStarted &&
-                    saga.ErrorAction != null);
+                RejectUnrestorable(saga?.Error);
+                RejectUnrestorable(saga?.HandlerError);
             }
             if (continuation.ParentJoinId == null)
                 return;
@@ -204,9 +214,9 @@ internal static class TryScopeTransitions
         }
     }
 
-    private static void RejectUnrestorable(SerializedException? error, bool caught = false)
+    private static void RejectUnrestorable(SerializedException? error)
     {
-        if (error?.IsRestorable == false && !(caught && error.Fault != null))
+        if (error?.IsRestorable == false && !error.HasDurableProperties)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Exception '{error.Type}' cannot be restored after a wait: " +
                 (error.RestorationFailureReason ?? "constructor values were unavailable"));

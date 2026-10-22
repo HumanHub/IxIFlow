@@ -10,6 +10,12 @@ namespace IxIFlow.Builders.Interfaces;
 /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
 public interface IWorkflowBuilder<TWorkflowData>
 {
+    /// <summary>Raises a business exception constructed from the current context.</summary>
+    IWorkflowBuilder<TWorkflowData, object> Throw<TException>(Expression<Func<WorkflowContext<TWorkflowData, object>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
+    /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
+    IWorkflowBuilder<TWorkflowData, object> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     /// <summary>Declares root input properties; no arguments declares no inputs.</summary>
     IWorkflowBuilder<TWorkflowData> Input(params Expression<Func<TWorkflowData, object?>>[] members);
     /// <summary>Declares root output properties; no arguments declares no outputs.</summary>
@@ -111,6 +117,11 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> target,
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+    /// <summary>Raises a business exception constructed from the current context.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Throw<TException>(Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
+    /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Requires a capability; explicitly inherited constraints also apply to children.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Demand(string key, string? value = null, bool inherit = false);

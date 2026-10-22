@@ -47,7 +47,7 @@ public static partial class WorkflowSourceTranslator
         if (diagnostic != null)
         {
             var location = DocumentModel.GetLocation(document, diagnostic.Path);
-            throw new WorkflowSourceException(((diagnostic.Code.StartsWith("SWITCH", StringComparison.Ordinal) || diagnostic.Code.StartsWith("ASSIGN", StringComparison.Ordinal)) ? diagnostic.Code + ": " : "") + diagnostic.Message, sourcePath, location.Line, location.Column);
+            throw new WorkflowSourceException(((diagnostic.Code.StartsWith("SWITCH", StringComparison.Ordinal) || diagnostic.Code.StartsWith("ASSIGN", StringComparison.Ordinal) || diagnostic.Code.StartsWith("THROW", StringComparison.Ordinal) || diagnostic.Code.StartsWith("RETHROW", StringComparison.Ordinal)) ? diagnostic.Code + ": " : "") + diagnostic.Message, sourcePath, location.Line, location.Column);
         }
         return new Translation(document, sourcePath, options).Run();
     }
@@ -99,6 +99,7 @@ public static partial class WorkflowSourceTranslator
                     if (policy.Exception != null) yield return policy.Exception;
                 break;
             case WaitStepDocument wait: yield return wait.Event; break;
+            case ThrowStepDocument raised: yield return raised.Exception; break;
             case SwitchStepDocument { ValueType: { } valueType }: yield return valueType; break;
             case InvokeWorkflowStepDocument namedInvocation:
                 foreach (var policy in namedInvocation.OnError)
@@ -339,6 +340,16 @@ public static partial class WorkflowSourceTranslator
                         Line($"var {next} = {builder}.Assign(target: ctx => {Expression(assignment.To)},");
                         Locate(assignment.Value, assignment.Value is PathExpressionDocument ? "path" : null);
                         Line($"value: ctx => {Expression(assignment.Value)});");
+                        break;
+                    case ThrowStepDocument raised:
+                        var exceptionType = Type(raised.Exception, raised, "exception");
+                        Locate(raised, "exception");
+                        Line($"var {next} = {builder}.Throw<{exceptionType}>(");
+                        Locate(raised, "value");
+                        Line($"ctx => {Expression(raised.Value)});");
+                        break;
+                    case RethrowStepDocument:
+                        Line($"var {next} = {builder}.Rethrow();");
                         break;
                     case SwitchStepDocument outcome:
                         Switch(outcome, builder, next, id, previousType, builderScope);

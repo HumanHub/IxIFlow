@@ -160,7 +160,7 @@ internal sealed partial class TraceBuffer
     }
 
     public static bool IsControlFlow(TraceEntryType kind) => kind is
-        TraceEntryType.InlineEntered or TraceEntryType.InlineExited or TraceEntryType.SwitchSelected or TraceEntryType.DataAssigned or TraceEntryType.StepEntered or TraceEntryType.ConditionTaken or TraceEntryType.LoopIteration or
+        TraceEntryType.InlineEntered or TraceEntryType.InlineExited or TraceEntryType.SwitchSelected or TraceEntryType.DataAssigned or TraceEntryType.FaultRaised or TraceEntryType.FaultRethrown or TraceEntryType.StepEntered or TraceEntryType.ConditionTaken or TraceEntryType.LoopIteration or
         TraceEntryType.LoopCompleted or TraceEntryType.BranchStarted or TraceEntryType.JoinCompleted or
         TraceEntryType.CatchEntered or TraceEntryType.FinallyEntered or TraceEntryType.ForEachItemStarted or
         TraceEntryType.ForEachItemEnded or TraceEntryType.CompensationStarted or TraceEntryType.CompensationCompleted or

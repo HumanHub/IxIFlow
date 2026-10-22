@@ -1,0 +1,29 @@
+workflow:
+  name: ThrowFixture
+  dataType: IxIFlow.Generators.Tests.ThrowYamlData
+code:
+  declined:
+    language: csharp-expression
+    source: 'new IxIFlow.Generators.Tests.ThrowYamlError("declined") { Code = workflow.Code }'
+definitions:
+  - kind: try
+    steps:
+      - kind: try
+        steps:
+          - kind: throw
+            id: raise
+            name: Decline
+            exception: IxIFlow.Generators.Tests.ThrowYamlError
+            value: {kind: function, function: declined}
+        catches:
+          - exception: IxIFlow.Generators.Tests.ThrowYamlError
+            faultType: IxIFlow.Generators.Tests.ThrowYamlFault
+            steps: [{kind: rethrow, id: again}]
+    catches:
+      - exception: IxIFlow.Generators.Tests.ThrowYamlError
+        faultType: IxIFlow.Generators.Tests.ThrowYamlFault
+        steps:
+          - kind: activity
+            activity: IxIFlow.Generators.Tests.ThrowYamlEcho
+            input: [{target: Value, from: {path: fault.Code}}]
+            output: [{source: Value, to: {path: workflow.Result}}]

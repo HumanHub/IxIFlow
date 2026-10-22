@@ -608,6 +608,22 @@ public sealed record AssignStepDocument : WorkflowStepDocument
     public ExpressionDocument Value { get; init; } = new ConstantExpressionDocument();
 }
 
+[Description("Raises a constructed business exception.")]
+[DocumentKind("throw")]
+public sealed record ThrowStepDocument : WorkflowStepDocument
+{
+    [Description("The concrete business exception type returned by the factory.")]
+    [DocumentRequired]
+    public string Exception { get; init; } = string.Empty;
+    [Description("The pure expression constructing the exception, including constructor arguments and initializers.")]
+    [DocumentRequired]
+    public ExpressionDocument Value { get; init; } = new ConstantExpressionDocument();
+}
+
+[Description("Propagates the original error from the nearest lexical Try Catch.")]
+[DocumentKind("rethrow")]
+public sealed record RethrowStepDocument : WorkflowStepDocument;
+
 [Description("Body selection by a typed value.")]
 [DocumentKind("switch")]
 public sealed record SwitchStepDocument : WorkflowStepDocument

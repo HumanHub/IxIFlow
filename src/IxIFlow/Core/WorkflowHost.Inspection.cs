@@ -112,6 +112,16 @@ public sealed partial class WorkflowHost
                 WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)!)!;
             foreach (var branch in checkpoint.Continuations) await reader.HydrateAsync(branch.DataChanges);
             foreach (var frame in checkpoint.InlineFrames.Values) await reader.ReadAsync(frame.Data);
+            var catchFaults = new List<InspectionCatchFault>();
+            foreach (var branch in checkpoint.Continuations)
+                foreach (var frame in branch.Stack)
+                    if (frame.TryState is { Phase: TryPhase.Catch, Error.Fault: { } fault } caught)
+                    {
+                        await reader.HydrateAsync(fault);
+                        var owner = scopes.Steps(frame.ScopeId)[frame.NextStepIndex].CatchBlocks[caught.CatchIndex];
+                        catchFaults.Add(new(branch.Id, frame.ActivationId, scopes.Id(owner), fault.Type,
+                            InspectionRedactionPolicy.Default.Value(fault.Read(services)!, services), caught.Error.OriginalFaultLocation));
+                    }
             var threads = InspectionProjection.Threads(instance, checkpoint, scopes, Now);
             var debug = checkpoint.Debug;
             var liveFrames = checkpoint.Continuations.SelectMany(c => c.Stack).Select(f => f.ActivationId).ToHashSet(StringComparer.Ordinal);
@@ -143,7 +153,7 @@ public sealed partial class WorkflowHost
                 }).Concat(checkpoint.InlineFrames.Where(pair => liveFrames.Contains(pair.Key)).Select(pair => new InspectionData(pair.Value.OwnerContinuationId,
                     InspectionRedactionPolicy.Default.Value(pair.Value.Value, services))
                     { FrameId = pair.Key, DataType = pair.Value.DataType })).ToArray())
-                { Invocations = InvocationRecords.Inspect(checkpoint) };
+                { Invocations = InvocationRecords.Inspect(checkpoint), CatchFaults = catchFaults };
             return InspectionPrivacy.Clean(result, WaitIds(instance, checkpoint));
         }
 

@@ -26,7 +26,7 @@ public sealed class DebugStepLocationTests
             .Parallel(p => p.Do(b => b.Step<Noop>()).Do(b => b.Step<Noop>()))
             .WhileDo(c => false, b => b.Step<Noop>())
             .DoWhile(b => b.Step<Noop>(), c => false)
-            .Try(b => b.Step<Noop>()).Catch<Exception>(b => b.Step<Noop>()).Finally(b => b.Step<Noop>())
+            .Try(b => b.Step<Noop>()).Catch<Exception>(b => b.Step<Noop>().Rethrow()).Finally(b => b.Step<Noop>())
             .Saga(s => s.Step<Noop>(a => a.CompensateWith<Noop>())).OnError(b => b.Step<Noop>()).Step<Noop>()
             .WaitFor<Go>("go")
             .ForEach(c => c.WorkflowData.Items, (b, item) => b.Result(c => c.Item(item)))
@@ -37,6 +37,7 @@ public sealed class DebugStepLocationTests
                 cases => cases.Case(1, b => b.Step<Noop>()).Default(b => b.Step<Noop>()))
             .Use<Data>(() => Workflow.Create<Data>("LocationInline").Build(), pin)
             .Assign(c => c.WorkflowData.Items[0], c => 2)
+            .Throw<InvalidOperationException>(c => new("location"))
             .Build();
         var table = definition.StepTable;
         Assert.Same(table, definition.StepTable);
@@ -58,7 +59,7 @@ public sealed class DebugStepLocationTests
     [Fact]
     public void CreationMethodsAndInterfacesCaptureLocationsIncludingDelegatingOverloads()
     {
-        var creatingNames = new[] { "Step", "Request", "Delay", "Invoke", "Sequence", "If", "Parallel", "WhileDo", "DoWhile", "ForEach", "Result", "Try", "Saga", "Suspend", "WaitFor", "Switch", "Assign", "CompensateWith" };
+        var creatingNames = new[] { "Step", "Request", "Delay", "Invoke", "Sequence", "If", "Parallel", "WhileDo", "DoWhile", "ForEach", "Result", "Try", "Saga", "Suspend", "WaitFor", "Switch", "Assign", "Throw", "Rethrow", "CompensateWith" };
         var types = typeof(Workflow).Assembly.GetTypes().Where(t => t.Namespace?.StartsWith("IxIFlow.Builders") == true);
         foreach (var method in types.SelectMany(t => t.GetMethods()).Where(m => creatingNames.Contains(m.Name) && m.DeclaringType?.Name.Contains("ForEachSetup") != true))
         {

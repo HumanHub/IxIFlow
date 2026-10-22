@@ -72,6 +72,7 @@ internal static class ExecutionSnapshotFactory
                         ["PendingTrigger"] = graph?.Pending?.Trigger ?? "",
                         ["PendingTarget"] = graph?.Pending?.Target ?? "",
                         ["PendingCause"] = graph?.Pending?.Cause ?? "",
+                        ["RethrowOwnerId"] = scopes.Steps(frame.ScopeId).ElementAtOrDefault(frame.NextStepIndex)?.RethrowOwnerId ?? "",
                         ["NextStepIndex"] = frame.NextStepIndex.ToString(),
                         ["LoopIteration"] = iteration.ToString(),
                         ["ForEachItemIndex"] = frame.ForEachIndex?.ToString() ?? "",

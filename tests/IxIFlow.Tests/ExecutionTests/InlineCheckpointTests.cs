@@ -148,15 +148,15 @@ public sealed class InlineCheckpointTests
     }
 
     [Fact]
-    public void FramePartsCountTowardCheckpointSizeAndContractElevenRejectsTen()
+    public void FramePartsCountTowardCheckpointSizeAndContractTwelveRejectsEleven()
     {
         var checkpoint = new ExecutionCheckpoint();
         checkpoint.InlineFrames.Add("frame", new() { DataType = WorkflowTypeIdentity.SavedName(typeof(Data)), Data = StoredJson.Inline(new string('x', 1000)) });
         var stored = StoredCheckpoint.Split(checkpoint, StoredJson.Inline("{}"));
         Assert.True(stored.Bytes >= 1000);
-        Assert.Equal(11, WorkflowDefinitionValidator.CheckpointContractVersion);
-        var error = Assert.Throws<WorkflowEngineException>(() => ExecutionCheckpoint.Read("{\"Runtime\":\"structured-v2\",\"SchemaVersion\":10}"));
-        Assert.Contains("expected 11", error.Message);
+        Assert.Equal(12, WorkflowDefinitionValidator.CheckpointContractVersion);
+        var error = Assert.Throws<WorkflowEngineException>(() => ExecutionCheckpoint.Read("{\"Runtime\":\"structured-v2\",\"SchemaVersion\":11}"));
+        Assert.Contains("expected 12", error.Message);
     }
 
     private static (ExecutionCheckpoint, WorkflowScopeCatalog, WorkflowInstance) Start(WorkflowDefinition definition)

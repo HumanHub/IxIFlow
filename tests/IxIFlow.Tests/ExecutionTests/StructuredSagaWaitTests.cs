@@ -31,12 +31,14 @@ public class StructuredSagaWaitTests
                 new ScopePosition { ScopeId = scopes.SagaScope(saga) }
             ]
         };
-        var saved = SerializedException.From(
-            new NonRestorableSagaException("private constructor value"));
+        var saved = SerializedException.Capture(
+            new NonRestorableSagaException("private constructor value"), new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true);
         Assert.False(saved.IsRestorable);
+        saved = JsonSerializer.Deserialize<SerializedException>(JsonSerializer.Serialize(saved))!;
+        var error = Assert.IsType<DurableWorkflowException>(saved.ForPropagation(new ExecutionCheckpoint()));
 
         var decision = StepErrorPolicies.Handle(scopes, new ExecutionCheckpoint(), continuation,
-            saved.ForPropagation(), DateTime.UtcNow, null);
+            error, DateTime.UtcNow, null);
         Assert.Equal(StepFailureAction.Ignore, decision.Action);
         Assert.Equal(1, continuation.Stack[^1].NextStepIndex);
     }
@@ -741,7 +743,7 @@ public class StructuredSagaWaitTests
     {
         var original = new SagaTerminatedException("policy", new InvalidOperationException("payment failed"));
 
-        var saved = IxIFlow.Core.Runtime.SerializedException.From(original);
+        var saved = IxIFlow.Core.Runtime.SerializedException.Capture(original, new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true);
 
         Assert.True(saved.IsRestorable, saved.RestorationFailureReason);
         var restored = Assert.IsType<SagaTerminatedException>(saved.Restore());

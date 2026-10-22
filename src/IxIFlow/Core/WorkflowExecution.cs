@@ -669,7 +669,9 @@ public enum TraceEntryType
     SwitchSelected,
     DataAssigned,
     /// <summary>An invocation policy selected retry, ignore or propagation.</summary>
-    InvocationPolicyApplied
+    InvocationPolicyApplied,
+    FaultRaised,
+    FaultRethrown
 }
 
 /// <summary>
@@ -860,9 +862,16 @@ public class WorkflowStep
     [System.Text.Json.Serialization.JsonIgnore]
     internal Type? ForEachConditionResultType { get; set; }
 
-    [System.Text.Json.Serialization.JsonIgnore]
     /// <summary>One typed workflow-data assignment.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public Assignment? Assignment { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public System.Linq.Expressions.LambdaExpression? ExceptionExpression { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Func<object, Exception?>? ExceptionFactory { get; set; }
+    public Type? ExceptionFactoryReturnType { get; set; }
+    /// <summary>The catalog address of the lexically enclosing Catch.</summary>
+    public string? RethrowOwnerId { get; internal set; }
 
     public Type? SwitchValueType { get; set; }
     internal Func<object?, object?, bool>? SwitchEquals { get; set; }
@@ -1159,6 +1168,10 @@ public class WorkflowStep
             Target = Target, EdgeLabel = EdgeLabel, IsDefault = IsDefault, Explicit = Explicit,
             OutcomeExpression = OutcomeExpression,
             Assignment = Assignment == null ? null : Assignment with { },
+            ExceptionExpression = ExceptionExpression,
+            ExceptionFactory = ExceptionFactory,
+            ExceptionFactoryReturnType = ExceptionFactoryReturnType,
+            RethrowOwnerId = RethrowOwnerId,
             SwitchValueType = SwitchValueType,
             SwitchEquals = SwitchEquals,
             LexicalFaultType = LexicalFaultType,
@@ -1314,7 +1327,9 @@ public enum WorkflowStepType
     InlineWorkflow,
     /// <summary>Selects one body with typed label equality.</summary>
     Switch,
-    Assign
+    Assign,
+    Throw,
+    Rethrow
 }
 
 /// <summary>

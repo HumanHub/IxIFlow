@@ -112,7 +112,7 @@ internal static class ForEachRules
             .Concat([
                 step.CompiledCondition, step.OutcomeSelector, step.ParallelCompletionCondition,
                 step.RequestSubject, step.ResultSelector, step.ForEachItems, step.ForEachInto,
-                step.Assignment?.TargetBehavior, step.Assignment?.ValueBehavior
+                step.Assignment?.TargetBehavior, step.Assignment?.ValueBehavior, step.ExceptionFactory
             ]);
 
     private static IEnumerable<IReadOnlyList<WorkflowStep>> Bodies(WorkflowStep step) =>

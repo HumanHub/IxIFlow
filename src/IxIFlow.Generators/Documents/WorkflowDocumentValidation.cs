@@ -218,6 +218,17 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     ValidateExpression(assignment.To, diagnostics, stepPath + ".to", inputRoots, document.Code);
                     ValidateExpression(assignment.Value, diagnostics, stepPath + ".value", inputRoots, document.Code);
                     break;
+                case ThrowStepDocument raised:
+                    if (string.IsNullOrWhiteSpace(raised.Exception) || Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseTypeName(raised.Exception.Replace('+', '.')).ContainsDiagnostics)
+                        Invalid("THROW001", "Throw requires a business exception type", stepPath + ".exception", diagnostics);
+                    if (HasMissingMember(stepPath + ".value", diagnostics))
+                        Invalid("THROW002", "Throw requires a factory value", stepPath + ".value", diagnostics);
+                    ValidateExpression(raised.Value, diagnostics, stepPath + ".value", inputRoots, document.Code);
+                    break;
+                case RethrowStepDocument:
+                    if (!faultBindings.Any(binding => binding.Kind == "catch"))
+                        Invalid("RETHROW001", "Rethrow must be inside a TryCatch Catch body", stepPath, diagnostics);
+                    break;
                 case SwitchStepDocument outcome:
                 {
                     if (HasMissingMember(stepPath + ".value", diagnostics))
@@ -616,8 +627,8 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
 
     internal static bool Supports(WorkflowDocumentScope scope, WorkflowStepDocument step) => scope switch
     {
-        WorkflowDocumentScope.Saga => step is ActivityStepDocument or ActivityReferenceStepDocument or WaitStepDocument or SwitchStepDocument or AssignStepDocument,
-        WorkflowDocumentScope.SagaHandler => step is ActivityStepDocument and not RequestStepDocument or ActivityReferenceStepDocument or WaitForStepDocument or SwitchStepDocument or AssignStepDocument,
+        WorkflowDocumentScope.Saga => step is ActivityStepDocument or ActivityReferenceStepDocument or WaitStepDocument or SwitchStepDocument or AssignStepDocument or ThrowStepDocument or RethrowStepDocument,
+        WorkflowDocumentScope.SagaHandler => step is ActivityStepDocument and not RequestStepDocument or ActivityReferenceStepDocument or WaitForStepDocument or SwitchStepDocument or AssignStepDocument or ThrowStepDocument or RethrowStepDocument,
         WorkflowDocumentScope.Catch => true,
         _ => true
     };
@@ -763,7 +774,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                 if (member.IsDefined(typeof(DocumentRequiredAttribute), true) &&
                     (fromSource && !node.Members.ContainsKey(name) || child is string text && string.IsNullOrWhiteSpace(text) || child == null))
                 {
-                    Invalid(node is AssignStepDocument ? (name == "to" ? "ASSIGN001" : "ASSIGN003") : node is SwitchStepDocument && name == "value" ? "SWITCH001" : node is SwitchCaseDocument && name == "value" ? "SWITCH002" : "MEMBER001", $"Missing '{name}'", memberPath, diagnostics);
+                    Invalid(node is AssignStepDocument ? (name == "to" ? "ASSIGN001" : "ASSIGN003") : node is ThrowStepDocument ? (name == "exception" ? "THROW001" : "THROW002") : node is SwitchStepDocument && name == "value" ? "SWITCH001" : node is SwitchCaseDocument && name == "value" ? "SWITCH002" : "MEMBER001", $"Missing '{name}'", memberPath, diagnostics);
                     continue;
                 }
                 var values = DocumentModel.GetValues(node.GetType(), member.Name);

@@ -13,6 +13,11 @@ public interface ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> target,
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+    /// <summary>Raises a business exception constructed from the current context.</summary>
+    ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Throw<TException>(Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
+    /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
+    ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Switch<TValue>(
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> selector,

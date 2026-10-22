@@ -11,6 +11,26 @@ public sealed class FaultSagaActivityBuilder<TData, TFault, TPrevious>(List<Work
     : IFaultSagaActivityBuilder<TData, TFault, TPrevious>
     where TData : class where TPrevious : class
 {
+    public IFaultSagaActivityBuilder<TData, TFault, TPrevious> Throw<TException>(Expression<Func<FaultContext<TData, TFault, TPrevious>, TException>> value,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var evaluate = value.Compile();
+        var step = Core.Runtime.ThrowConstruction.Leaf<TData, TPrevious>(WorkflowStepType.Throw, sourcePath, sourceLine);
+        step.ExceptionType = typeof(TException);
+        step.ExceptionExpression = value;
+        step.ExceptionFactoryReturnType = value.ReturnType;
+        step.ExceptionFactory = context => evaluate((FaultContext<TData, TFault, TPrevious>)context);
+        CatchWorkflowBuilder<TData, TFault, TPrevious>.CaptureFaults(step);
+        steps.Add(step);
+        return this;
+    }
+    public IFaultSagaActivityBuilder<TData, TFault, TPrevious> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        steps.Add(Core.Runtime.ThrowConstruction.Leaf<TData, TPrevious>(WorkflowStepType.Rethrow, sourcePath, sourceLine));
+        return this;
+    }
+
     private SagaActivityBuilder<TData, TPrevious> Inner => new(steps, sagaSteps);
     public IFaultSagaActivityBuilder<TData, TFault, TPrevious> WithId(string id,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)

@@ -57,7 +57,7 @@ internal static class WorkflowInstances
     /// commit to carry. The host validates the definition and checkpoint size before accepting it.
     /// </summary>
     public static ChildStart Start(WorkflowDefinition definition, object data, WorkflowInstance parent, string childId,
-        string parentWaitId, DateTime now)
+        string parentWaitId, DateTime now, IEnumerable<string>? faultProperties = null)
     {
         var (child, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, data, new WorkflowOptions
         {
@@ -67,6 +67,7 @@ internal static class WorkflowInstances
             Demands = WorkflowDemands.Saved(parent).Where(demand => demand.Inherit).ToList()
         }, now);
         child.ParentWaitId = parentWaitId;
+        checkpoint.InvocationFaultProperties = faultProperties?.Distinct(StringComparer.Ordinal).ToList() ?? [];
         ExecutionCheckpointWriter.Prepare(child, checkpoint, data, scopes, now);
         // The store saves a child's start whole, as one instance with no parts.
         child.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);

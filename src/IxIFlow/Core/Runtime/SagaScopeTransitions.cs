@@ -57,12 +57,12 @@ internal static class SagaScopeTransitions
             {
                 owner.SagaState = null;
                 owner.NextStepIndex++;
-                throw Terminated($"the error handler failed: {handlerError.Message}", handlerError.ForPropagation());
+                throw Terminated($"the error handler failed: {handlerError.Message}", handlerError.ForPropagation(checkpoint));
             }
 
             var mayContinue = state.ErrorAction == SagaContinuationAction.Continue &&
                 (state.CompensationErrors.Count == 0 || state.IgnoreCompensationErrors);
-            var error = state.IsCancellationCleanup || mayContinue ? null : state.GetTerminalError();
+            var error = state.IsCancellationCleanup || mayContinue ? null : state.GetTerminalError(checkpoint);
             var compensationErrors = state.CompensationErrors;
             var isCancellationCleanup = state.IsCancellationCleanup;
             if ((compensationErrors.Count == 0 || mayContinue) &&
@@ -99,7 +99,11 @@ internal static class SagaScopeTransitions
             if (state.ErrorAction == SagaContinuationAction.Terminate && error != null)
                 throw new SagaTerminatedException("Error policy requested termination", error, true);
             if (error != null)
-                throw error;
+            {
+                if (state.ErrorHandlerIndex >= 0 && state.ErrorAction != null && state.Error != null)
+                    throw error; // GetTerminalError created this saga failure; it is a new occurrence.
+                SerializedException.From(error, checkpoint).Propagate(checkpoint);
+            }
             if (isCancellationCleanup)
                 continuation.Status = ContinuationStatus.Cancelling;
             return;
@@ -346,23 +350,19 @@ internal static class SagaScopeTransitions
             handler.ExceptionType?.IsAssignableFrom(SerializedException.CatchType(error)) == true);
         SerializedException savedError;
         if (handlerIndex < 0)
-            savedError = SerializedException.From(error,
-                scopes.FaultProperties(SerializedException.CatchType(error)));
+            savedError = SerializedException.From(error, checkpoint);
         else
         {
             try
             {
                 savedError = SerializedException.FromForCatch(error,
                     saga.CatchBlocks[handlerIndex].ExceptionType!,
-                    saga.CatchBlocks[handlerIndex].FaultType!,
-                    scopes.FaultProperties(SerializedException.CatchType(error)));
+                    saga.CatchBlocks[handlerIndex].FaultType!, checkpoint);
             }
             catch (Exception projectionError)
             {
-                error = new InvalidOperationException(
-                    $"Fault projection for '{SerializedException.CatchType(error).Name}' failed: " +
-                    projectionError.GetBaseException().Message);
-                savedError = SerializedException.From(error);
+                error = FaultCapture.ProjectionFailure(error, projectionError);
+                savedError = SerializedException.Capture(error, scopes, checkpoint, continuation, newOccurrence: true);
                 handlerIndex = -1;
             }
         }
@@ -555,7 +555,7 @@ internal static class SagaScopeTransitions
             ? continuation.ItemUnwindCause ?? ItemEndCause.Cancelled : ItemEndCause.UnwoundByOuterHandler);
         continuation.Previous = body.EntryPrevious;
         continuation.RuntimePrevious = body.RuntimeEntryPrevious;
-        state.HandlerError = SerializedException.From(error);
+        state.HandlerError = SerializedException.From(error, checkpoint: checkpoint);
         GiveUp(state);
     }
 

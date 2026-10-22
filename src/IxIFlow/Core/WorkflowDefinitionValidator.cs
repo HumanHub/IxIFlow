@@ -44,7 +44,7 @@ public static class WorkflowDefinitionValidator
         WorkflowTypeIdentity.SavedName(dataType) == WorkflowTypeIdentity.SavedName(workflowData.GetType());
 
     /// <summary>The persisted execution contract version; other versions require a separate migration.</summary>
-    public const int CheckpointContractVersion = 11;
+    public const int CheckpointContractVersion = 12;
 
     public static IReadOnlyList<WorkflowVersionDependency> GetDependencies(WorkflowDefinition definition)
     {
@@ -105,6 +105,7 @@ public static class WorkflowDefinitionValidator
                          .Prepend(definition.WorkflowDataType).OfType<Type>().Distinct())
                 _ = RedactingJson.ClassifiedPaths(type);
             AssignmentRules.Validate(steps);
+            ThrowRules.Validate(steps);
             SwitchRules.Validate(steps);
             GraphRules.Validate(steps);
             var ids = new HashSet<string>(StringComparer.Ordinal);
@@ -168,7 +169,7 @@ public static class WorkflowDefinitionValidator
             var supported = step.StepType switch
             {
                 WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow or WorkflowStepType.Sequence or
-                    WorkflowStepType.Assign or WorkflowStepType.Conditional or WorkflowStepType.Switch or WorkflowStepType.Parallel or WorkflowStepType.Loop or
+                    WorkflowStepType.Assign or WorkflowStepType.Conditional or WorkflowStepType.Switch or WorkflowStepType.Throw or WorkflowStepType.Rethrow or WorkflowStepType.Parallel or WorkflowStepType.Loop or
                     WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
                     WorkflowStepType.ForEach or WorkflowStepType.ForEachResult or WorkflowStepType.Flowchart or
                     WorkflowStepType.Enter or WorkflowStepType.Decision or WorkflowStepType.Edge or
