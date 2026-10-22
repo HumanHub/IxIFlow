@@ -40,7 +40,7 @@ The singleton `InMemoryWorkflowStateRepository` survives DI request scopes in on
 
 Use a file connection string, for example `Data Source=workflows.db`. `UseSqlite` rejects `Mode=Memory`, `:memory:`, an empty data source and `file:` URIs with `ArgumentException` during registration. The provider uses WAL and takes an exclusive OS handle on the normalized database path plus `.ixiflow-owner`. Ownership is enforced even when the repository is constructed directly.
 
-A second owner cannot open that database concurrently. Asynchronously dispose the service provider/repository before reopening it; a process crash releases the OS handle. Use a local file system with working file locking. UNC and network paths are rejected, and startup probes that the ownership lock is enforced. SQLite does not support coordinator or multiple-host execution.
+A second owner cannot open that database concurrently. Await `WorkflowHost.StopAsync` (called during generic-host shutdown) or asynchronous host disposal before disposing its stores and service provider, then asynchronously dispose the repository before reopening the database. Container disposal alone does not order the host before its stores; a shutdown release timeout can leave database connections in use. See [shutdown](coordinator-and-hosts.md#shutdown). A process crash releases the OS handle. Use a local file system with working file locking. UNC and network paths are rejected, and startup probes that the ownership lock is enforced. SQLite does not support coordinator or multiple-host execution.
 
 The registered `TimeProvider` supplies store time. Run it with the [core host](coordinator-and-hosts.md) for recovery scans, outbox publication and retention.
 
