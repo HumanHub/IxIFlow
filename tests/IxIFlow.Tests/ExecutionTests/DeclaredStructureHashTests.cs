@@ -15,6 +15,7 @@ using Moq;
 
 namespace IxIFlow.Tests.ExecutionTests.StructureHashFixtures;
 
+[Trait("Spec", "F-03")]
 [Trait("Feature", "registration")]
 public sealed class DeclaredStructureHashTests
 {

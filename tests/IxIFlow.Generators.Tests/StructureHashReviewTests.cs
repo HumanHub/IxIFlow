@@ -6,6 +6,7 @@ using Microsoft.CodeAnalysis;
 
 namespace IxIFlow.Generators.Tests.StructureHashFixtures;
 
+[Trait("Spec", "F-03")]
 public sealed class StructureHashReviewTests
 {
     [Fact]
