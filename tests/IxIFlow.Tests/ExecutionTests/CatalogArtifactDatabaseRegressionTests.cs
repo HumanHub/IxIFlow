@@ -29,7 +29,7 @@ public sealed class CatalogArtifactDatabaseRegressionTests
     private static async Task LockScopeAsync(IWorkflowStateRepository store, Func<DbConnection> connect, bool sqlServer)
     {
         var name = "Locks-" + Guid.NewGuid().ToString("N");
-        await store.RegisterWorkflowVersionAsync(new(name, 1, "locks"));
+        await store.RegisterWorkflowVersionAsync(new(name, 1, "locks", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash));
         var ordinary = Instance(name);
         var parent = Instance(name);
         var root = Instance(name);
@@ -107,10 +107,10 @@ public sealed class CatalogArtifactDatabaseRegressionTests
     private static async Task ProjectionAsync(IWorkflowStateRepository store, Func<DbConnection> connect, Provider provider)
     {
         var name = "Projection-" + Guid.NewGuid().ToString("N");
-        await store.RegisterWorkflowVersionAsync(new(name, 1, "child"));
+        await store.RegisterWorkflowVersionAsync(new(name, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash));
         // More names than SQL Server allows in one command; all are retired callers.
         var callers = Enumerable.Range(0, 2105).Select(i => new WorkflowVersion(name + "-" + i, 1,
-            "caller", WorkflowVersionState.Retired, Dependencies: [new(name, 1)])).ToArray();
+            "caller", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, WorkflowVersionState.Retired, Dependencies: [new(name, 1)])).ToArray();
         await using var connection = connect();
         await connection.OpenAsync();
         var insert = provider == Provider.SqlServer

@@ -37,6 +37,10 @@ public sealed record WorkflowDefinitionDocument : DocumentNode
     [Description("The workflow data CLR type or resolved catalog key.")]
     [DocumentRequired]
     public string DataType { get; init; } = string.Empty;
+    [Description("Input members added to workflow markers; an empty list explicitly declares no convention inputs.")]
+    public List<string>? Input { get; init; }
+    [Description("Output members added to workflow markers; an empty list explicitly declares no convention outputs.")]
+    public List<string>? Output { get; init; }
     [Description("The display name stored in workflow metadata.")]
     public string? DisplayName { get; init; }
     [Description("The description stored on the workflow definition.")]
@@ -358,7 +362,7 @@ public sealed record WorkflowReferenceDocument : DocumentNode
     [DocumentRequired]
     public string Name { get; init; } = string.Empty;
     [Description("The requested workflow version, or the host-resolved version when omitted.")]
-    public int? Version { get; init; }
+    public int? Version { get; set; }
 }
 
 [Description("An expression mapped to an input property.")]

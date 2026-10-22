@@ -188,7 +188,7 @@ public sealed class DefinitionValidationTests
             var store = new InMemoryWorkflowStateRepository();
             foreach (var definition in definitions)
                 store.RegisterWorkflowVersionAsync(new(definition.Name, definition.Version,
-                    new WorkflowScopeCatalog(definition).StructureHash)).GetAwaiter().GetResult();
+                    new WorkflowScopeCatalog(definition).StructureHash, WorkflowDefinitionValidator.GetContract(definition).ToJson(), WorkflowDefinitionValidator.GetContract(definition).Hash)).GetAwaiter().GetResult();
             return new WorkflowCatalog(store);
         }
         public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => _catalog.RegisterPackageAsync(package, artifacts);

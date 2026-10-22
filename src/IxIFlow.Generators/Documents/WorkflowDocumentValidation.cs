@@ -55,6 +55,24 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             }
         }
 
+        if (document.Workflow is { } header && context is IWorkflowContractValidationContext contracts && contracts.FindDataContract(header.DataType) is { } contract)
+        {
+            ValidateDeclarations(document.Workflow.Input, true);
+            ValidateDeclarations(document.Workflow.Output, false);
+            void ValidateDeclarations(IReadOnlyList<string>? names, bool input)
+            {
+                for (var index = 0; index < (names?.Count ?? 0); index++)
+                {
+                    var name = names![index];
+                    var member = contract.Members.FirstOrDefault(member => member.Name == name);
+                    var path = $"workflow.{(input ? "input" : "output")}[{index}]";
+                    if (member == null) Invalid("WF005", $"Unknown workflow member '{name}'", path, diagnostics);
+                    else if (member.Indexer || (input ? !member.Setter || member.Output && !member.Input : !member.Getter || member.Input && !member.Output))
+                        Invalid("WF006", $"Workflow member '{name}' contradicts its {(input ? "input" : "output")} declaration", path, diagnostics);
+                }
+            }
+        }
+
         for (var index = 0; index < document.Demands.Count; index++)
         {
             var demand = document.Demands[index];
@@ -207,6 +225,8 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     if (invocation.DataType != null) RequiredType(invocation.DataType, stepPath + ".dataType", diagnostics);
                     ValidateInputMappings(invocation.Input, diagnostics, stepPath + ".input", false, aliases, document.Code);
                     ValidateOutputMappings(invocation.Output, diagnostics, stepPath + ".output");
+                    ValidateWorkflowMappings(invocation.Input, invocation.Output,
+                        (context as IWorkflowContractValidationContext)?.FindWorkflowTypeContract(invocation.WorkflowType, invocation.DataType), stepPath, diagnostics);
                     break;
                 }
                 case DelayStepDocument delay:
@@ -273,11 +293,13 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                 case InvokeWorkflowStepDocument invokeWorkflowStep:
                     if (!HasMissingMember(stepPath + ".workflow", diagnostics) && !string.IsNullOrWhiteSpace(invokeWorkflowStep.Workflow.Name) && !await context.HasWorkflowAsync(invokeWorkflowStep.Workflow.Name, invokeWorkflowStep.Workflow.Version, cancellationToken))
                     {
-                        diagnostics.Add(new WorkflowDiagnostic("STEP011", $"Workflow '{invokeWorkflowStep.Workflow.Name}' needs a resolved data contract and pinned version", WorkflowDiagnosticSeverity.Error, $"{stepPath}.workflow.name"));
+                        diagnostics.Add(new WorkflowDiagnostic("STEP011", $"Workflow '{invokeWorkflowStep.Workflow.Name}' needs a resolved workflow contract and pinned version", WorkflowDiagnosticSeverity.Error, $"{stepPath}.workflow.name"));
                     }
 
                     ValidateInputMappings(invokeWorkflowStep.Input, diagnostics, $"{stepPath}.input", allowEventRoot: false, aliases, document.Code);
                     ValidateOutputMappings(invokeWorkflowStep.Output, diagnostics, $"{stepPath}.output");
+                    ValidateWorkflowMappings(invokeWorkflowStep.Input, invokeWorkflowStep.Output,
+                        (context as IWorkflowContractValidationContext)?.FindWorkflowContract(invokeWorkflowStep.Workflow.Name, invokeWorkflowStep.Workflow.Version), stepPath, diagnostics);
                     break;
 
                 case ConditionalStepDocument conditionalStep:
@@ -322,6 +344,21 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             }
             if (step is TryStepDocument or SagaStepDocument) scope = WorkflowDocumentScope.Workflow;
         }
+    }
+
+    private static void ValidateWorkflowMappings(IReadOnlyList<InputMappingDocument> inputs, IReadOnlyList<OutputMappingDocument> outputs,
+        WorkflowDataDocumentContract? contract, string path, List<WorkflowDiagnostic> diagnostics)
+    {
+        if (contract == null) return;
+        for (var index = 0; index < inputs.Count; index++)
+            if (!contract.Members.Any(member => member.Name == inputs[index].Target && member.Input && member.Setter && !member.Indexer))
+                Invalid("MAP004", $"Workflow member '{inputs[index].Target}' is not an input", $"{path}.input[{index}].target", diagnostics);
+        for (var index = 0; index < outputs.Count; index++)
+            if (!contract.Members.Any(member => member.Name == outputs[index].Source && member.Output && member.Getter && !member.Indexer))
+                Invalid("MAP005", $"Workflow member '{outputs[index].Source}' is not an output", $"{path}.output[{index}].source", diagnostics);
+        foreach (var member in contract.Members.Where(member => member.Input && member.Required && !member.HasDefault))
+            if (!inputs.Any(mapping => mapping.Target == member.Name))
+                Invalid("MAP006", $"Required workflow input '{member.Name}' must be mapped or have a default", path + ".input", diagnostics);
     }
 
     private async Task ValidateActivityTemplateAsync(

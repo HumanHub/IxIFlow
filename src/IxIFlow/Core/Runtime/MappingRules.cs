@@ -11,9 +11,9 @@ namespace IxIFlow.Core.Runtime;
 /// <see cref="ActivityInputAttribute"/> or <see cref="ActivityOutputAttribute"/> takes inputs only into its marked
 /// inputs and gives outputs only from its marked outputs, and each input it requires is mapped unless it has a
 /// default. An activity without the attributes takes inputs into properties with a public setter and gives outputs
-/// from properties with a public getter. A child workflow's data takes inputs into public settable properties and
-/// gives outputs from public readable ones. An event takes suggestion inputs into public settable properties and
-/// gives outputs from public readable ones. A mapping that
+/// from properties with a public getter. A child workflow's mappings follow its caller view or explicit contract,
+/// with public setters for inputs and public getters for outputs. An event takes suggestion inputs into public
+/// settable properties and gives outputs from public readable ones. A mapping that
 /// breaks a rule fails the build with a message naming the type and property.
 /// </summary>
 internal static class MappingRules
@@ -37,8 +37,8 @@ internal static class MappingRules
                         $"Wait default payload has type {payload.GetType().Name}, expected {step.ResumeEventType?.Name ?? "an event type"}");
                 if (step.ActivityType != null)
                     CheckActivity(step.ActivityType, step.InputMappings, step.OutputMappings);
-                if (step.StepType == WorkflowStepType.WorkflowInvocation && step.InvokedDataType != null)
-                    CheckData(step.InvokedDataType, step.InputMappings, step.OutputMappings, "Child workflow");
+                if (step.StepType == WorkflowStepType.WorkflowInvocation)
+                    CheckWorkflow(step);
                 if (step.ResumeEventType != null && step.ActivityType == null &&
                     step.StepType != WorkflowStepType.WorkflowInvocation)
                     CheckEvent(step);
@@ -104,6 +104,37 @@ internal static class MappingRules
                 throw Refused("Activity", activity, property, "is a required input and is not mapped");
     }
 
+    internal static void CheckWorkflow(WorkflowStep step)
+    {
+        var type = step.InvokedDataType ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+            $"Child workflow step '{step.Name}' has no invoked data type");
+        var contract = step.InvokedContract ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+            $"Child workflow step '{step.Name}' has no invoked contract");
+        if (step.InvokedContractHash != contract.Hash)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, $"Child workflow step '{step.Name}' has an invalid invoked contract hash");
+        contract.ValidateType(type);
+        foreach (var mapping in step.InputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Input))
+        {
+            var property = WorkflowProperty(type, mapping);
+            if (property.SetMethod is not { IsPublic: true })
+                throw Refused("Child workflow", type, property, "is not an input: it has no public setter");
+            if (!contract.Inputs.Any(member => member.Name == mapping.TargetProperty))
+                throw Refused("Child workflow", type, property, "is not an input: it is not in the workflow contract");
+        }
+        foreach (var mapping in step.OutputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Output))
+        {
+            var property = WorkflowProperty(type, mapping);
+            if (property.GetMethod is not { IsPublic: true })
+                throw Refused("Child workflow", type, property, "is not an output: it has no public getter");
+            if (!contract.Outputs.Any(member => member.Name == mapping.TargetProperty))
+                throw Refused("Child workflow", type, property, "is not an output: it is not in the workflow contract");
+        }
+        foreach (var member in contract.Inputs.Where(member => member.Required && !member.HasDefault))
+            if (!step.InputMappings.Any(mapping => mapping.Direction == PropertyMappingDirection.Input && mapping.TargetProperty == member.Name))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Child workflow property '{type.Name}.{member.Name}' is a required input and is not mapped");
+    }
+
     private static void CheckData(Type data, IEnumerable<PropertyMapping> inputs, IEnumerable<PropertyMapping> outputs,
         string owner)
     {
@@ -147,6 +178,11 @@ internal static class MappingRules
         owner.GetProperty(mapping.TargetProperty, BindingFlags.Public | BindingFlags.Instance)
         ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
             $"{kind} '{owner.Name}' has no public property '{mapping.TargetProperty}' to map");
+
+    private static PropertyInfo WorkflowProperty(Type owner, PropertyMapping mapping) =>
+        WorkflowContract.FindProperty(owner, mapping.TargetProperty)
+        ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+            $"Child workflow '{owner.Name}' has no public property '{mapping.TargetProperty}' to map");
 
     private static WorkflowEngineException Refused(string kind, Type owner, PropertyInfo property, string reason) =>
         new(WorkflowErrorKind.InvalidDefinition, $"{kind} property '{owner.Name}.{property.Name}' {reason}");

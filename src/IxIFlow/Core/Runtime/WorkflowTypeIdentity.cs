@@ -78,6 +78,18 @@ public static class WorkflowTypeIdentity
         { return null; }
     }
 
+    internal static bool IsSavedName(string? name)
+    {
+        if (name?.StartsWith(Prefix, StringComparison.Ordinal) != true) return false;
+        try
+        {
+            var position = Prefix.Length;
+            _ = Read(name, ref position, 0, resolve: false);
+            return position == name.Length;
+        }
+        catch (Exception error) when (error is FormatException or OverflowException or ArgumentException) { return false; }
+    }
+
     private static int Count(string text, ref int position)
     {
         var end = text.IndexOf(':', position);
@@ -97,7 +109,7 @@ public static class WorkflowTypeIdentity
         return value;
     }
 
-    private static Type? Read(string text, ref int position, int depth)
+    private static Type? Read(string text, ref int position, int depth, bool resolve = true)
     {
         if (depth > 64 || position >= text.Length) throw new FormatException("Invalid type identifier nesting");
         var kind = text[position++];
@@ -105,16 +117,18 @@ public static class WorkflowTypeIdentity
         {
             var rank = kind == 'A' ? Count(text, ref position) : 0;
             if (kind == 'A' && rank is < 1 or > 32) throw new FormatException("Invalid array rank");
-            var element = Read(text, ref position, depth + 1);
+            var element = Read(text, ref position, depth + 1, resolve);
             return element == null ? null : kind == 'V' ? element.MakeArrayType() : element.MakeArrayType(rank);
         }
         if (kind != 'N') throw new FormatException("Unknown type identifier node");
         var assembly = Part(text, ref position);
         var name = Part(text, ref position);
+        if (assembly.Length == 0 || name.Length == 0) throw new FormatException("Empty type identifier part");
         var count = Count(text, ref position);
         if (count > 128) throw new FormatException("Too many generic arguments");
         var arguments = new Type?[count];
-        for (var index = 0; index < count; index++) arguments[index] = Read(text, ref position, depth + 1);
+        for (var index = 0; index < count; index++) arguments[index] = Read(text, ref position, depth + 1, resolve);
+        if (!resolve) return null;
         var type = (Context.Value ?? AssemblyLoadContext.Default).LoadFromAssemblyName(new AssemblyName(assembly))
             .GetType(name, throwOnError: false);
         return type == null || count == 0 ? type : arguments.Any(argument => argument == null) ? null : type.MakeGenericType(arguments!);

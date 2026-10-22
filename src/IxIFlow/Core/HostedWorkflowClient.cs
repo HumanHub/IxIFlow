@@ -35,6 +35,9 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
     {
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(workflowData);
+        WorkflowDefinitionValidator.CheckRootDataType(definition, workflowData);
+        if (definition.WorkflowDataType is { } dataType)
+            WorkflowDefinitionValidator.GetContract(definition).ValidateRequired(workflowData, dataType);
         if (options?.InstanceId != null) InstanceIds.Validate(options.InstanceId);
         return UntilIdleAsync(host.RunAsync(options?.InstanceId,
             (client, _, token) => client.RunAsync(definition, workflowData, options, token), cancellationToken),
@@ -45,6 +48,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
         WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class
     {
         WorkflowCatalogRules.ValidateName(name);
+        ArgumentNullException.ThrowIfNull(workflowData);
         if (options?.InstanceId != null) InstanceIds.Validate(options.InstanceId);
         var versionOmitted = version == null;
         if (version == null && options?.InstanceId is { } instanceId &&
@@ -92,6 +96,9 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
     {
         ArgumentNullException.ThrowIfNull(definition);
         ArgumentNullException.ThrowIfNull(workflowData);
+        WorkflowDefinitionValidator.CheckRootDataType(definition, workflowData);
+        if (definition.WorkflowDataType is { } dataType)
+            WorkflowDefinitionValidator.GetContract(definition).ValidateRequired(workflowData, dataType);
         options ??= new WorkflowOptions();
         if (options.InstanceId != null) InstanceIds.Validate(options.InstanceId);
         // Inside a slot the start runs inline, so it cannot return before the run ends. The host

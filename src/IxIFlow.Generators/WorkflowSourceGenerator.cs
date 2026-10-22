@@ -89,15 +89,16 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
                 var version = attribute?.NamedArguments.FirstOrDefault(pair => pair.Key == "Version").Value.Value as string ??
                     (attribute == null ? "" : "1.0");
                 var dataTypes = type.AllInterfaces.Where(contract => contract.OriginalDefinition.ToDisplayString() == "IxIFlow.Builders.Interfaces.IWorkflow<TWorkflowData>")
-                    .Select(contract => contract.TypeArguments[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)).Distinct().ToArray();
+                    .Select(contract => contract.TypeArguments[0]).OfType<INamedTypeSymbol>().ToArray();
                 var identity = type.GetAttributes().FirstOrDefault(item =>
                     item.AttributeClass?.ToDisplayString() == "IxIFlow.Core.WorkflowAttribute");
                 var workflowName = identity?.ConstructorArguments.FirstOrDefault().Value as string ?? "";
                 var workflowVersion = identity == null ? 0 :
                     identity.NamedArguments.FirstOrDefault(pair => pair.Key == "Version").Value.Value as int? ?? 1;
                 rows.Add(string.Join("\t", name, type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), version,
-                    string.Join(";", properties.Distinct(StringComparer.Ordinal)), dataTypes.Length == 1 ? dataTypes[0] : "",
-                    Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(workflowName)), workflowVersion));
+                    string.Join(";", properties.Distinct(StringComparer.Ordinal)), dataTypes.Length == 1 ? dataTypes[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) : "",
+                    Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(workflowName)), workflowVersion,
+                    WorkflowDataDocumentContract.FromSymbol(type).Snapshot(), dataTypes.Length == 1 ? WorkflowDataDocumentContract.FromSymbol(dataTypes[0]).Snapshot() : ""));
             }
         }
         return new BoundTypes(Lines(rows));
@@ -110,6 +111,7 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
         var workflowIdentities = new List<string>();
         var workflowDataTypes = new SortedDictionary<string, string>(StringComparer.Ordinal);
         var versions = new SortedDictionary<string, string>(StringComparer.Ordinal);
+        var contracts = new SortedDictionary<string, string>(StringComparer.Ordinal);
         foreach (var group in bound.Rows.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries)
                      .Select(line => line.Split('\t')).GroupBy(row => row[0], StringComparer.Ordinal))
         {
@@ -117,9 +119,11 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
             if (matches.Length != 1) continue;
             var row = matches[0];
             names.Add(row[0], row[1]);
+            contracts[row[0]] = row[7];
             if (row[4].Length > 0)
             {
                 workflowDataTypes.Add(row[0], row[4]);
+                contracts[row[4]] = row[8];
                 workflowIdentities.Add(string.Join("\t", row[0], row[5], row[6]));
             }
             if (row[2].Length != 0) versions.Add(row[0], row[2]);
@@ -132,7 +136,8 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
         return new TypeModel(Lines(names.Select(pair => pair.Key + "\t" + pair.Value)),
             Lines(members.Select(pair => pair.Key + "\t" + pair.Value)),
             Lines(versions.Select(pair => pair.Key + "\t" + pair.Value)),
-            Lines(workflowDataTypes.Select(pair => pair.Key + "\t" + pair.Value)), Lines(workflowIdentities));
+            Lines(workflowDataTypes.Select(pair => pair.Key + "\t" + pair.Value)), Lines(workflowIdentities),
+            Lines(contracts.Select(pair => pair.Key + "\t" + pair.Value)));
     }
 
     private static string ReferencedAliases(MetadataReference reference, CancellationToken token)
@@ -187,6 +192,11 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
         var options = new WorkflowSourceOptions { Namespace = generatedNamespace, RequireResolvedTypes = true };
         Copy(types.Names, options.Types);
         Copy(types.Members, options.Members);
+        foreach (var line in types.Contracts.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var entry = line.Split('\t');
+            options.DataContracts.Add(entry[0], WorkflowDataDocumentContract.ReadSnapshot(entry[1]));
+        }
         foreach (var line in types.Versions.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))
         {
             var entry = line.Split('\t');
@@ -209,7 +219,7 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
                 var key = workflow.Name + "@" + workflow.Version;
                 if (options.Workflows.ContainsKey(key))
                     throw new WorkflowSourceException($"Duplicate workflow '{key}'", file.Path, workflow.Location.Line, workflow.Location.Column);
-                options.Workflows.Add(key, new WorkflowSourceReference(workflow.DataType, workflow.Version));
+                options.Workflows.Add(key, new WorkflowSourceReference(workflow.DataType, workflow.Version) { Inputs = workflow.Input, Outputs = workflow.Output });
                 documents.Add(file, document);
             }
             catch (WorkflowSourceException error) { Report(context, file, error); }
@@ -265,5 +275,5 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
     private sealed record TypeRequests(string Names);
     private sealed record Lookup(string Names, string Aliases);
     private sealed record BoundTypes(string Rows);
-    private sealed record TypeModel(string Names, string Members, string Versions, string WorkflowDataTypes, string WorkflowIdentities);
+    private sealed record TypeModel(string Names, string Members, string Versions, string WorkflowDataTypes, string WorkflowIdentities, string Contracts);
 }

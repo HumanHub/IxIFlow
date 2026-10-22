@@ -74,7 +74,7 @@ All steps accept `id`; `name` is accepted only in workflow-scope bodies. A name 
 | `request` | Activity members plus required `key` and optional `subject`; opens a request reply slot |
 | `waitFor` | Required `key` and `event`; plain event wait or the paired request's reply wait |
 | `suspend` | Required `event`, optional `reason` key (step ID fallback) |
-| `invokeWorkflow` | `workflow: { name, version }`, `input`, `output`, optional `cancelWithParent` (true by default); the source generator requires an explicit `version` because it registers only `name@version` references |
+| `invokeWorkflow` | `workflow: { name, version? }`, `input`, `output`, optional `cancelWithParent` (true by default); publishing resolves catalog versions and contracts; local source generation requires an explicit version of another document in the compilation |
 | `invokeWorkflowType` | `workflowType`, optional `dataType` fallback, mappings and `cancelWithParent`; the generator reads the class's `[Workflow("Name", Version = n)]` identity; register the class with `services.RegisterWorkflow<TWorkflow>()` before building the service provider |
 
 The schema describes possible nodes; shared builder rules also enforce where constructs are legal. Saga bodies accept activities/references, requests, waits and outcomes. Saga handlers accept ordinary activities/references and `waitFor`; catch bodies exclude requests, delays, results and outcomes. Timeout paths and result-producing lists retain the fluent API's scope restrictions. Use `name` for a step label; descriptions belong to the workflow.
@@ -162,8 +162,41 @@ The package includes [workflow.schema.json](../src/IxIFlow/schemas/workflow.sche
 
 `WorkflowYamlSerializer` and the Authoring `WorkflowJsonSerializer` share the document model and strict member rules. JSON document reading/writing and translation from a `WorkflowDocument` exist; automatic build discovery is for YAML/YML files.
 
+## Workflow contracts and catalog calls
+
+The workflow header accepts `input: [Member, ...]` and `output: [Member, ...]`. These lists merge with `[WorkflowInput]`, `[WorkflowOutput]` and `[WorkflowInputOutput]` on the data type. Without markers or lists, public setters are inputs and public getters are outputs. With declarations, only declared members are exposed. An explicit empty list exposes nothing on that side, including marked members. Omit the lists to keep convention. Unknown members report WF005; declarations that contradict markers or public accessors report WF006.
+
+Publishing resolves every `invokeWorkflow` and `imports.workflows` entry through the catalog. An omitted version selects the latest Published version. An explicit version may name a Published or Deprecated version. Missing, Draft and Retired versions are refused. Canonical bundle YAML records explicit step versions and `imports.workflows` entries such as `Orders@3`.
+
+<!-- snippet: samples/IxIFlow.Samples/PublishedCheckout.cs#checkout-yaml -->
+```yaml
+workflow:
+  name: Checkout
+  version: 1
+  dataType: CheckoutData
+  input: [OrderId]
+  output: [Receipt]
+imports:
+  workflows: [Orders]
+definitions:
+  - kind: invokeWorkflow
+    workflow: {name: Orders}
+    input:
+      - target: OrderId
+        from: {path: workflow.OrderId}
+    output:
+      - source: Receipt
+        to: {path: workflow.Receipt}
+```
+
+Generated calls embed the catalog's immutable workflow contract. Mapping a member outside its inputs is MAP004; reading a member outside its outputs is MAP005; omitting a required input without a default is MAP006. These diagnostics point to the mapping in YAML. STEP011 requires a resolved workflow contract and pinned version. Public accessors and compatible types are also checked by the fluent builder and compiler.
+
+The caller bundle includes the union of its packages and its callees' digest-pinned package closures, preserving reference assemblies and runtime assets per RID. This makes package-owned callee data types available to compile and load the caller. Callee workflow assemblies are resolved independently when the child runs. An incompatible callee engine version, checkpoint contract version, target framework or shared assembly profile reports PUB009 and requires republishing the callee. Conflicting package versions, digests or asset selections report PUB010, as do incompatible private DTO assemblies or their private dependencies (including different bytes with the same assembly identity).
+
+Call input precedence is explicit mapping, then `[DefaultValue]`, then constructor or initializer. A required null or empty input fails the invocation step as `InvalidInput`, catchable with `try`/`catches`. Invocation steps have no retry policy yet. Client root starts validate required inputs without applying attribute defaults. Invoked workflows run as independent child instances; their contracts are checked again at child start. Published and Deprecated callers, and unfinished parent instances of retired callers, continue to prevent retirement of their child dependencies.
+
 ## Publishing and boundaries
 
-`WorkflowPublisher` in `IxIFlow.Authoring` publishes import-free YAML drafts as verified bundles. It validates, translates and compiles the draft, then calls the generated `Build()` in the publishing process, inside a collectible scratch load context on a dedicated background thread. `WorkflowPublisherOptions.BuildTimeout` defaults to 30 seconds. If the build exceeds that deadline, publication fails with a build-timeout diagnostic and uploads nothing. The thread cannot be stopped: a warning reports that it and its scratch load context are abandoned until the process restarts. Supply an `ILogger<WorkflowPublisher>` to capture these warnings. A completed build is validated before its scratch context is unloaded and its bundle is uploaded and published against the draft revision.
+`WorkflowPublisher` in `IxIFlow.Authoring` publishes YAML drafts with pinned package and workflow imports as verified bundles. It validates, translates and compiles the draft, then calls the generated `Build()` in the publishing process, inside a collectible scratch load context on a dedicated background thread. `WorkflowPublisherOptions.BuildTimeout` defaults to 30 seconds. If the build exceeds that deadline, publication fails with a build-timeout diagnostic and uploads nothing. The thread cannot be stopped: a warning reports that it and its scratch load context are abandoned until the process restarts. Supply an `ILogger<WorkflowPublisher>` to capture these warnings. A completed build is validated before its scratch context is unloaded and its bundle is uploaded and published against the draft revision.
 
 See the [generator guide](../src/IxIFlow.Generators/README.md) for custom filenames, opt-out, MSBuild metadata and explicit project references. Host bundle loading and activity-package dependency resolution and pinning are implemented (see the README's publishing section). Inline workflow calls and YAML-defined code activities remain planned. Application hosting, store choice, publishers and client calls use C# configuration.

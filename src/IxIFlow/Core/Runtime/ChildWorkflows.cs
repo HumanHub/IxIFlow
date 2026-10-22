@@ -59,16 +59,60 @@ internal static class ChildInputs
         var data = Activator.CreateInstance(definition.WorkflowDataType!)
                    ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                        $"Failed to create instance of {definition.WorkflowDataType}");
+        var contract = WorkflowDefinitionValidator.GetContract(definition);
+        var assigned = new Dictionary<string, object?>(StringComparer.Ordinal);
+        foreach (var member in contract.Inputs.Where(member => member.HasDefault &&
+                     !step.InputMappings.Any(mapping => mapping.Direction == PropertyMappingDirection.Input && mapping.TargetProperty == member.Name)))
+        {
+            var target = WorkflowContract.FindProperty(data.GetType(), member.Name) ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Child workflow input '{data.GetType().Name}.{member.Name}' is not a property of its data");
+            var value = WorkflowJson.Deserialize(member.DefaultJson!, target.PropertyType);
+            target.SetValue(data, value);
+            assigned[member.Name] = value;
+        }
         foreach (var mapping in step.InputMappings.Where(item => item.Direction == PropertyMappingDirection.Input))
         {
-            var target = data.GetType().GetProperty(mapping.TargetProperty);
+            var target = WorkflowContract.FindProperty(data.GetType(), mapping.TargetProperty);
             if (target is not { CanWrite: true })
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Child workflow input '{data.GetType().Name}.{mapping.TargetProperty}' is " +
                     (target == null ? "not a property of its data" : "not writable"));
-            target.SetValue(data, Convert(mapping.SourceFunction(context), target, data.GetType()));
+            var value = Convert(mapping.SourceFunction(context), target, data.GetType());
+            target.SetValue(data, value);
+            assigned[target.Name] = value;
         }
+        try { contract.ValidateRequired(data, data.GetType(), assigned); }
+        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidRequest)
+        { throw WorkflowEngineException.FromWorkflowCode(error); }
         return data;
+    }
+
+    internal static void CheckContract(WorkflowDefinition definition, WorkflowStep step, WorkflowContract contract)
+    {
+        if (step.InvokedContractKind == WorkflowInvocationContractKind.ExactPin)
+        {
+            if (contract.Hash != step.InvokedContractHash)
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch,
+                    $"Workflow {definition.Name} v{definition.Version} contract hash differs: resolved '{contract.Hash}', invoked '{step.InvokedContractHash}'");
+            return;
+        }
+        foreach (var mapping in step.InputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Input))
+        {
+            if (WorkflowContract.FindProperty(definition.WorkflowDataType!, mapping.TargetProperty) == null)
+                throw InvalidInput(mapping.TargetProperty, "is not a property of its data");
+            if (!contract.Inputs.Any(member => member.Name == mapping.TargetProperty))
+                throw InvalidInput(mapping.TargetProperty, "is not an input in its workflow contract");
+        }
+        foreach (var mapping in step.OutputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Output))
+            if (!contract.Outputs.Any(member => member.Name == mapping.TargetProperty))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"Child workflow output '{definition.WorkflowDataType!.Name}.{mapping.TargetProperty}' is not an output in its workflow contract");
+        foreach (var member in contract.Inputs.Where(member => member.Required && !member.HasDefault))
+            if (!step.InputMappings.Any(mapping => mapping.Direction == PropertyMappingDirection.Input && mapping.TargetProperty == member.Name))
+                throw InvalidInput(member.Name, "is a required input in its workflow contract and is not mapped");
+
+        WorkflowEngineException InvalidInput(string member, string reason) => new(WorkflowErrorKind.InvalidDefinition,
+            $"Child workflow input '{definition.WorkflowDataType!.Name}.{member}' {reason}");
     }
 
     private static object? Convert(object? value, PropertyInfo target, Type dataType)

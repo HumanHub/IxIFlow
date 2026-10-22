@@ -23,6 +23,8 @@ public sealed class WorkflowSourceOptions
     public IDictionary<string, WorkflowClassIdentity> WorkflowIdentities { get; } =
         new Dictionary<string, WorkflowClassIdentity>(StringComparer.Ordinal);
     public IDictionary<string, string> Members { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
+    public IDictionary<string, WorkflowDataDocumentContract> DataContracts { get; } =
+        new Dictionary<string, WorkflowDataDocumentContract>(StringComparer.Ordinal);
     public IDictionary<string, WorkflowSourceReference> Workflows { get; } =
         new Dictionary<string, WorkflowSourceReference>(StringComparer.Ordinal);
 }
@@ -39,6 +41,11 @@ public sealed class WorkflowSourceReference(string dataType, int version)
 {
     public string DataType { get; } = dataType;
     public int Version { get; } = version;
+    /// <summary>Canonical immutable contract read from the publishing catalog.</summary>
+    public string? ContractJson { get; init; }
+    public WorkflowDataDocumentContract? Contract { get; init; }
+    public IReadOnlyList<string>? Inputs { get; init; }
+    public IReadOnlyList<string>? Outputs { get; init; }
 }
 
 /// <summary>A translation error at a YAML location.</summary>

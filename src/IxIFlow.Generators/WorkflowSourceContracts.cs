@@ -2,7 +2,7 @@ using IxIFlow.Dsl.Compilation;
 
 namespace IxIFlow.Generators;
 
-public sealed class WorkflowSourceContracts(WorkflowSourceOptions options) : IWorkflowValidationContext
+public sealed class WorkflowSourceContracts(WorkflowSourceOptions options) : IWorkflowValidationContext, IWorkflowContractValidationContext
 {
     public Task<ActivityDocumentContract?> FindActivityAsync(string key, CancellationToken token) =>
         Task.FromResult(KnownType(key) ? options.Activities.TryGetValue(key, out var activity)
@@ -15,5 +15,12 @@ public sealed class WorkflowSourceContracts(WorkflowSourceOptions options) : IWo
     private bool KnownType(string key) => options.Types.ContainsKey(key) || !options.RequireResolvedTypes &&
         !Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseTypeName(key).ContainsDiagnostics;
     public Task<bool> HasStepTemplateAsync(string key, CancellationToken token) => Task.FromResult(false);
+
+    public WorkflowDataDocumentContract? FindDataContract(string dataType) => options.DataContracts.TryGetValue(dataType, out var contract) ? contract : null;
+    public WorkflowDataDocumentContract? FindWorkflowContract(string name, int? version) =>
+        options.Workflows.TryGetValue(name + (version == null ? "" : "@" + version), out var workflow)
+            ? workflow.Contract ?? FindDataContract(workflow.DataType)?.Select(workflow.Inputs, workflow.Outputs) : null;
+    public WorkflowDataDocumentContract? FindWorkflowTypeContract(string workflowType, string? dataType) =>
+        FindDataContract(options.WorkflowDataTypes.TryGetValue(workflowType, out var inferred) ? inferred : dataType ?? "")?.Select(null, null);
 }
 

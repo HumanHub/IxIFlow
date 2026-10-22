@@ -21,15 +21,37 @@ public static class WorkflowDefinitionValidator
         return BranchData.CombinerSignature(definition.WorkflowDataType);
     }
 
+    /// <summary>Returns the effective contract after merging type markers and root declarations.</summary>
+    public static WorkflowContract GetContract(WorkflowDefinition definition)
+    {
+        ArgumentNullException.ThrowIfNull(definition);
+        return Validated.TryGetValue(definition, out var validation) && validation.IsValueCreated
+            ? validation.Value.Contract
+            // Untyped definitions can be registered; existing build and execution rules decide whether they can run.
+            : definition.WorkflowDataType == null ? new WorkflowContract([], [], false)
+            : WorkflowContract.Derive(definition.WorkflowDataType, definition.DeclaredInputs, definition.DeclaredOutputs);
+    }
+
+    internal static void CheckRootDataType(WorkflowDefinition definition, object workflowData)
+    {
+        if (definition.WorkflowDataType is { } dataType && !AcceptsRootData(dataType, workflowData))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                $"Workflow data type '{workflowData.GetType()}' is not an instance of the definition's data type '{dataType}'");
+    }
+
+    internal static bool AcceptsRootData(Type dataType, object workflowData) =>
+        dataType.IsInstanceOfType(workflowData) ||
+        WorkflowTypeIdentity.SavedName(dataType) == WorkflowTypeIdentity.SavedName(workflowData.GetType());
+
     /// <summary>The persisted execution contract version; other versions require a separate migration.</summary>
     public const int CheckpointContractVersion = 7;
 
-    public static IReadOnlyList<WorkflowVersionReference> GetDependencies(WorkflowDefinition definition)
+    public static IReadOnlyList<WorkflowVersionDependency> GetDependencies(WorkflowDefinition definition)
     {
         Validate(definition);
         return ForExecution(definition).AllSteps.Select(pair => pair.Value)
             .Where(step => step.WorkflowName != null && step.WorkflowVersion != null)
-            .Select(step => new WorkflowVersionReference(step.WorkflowName!, step.WorkflowVersion!.Value))
+            .Select(step => new WorkflowVersionDependency(step.WorkflowName!, step.WorkflowVersion!.Value, WorkflowDependencyKind.Child))
             .Distinct().OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ToArray();
     }
 
@@ -57,6 +79,7 @@ public static class WorkflowDefinitionValidator
 
     private static Validation Checked(WorkflowDefinition definition)
     {
+        WorkflowContract? contract = null;
         Check(() =>
         {
             if (string.IsNullOrWhiteSpace(definition.Name) || definition.Name.Length != definition.Name.Trim().Length)
@@ -70,6 +93,7 @@ public static class WorkflowDefinitionValidator
                 WorkflowDemands.Validate(demand);
                 ExpressionRules.CheckDemand(demand);
             }
+            contract = GetContract(definition);
             var steps = definition.Steps;
             foreach (var type in ParallelRules.Flatten(steps).SelectMany(step => new[]
                      { step.WorkflowDataType, step.PreviousStepDataType,
@@ -94,13 +118,15 @@ public static class WorkflowDefinitionValidator
                         $"Step '{step.Id}' has a compensation with no runtime delegates; construct steps through the workflow builders");
             }
         });
-        return new Validation(definition);
+        return new Validation(definition, contract!);
     }
 
     // Preserve the execution compatibility checks at validation/registration/start, after Build's rules.
     // Lazy caches both the catalog and any compatibility failure, including for direct executor hosts.
-    private sealed class Validation(WorkflowDefinition definition)
+    private sealed class Validation(WorkflowDefinition definition, WorkflowContract contract)
     {
+        public WorkflowContract Contract { get; } = contract;
+
         public Lazy<WorkflowScopeCatalog> Scopes { get; } = new(() =>
         {
             WorkflowScopeCatalog? catalog = null;

@@ -64,7 +64,7 @@ public static partial class WorkflowSourceTranslator
             foreach (var type in StepTypeNames(step)) yield return type;
     }
 
-    private static IEnumerable<WorkflowStepDocument> Flatten(IEnumerable<WorkflowStepDocument> steps)
+    public static IEnumerable<WorkflowStepDocument> Flatten(IEnumerable<WorkflowStepDocument> steps)
     {
         foreach (var step in steps)
         {
@@ -173,10 +173,29 @@ public static partial class WorkflowSourceTranslator
             Line("    public static WorkflowDefinition Build()");
             Line("    {");
             var initial = document.Definitions.FirstOrDefault();
+            var rootDeclarations = initial is not (ActivityStepDocument or ActivityReferenceStepDocument) && (workflow.Input != null || workflow.Output != null);
+            if (rootDeclarations)
+            {
+                Line($"var declarations = Workflow.Create<{data}>({Quote(name)}, {workflow.Version});");
+                Declarations(workflow.Input, "Input", "declarations");
+                Declarations(workflow.Output, "Output", "declarations");
+                Line("var declared = declarations.Build();");
+            }
             Locate(workflow, "dataType");
             Line(initial is ActivityStepDocument or ActivityReferenceStepDocument
                 ? $"var builder0 = Workflow.Create<{data}>({Quote(name)}, {workflow.Version});"
-                : $"var builder0 = new WorkflowBuilder<{data}, object>(new(), {Quote(name)}, {workflow.Version});");
+                : $"var builder0 = new WorkflowBuilder<{data}, object>(new(), {Quote(name)}, {workflow.Version}{(rootDeclarations ? ", declaredInputs: declared.DeclaredInputs, declaredOutputs: declared.DeclaredOutputs" : "")});");
+            if (!rootDeclarations)
+            {
+                Declarations(workflow.Input, "Input", "builder0");
+                Declarations(workflow.Output, "Output", "builder0");
+            }
+            void Declarations(IReadOnlyList<string>? members, string direction, string builder)
+            {
+                if (members == null) return;
+                Locate(workflow, direction.ToLowerInvariant());
+                Line($"{builder}.{direction}({string.Join(", ", members.Select(member => "data => data." + Member(member, workflow)))});");
+            }
             foreach (var demand in document.Demands)
             {
                 Locate(demand);
@@ -344,7 +363,9 @@ public static partial class WorkflowSourceTranslator
                         var childName = childReference.Name!;
                         var lookup = childName + (childReference.Version == null ? "" : "@" + childReference.Version);
                         var child = options.Workflows[lookup];
-                        Line($"var {next} = {builder}.Invoke<{Type(child.DataType, childReference)}>({Quote(childName)}, {child.Version}, setup => {{");
+                        var pin = child.ContractJson != null ? $"WorkflowContract.Parse({Quote(child.ContractJson)})" :
+                            $"WorkflowDefinitionValidator.GetContract(new WorkflowDefinition {{ WorkflowDataType = typeof({Type(child.DataType, childReference)}), DeclaredInputs = {Names(child.Inputs)}, DeclaredOutputs = {Names(child.Outputs)} }})";
+                        Line($"var {next} = {builder}.Invoke<{Type(child.DataType, childReference)}>({Quote(childName)}, {child.Version}, {pin}, setup => {{");
                         Mappings(invocation.Input, invocation.Output);
                         if (!invocation.CancelWithParent)
                         {
@@ -362,6 +383,9 @@ public static partial class WorkflowSourceTranslator
             }
             return builder;
         }
+
+        private static string Names(IReadOnlyList<string>? names) => names == null ? "null" :
+            "new string[] { " + string.Join(", ", names.Select(Quote)) + " }";
 
         private void Container(string builder, string next, string id, IEnumerable<WorkflowStepDocument> children, string previousType)
         {

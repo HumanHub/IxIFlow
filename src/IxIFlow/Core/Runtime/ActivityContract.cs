@@ -21,7 +21,7 @@ internal static class ActivityContract
         ? property.IsDefined(typeof(ActivityOutputAttribute)) || property.IsDefined(typeof(ActivityInputOutputAttribute))
         : property.GetMethod is { IsPublic: true };
 
-    public static object? Default(PropertyInfo property, Type? activityType = null)
+    public static object? Default(PropertyInfo property, Type? activityType = null, string owner = "Activity")
     {
         var value = property.GetCustomAttribute<DefaultValueAttribute>()!.Value;
         var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
@@ -53,7 +53,7 @@ internal static class ActivityContract
         catch (Exception error) when (error is not WorkflowEngineException)
         {
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                $"Activity property '{(activityType ?? property.DeclaringType)!.Name}.{property.Name}' has a [DefaultValue] that cannot be converted to {property.PropertyType.Name}", error);
+                $"{owner} property '{(activityType ?? property.DeclaringType)!.Name}.{property.Name}' has a [DefaultValue] that cannot be converted to {property.PropertyType.Name}", error);
         }
     }
 
@@ -67,6 +67,8 @@ internal static class ActivityContract
         return null;
     }
 
+    internal static bool IsEmpty(object? value) => value == null || value is string { Length: 0 };
+
     public static void ValidateRequired(IAsyncActivity activity, ActivityInputSnapshot inputs, IServiceProvider services)
     {
         var properties = activity.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance);
@@ -77,7 +79,7 @@ internal static class ActivityContract
             // A setter-only input can still be validated from its saved value.
             var value = property.GetMethod != null ? property.GetValue(activity) :
                 inputs.Properties.TryGetValue(property.Name, out var saved) ? saved.Read(property, services) : null;
-            if (value == null || value is string { Length: 0 })
+            if (IsEmpty(value))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                     $"InvalidInput: activity input '{activity.GetType().Name}.{property.Name}' is required and cannot be null or an empty string");
         }

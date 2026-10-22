@@ -66,17 +66,14 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             if (draft.Kind != "workflow") return Failure("PUB002", "Only workflow YAML drafts can be published");
             document = WorkflowYamlSerializer.Read(draft.Source);
             location = document.Workflow.Location;
-            if (document.Imports.Workflows.Count != 0)
-            {
-                location = document.Imports.Location;
-                return Failure("PUB003", "Workflow imports are not supported by this publisher yet");
-            }
             location = document.Imports.Catalogs.Count > 0 ? document.Imports.Location : document.Workflow.Location;
             using var packages = await new WorkflowPackageResolver(catalog, artifacts, _options).ResolveAsync(document.Imports.Catalogs, cancellationToken);
+            var callees = await new WorkflowCallees(catalog, artifacts, _options).ResolveAsync(document, packages, cancellationToken);
             var references = WorkflowCompilation.CreateReferences(_options.SourceOptions, packages.References);
             var sourceOptions = ResolveTypes(document, _options.SourceOptions, references);
+            WorkflowCallees.Bind(callees, sourceOptions, references, packages);
             ResolvePackageActivities(sourceOptions, references, packages);
-            foreach (var import in document.Imports.Catalogs) sourceOptions.ResolvedImports.Add(import);
+            foreach (var import in document.Imports.Catalogs.Concat(document.Imports.Workflows)) sourceOptions.ResolvedImports.Add(import);
             var validation = await new WorkflowDocumentValidator().ValidateAsync(document, new WorkflowSourceContracts(sourceOptions), cancellationToken);
             diagnostics.AddRange(validation.Diagnostics.Select(item =>
             {
@@ -109,9 +106,9 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 return Failure("PUB005", $"Declared identity '{tested.Name}' v{tested.Version} does not match draft '{draft.Name}' v{draft.Version}");
             }
             stage = WorkflowPublishStage.Publish;
-            var manifest = new WorkflowBundleManifest(1, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
+            var manifest = new WorkflowBundleManifest(2, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
                 typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
-                tested.CombinerSignature, WorkflowCompilation.Settings,
+                tested.CombinerSignature, tested.ContractJson, WorkflowContract.Parse(tested.ContractJson).Hash, WorkflowCompilation.Settings,
                 shared,
                 new Dictionary<string, ArtifactDigest>()) { TargetFramework = _options.TargetFramework, ActivityPackages = packages.Pins };
             entries.Add(WorkflowBundleArchive.AssemblyPath, compilation.Assembly);
@@ -127,9 +124,15 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             if (storedDigest != digest) return Failure("PUB006", "The artifact store returned a different archive digest");
             cancellationToken.ThrowIfCancellationRequested();
             var version = new WorkflowVersion(draft.Name, draft.Version, tested.StructureHash,
+                tested.ContractJson, bundle.Manifest.ContractHash,
                 ArtifactDigest: digest, Dependencies: tested.Dependencies, ArtifactReferences: packages.Pins.Select(package => package.Digest).ToArray(), PublishedDraftRevision: draft.Revision,
                 ManifestJson: JsonSerializer.Serialize(bundle.Manifest));
             return new(await catalog.PublishDefinitionAsync(draftId, version, artifacts), diagnostics);
+        }
+        catch (WorkflowPublishException error)
+        {
+            location = error.Location;
+            return Failure(error.Code, error.Message);
         }
         catch (WorkflowSourceException error)
         {
@@ -196,20 +199,29 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         var result = new WorkflowSourceOptions { RequireResolvedTypes = true, Namespace = configured.Namespace, ClassName = configured.ClassName };
         foreach (var pair in configured.Types) result.Types.Add(pair);
         foreach (var pair in configured.Members) result.Members.Add(pair);
+        foreach (var pair in configured.DataContracts) result.DataContracts.Add(pair);
         foreach (var pair in configured.Activities) result.Activities.Add(pair);
         foreach (var pair in configured.Workflows) result.Workflows.Add(pair);
         foreach (var pair in configured.WorkflowDataTypes) result.WorkflowDataTypes.Add(pair);
         foreach (var pair in configured.WorkflowIdentities) result.WorkflowIdentities.Add(pair);
         foreach (var key in WorkflowSourceTranslator.TypeNames(document).Distinct())
         {
-            if (result.Types.ContainsKey(key)) continue;
-            var name = key.Replace("global::", "", StringComparison.Ordinal);
-            var matches = references.Assemblies.Select(assembly => FindType(assembly, name)).OfType<INamedTypeSymbol>()
-                .Distinct<INamedTypeSymbol>(SymbolEqualityComparer.Default).ToArray();
-            if (matches.Length == 1)
+            var name = result.Types.TryGetValue(key, out var configuredType) ? configuredType : key;
+            if (references.BindType(name, result.Namespace) is { } type)
             {
-                var type = matches[0];
                 result.Types[key] = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                result.DataContracts[key] = WorkflowDataDocumentContract.FromSymbol(type);
+                var workflowData = type.AllInterfaces.Where(contract => contract.OriginalDefinition.ToDisplayString() == "IxIFlow.Builders.Interfaces.IWorkflow<TWorkflowData>")
+                    .Select(contract => contract.TypeArguments[0]).OfType<INamedTypeSymbol>().ToArray();
+                if (workflowData.Length == 1)
+                {
+                    var dataType = workflowData[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                    result.WorkflowDataTypes[key] = dataType;
+                    result.DataContracts[dataType] = WorkflowDataDocumentContract.FromSymbol(workflowData[0]);
+                    var identity = type.GetAttributes().FirstOrDefault(attribute => attribute.AttributeClass?.ToDisplayString() == "IxIFlow.Core.WorkflowAttribute");
+                    if (identity?.ConstructorArguments.FirstOrDefault().Value is string workflowName)
+                        result.WorkflowIdentities[key] = new(workflowName, identity.NamedArguments.FirstOrDefault(pair => pair.Key == "Version").Value.Value as int? ?? 1);
+                }
                 foreach (var property in Properties(type))
                     result.Members.TryAdd(key + "." + char.ToLowerInvariant(property.Name[0]) + property.Name[1..], property.Name);
             }

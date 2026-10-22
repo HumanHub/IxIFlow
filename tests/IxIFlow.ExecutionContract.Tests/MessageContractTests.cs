@@ -65,7 +65,7 @@ public sealed class MessageContractTests
             new Recycle(assign.AssignmentId), new Checkpoint(assign.AssignmentId, commit),
             new CheckpointReply(assign.AssignmentId, CheckpointReplyKind.Unknown, 5, "lost reply", reason,
                 true, true, ConflictReason.EventsChanged),
-            new StartChild(assign.AssignmentId, assign.Instance.InstanceId, assign.Epoch, "root/0", child, "hash"),
+            new StartChild(assign.AssignmentId, assign.Instance.InstanceId, assign.Epoch, "root/0", child, "hash", WorkflowContract.OfType(typeof(Data)).Hash),
             new StartChildReply(assign.AssignmentId, child, WorkflowErrorKind.ArtifactUnavailable, "refused", ConflictReason.NotAssigned),
             new ReadInbox(assign.AssignmentId, assign.Instance.InstanceId, 3, 20), new ReadInboxReply(assign.AssignmentId, page),
             new ReadWait(assign.AssignmentId, assign.Instance.InstanceId, "wait"),
