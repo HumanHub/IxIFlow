@@ -102,6 +102,25 @@ internal static class WorkflowPackageRules
     internal static bool ValidId(string? id) => id != null && id.Length is > 0 and <= 100 &&
         System.Text.RegularExpressions.Regex.IsMatch(id, @"\A\w+([.-]\w+)*\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
+    internal static string NormalizeId(string id)
+    {
+        if (!ValidId(id))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, $"Invalid package id '{id}'");
+        return id.ToLowerInvariant();
+    }
+
+    internal static string NormalizeVersion(string version)
+    {
+        var parts = version.ToLowerInvariant().Split('-', 2);
+        var numbers = parts[0].Split('.');
+        if (numbers.Length == 4 && numbers[3] == "0")
+            parts[0] = string.Join('.', numbers.Take(3));
+        var canonical = string.Join('-', parts);
+        if (!CanonicalVersion(canonical))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, $"Invalid package version '{version}'");
+        return canonical;
+    }
+
     private static bool CanonicalVersion(string? version)
     {
         if (version == null || version.Length > 100 || version != version.ToLowerInvariant()) return false;

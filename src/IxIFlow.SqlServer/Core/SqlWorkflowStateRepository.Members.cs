@@ -21,6 +21,21 @@ public sealed partial class SqlWorkflowStateRepository
             CapabilityValue NVARCHAR(MAX) NOT NULL,
             PRIMARY KEY (MemberId, CapabilityKey)
         );
+        CREATE TABLE dbo.IxIFlowInstalledPackages (
+            Id NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            Version NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            Fingerprint VARCHAR(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            ActivitiesJson NVARCHAR(MAX) NOT NULL,
+            PRIMARY KEY (Id, Version, Fingerprint)
+        );
+        CREATE TABLE dbo.IxIFlowHostPackages (
+            MemberId UNIQUEIDENTIFIER NOT NULL REFERENCES dbo.IxIFlowHosts(MemberId),
+            PackageId NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            PackageVersion NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            Fingerprint VARCHAR(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            PRIMARY KEY (MemberId, PackageId, PackageVersion, Fingerprint),
+            FOREIGN KEY (PackageId, PackageVersion, Fingerprint) REFERENCES dbo.IxIFlowInstalledPackages(Id, Version, Fingerprint)
+        );
         """;
 
     private static string? RegistrySql(Statement statement) => statement switch
@@ -42,10 +57,13 @@ public sealed partial class SqlWorkflowStateRepository
             """,
         Statement.MemberHeartbeat => "UPDATE dbo.IxIFlowHosts SET HeartbeatAtUtc=@Now WHERE MemberId=@MemberId",
         Statement.UnregisterMember => """
+            DELETE FROM dbo.IxIFlowHostPackages WHERE MemberId=@MemberId;
             DELETE FROM dbo.IxIFlowHostCapabilities WHERE MemberId=@MemberId;
             DELETE FROM dbo.IxIFlowHosts WHERE MemberId=@MemberId;
             """,
         Statement.PruneMembers => """
+            DELETE FROM dbo.IxIFlowHostPackages WHERE MemberId IN
+                (SELECT MemberId FROM dbo.IxIFlowHosts WHERE HeartbeatAtUtc < @PruneBefore);
             DELETE FROM dbo.IxIFlowHostCapabilities WHERE MemberId IN
                 (SELECT MemberId FROM dbo.IxIFlowHosts WHERE HeartbeatAtUtc < @PruneBefore);
             DELETE FROM dbo.IxIFlowHosts WHERE HeartbeatAtUtc < @PruneBefore;
@@ -62,6 +80,14 @@ public sealed partial class SqlWorkflowStateRepository
         Statement.InsertCapability => """
             INSERT INTO dbo.IxIFlowHostCapabilities (MemberId, CapabilityKey, CapabilityValue) VALUES (@MemberId, @Key, @Value)
             """,
+        Statement.InstalledPackages => "SELECT Id, Version, Fingerprint, ActivitiesJson FROM dbo.IxIFlowInstalledPackages WHERE @Id IS NULL OR Id=@Id",
+        Statement.HostPackages => "SELECT MemberId, PackageId AS Id, PackageVersion AS Version, Fingerprint FROM dbo.IxIFlowHostPackages",
+        Statement.InsertInstalledPackage => """
+            IF NOT EXISTS (SELECT 1 FROM dbo.IxIFlowInstalledPackages WHERE Id=@Id AND Version=@Version AND Fingerprint=@Fingerprint)
+                INSERT INTO dbo.IxIFlowInstalledPackages (Id, Version, Fingerprint, ActivitiesJson) VALUES (@Id, @Version, @Fingerprint, @ActivitiesJson);
+            """,
+        Statement.DeleteHostPackages => "DELETE FROM dbo.IxIFlowHostPackages WHERE MemberId=@MemberId",
+        Statement.InsertHostPackage => "INSERT INTO dbo.IxIFlowHostPackages (MemberId, PackageId, PackageVersion, Fingerprint) VALUES (@MemberId, @Id, @Version, @Fingerprint)",
         _ => null
     };
 }

@@ -409,7 +409,7 @@ public sealed class CatalogHeartbeatRevisionTests
         reads.Inner = catalog;
         var settings = HostSettings.Default with { BundleHostingEnabled = true };
         var logger = new HeartbeatLogger();
-        using var heartbeat = new WorkflowHeartbeatService(store, observed, settings, time, logger);
+        using var heartbeat = new WorkflowHeartbeatService(store, observed, settings, time, logger, new ActivityRegistry([]));
         await heartbeat.StartAsync(CancellationToken.None);
         var initial = await settings.GetCapabilitiesAsync(observed);
         Assert.Contains("workflow:HeartbeatLocal@1", initial.Keys);
@@ -657,7 +657,7 @@ public sealed class CatalogHeartbeatRevisionTests
             var store = DispatchProxy.Create<IWorkflowStateRepository, HeartbeatReads>();
             Beats = (HeartbeatReads)(object)store;
             Beats.Inner = Inner;
-            Heartbeat = new(store, Observed, Settings, Time, Logger);
+            Heartbeat = new(store, Observed, Settings, Time, Logger, new ActivityRegistry([]));
         }
         internal static async Task<HeartbeatFixture> StartAsync(bool sqlite)
         {
@@ -708,7 +708,7 @@ public sealed class CatalogHeartbeatRevisionTests
         beats.Inner = inner;
         var settings = HostSettings.Default with { BundleHostingEnabled = true, HeartbeatInterval = TimeSpan.FromSeconds(1) };
         var logger = new HeartbeatLogger();
-        using var heartbeat = new WorkflowHeartbeatService(store, observed, settings, TimeProvider.System, logger);
+        using var heartbeat = new WorkflowHeartbeatService(store, observed, settings, TimeProvider.System, logger, new ActivityRegistry([]));
         var digest = await inner.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
         var held = new WorkflowVersion("HeldPublication", 1, "held-hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
             ManifestJson: CompatibleManifest("HeldPublication"));
