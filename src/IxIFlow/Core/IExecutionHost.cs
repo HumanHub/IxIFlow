@@ -19,7 +19,7 @@ public sealed record ReadPayload(Guid AssignmentId, string InstanceId, PayloadRe
 public sealed record ReadPayloadReply(Guid AssignmentId, byte[]? Body = null,
     WorkflowErrorKind? Refusal = null, ConflictReason? Conflict = null);
 public sealed record StartChild(Guid AssignmentId, string InstanceId, long Epoch, string StepId,
-    ChildStart Start, string StructureHash);
+    ChildStart Start, string StructureHash, string ContractHash);
 public sealed record ReadInbox(Guid AssignmentId, string InstanceId, long AfterSequence, int Limit);
 public sealed record ReadWait(Guid AssignmentId, string InstanceId, string WaitId);
 public sealed record StartChildReply(Guid AssignmentId, ChildStart? Start = null,

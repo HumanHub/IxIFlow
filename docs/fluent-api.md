@@ -7,6 +7,18 @@ Start with `Workflow.Create<TData>(name, version)`, configure the fluent graph, 
 
 Workflow identity is `(name, version)`. A nonblank name is required; definitions no longer receive implicit or hash-derived names. Declare the version and change it when changing behavior.
 
+## Declare workflow data
+
+Mark data properties with `[WorkflowInput]`, `[WorkflowOutput]` or `[WorkflowInputOutput]` from `IxIFlow.ActivitySdk`. Inputs need public setters and outputs need public getters. Once a type uses workflow markers, only declared members are exposed. Without markers or root declarations, public setters are inputs and public getters are outputs. `[Required]`, `[DefaultValue]`, `[Display]` and `[UIHint]` supply the same metadata as on activities.
+
+The root builder also accepts property declarations: `Workflow.Create<OrderData>("Orders").Input(data => data.Customer).Output(data => data.Receipt)`. These lists add to the type's markers. `Input()` or `Output()` explicitly declares nothing on that side, including marked members. Select a direct property; nested paths and method calls fail the build. These methods belong to the root builder before the first activity or request.
+
+Declaring anything, through markers or either list, turns off convention on both sides, just as a marked activity exposes only marked properties. On an unmarked type, `Input(d => d.A)` alone gives no outputs, so declare outputs too.
+
+`WorkflowDefinitionValidator.GetContract(definition)` returns the effective contract, including lists. `WorkflowContract.OfType(typeof(OrderData))` returns the type's contract. Contracts have canonical `ToJson()`, `Hash` and `Parse(json)` for portable pins.
+
+Root starts enforce required inputs before creating an instance. The client must fill them itself: null and empty strings are refused with `InvalidRequest`, naming the missing members. Definition-based `RunAsync` and `StartAsync` accept data assignable to the definition's data type or with the same saved type identity from another load context; incompatible data is refused with `InvalidRequest`, naming both types. `[DefaultValue]` applies when invoking a child; a default clients should receive belongs in a property initializer.
+
 ## Map activity data
 
 With `IxIFlow.Builders`, `IxIFlow.Core` and the sample types in scope, this definition uses the same activity contract as the quick start:
@@ -49,6 +61,12 @@ The continuation builder exposes these families. The root builder exposes initia
 | `Invoke<TWorkflow,TChildData>(setup)`, `Invoke<TChildData>(name, version)` | Independent child instance with mapped input/output; [Review](../samples/IxIFlow.Samples/Review.cs) |
 
 Workflow classes declare identity once with `[Workflow("Customer approval", Version = 3)]` from `IxIFlow.Core`, and implement only `Build` on `IWorkflow<TData>`. Register with `services.RegisterWorkflow<TWorkflow>()` or `services.RegisterWorkflow<TWorkflow,TData>()`; invoke with `Invoke<TWorkflow,TChildData>(setup)`. Both read the attribute from the type without constructing the class to discover identity. A missing attribute, blank name or nonpositive version is refused. The parent's structure hash includes the child's declared name and version. Registration constructs the class only when building its definition. Named children use `Invoke<TChildData>(name, version, setup)` and require that exact identity in `IWorkflowCatalog`, with the executable definition loaded locally. Both forms execute the registered definition and verify its structure hash. Every process that can resume the parent or child must load matching definitions.
+
+Typed invocations and `Invoke<TChildData>(name, version, setup)` use `WorkflowContract.OfType(typeof(TChildData))` as a caller view. The build checks mappings against that view. Before starting the child, the executor checks mapped input and output names against the resolved child's effective contract, including its root declarations, and requires a mapping for every required child input without a default. View and callee member types may differ; input values convert as usual.
+
+`Invoke<OrderData>("Orders", 3, contract, setup)` supplies an exact pin instead. The executor requires the resolved child's contract hash to equal the pin before constructing inputs. This overload is also available inside a catch body. A caller view that maps an input missing from the child's data, maps outside its contract inputs or outputs, or omits a required input without a default fails with `InvalidDefinition` before the child starts. The error names the child's data type and member. An exact-pin hash mismatch interrupts execution with `ArtifactMismatch` and keeps the checkpoint. Both are engine failures that the caller's `Catch` cannot handle. The host also compares the resolved contract hash sent by the executor with the catalog row, for both forms.
+
+Each child invocation constructs fresh data, applies defaults from the resolved callee's effective contract to unmapped inputs, then applies mappings: mapping values take precedence over `[DefaultValue]`, which takes precedence over constructors and initializers. Required values that are null or an empty string raise an `InvalidInput` failure with `WorkflowErrorKind.InvalidRequest`. The caller can catch `WorkflowEngineException`; an uncaught failure ends the parent as failed.
 
 ## Parallel work and lists
 

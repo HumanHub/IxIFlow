@@ -116,9 +116,9 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
         return reply.Body ?? throw new InvalidDataException("Missing payload body");
     }
 
-    public async Task<StartChildReply> StartChildAsync(string stepId, ChildStart start, string hash)
+    public async Task<StartChildReply> StartChildAsync(string stepId, ChildStart start, string hash, string contractHash)
     {
-        var reply = await host.StartChildAsync(new(AssignmentId, InstanceId, Epoch, stepId, start, hash));
+        var reply = await host.StartChildAsync(new(AssignmentId, InstanceId, Epoch, stepId, start, hash, contractHash));
         Check(reply.AssignmentId, reply.Conflict);
         return reply;
     }

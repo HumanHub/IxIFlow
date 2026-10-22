@@ -45,6 +45,8 @@ The three direction markers have no settings of their own:
 
 Once any property uses a marker, only marked properties belong to the contract. Without markers, public setters are inputs and public getters are outputs. An in-out property still needs explicit input and output mappings when both directions should reach workflow data.
 
+Workflow data has the corresponding `[WorkflowInput]`, `[WorkflowOutput]` and `[WorkflowInputOutput]` markers in the same namespace and package. They have the same accessor requirements and use the .NET metadata below. Workflow markers describe child data independently of activity markers, including when a data type also implements `IAsyncActivity`. Root fluent declarations can add members; see [workflow contracts](fluent-api.md#declare-workflow-data).
+
 ## Use .NET metadata
 
 | Attribute | Behavior |
@@ -54,7 +56,9 @@ Once any property uses a marker, only marked properties belong to the contract. 
 | `[Display(Name = ..., Description = ...)]` | Labels and help for inputs and outputs; absent labels fall back to property names. |
 | `[UIHint(...)]` | Input-control hint; the catalog accepts `text`, `code`, `binding` and `connection`, defaulting to `text`. |
 
-Attribute defaults are applied before saving the input snapshot. A retry receives the saved values even if a prior attempt mutated its inputs. A property initializer alone does not satisfy a required mapping/default contract. `[Required]` checks null and empty strings; whitespace and empty collections pass this engine check, regardless of `AllowEmptyStrings`. Public getter-only activity state needs a setter (which may be private) for checkpoint restoration, or exclusion with `[JsonIgnore]`.
+Attribute defaults are applied before saving the input snapshot. A retry receives the saved values even if a prior attempt mutated its inputs. A property initializer alone does not satisfy a required mapping/default contract. `[Required]` checks null and empty strings; whitespace passes this engine check, regardless of `AllowEmptyStrings`. Public getter-only activity state needs a setter (which may be private) for checkpoint restoration, or exclusion with `[JsonIgnore]`.
+
+For workflow data, attribute defaults apply to child invocation inputs. Root starts validate the data the client supplies without applying attribute defaults; use a property initializer for client-facing defaults. Labels, descriptions and control hints are retained in the workflow's portable contract alongside its converted defaults.
 
 The bundled analyzers check mapping direction, required mappings, accessors and convertible defaults when the activity type is used. Full validation also runs through fluent `Build()` and `WorkflowDefinitionValidator.Validate`; custom conversion code is checked at build time rather than executed by an analyzer.
 

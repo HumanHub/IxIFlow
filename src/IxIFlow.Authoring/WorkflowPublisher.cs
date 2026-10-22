@@ -109,9 +109,9 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 return Failure("PUB005", $"Declared identity '{tested.Name}' v{tested.Version} does not match draft '{draft.Name}' v{draft.Version}");
             }
             stage = WorkflowPublishStage.Publish;
-            var manifest = new WorkflowBundleManifest(1, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
+            var manifest = new WorkflowBundleManifest(2, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
                 typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
-                tested.CombinerSignature, WorkflowCompilation.Settings,
+                tested.CombinerSignature, tested.ContractJson, WorkflowContract.Parse(tested.ContractJson).Hash, WorkflowCompilation.Settings,
                 shared,
                 new Dictionary<string, ArtifactDigest>()) { TargetFramework = _options.TargetFramework, ActivityPackages = packages.Pins };
             entries.Add(WorkflowBundleArchive.AssemblyPath, compilation.Assembly);
@@ -127,6 +127,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             if (storedDigest != digest) return Failure("PUB006", "The artifact store returned a different archive digest");
             cancellationToken.ThrowIfCancellationRequested();
             var version = new WorkflowVersion(draft.Name, draft.Version, tested.StructureHash,
+                tested.ContractJson, bundle.Manifest.ContractHash,
                 ArtifactDigest: digest, Dependencies: tested.Dependencies, ArtifactReferences: packages.Pins.Select(package => package.Digest).ToArray(), PublishedDraftRevision: draft.Revision,
                 ManifestJson: JsonSerializer.Serialize(bundle.Manifest));
             return new(await catalog.PublishDefinitionAsync(draftId, version, artifacts), diagnostics);
