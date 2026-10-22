@@ -21,6 +21,8 @@ internal sealed class FaultRepository(IWorkflowStateRepository inner) : IWorkflo
         inner.RegisterWorkflowVersionAsync(version, artifacts);
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
         inner.GetWorkflowVersionAsync(name, version);
+    public Task<long> GetCatalogRevisionAsync() => inner.GetCatalogRevisionAsync();
+    public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => inner.GetWorkflowVersionChangesAsync(afterRevision);
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
         inner.GetWorkflowVersionsAsync(name);
     public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>

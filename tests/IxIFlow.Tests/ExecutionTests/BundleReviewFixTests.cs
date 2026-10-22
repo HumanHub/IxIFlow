@@ -353,10 +353,16 @@ public sealed class BundleReviewFixTests
         Assert.Equal(1, proxy.Acquisitions);
     }
 
-    [Fact]
-    public async Task CapabilitySnapshotsRefreshOnlyOnHeartbeatOrCatalogRevisionAndExcludeIncompatibleProfiles()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CapabilitySnapshotsRefreshOnlyOnHeartbeatOrCatalogRevisionAndExcludeIncompatibleProfiles(bool sqlite)
     {
-        var store = new InMemoryWorkflowStateRepository();
+        var folder = Folder();
+        if (sqlite) Directory.CreateDirectory(folder);
+        await using var sqliteStore = sqlite ? new SqliteWorkflowStateRepository(new SqliteConnectionStringBuilder
+        { DataSource = Path.Combine(folder, "state.db"), Pooling = false }.ConnectionString) : null;
+        IWorkflowStateRepository store = sqliteStore ?? (IWorkflowStateRepository)new InMemoryWorkflowStateRepository();
         var version = await PublishedBundleScenario.PublishAsync(store);
         var bundle = await ReadAsync(store, version);
         foreach (var defect in new[] { "engine", "checkpoint", "shared" })
@@ -380,21 +386,35 @@ public sealed class BundleReviewFixTests
             Assert.False(first.ContainsKey($"workflow:{defect}@1"));
         Assert.Same(first, await settings.GetCapabilitiesAsync(counted));
         Assert.Equal(1, proxy.Reads);
-        await settings.RefreshCapabilitiesAsync(counted);
-        Assert.Equal(2, proxy.Reads);
+        Assert.Equal(1, proxy.RevisionReads);
+        Assert.Same(first, await settings.RefreshCapabilitiesAsync(counted));
+        Assert.Equal(1, proxy.Reads); // Unchanged heartbeat reads no version rows.
+        Assert.Equal(2, proxy.RevisionReads);
         await counted.RegisterWorkflowVersionAsync(version);
-        await settings.GetCapabilitiesAsync(counted);
-        Assert.Equal(3, proxy.Reads);
+        var registered = await settings.GetCapabilitiesAsync(counted);
+        Assert.Equal(1, proxy.Reads); // Idempotent registration changes no durable version row.
+        Assert.Equal(3, proxy.RevisionReads);
+        Assert.Equal(version.StructureHash, registered["workflow:BundleLifecycle@1"]);
+        var second = await PublishedBundleScenario.PublishAsync(store, 2);
+        Assert.Same(registered, await settings.GetCapabilitiesAsync(counted));
+        var refreshed = await settings.RefreshCapabilitiesAsync(counted);
+        Assert.Equal(second.StructureHash, refreshed["workflow:BundleLifecycle@2"]);
+        Assert.Equal(2, proxy.Reads);
+        Assert.Equal(4, proxy.RevisionReads);
     }
 
     public class CatalogReads : DispatchProxy
     {
         public IWorkflowCatalog Inner = null!;
         public int Reads;
+        public int RevisionReads;
         public int Acquisitions;
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
-            if (targetMethod!.Name == nameof(IWorkflowCatalog.GetWorkflowVersionsAsync)) Reads++;
+            if (targetMethod!.Name == nameof(IWorkflowCatalog.GetCatalogRevisionAsync)) RevisionReads++;
+            if (targetMethod.Name == nameof(IWorkflowCatalog.GetWorkflowVersionChangesAsync)) Reads++;
+            if (targetMethod.Name == nameof(IWorkflowCatalog.GetWorkflowVersionsAsync))
+                throw new InvalidOperationException("Capability refresh must not enumerate the full catalog");
             if (targetMethod.Name == nameof(IWorkflowCatalog.AcquireWorkflowDefinitionAsync)) Acquisitions++;
             return targetMethod.Invoke(Inner, args);
         }

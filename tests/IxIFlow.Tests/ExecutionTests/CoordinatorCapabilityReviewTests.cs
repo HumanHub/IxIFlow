@@ -106,12 +106,20 @@ public sealed class CoordinatorCapabilityReviewTests : IClassFixture<SqliteTestD
                 Assert.Equal(WorkflowExecutionStatus.Success, (await host.GetRequiredService<IWorkflowClient>()
                     .RunAsync(added, new Data(), cancellationToken: timeout.Token)).Status);
                 Assert.Equal(3, definitions.Count("GetWorkflowDefinitionsAsync"));
+                var snapshot = await host.GetRequiredService<HostSettings>().GetCapabilitiesAsync(countedCatalog);
+                var revisionReads = definitions.Count("GetCatalogRevisionAsync");
+                var deltaReads = definitions.Count("GetWorkflowVersionChangesAsync");
                 var before = calls.Count("HeartbeatAsync");
                 time.Advance(MemberRegistry.DefaultHeartbeatInterval);
                 var until = DateTime.UtcNow.AddSeconds(5);
                 while (calls.Count("HeartbeatAsync") == before && DateTime.UtcNow < until) await Task.Delay(10);
                 Assert.True(calls.Count("HeartbeatAsync") > before);
-                Assert.Equal(4, definitions.Count("GetWorkflowDefinitionsAsync"));
+                // This host does not host bundles: the unchanged heartbeat makes no catalog read at all.
+                Assert.Equal(3, definitions.Count("GetWorkflowDefinitionsAsync"));
+                Assert.Equal(revisionReads, definitions.Count("GetCatalogRevisionAsync"));
+                Assert.Equal(deltaReads, definitions.Count("GetWorkflowVersionChangesAsync"));
+                Assert.Equal(0, definitions.Count("GetWorkflowVersionsAsync"));
+                Assert.Same(snapshot, await host.GetRequiredService<HostSettings>().GetCapabilitiesAsync(countedCatalog));
             }
             finally { await heartbeat.StopAsync(CancellationToken.None); }
         }
