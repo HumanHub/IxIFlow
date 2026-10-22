@@ -110,9 +110,9 @@ public class AllPropertyAccessTypesSyntaxTests
                     setup => setup
                         .Input(data => data.SuspendInput).From(ctx => ctx.PreviousStep.Level1Output)
                         .Output(data => data.SuspendOutput).To(ctx => ctx.WorkflowData.RootOutput))
-                //.OutcomeOn(x => x.PreviousStep.SuspendOutput, 
+                //.Switch(x => x.PreviousStep.SuspendOutput, 
                 //    osetup =>osetup
-                //        .Outcome("Cucu",o1=>o1.Step<>())
+                //        .Case("Cucu",o1=>o1.Step<>())
                     
                     
                 //    )

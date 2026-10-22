@@ -358,17 +358,17 @@ public sealed partial class YamlParityTests
             - kind: saga
               id: saga
               steps:
-                - kind: outcome
+                - kind: switch
                   id: outcome
                   value: {path: workflow.Selected}
-                  branches:
+                  cases:
                     - value: {kind: constant, value: true}
                       steps: [{kind: activity, id: chosen, activity: ParityWork}]
                   default: [{kind: activity, id: default, activity: ParitySecondWork}]
             """);
-        var fluent = Start().Saga(saga => saga.OutcomeOn(ctx => ctx.WorkflowData.Selected, outcomes => outcomes
-            .Outcome(true, body => body.Step<ParityWork>().WithId("chosen"))
-            .DefaultOutcome(body => body.Step<ParitySecondWork>().WithId("default"))).WithId("outcome"))
+        var fluent = Start().Saga(saga => saga.Switch(ctx => ctx.WorkflowData.Selected, outcomes => outcomes
+            .Case(true, body => body.Step<ParityWork>().WithId("chosen"))
+            .Default(body => body.Step<ParitySecondWork>().WithId("default"))).WithId("outcome"))
             .WithId("saga").Build();
         var result = await Match(fluent, generated, data: () => new() { Selected = selected });
         Assert.Equal(selected ? 1 : 0, result.Work);

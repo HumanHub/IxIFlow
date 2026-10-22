@@ -77,7 +77,7 @@ public sealed class DocumentChildScopeTests
             WorkflowSourceTranslator.TypeNames(document));
         Assert.Empty(new WaitForStepDocument().ChildScopes());
         Assert.Empty(new TryStepDocument().ChildScopes().Where(scope => scope.Kind == "finally"));
-        Assert.Empty(new OutcomeStepDocument().ChildScopes());
+        Assert.Empty(new SwitchStepDocument().ChildScopes());
     }
 
     [Fact]

@@ -159,21 +159,24 @@ internal static class TryScopeTransitions
     }
 
     public static object? CatchFault(ExecutionCheckpoint checkpoint, ContinuationState continuation,
-        IServiceProvider services)
+        IServiceProvider services, WorkflowStep? expressionStep = null, WorkflowScopeCatalog? scopes = null)
     {
+        var expected = expressionStep?.LexicalFaultOwnerId;
         while (true)
         {
             for (var index = continuation.Stack.Count - 1; index >= 0; index--)
             {
-                var state = continuation.Stack[index].TryState;
-                if (state?.Phase == TryPhase.Catch)
+                var frame = continuation.Stack[index];
+                var state = frame.TryState;
+                if (state?.Phase == TryPhase.Catch && (expected == null ||
+                    scopes!.Id(scopes.Steps(frame.ScopeId)[frame.NextStepIndex].CatchBlocks[state.CatchIndex]) == expected))
                     return state.Error?.Fault?.Read(services);
-                var saga = continuation.Stack[index].SagaState;
-                if (saga?.Phase == SagaPhase.Compensating && saga.ErrorHandlerStarted)
+                var saga = frame.SagaState;
+                if (saga?.Phase == SagaPhase.Compensating && saga.ErrorHandlerStarted && (expected == null ||
+                    scopes!.Id(scopes.Steps(frame.ScopeId)[frame.NextStepIndex].CatchBlocks[saga.ErrorHandlerIndex]) == expected))
                     return saga.Error?.Fault?.Read(services);
             }
-            if (continuation.ParentJoinId == null)
-                return null;
+            if (continuation.ParentJoinId == null) return null;
             var join = checkpoint.Joins.Single(item => item.Id == continuation.ParentJoinId);
             continuation = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
         }

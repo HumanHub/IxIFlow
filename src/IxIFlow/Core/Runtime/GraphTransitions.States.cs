@@ -167,14 +167,14 @@ internal static partial class GraphTransitions
                 if (reply.DefaultPayloadJson == null)
                 {
                     reply.DefaultPayloadJson = WaitSuggestions.Create(trigger, checkpoint.DataOf(continuation),
-                        continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+                        continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, trigger, scopes));
                     checkpoint.TouchOwner(reply.ContinuationId);
                 }
                 continue;
             }
             var suggestion = trigger.TriggerKind == TriggerKind.Event
                 ? WaitSuggestions.Create(trigger, checkpoint.DataOf(continuation), continuation.GetPrevious(services),
-                    ForEachTransitions.ItemsOf(scopes, checkpoint, continuation)) : null;
+                    ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, trigger, scopes)) : null;
             TimeSpan? duration = null;
             if (trigger.TriggerKind == TriggerKind.Timer)
             {
@@ -182,7 +182,7 @@ internal static partial class GraphTransitions
                 if (duration == null)
                 {
                     var context = WorkflowValueBinding.EvaluationContext(trigger, checkpoint.DataOf(continuation),
-                        continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+                        continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, trigger, scopes));
                     try
                     {
                         duration = trigger.After!(context);
@@ -215,7 +215,7 @@ internal static partial class GraphTransitions
         {
             var edge = alternative[0];
             var context = WorkflowValueBinding.EvaluationContext(edge, checkpoint.DataOf(continuation),
-                continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+                continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, edge, scopes));
             try
             {
                 if (edge.CompiledCondition != null && !edge.CompiledCondition(context)) continue;

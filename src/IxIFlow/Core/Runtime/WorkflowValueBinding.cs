@@ -6,7 +6,7 @@ namespace IxIFlow.Core.Runtime;
 internal static class WorkflowValueBinding
 {
     public static bool Matches<TEvent>(WorkflowStep step, TEvent @event, object workflowData,
-        object? previous = null, ItemValues? items = null)
+        object? previous = null, ItemValues? items = null, object? fault = null)
         where TEvent : class
     {
         if (step.CompiledCondition == null)
@@ -17,7 +17,9 @@ internal static class WorkflowValueBinding
         var typedPrevious = step.StepMetadata.ContainsKey("IsSagaStep") &&
             step.PreviousStepDataType?.IsInstanceOfType(previous) == true;
         var factory = typedPrevious ? step.Runtime.PreviousEventContext! : step.Runtime.EventContext!;
-        var context = (items ?? ItemValues.None).On(factory(new MappingContextValues(workflowData, previous, Event: @event)));
+        var context = factory(new MappingContextValues(workflowData, previous, fault, Event: @event));
+        if (context is IFaultEventValue bound) (items ?? ItemValues.None).On(bound.Context);
+        else (items ?? ItemValues.None).On(context);
         try
         {
             return step.CompiledCondition(context);
@@ -78,7 +80,7 @@ internal static class WorkflowValueBinding
         }
     }
 
-    public static object EvaluationContext(WorkflowStep step, object workflowData, object? previous, ItemValues? items = null) =>
+    public static object EvaluationContext(WorkflowStep step, object workflowData, object? previous, ItemValues? items = null, object? fault = null) =>
         (items ?? ItemValues.None).On(step.Runtime.Context
-            (new MappingContextValues(workflowData, previous)));
+            (new MappingContextValues(workflowData, previous, fault)));
 }

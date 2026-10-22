@@ -59,7 +59,7 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
         foreach (var argument in invocation.Arguments)
         {
             if (argument.Parameter == null || argument.ArgumentKind == ArgumentKind.DefaultValue ||
-                !engine.TakesCode(argument.Parameter.Type))
+                !(engine.TakesCode(argument.Parameter.Type) || invocation.TargetMethod.Name == "Case" && argument.Parameter.Ordinal == 0))
                 continue;
             var value = EngineSymbols.Unwrapped(argument.Value);
             for (var depth = 0; depth < 8 && value is ILocalReferenceOperation local &&
@@ -72,6 +72,8 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
             foreach (var (use, member) in (demand ? demands : code).Uses(value, destination, context.CancellationToken))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureExpression, use.Syntax.GetLocation(),
                     demand ? null : ClockFix(engine, use, member), member));
+            foreach (var (use, member) in code.MutationUses(value, context.CancellationToken))
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureExpression, use.Syntax.GetLocation(), member));
         }
     }
 

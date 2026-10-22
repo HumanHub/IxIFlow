@@ -74,8 +74,9 @@ public sealed class SampleTests
             .Where(type => type.Namespace == "IxIFlow.Samples.Generated").Select(type => type.Name).Order().ToArray();
         var covered = Pairs.Select(row => Definitions((string)row[0]).Yaml)
             .Select(definition => definition.Name)
-            .Concat(YamlSampleTests.YamlDefinitions.Values.Select(build => build().Name)).Distinct().Count();
-        Assert.Equal(18, generated.Length);
+            .Concat(YamlSampleTests.YamlDefinitions.Values.Select(build => build().Name))
+            .Append(SwitchSampleTests.GeneratedDefinition().Name).Distinct().Count();
+        Assert.Equal(19, generated.Length);
         Assert.Equal(generated.Length, covered);
     }
 

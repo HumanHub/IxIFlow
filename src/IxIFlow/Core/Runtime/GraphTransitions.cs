@@ -36,14 +36,14 @@ internal static partial class GraphTransitions
             return;
         }
         var context = WorkflowValueBinding.EvaluationContext(decision, checkpoint.DataOf(continuation),
-            continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+            continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, decision, scopes));
         var value = decision.OutcomeSelector?.Invoke(context);
         var node = graph.GraphNodes.Single(node => node.Key == frame.Node);
         for (var index = 0; index < node.Edges.Count; index++)
         {
             var edge = node.Edges[index][0];
             if (!edge.IsDefault && (decision.OutcomeSelector != null
-                    ? !Equals(edge.EdgeLabel, value)
+                    ? !decision.SwitchEquals!(edge.EdgeLabel, value)
                     : edge.CompiledCondition != null && !edge.CompiledCondition(context))) continue;
             var selected = new ScopePosition
             {

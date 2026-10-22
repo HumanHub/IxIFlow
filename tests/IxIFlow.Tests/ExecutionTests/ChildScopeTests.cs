@@ -29,7 +29,7 @@ public sealed class ChildScopeTests
                 ("state", "/on/1"), ("state", "/on/1/case/0"), ("state", "/on/1/case/1"), ("state", "/on/1/run"), ("state", "/listen"),
                 ("state", ""), ("state", "/exit"), ("state", "/on/0"), ("state", "/on/0/case/0"), ("state", "/on/0/case/1"), ("state", "/on/0/run"),
                 ("state", "/on/1"), ("state", "/on/1/case/0"), ("state", "/on/1/case/1"), ("state", "/on/1/run"), ("state", "/listen"),
-                ("outcome", "0"), ("outcome", "1")],
+                ("case", "0"), ("case", "1")],
             scopes.Skip(9).Select(scope => (scope.Kind, scope.Key)));
         Assert.All(new WorkflowStep().ChildScopes(), scope => Assert.Empty(scope.Steps));
     }
@@ -167,7 +167,7 @@ public sealed class ChildScopeTests
                 "node", "node/to/0", "node", "node/to/0",
                 "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/0/run", "state/on/1", "state/on/1/case/0", "state/on/1/run", "state/listen",
                 "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/0/run", "state/on/1", "state/on/1/case/0", "state/on/1/run", "state/listen",
-                "timeout", "foreach", "branch0", "outcome0", "outcome1"],
+                "timeout", "foreach", "branch0", "case0", "case1"],
             ParallelRules.Flatten([step]).Select(child => child.Id));
     }
 

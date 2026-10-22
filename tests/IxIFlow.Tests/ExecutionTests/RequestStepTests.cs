@@ -351,9 +351,9 @@ public sealed class RequestStepTests
             .Step<StartActivity>()
             .Saga(saga => saga
                 .Request<RequestApproval>("approval")
-                .OutcomeOn(ctx => ctx.WorkflowData.Broken, outcomes => outcomes
-                    .Outcome(true, branch => branch.Step<StartActivity>())
-                    .DefaultOutcome(branch => branch.Step<StartActivity>()))
+                .Switch(ctx => ctx.WorkflowData.Broken, outcomes => outcomes
+                    .Case(true, branch => branch.Step<StartActivity>())
+                    .Default(branch => branch.Step<StartActivity>()))
                 .WaitFor<ApprovalDecision>("approval"))
             // Keeping the request would be refused at build: its answer would be lost with the saga (D-36).
             .OnError<InvalidOperationException>(error => error.Compensate().ThenTerminate())
@@ -379,9 +379,9 @@ public sealed class RequestStepTests
                 .Request<RequestApproval>("approval")
                 .WaitFor<ApprovalDecision>("approval", configure: wait => wait
                     .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved))
-                .OutcomeOn(ctx => ctx.WorkflowData.Approved, outcomes => outcomes
-                    .Outcome(true, branch => branch.WaitFor<OtherAnswer>("approved-note"))
-                    .DefaultOutcome(branch => branch.WaitFor<OtherAnswer>("rejected-note")))
+                .Switch(ctx => ctx.WorkflowData.Approved, outcomes => outcomes
+                    .Case(true, branch => branch.WaitFor<OtherAnswer>("approved-note"))
+                    .Default(branch => branch.WaitFor<OtherAnswer>("rejected-note")))
                 .Step<FailTwiceActivity>())
             .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(2))
             .Build();
@@ -499,9 +499,9 @@ public sealed class RequestStepTests
                 .Request<RequestApproval>("approval")
                 .WaitFor<ApprovalDecision>("approval", configure: wait => wait
                     .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved))
-                .OutcomeOn(ctx => ctx.WorkflowData.Approved, outcomes => outcomes
-                    .Outcome(true, branch => branch.WaitFor<OtherAnswer>("approved-note"))
-                    .DefaultOutcome(branch => branch
+                .Switch(ctx => ctx.WorkflowData.Approved, outcomes => outcomes
+                    .Case(true, branch => branch.WaitFor<OtherAnswer>("approved-note"))
+                    .Default(branch => branch
                         .WaitFor<OtherAnswer>("rejected-note")
                         .WaitFor<OtherAnswer>("rejected-sign")))
                 .Step<FailTwiceActivity>())

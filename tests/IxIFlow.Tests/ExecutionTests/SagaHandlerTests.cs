@@ -91,9 +91,9 @@ public sealed class SagaHandlerTests
             .Step<ValidateOrder>()
             .Saga(saga => saga
                 .Step<ReserveStock>()
-                .OutcomeOn(ctx => ctx.WorkflowData.Express, outcomes => outcomes
-                    .Outcome(true, branch => branch.Step<ReserveStock>())
-                    .DefaultOutcome(branch => branch.Step<PackOrder>()))
+                .Switch(ctx => ctx.WorkflowData.Express, outcomes => outcomes
+                    .Case(true, branch => branch.Step<ReserveStock>())
+                    .Default(branch => branch.Step<PackOrder>()))
                 .Step<ShipOrder>())
             .OnError<ShippingFailed>(handler => handler.CompensateUpTo<ReserveStock>().ThenTerminate())
             .Build());
@@ -182,11 +182,11 @@ public sealed class SagaHandlerTests
             .Step<ValidateOrder>()
             .Saga(saga => saga
                 .Step<ReserveStock>(step => step.CompensateWith<ReleaseStock>())
-                .OutcomeOn(ctx => ctx.WorkflowData.Express, outcomes => outcomes
-                    .Outcome(true, branch => branch
+                .Switch(ctx => ctx.WorkflowData.Express, outcomes => outcomes
+                    .Case(true, branch => branch
                         .Step<PackOrder>(step => step.CompensateWith<UnpackOrder>())
                         .Step<ShipOrder>())
-                    .DefaultOutcome(branch => branch.Step<ShipOrder>())))
+                    .Default(branch => branch.Step<ShipOrder>())))
             .OnError<ShippingFailed>(handler => handler.CompensateUpTo<PackOrder>().ThenRetry(2))
             .Build();
 
@@ -567,13 +567,13 @@ public sealed class SagaHandlerTests
         var definition = Workflow.Create<ShopData>("TargetFirst")
             .Step<ValidateOrder>()
             .Saga(saga => saga
-                .OutcomeOn(ctx => ctx.WorkflowData.Express, outcomes => outcomes
-                    .Outcome(true, branch => branch
+                .Switch(ctx => ctx.WorkflowData.Express, outcomes => outcomes
+                    .Case(true, branch => branch
                         // Undoing the packing clears the flag its branch was chosen by.
                         .Step<PackOrder>(step => step.CompensateWith<UnpackOrder>(undo => undo
                             .Output(activity => activity.Express).To(ctx => ctx.WorkflowData.Express)))
                         .Step<ShipOrder>())
-                    .DefaultOutcome(branch => branch.Step<ReserveStock>())))
+                    .Default(branch => branch.Step<ReserveStock>())))
             .OnError<ShippingFailed>(handler => handler.CompensateUpTo<PackOrder>().ThenRetry(2))
             .Build();
 
@@ -968,11 +968,11 @@ public sealed class SagaHandlerTests
             .Step<ValidateOrder>()
             .Saga(saga => saga
                 .Request<CreatePayment>("payment")
-                .OutcomeOn(ctx => ctx.WorkflowData.Express, outcomes => outcomes
-                    .Outcome(true, branch => branch
+                .Switch(ctx => ctx.WorkflowData.Express, outcomes => outcomes
+                    .Case(true, branch => branch
                         .Request<CreatePayment>("payment")
                         .WaitFor<PaymentReceived>("payment"))
-                    .DefaultOutcome(branch => branch.Step<PackOrder>()))
+                    .Default(branch => branch.Step<PackOrder>()))
                 .Step<ReserveStock>()
                 .Step<ShipOrder>()
                 .WaitFor<PaymentReceived>("payment"))
@@ -1024,11 +1024,11 @@ public sealed class SagaHandlerTests
             .Step<ValidateOrder>()
             .Saga(saga => saga
                 .Step<ReserveStock>(step => step.CompensateWith<ReleaseStock>())
-                .OutcomeOn(ctx => ctx.WorkflowData.Express, outcomes => outcomes
-                    .Outcome(true, branch => branch
+                .Switch(ctx => ctx.WorkflowData.Express, outcomes => outcomes
+                    .Case(true, branch => branch
                         .Step<PackOrder>(step => step.CompensateWith<UnpackOrder>(undo => undo
                             .Output(activity => activity.Express).To(ctx => ctx.WorkflowData.Express))))
-                    .DefaultOutcome(branch => branch
+                    .Default(branch => branch
                         .Step<InsureOrder>()
                         .Step<LabelOrder>(step => step.CompensateWith<UnlabelOrder>())))
                 .WaitFor<Approval>("approval")

@@ -84,14 +84,14 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
         where TResumeEvent : class;
 
     /// <summary>
-    /// Creates outcome-based branching based on a property value from the workflow context
+    /// Selects one compensable case body using a typed selector
     /// </summary>
     /// <typeparam name="TProperty">The type of the property used for branching</typeparam>
     /// <param name="propertySelector">Expression that selects the property to branch on</param>
-    /// <param name="configure">Configuration for the outcome branches</param>
+    /// <param name="configure">Configuration for the switch cases</param>
     /// <returns>A saga activity builder for continuing the saga flow</returns>
-    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> OutcomeOn<TProperty>(
+    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Switch<TProperty>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TProperty>> propertySelector,
-        Action<ISagaOutcomeBuilder<TWorkflowData, TPreviousStepData, TProperty>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+        Action<ISagaSwitchBuilder<TWorkflowData, TPreviousStepData, TProperty>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
 }

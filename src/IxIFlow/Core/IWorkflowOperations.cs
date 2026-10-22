@@ -30,6 +30,8 @@ public interface IWorkflowOperations
     IDisposable WatchChanges(string instanceId, Action changed);
     Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string instanceId, CancellationToken cancellationToken = default);
     /// <summary>Reads detached graph topology through the instance's definition and privacy projection.</summary>
+    /// <summary>Reads detached typed switch label descriptors through the definition privacy projection.</summary>
+    Task<IReadOnlyList<SwitchTableEntry>> GetSwitchTableAsync(string instanceId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<GraphTableEntry>> GetGraphTableAsync(string instanceId, CancellationToken cancellationToken = default);
     /// <summary>Loads bounded, detached replay through the same privacy projection as inspection.</summary>
     Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries = 10000, CancellationToken cancellationToken = default);

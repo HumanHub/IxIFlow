@@ -46,6 +46,7 @@ internal static class ExecutionSnapshotFactory
                 var iteration = owner?.StepType == WorkflowStepType.Loop ? parent!.LoopIterationCount : frame.LoopIterationCount;
                 var name = owner?.Name ?? frame.ScopeId;
                 if (owner?.StepType == WorkflowStepType.Loop) name += $" (iteration {iteration})";
+                if (frame.Kind == FrameKind.SwitchCase) name += frame.ScopeId.EndsWith("/default", StringComparison.Ordinal) ? " / default" : " / case " + frame.ScopeId[(frame.ScopeId.LastIndexOf('/') + 1)..];
                 if (frame.ForEachIndex is { } itemIndex) name += $" (item {itemIndex})";
                 var graph = GraphFrameInfo.Of(scopes, continuation, index, checkpoint);
                 snapshot.Frames.Add(new ExecutionFrame
@@ -55,7 +56,7 @@ internal static class ExecutionSnapshotFactory
                     Name = graph?.Name ?? name,
                     LoopIteration = iteration,
                     ForEachItemIndex = frame.ForEachIndex,
-                    Kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen
+                    Kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase
                         ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId,
                     StepId = frame.ScopeId,
                     ParentFrameId = parent?.ActivationId,

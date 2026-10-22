@@ -16,6 +16,8 @@ public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
 {
     private readonly WorkflowStep _step;
 
+    internal WorkflowStep Step => _step;
+
     public SuspendSetupBuilder(WorkflowStep step)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));

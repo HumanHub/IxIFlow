@@ -138,7 +138,7 @@ internal static class ParallelRules
             // Keep validation order: catches precede timeouts, and item bodies follow both.
             foreach (var scope in step.ChildScopes().Where(scope => crossInline || scope.Kind != "inline").OrderBy(scope => scope.Kind switch
                      {
-                         "timeout" => 1, "foreach" => 2, "branch" or "outcome" => 3, _ => 0
+                         "timeout" => 1, "foreach" => 2, "branch" or "case" or "default" => 3, _ => 0
                      }))
                 foreach (var inner in Flatten(scope.Steps, crossInline))
                     yield return inner;

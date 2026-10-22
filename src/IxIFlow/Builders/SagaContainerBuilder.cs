@@ -51,6 +51,12 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         _workflowBuilder.WithId(id, sourcePath, sourceLine);
 
     // Delegate all IWorkflowBuilder methods to the real workflow builder
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Switch<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> selector,
+        Action<SwitchCases<TValue, IWorkflowBuilder<TWorkflowData, TPreviousStepData>>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        _workflowBuilder.Switch(selector, configure, sourcePath, sourceLine);
+
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name) => _workflowBuilder.Named(name);
 
     /// <summary>Runs a flowchart after the completed saga container.</summary>

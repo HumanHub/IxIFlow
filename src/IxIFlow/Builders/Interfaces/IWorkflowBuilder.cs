@@ -26,6 +26,12 @@ public interface IWorkflowBuilder<TWorkflowData>
     /// <summary>Names the preceding step.</summary>
     IWorkflowBuilder<TWorkflowData> Named(string name);
 
+    /// <summary>Selects one case body, retaining the incoming previous value.</summary>
+    IWorkflowBuilder<TWorkflowData, object> Switch<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, object>, TValue>> selector,
+        Action<SwitchCases<TValue, IWorkflowBuilder<TWorkflowData, object>>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     /// <summary>Composes a fresh workflow body with private data into this definition.</summary>
     IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TWorkflow, TInvokedData>(
         Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
@@ -105,6 +111,12 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
 
     /// <summary>Names the preceding step.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name);
+
+    /// <summary>Selects one case body, retaining the incoming previous value.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Switch<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> selector,
+        Action<SwitchCases<TValue, IWorkflowBuilder<TWorkflowData, TPreviousStepData>>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Composes a fresh workflow body with private data into this definition.</summary>
     IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TWorkflow, TInvokedData>(

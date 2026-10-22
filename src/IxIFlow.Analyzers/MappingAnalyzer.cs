@@ -287,7 +287,7 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     // implements, and otherwise an activity when it is one.
     private static string? Kind(EngineSymbols engine, INamedTypeSymbol owner, INamedTypeSymbol builder)
     {
-        if (builder.Name.Contains("WorkflowInvocationSetup"))
+        if (builder.Name.Contains("WorkflowInvocationSetup") || builder.Name.StartsWith("FaultInvocation", System.StringComparison.Ordinal))
             return WorkflowKind;
         if (builder.Name.Contains("Suspend"))
             return "Event";

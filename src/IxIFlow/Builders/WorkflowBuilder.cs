@@ -94,7 +94,14 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
         new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs)
             .Use<TInvokedData>(callee, pin, configure == null ? null : setup => configure(setup), sourcePath, sourceLine);
 
-    /// <summary>Runs a flowchart with no incoming activity value.</summary>
+    /// <summary>Selects one case body with no incoming activity value.</summary>
+    public IWorkflowBuilder<TWorkflowData, object> Switch<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, object>, TValue>> selector,
+        Action<SwitchCases<TValue, IWorkflowBuilder<TWorkflowData, object>>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs)
+            .Switch(selector, configure, sourcePath, sourceLine);
+
     public IWorkflowBuilder<TWorkflowData, object> Flowchart(Action<FlowchartBuilder<TWorkflowData, object>> configure,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
         new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands)
@@ -213,6 +220,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     where TPreviousStepData : class
 {
     protected readonly List<WorkflowStep> _steps = steps;
+    internal List<WorkflowStep> Steps => _steps;
     private readonly List<WorkflowDemand> _demands = demands ?? [];
 
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Demand(string key, string? value = null, bool inherit = false)
@@ -253,6 +261,29 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name)
     {
         Core.Runtime.WorkflowStepIdentity.Name(_steps, name);
+        return this;
+    }
+
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Switch<TValue>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> selector,
+        Action<SwitchCases<TValue, IWorkflowBuilder<TWorkflowData, TPreviousStepData>>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        ArgumentNullException.ThrowIfNull(selector);
+        ArgumentNullException.ThrowIfNull(configure);
+        var evaluate = selector.Compile();
+        var step = new WorkflowStep
+        {
+            StepType = WorkflowStepType.Switch, Name = "Switch", Order = _steps.Count,
+            Runtime = WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(),
+            WorkflowDataType = typeof(TWorkflowData), PreviousStepDataType = typeof(TPreviousStepData),
+            OutcomeExpression = selector, OutcomeSelector = context => evaluate((WorkflowContext<TWorkflowData, TPreviousStepData>)context),
+            SwitchValueType = typeof(TValue),
+            SwitchEquals = (left, right) => EqualityComparer<TValue>.Default.Equals((TValue)left!, (TValue)right!),
+            SourceLocation = sourcePath + ":" + sourceLine
+        };
+        configure(new(step, body => new WorkflowBuilder<TWorkflowData, TPreviousStepData>(body, string.Empty)));
+        _steps.Add(step);
         return this;
     }
 

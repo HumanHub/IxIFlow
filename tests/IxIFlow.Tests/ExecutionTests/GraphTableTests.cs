@@ -12,41 +12,44 @@ public sealed class GraphTableTests
     [Fact]
     public async Task MutableLabelMetadataCannotChangeRoutingOrCachedHash()
     {
-        var label = new MutableLabel { Values = [7] };
+        object label = new MutableLabel { Value = 7 };
+        // Keep checkpoint data typed, but pass the authored box unchanged to Case.
         var definition = Workflow.Create<LabelData>("GraphTableLabels").Flowchart(f => f.Start("route")
-            .Node("route", e => e.Switch(c => c.WorkflowData.Label).Case(label, "selected").Otherwise("end"))
+            .Node("route", e => e.Switch<object>(c => c.WorkflowData.Label).Case(label, "selected").Otherwise("end"))
             .Node("selected", n => n.Step<MarkSelected>())).Build();
         var hash = WorkflowDefinitionValidator.Inspect(definition);
-        var metadata = definition.GraphTable.Single().Transitions[0].Cases.Single().Label;
-        Assert.NotSame(label, metadata);
-        // A detached mutable copy or an immutable JSON projection is acceptable.
-        if (metadata is MutableLabel copy) copy.Values[0] = 99;
-        else
-        {
-            var json = Assert.IsType<JsonElement>(metadata);
-            Assert.Equal(7, json.GetProperty("Values")[0].GetInt32());
-            var jsonCopy = JsonSerializer.Deserialize<MutableLabel>(json)!;
-            jsonCopy.Values[0] = 99;
-        }
-        Assert.Equal(7, label.Values[0]);
+        var entry = definition.GraphTable.Single().Transitions[0].Cases.Single();
+        var metadata = Assert.IsType<JsonElement>(entry.Label);
+        Assert.Equal(JsonValueKind.String, metadata.ValueKind);
+        Assert.NotNull(entry.LabelSignature);
+        Assert.Equal(entry.LabelSignature, metadata.GetString());
+        // The catalog descriptor is immutable; mutate the original authored box.
+        typeof(MutableLabel).GetProperty(nameof(MutableLabel.Value))!.SetValue(label, 99);
+        Assert.Equal(99, ((MutableLabel)label).Value);
+        Assert.Equal(hash, WorkflowDefinitionValidator.Inspect(definition));
         var services = new ServiceCollection().AddLogging();
         services.AddIxIFlow();
         await using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition, new LabelData());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        Assert.True(Assert.IsType<LabelData>(result.WorkflowData).Selected);
+        var data = Assert.IsType<LabelData>(result.WorkflowData);
+        Assert.Equal(7, data.Label.Value);
+        Assert.True(data.Selected);
+        var currentEntry = definition.GraphTable.Single().Transitions[0].Cases.Single();
+        Assert.Equal(metadata.GetString(), Assert.IsType<JsonElement>(currentEntry.Label).GetString());
+        Assert.Equal(entry.LabelSignature, currentEntry.LabelSignature);
         Assert.Equal(hash, WorkflowDefinitionValidator.Inspect(definition));
     }
 
-    public sealed class MutableLabel
+    public struct MutableLabel
     {
-        public List<int> Values { get; set; } = [];
-        public override bool Equals(object? obj) => obj is MutableLabel other && Values.SequenceEqual(other.Values);
-        public override int GetHashCode() => Values.Aggregate(0, HashCode.Combine);
+        public int Value { get; set; }
+        public override bool Equals(object? obj) => obj is MutableLabel other && Value == other.Value;
+        public override int GetHashCode() => Value;
     }
     public sealed class LabelData
     {
-        public MutableLabel Label { get; set; } = new() { Values = [7] };
+        public MutableLabel Label { get; set; } = new() { Value = 7 };
         public bool Selected { get; set; }
     }
     public sealed class MarkSelected : IAsyncActivity

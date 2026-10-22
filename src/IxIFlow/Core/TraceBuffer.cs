@@ -130,6 +130,7 @@ internal sealed partial class TraceBuffer
             GraphTrace p => (p.StepId, p.ContinuationId),
             ControlFlowTrace p => (p.StepId, p.ContinuationId),
             ConditionTrace p => (p.StepId, p.ContinuationId),
+            SwitchTrace p => (p.StepId, p.ContinuationId),
             JoinTrace p => (p.StepId, p.ContinuationId),
             ItemEndTrace p => (p.StepId, p.ContinuationId),
             TimeoutTrace p => (p.StepId, p.ContinuationId),
@@ -153,7 +154,7 @@ internal sealed partial class TraceBuffer
     }
 
     public static bool IsControlFlow(TraceEntryType kind) => kind is
-        TraceEntryType.StepEntered or TraceEntryType.ConditionTaken or TraceEntryType.LoopIteration or
+        TraceEntryType.InlineEntered or TraceEntryType.InlineExited or TraceEntryType.SwitchSelected or TraceEntryType.StepEntered or TraceEntryType.ConditionTaken or TraceEntryType.LoopIteration or
         TraceEntryType.LoopCompleted or TraceEntryType.BranchStarted or TraceEntryType.JoinCompleted or
         TraceEntryType.CatchEntered or TraceEntryType.FinallyEntered or TraceEntryType.ForEachItemStarted or
         TraceEntryType.ForEachItemEnded or TraceEntryType.CompensationStarted or TraceEntryType.CompensationCompleted or

@@ -101,7 +101,7 @@ public sealed partial class WorkflowDocumentValidator
                     ValidateExpression(expression, diagnostics, triggerPath + ".after", roots, document.Code);
                 else if (forms[2])
                     Invalid("GRAPH006", "After must be a positive duration string or a TimeSpan expression", triggerPath + ".after", diagnostics);
-                ValidateExpression(transition.Matches, diagnostics, triggerPath + ".matches", new[] { "workflow", "event" }.Concat(aliases).ToArray(), document.Code);
+                ValidateExpression(transition.Matches, diagnostics, triggerPath + ".matches", (aliases.Contains("fault") ? new[] { "workflow", "previousStep", "event" } : new[] { "workflow", "event" }).Concat(aliases).ToArray(), document.Code);
                 ValidateInputMappings(transition.Input, diagnostics, triggerPath + ".input", false, aliases, document.Code);
                 ValidateOutputMappings(transition.Output, diagnostics, triggerPath + ".output");
                 var cases = transition.Cases ?? [transition];
@@ -192,8 +192,8 @@ public sealed partial class WorkflowDocumentValidator
         "sequence" or "loop" or "foreach" => path + ".steps",
         "branch" => $"{path}.branches[{key}].steps",
         "catch" => $"{path}.{(step is SagaStepDocument ? "onError" : "catches")}[{key}].steps",
-        "outcome" => step is OutcomeStepDocument outcome && int.Parse(key!, CultureInfo.InvariantCulture) < outcome.Branches.Count
-            ? $"{path}.branches[{key}].steps" : path + ".default",
+        "case" => $"{path}.cases[{key}].steps",
+        "default" => path + ".default",
         _ => path + "." + kind
     };
 }

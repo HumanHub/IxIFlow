@@ -884,8 +884,8 @@ public class StructuredSagaWaitTests
                 .Step<ReserveActivity>(setup => setup
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Reserved))
-                .OutcomeOn(ctx => ctx.WorkflowData.Reserved, outcomes => outcomes
-                    .Outcome(1, branch => branch.Step<CompleteActivity>(setup => setup
+                .Switch(ctx => ctx.WorkflowData.Reserved, outcomes => outcomes
+                    .Case(1, branch => branch.Step<CompleteActivity>(setup => setup
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Completed))))
                 .WaitFor<Approval>("approval"))
             .Build();
@@ -907,8 +907,8 @@ public class StructuredSagaWaitTests
         var definition = Workflow.Create<SagaData>("OutcomeCompensation")
             .Step<BeginActivity>()
             .Saga(saga => saga
-                .OutcomeOn(ctx => ctx.WorkflowData.Method, outcomes => outcomes
-                    .Outcome("card", branch => branch.Step<ReserveActivity>(setup => setup
+                .Switch(ctx => ctx.WorkflowData.Method, outcomes => outcomes
+                    .Case("card", branch => branch.Step<ReserveActivity>(setup => setup
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Reserved)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Reserved)
                         .CompensateWith<ReleaseActivity>(compensation => compensation

@@ -266,10 +266,10 @@ public sealed partial class YamlParityTests
             - kind: saga
               id: saga
               steps:
-                - kind: outcome
+                - kind: switch
                   id: outcome
                   value: {path: workflow.Mode}
-                  branches:
+                  cases:
                     - value: {kind: function, function: ready}
                       steps: [{kind: activity, id: selected, activity: ParityWork}]
                   default: [{kind: activity, id: fallback, activity: ParitySecondWork}]
@@ -278,9 +278,9 @@ public sealed partial class YamlParityTests
                 language: csharp-expression
                 source: ParityMode.Ready
             """);
-        var fluent = Start().Saga(saga => saga.OutcomeOn(ctx => ctx.WorkflowData.Mode, outcomes => outcomes
-            .Outcome(ParityMode.Ready, body => body.Step<ParityWork>().WithId("selected"))
-            .DefaultOutcome(body => body.Step<ParitySecondWork>().WithId("fallback"))).WithId("outcome")).WithId("saga").Build();
+        var fluent = Start().Saga(saga => saga.Switch(ctx => ctx.WorkflowData.Mode, outcomes => outcomes
+            .Case(ParityMode.Ready, body => body.Step<ParityWork>().WithId("selected"))
+            .Default(body => body.Step<ParitySecondWork>().WithId("fallback"))).WithId("outcome")).WithId("saga").Build();
         var result = await Match(fluent, generated, data: () => new() { Mode = mode });
         Assert.Equal(mode == ParityMode.Ready ? 1 : 0, result.Work);
     }

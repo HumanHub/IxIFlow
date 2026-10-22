@@ -664,7 +664,9 @@ public enum TraceEntryType
     /// <summary>A timer trigger became due.</summary>
     TimerFired,
     InlineEntered,
-    InlineExited
+    InlineExited,
+    /// <summary>A switch selected a case, default or no-match path.</summary>
+    SwitchSelected
 }
 
 /// <summary>
@@ -685,6 +687,8 @@ public class WorkflowDefinition
     /// <summary>The definition's graph topology and designer metadata.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public GraphTable GraphTable => WorkflowDefinitionValidator.ForExecution(this).GraphTable;
+
+    public SwitchTable SwitchTable => WorkflowDefinitionValidator.ForExecution(this).SwitchTable;
     /// <summary>Placement declarations, excluded from executable structure identity.</summary>
     public List<WorkflowDemand> Demands { get; set; } = [];
 
@@ -854,6 +858,11 @@ public class WorkflowStep
     internal Type? ForEachConditionResultType { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
+    public Type? SwitchValueType { get; set; }
+    internal Func<object?, object?, bool>? SwitchEquals { get; set; }
+    internal Type? LexicalFaultType { get; set; }
+    internal string? LexicalFaultOwnerId { get; set; }
+
     public Func<object, object?>? OutcomeSelector { get; set; }
 
     public List<WorkflowOutcomeBranch> OutcomeBranches { get; set; } = new();
@@ -1092,7 +1101,9 @@ public class WorkflowStep
             if (state.ListenSteps.Count > 0) yield return ("state", state.Key + "/listen", state.ListenSteps);
         }
         for (var index = 0; index < OutcomeBranches.Count; index++)
-            yield return ("outcome", index.ToString(System.Globalization.CultureInfo.InvariantCulture), OutcomeBranches[index].Steps);
+            yield return OutcomeBranches[index].IsDefault
+                ? ("default", null, OutcomeBranches[index].Steps)
+                : ("case", index.ToString(System.Globalization.CultureInfo.InvariantCulture), OutcomeBranches[index].Steps);
     }
 
     /// <summary>
@@ -1141,6 +1152,10 @@ public class WorkflowStep
             TriggerKind = TriggerKind, AfterExpression = AfterExpression, After = After,
             Target = Target, EdgeLabel = EdgeLabel, IsDefault = IsDefault, Explicit = Explicit,
             OutcomeExpression = OutcomeExpression,
+            SwitchValueType = SwitchValueType,
+            SwitchEquals = SwitchEquals,
+            LexicalFaultType = LexicalFaultType,
+            LexicalFaultOwnerId = LexicalFaultOwnerId,
             CompiledCondition = CompiledCondition,
             ConditionExpression = ConditionExpression,
             ParallelCompletionExpression = ParallelCompletionExpression,
@@ -1148,6 +1163,7 @@ public class WorkflowStep
             OutcomeSelector = OutcomeSelector,
             OutcomeBranches = OutcomeBranches.Select(branch => new WorkflowOutcomeBranch
             {
+                SourceLocation = branch.SourceLocation,
                 Value = branch.Value,
                 IsDefault = branch.IsDefault,
                 SagaSteps = new List<IxIFlow.Builders.SagaStepInfo>(branch.SagaSteps)
@@ -1198,6 +1214,7 @@ public class WorkflowStep
 
 public class WorkflowOutcomeBranch
 {
+    internal string? SourceLocation { get; set; }
     public object? Value { get; set; }
     public bool IsDefault { get; set; }
     public List<WorkflowStep> Steps { get; set; } = new();
@@ -1287,7 +1304,9 @@ public enum WorkflowStepType
     /// <summary>Records a fired trigger before its branch completes.</summary>
     Fire,
     /// <summary>Execute a built workflow body on its own data copy.</summary>
-    InlineWorkflow
+    InlineWorkflow,
+    /// <summary>Selects one body with typed label equality.</summary>
+    Switch
 }
 
 /// <summary>

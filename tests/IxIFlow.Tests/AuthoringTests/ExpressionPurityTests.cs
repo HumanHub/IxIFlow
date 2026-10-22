@@ -69,9 +69,9 @@ public sealed class ExpressionPurityTests
         var error = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<Data>("ImpureOutcome")
             .Step<Takes>()
             .Saga(saga => saga.Step<Takes>()
-                .OutcomeOn(_ => DateTime.UtcNow.Hour, outcomes => outcomes
-                    .Outcome(1, branch => branch.Step<Takes>())
-                    .DefaultOutcome(branch => branch.Step<Takes>())))
+                .Switch(_ => DateTime.UtcNow.Hour, outcomes => outcomes
+                    .Case(1, branch => branch.Step<Takes>())
+                    .Default(branch => branch.Step<Takes>())))
             .Build());
 
         Assert.Contains("uses DateTime.UtcNow", error.Message);

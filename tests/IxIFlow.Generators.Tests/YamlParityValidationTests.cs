@@ -22,10 +22,8 @@ public sealed class YamlParityValidationTests
         yield return ["- kind: request\n  activity: ParityRequest\n  key: ''", "key:"];
         yield return ["- kind: waitFor\n  event: Answer\n  key: answer\n  timeout: '-00:00:01'", "timeout:"];
         yield return ["- kind: suspend\n  event: Answer\n  onTimeout: [{kind: activity, activity: ParityEcho}]", "onTimeout:"];
-        yield return ["- kind: outcome\n  value: {kind: constant, value: true}", "kind: outcome"];
         yield return ["- kind: result\n  value: {path: outside.Value}", "value:"];
         yield return ["- kind: parallel\n  branches: []\n  combine:\n    - property: {path: workflow.Result}\n      propertyType: ''\n      combiner: 'IxIFlow.Core.Sum<int>'", "propertyType:"];
-        yield return ["- kind: try\n  catches:\n    - steps: [{kind: delay, duration: '00:00:01'}]", "steps: [{kind: delay"];
         yield return ["- kind: saga\n  steps: [{kind: forEach, items: {path: workflow.Values}}]", "steps: [{kind: forEach"];
         yield return ["- kind: activity\n  activity: ParityEcho\n  configure: false\n  input: [{target: Value, from: {kind: constant, value: 1}}]", "configure:"];
         yield return ["- kind: invokeWorkflowType\n  workflowType: ''\n  dataType: IxIFlow.Generators.Tests.FlowData", "workflowType:"];
@@ -54,7 +52,7 @@ public sealed class YamlParityValidationTests
     [InlineData("{kind: delay}")]
     [InlineData("{kind: request, activity: ParityRequest}")]
     [InlineData("{kind: waitFor, event: Answer}")]
-    [InlineData("{kind: outcome}")]
+    [InlineData("{kind: switch}")]
     [InlineData("{kind: result}")]
     [InlineData("{kind: invokeWorkflowType}")]
     [InlineData("{kind: invokeWorkflow, workflow: {name: Child}, cancelWithParent: 1}")]
@@ -134,7 +132,6 @@ public sealed class YamlParityValidationTests
     }
 
     [Theory]
-    [InlineData("- kind: try\n  catches: [{steps: [{kind: activity, activity: ParityEcho, name: named}]}]", "SCOPE002", "name: named")]
     [InlineData("- kind: saga\n  steps: [{kind: activity, activity: ParityEcho, name: named}]", "SCOPE002", "name: named")]
     [InlineData("- kind: saga\n  onError: [{compensate: all, then: terminate, ignoreCompensationErrors: true}]", "SAGA004", "ignoreCompensationErrors:")]
     [InlineData("- kind: saga\n  steps: [{kind: activity, activity: ParityWork, compensation: [{activity: ParityUndo, replyType: Answer, previousActivity: ParityUndo}]}]", "SAGA008", "compensation:")]

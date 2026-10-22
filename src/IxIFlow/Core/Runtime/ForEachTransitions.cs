@@ -328,7 +328,7 @@ internal static class ForEachTransitions
     private static object Context(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, WorkflowStep step, object workflowData, IServiceProvider services) =>
         WorkflowValueBinding.EvaluationContext(step, workflowData,
-            continuation.GetPrevious(services), ItemsOf(scopes, checkpoint, continuation));
+            continuation.GetPrevious(services), ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes));
 
     private static WorkflowEngineException NoResult(WorkflowStep step) =>
         new(WorkflowErrorKind.InvalidState, $"ForEach step '{step.Name}' has an item that gave no result");

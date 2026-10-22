@@ -171,11 +171,11 @@ public abstract record WorkflowStepDocument : DocumentNode
                 for (var index = 0; index < saga.OnError.Count; index++)
                     yield return ("catch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), saga.OnError[index].Steps);
                 break;
-            case OutcomeStepDocument outcome:
-                for (var index = 0; index < outcome.Branches.Count; index++)
-                    yield return ("outcome", index.ToString(System.Globalization.CultureInfo.InvariantCulture), outcome.Branches[index].Steps);
+            case SwitchStepDocument outcome:
+                for (var index = 0; index < outcome.Cases.Count; index++)
+                    yield return ("case", index.ToString(System.Globalization.CultureInfo.InvariantCulture), outcome.Cases[index].Steps);
                 if (outcome.Default != null)
-                    yield return ("outcome", outcome.Branches.Count.ToString(System.Globalization.CultureInfo.InvariantCulture), outcome.Default);
+                    yield return ("default", null, outcome.Default);
                 break;
         }
     }
@@ -517,7 +517,7 @@ public sealed record CatchDocument : DocumentNode
 [DocumentKind("saga")]
 public sealed record SagaStepDocument : WorkflowStepDocument
 {
-    [Description("Saga activities, requests, waits and outcome branches.")]
+    [Description("Saga activities, requests, waits and switch cases.")]
     public List<WorkflowStepDocument> Steps { get; init; } = [];
     [Description("Ordered typed or catch-all saga error handlers.")]
     public List<SagaErrorHandlerDocument> OnError { get; init; } = [];
@@ -594,23 +594,25 @@ public sealed record SagaErrorHandlerDocument : DocumentNode
     public bool IgnoreCompensationErrors { get; init; }
 }
 
-[Description("Saga branching selected by a typed value.")]
-[DocumentKind("outcome")]
-public sealed record OutcomeStepDocument : WorkflowStepDocument
+[Description("Body selection by a typed value.")]
+[DocumentKind("switch")]
+public sealed record SwitchStepDocument : WorkflowStepDocument
 {
-    [Description("The expression selecting an outcome value.")]
+    [Description("Optional selector CLR type when inference is ambiguous, including null or a base type.")]
+    public string? ValueType { get; init; }
+    [Description("The expression selecting a typed value.")]
     [DocumentRequired]
     public ExpressionDocument Value { get; init; } = new ConstantExpressionDocument();
-    [Description("Ordered typed outcome labels and saga bodies.")]
-    public List<OutcomeBranchDocument> Branches { get; init; } = [];
-    [Description("The saga body selected when no label matches.")]
+    [Description("Ordered typed labels and case bodies.")]
+    public List<SwitchCaseDocument> Cases { get; init; } = [];
+    [Description("The body selected when no label matches.")]
     public List<WorkflowStepDocument>? Default { get; init; }
 }
 
-[Description("One typed outcome label and its saga body.")]
-public sealed record OutcomeBranchDocument : DocumentNode
+[Description("One typed label and its body.")]
+public sealed record SwitchCaseDocument : DocumentNode
 {
-    [Description("The label expression evaluated at build time and passed to Outcome.")]
+    [Description("The label expression evaluated at build time and passed to Case.")]
     [DocumentRequired]
     public ExpressionDocument Value { get; init; } = new ConstantExpressionDocument();
     [Description("Saga steps executed for this label.")]

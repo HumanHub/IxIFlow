@@ -3,6 +3,9 @@ namespace IxIFlow.Core.Runtime;
 internal sealed record MappingContextValues(object? Data, object? Previous = null, object? Fault = null,
     object? Reply = null, bool Answered = false, object? Event = null);
 
+internal interface IFaultEventValue { object Context { get; } }
+internal sealed record FaultEventValue<TEvent>(TEvent Event, object Context) : IFaultEventValue;
+
 /// <summary>Typed context constructors and activity dispatch captured by builders.</summary>
 internal sealed record WorkflowStepDelegates
 {
@@ -32,7 +35,7 @@ internal sealed record WorkflowStepDelegates
 
     public static WorkflowStepDelegates Wait<TData, TEvent, TPrevious>() where TPrevious : class => new()
     {
-        Factories = new Contexts<TData, TPrevious>(),
+        Factories = new WaitContexts<TData, TEvent, TPrevious>(),
         Context = Previous<TData, TPrevious>, OutputContext = Data<TData>,
         EventContext = values => new ResumeEventContext<TData, TEvent>
         {
@@ -43,18 +46,29 @@ internal sealed record WorkflowStepDelegates
 
     public WorkflowStepDelegates ForFault<TFault>() => this with
     {
-        Context = Factories!.Fault<TFault>()
+        Context = Factories!.Fault<TFault>(),
+        EventContext = Factories.EventFault<TFault>() ?? EventContext,
+        PreviousEventContext = Factories.EventFault<TFault>() ?? PreviousEventContext
     };
 
     private interface IContexts
     {
         Func<MappingContextValues, object> Fault<TFault>();
+        Func<MappingContextValues, object>? EventFault<TFault>();
     }
 
     private sealed class Contexts<TData, TPrevious> : IContexts where TPrevious : class
     {
         public Func<MappingContextValues, object> Fault<TFault>() =>
             WorkflowStepDelegates.Fault<TData, TFault, TPrevious>;
+        public Func<MappingContextValues, object>? EventFault<TFault>() => null;
+    }
+
+    private sealed class WaitContexts<TData, TEvent, TPrevious> : IContexts where TPrevious : class
+    {
+        public Func<MappingContextValues, object> Fault<TFault>() => WorkflowStepDelegates.Fault<TData, TFault, TPrevious>;
+        public Func<MappingContextValues, object>? EventFault<TFault>() => values => new FaultEventValue<TEvent>((TEvent)values.Event!,
+            WorkflowStepDelegates.Fault<TData, TFault, TPrevious>(values with { Previous = values.Previous is TPrevious ? values.Previous : null }));
     }
 
     public static object Data<TData>(MappingContextValues values) =>

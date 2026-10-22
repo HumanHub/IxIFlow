@@ -1,0 +1,4 @@
+workflow: {name: SwitchCompositionsaga, dataType: IxIFlow.Tests.Conformance.SwitchScenarios+Data}
+definitions:
+- {kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Seed}
+- {kind: saga, steps: [{kind: switch, value: {path: workflow.Route}, cases: [{value: {kind: constant, value: 1}, steps: [{kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Forward, compensation: [{activity: IxIFlow.Tests.Conformance.SwitchScenarios+Undo}]}, {kind: waitFor, key: inside, event: IxIFlow.Tests.Conformance.SwitchScenarios+Go}]}], default: [{kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Seed}]}, {kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Fail}], onError: [{compensate: all, then: continue}]}

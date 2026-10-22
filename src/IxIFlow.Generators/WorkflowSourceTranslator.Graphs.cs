@@ -38,7 +38,7 @@ public static partial class WorkflowSourceTranslator
                     if (edge.When != null)
                         Line($"{edges}.When(whenExpression: ctx => {Expression(edge.When)}, to: {Destination(edge.To)}, {Site(edge)});");
                     else if (edge.Case != null || edge.Members.ContainsKey("case"))
-                        Line($"{target}.Case({(edge.Case is ExpressionDocument label ? Expression(label) : Literal(edge.Case, edge))}, to: {Destination(edge.To)}, {Site(edge)});");
+                        Line($"{target}.Case({(edge.Case is ExpressionDocument label ? Label(label) : Literal(edge.Case, edge))}, to: {Destination(edge.To)}, {Site(edge)});");
                     else if (edge.Default == false || edge.Default == null && node.Switch == null && node.Transitions.Count == 1)
                         Line($"{edges}.Always(to: {Destination(edge.To)}, {Site(edge)});");
                     else

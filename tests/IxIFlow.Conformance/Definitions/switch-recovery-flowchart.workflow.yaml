@@ -1,0 +1,4 @@
+workflow: {name: SwitchCompositionflowchart, dataType: IxIFlow.Tests.Conformance.SwitchScenarios+Data}
+definitions:
+- {kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Seed}
+- {kind: flowchart, start: work, nodes: [{key: work, steps: [{kind: switch, value: {path: workflow.Route}, cases: [{value: {kind: constant, value: 1}, steps: [{kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Forward}, {kind: waitFor, key: inside, event: IxIFlow.Tests.Conformance.SwitchScenarios+Go}]}], default: [{kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Seed}]}, {kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Increment, input: [{target: Value, from: {path: workflow.Visits}}], output: [{source: Value, to: {path: workflow.Visits}}]}], transitions: [{when: {path: previousStep.Value < 2}, to: work}]}]}

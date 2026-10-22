@@ -251,7 +251,7 @@ public class SagaTestData
     public int RetryAttempts { get; set; }
     public string SuspensionMessage { get; set; }
 
-    // OutcomeOn testing properties
+    // Switch testing properties
     public bool CashReceived { get; set; }
     public bool LoggedUnknown { get; set; }
 }
@@ -507,7 +507,7 @@ public class SagaReserveInventoryAsyncActivity : IAsyncActivity
 }
 
 /// <summary>
-///     Smart inventory reservation activity that generates ReservationId based on payment method for OutcomeOn testing
+///     Smart inventory reservation activity that generates ReservationId based on payment method for Switch testing
 /// </summary>
 public class SagaSmartReserveInventoryAsyncActivity : IAsyncActivity
 {
@@ -523,7 +523,7 @@ public class SagaSmartReserveInventoryAsyncActivity : IAsyncActivity
         if (string.IsNullOrWhiteSpace(OrderId))
             throw new Exception("Inventory reservation failed: OrderId is required");
 
-        // Generate ReservationId based on payment method for OutcomeOn pattern testing
+        // Generate ReservationId based on payment method for Switch pattern testing
         var prefix = PaymentMethod.ToUpper() switch
         {
             "CARD" => "CARD",
@@ -1023,7 +1023,7 @@ public class CompleteOrderAsyncActivity : IAsyncActivity
 }
 
 /// <summary>
-///     Cash payment activity for OutcomeOn testing
+///     Cash payment activity for Switch testing
 /// </summary>
 public class SagaCashPaymentAsyncActivity : IAsyncActivity
 {
@@ -1043,7 +1043,7 @@ public class SagaCashPaymentAsyncActivity : IAsyncActivity
 }
 
 /// <summary>
-///     Log unknown payment activity for OutcomeOn testing
+///     Log unknown payment activity for Switch testing
 /// </summary>
 public class SagaLogUnknownPaymentAsyncActivity : IAsyncActivity
 {

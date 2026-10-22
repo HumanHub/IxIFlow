@@ -68,7 +68,7 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
         for (var index = 0; index < continuation.Stack.Count; index++)
         {
             var frame = continuation.Stack[index];
-            if (frame.Kind is FrameKind.Inline or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen)
+            if (frame.Kind is FrameKind.Inline or FrameKind.SwitchCase or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen)
                 await Reader.HydrateAsync(frame.EntryPrevious);
             await Reader.HydrateAsync(frame.Graph?.Pending?.Event);
             // Reply matching does not read the selected fire while its parent is still Joining.
@@ -84,6 +84,9 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
                 await Reader.HydrateAsync(frame.SagaState);
             if (restoreInputs && frame.TryState?.Phase is TryPhase.Catch or TryPhase.Finally)
                 await Reader.HydrateAsync(frame.TryState);
+            if (frame.TryState?.Phase == TryPhase.Catch) await Reader.HydrateAsync(frame.TryState.Error?.Fault);
+            if (frame.SagaState is { Phase: SagaPhase.Compensating, ErrorHandlerStarted: true })
+                await Reader.HydrateAsync(frame.SagaState.Error?.Fault);
             if (restoreInputs && frame.SagaState is { Phase: SagaPhase.Forward, RetryCount: > 0 } saga &&
                 saga.AcceptedWaitCursor < saga.AcceptedWaits.Count)
             {
@@ -91,6 +94,21 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
                 var next = scopes.Steps(current.ScopeId).ElementAtOrDefault(current.NextStepIndex);
                 if (next != null && saga.AcceptedWaits[saga.AcceptedWaitCursor].StepId == scopes.Id(next))
                     await Reader.HydrateAsync(saga.AcceptedWaits[saga.AcceptedWaitCursor].Event);
+            }
+        }
+        // A fault-aware expression in a fork may read a DTO owned by an ancestor continuation.
+        {
+            var ancestor = continuation;
+            while (ancestor.ParentJoinId is { } faultJoin)
+            {
+                var joinOwner = checkpoint.Joins.Single(join => join.Id == faultJoin);
+                ancestor = checkpoint.ContinuationById(joinOwner.ParentContinuationId)!;
+                foreach (var frame in ancestor.Stack)
+                {
+                    if (frame.TryState?.Phase == TryPhase.Catch) await Reader.HydrateAsync(frame.TryState.Error?.Fault);
+                    if (frame.SagaState is { Phase: SagaPhase.Compensating, ErrorHandlerStarted: true })
+                        await Reader.HydrateAsync(frame.SagaState.Error?.Fault);
+                }
             }
         }
         if (continuation.ParentJoinId is { } joinId && continuation.Stack.Count == 1 &&

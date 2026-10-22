@@ -1,0 +1,4 @@
+workflow: {name: SwitchCompositionparallel, dataType: IxIFlow.Tests.Conformance.SwitchScenarios+Data}
+definitions:
+- {kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Seed}
+- {kind: parallel, branches: [{steps: [{kind: switch, value: {path: workflow.Route}, cases: [{value: {kind: constant, value: 1}, steps: [{kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Forward}, {kind: waitFor, key: inside, event: IxIFlow.Tests.Conformance.SwitchScenarios+Go}]}], default: [{kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Seed}]}]}, {steps: [{kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Seed}]}]}

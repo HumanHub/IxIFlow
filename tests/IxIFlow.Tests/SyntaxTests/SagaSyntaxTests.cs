@@ -274,10 +274,10 @@ public class SagaSyntaxTests
     }
 
     [Fact]
-    public void Build_SagaWithOutcomeOnPattern_ShouldCompileCorrectly()
+    public void Build_SagaWithSwitchPattern_ShouldCompileCorrectly()
     {
-        // Arrange & Act - Test that saga with OutcomeOn pattern compiles correctly
-        var definition = Workflow.Create<OrderWorkflowData>("SagaOutcomeOnTest", 1)
+        // Arrange & Act - Test that saga with Switch pattern compiles correctly
+        var definition = Workflow.Create<OrderWorkflowData>("SagaSwitchTest", 1)
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -290,19 +290,19 @@ public class SagaSyntaxTests
                     .Output(act => act.PaymentStatus).To(ctx => ctx.WorkflowData.PaymentStatus)
                     .CompensateWith<RefundPaymentAsyncActivity>())
 
-                .OutcomeOn(ctx => ctx.PreviousStep.PaymentMethod, outcomes => outcomes
-                    .Outcome("Card", success => success
+                .Switch(ctx => ctx.PreviousStep.PaymentMethod, outcomes => outcomes
+                    .Case("Card", success => success
                         .Step<SendConfirmationAsyncActivity>(setup => setup
                             .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
                     
-                    .Outcome("Cash", declined => declined
+                    .Case("Cash", declined => declined
                         .Step<HandleDeclinedPaymentAsyncActivity>(setup => setup
                             .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
                     
-                    .Outcome("Check", pending => pending
+                    .Case("Check", pending => pending
                         .Suspend<ConfirmOrderEventData>("Waiting for payment confirmation"))
                     
-                    .DefaultOutcome(defaultPath => defaultPath
+                    .Default(defaultPath => defaultPath
                         .Step<LogUnknownStatusAsyncActivity>(setup => setup
                             .Input(act => act.Status).From(ctx => ctx.WorkflowData.PaymentStatus))));
             })
@@ -310,17 +310,17 @@ public class SagaSyntaxTests
 
         // Assert
         Assert.NotNull(definition);
-        Assert.Equal("SagaOutcomeOnTest", definition.Name);
+        Assert.Equal("SagaSwitchTest", definition.Name);
         Assert.Equal(1, definition.Version);
         Assert.Equal(2, definition.Steps.Count); // ValidateOrder + Saga
         Assert.Equal(typeof(OrderWorkflowData), definition.WorkflowDataType);
     }
 
     [Fact]
-    public void Build_SagaWithSimpleOutcomeOn_ShouldCompileCorrectly()
+    public void Build_SagaWithSimpleSwitch_ShouldCompileCorrectly()
     {
-        // Arrange & Act - Test that saga with simple OutcomeOn pattern compiles correctly
-        var definition = Workflow.Create<OrderWorkflowData>("SagaSimpleOutcomeOnTest", 1)
+        // Arrange & Act - Test that saga with simple Switch pattern compiles correctly
+        var definition = Workflow.Create<OrderWorkflowData>("SagaSimpleSwitchTest", 1)
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
@@ -331,12 +331,12 @@ public class SagaSyntaxTests
                     .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                     .Output(act => act.PaymentStatus).To(ctx => ctx.WorkflowData.PaymentStatus))
 
-                .OutcomeOn(ctx => ctx.WorkflowData.ValidationResult, outcomes => outcomes
-                    .Outcome(true, valid => valid
+                .Switch(ctx => ctx.WorkflowData.ValidationResult, outcomes => outcomes
+                    .Case(true, valid => valid
                         .Step<ProcessOrderAsyncActivity>(setup => setup
                             .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
                     
-                    .DefaultOutcome(invalid => invalid
+                    .Default(invalid => invalid
                         .Step<RejectOrderAsyncActivity>(setup => setup
                             .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))));
             })

@@ -628,17 +628,17 @@ public class SagaExecutionTests
                     //                .Output(act => act.Message).To(ctx => ctx.WorkflowData.SuspensionMessage)
                     //        )
                     //)
-                    //.OutcomeOn(x => x.Data1, setup => 
+                    //.Switch(x => x.Data1, setup => 
                     //    setup
-                    //        .Outcome("d11",d1=>{})
-                    //        .Outcome("d12",d2 =>{})
-                    //        .Outcome("d13",d3 =>{})
+                    //        .Case("d11",d1=>{})
+                    //        .Case("d12",d2 =>{})
+                    //        .Case("d13",d3 =>{})
                     //    )
-                    //.OutcomeOn(x => x.Data2, setup => 
+                    //.Switch(x => x.Data2, setup => 
                     //    setup
-                    //        .Outcome("d21", d2 =>{})
-                    //        .Outcome("d22", d2 =>{})
-                    //        .Outcome("d23", d2 =>{})
+                    //        .Case("d21", d2 =>{})
+                    //        .Case("d22", d2 =>{})
+                    //        .Case("d23", d2 =>{})
                     //    )
                     .Suspend<OrderConfirmationEvent>("Waiting for order confirmation before proceeding with inventory reservation",
                         (evt, ctx) => evt.IsConfirmed,
@@ -879,9 +879,9 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
     }
 
     [Fact]
-    public async Task SagaExecution_OutcomeOnPattern_ShouldExecuteCorrectBranch()
+    public async Task SagaExecution_SwitchPattern_ShouldExecuteCorrectBranch()
     {
-        // Arrange - Test OutcomeOn pattern execution with different payment methods
+        // Arrange - Test Switch pattern execution with different payment methods
         var workflowData = new SagaTestData
         {
             OrderId = "OUTCOME-001",
@@ -891,7 +891,7 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
         };
 
         var workflow = Workflow
-            .Create<SagaTestData>("OutcomeOnExecutionTest")
+            .Create<SagaTestData>("SwitchExecutionTest")
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
@@ -910,8 +910,8 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
                         comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
                     }))
 
-                .OutcomeOn(ctx => ctx.PreviousStep.ReservationId.Substring(0, 4), outcomes => outcomes // Use reservation prefix for branching
-                    .Outcome("CARD", cardPath => cardPath
+                .Switch(ctx => ctx.PreviousStep.ReservationId.Substring(0, 4), outcomes => outcomes // Use reservation prefix for branching
+                    .Case("CARD", cardPath => cardPath
                         .Step<SagaProcessPaymentAsyncActivity>(setup => setup
                             .Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.Amount)
                             .Input(act => act.PaymentMethod).From(ctx => "CreditCard")
@@ -919,17 +919,17 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
                             .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                             .Output(act => act.Step3Completed).To(ctx => ctx.WorkflowData.Step3Completed)))
                     
-                    .Outcome("CASH", cashPath => cashPath
+                    .Case("CASH", cashPath => cashPath
                         .Step<SagaCashPaymentAsyncActivity>(setup => setup
                             .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                             .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                             .Output(act => act.CashReceived).To(ctx => ctx.WorkflowData.CashReceived)
                             .Output(act => act.Step2Completed).To(ctx => ctx.WorkflowData.Step2Completed)))
                     
-                    .Outcome("CHCK", checkPath => checkPath
+                    .Case("CHCK", checkPath => checkPath
                         .Suspend<OrderConfirmationEvent>("Waiting for check clearance"))
                     
-                    .DefaultOutcome(defaultPath => defaultPath
+                    .Default(defaultPath => defaultPath
                         .Step<SagaLogUnknownPaymentAsyncActivity>(setup => setup
                             .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
                             .Output(act => act.LoggedUnknown).To(ctx => ctx.WorkflowData.LoggedUnknown))));
@@ -941,7 +941,7 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
             .Build();
 
         // Act
-        _output.WriteLine("TESTING: OutcomeOn pattern execution...");
+        _output.WriteLine("TESTING: Switch pattern execution...");
         _output.WriteLine($"PaymentMethod: {workflowData.PaymentMethod}");
 
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
@@ -965,13 +965,13 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
         Assert.NotEmpty(finished.TransactionId);
         Assert.True(finished.AnalyticsUpdated);
 
-        _output.WriteLine("OutcomeOn pattern executed successfully - Card branch selected");
+        _output.WriteLine("Switch pattern executed successfully - Card branch selected");
     }
 
     [Fact]
-    public async Task SagaExecution_OutcomeOnPattern_CheckPayment_ShouldSuspendForCheckClearance()
+    public async Task SagaExecution_SwitchPattern_CheckPayment_ShouldSuspendForCheckClearance()
     {
-        // Arrange - Test OutcomeOn pattern with CHECK payment method that should suspend
+        // Arrange - Test Switch pattern with CHECK payment method that should suspend
         var workflowData = new SagaTestData
         {
             OrderId = "OUTCOME-CHECK-001",
@@ -981,7 +981,7 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
         };
 
         var workflow = Workflow
-            .Create<SagaTestData>("OutcomeOnCheckSuspendTest")
+            .Create<SagaTestData>("SwitchCheckSuspendTest")
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
@@ -1000,8 +1000,8 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
                         comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
                     }))
 
-                .OutcomeOn(ctx => ctx.PreviousStep.ReservationId.Substring(0, 4), outcomes => outcomes // Use reservation prefix for branching
-                    .Outcome("CARD", cardPath => cardPath
+                .Switch(ctx => ctx.PreviousStep.ReservationId.Substring(0, 4), outcomes => outcomes // Use reservation prefix for branching
+                    .Case("CARD", cardPath => cardPath
                         .Step<SagaProcessPaymentAsyncActivity>(setup => setup
                             .Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.Amount)
                             .Input(act => act.PaymentMethod).From(ctx => "CreditCard")
@@ -1009,21 +1009,21 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
                             .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                             .Output(act => act.Step3Completed).To(ctx => ctx.WorkflowData.Step3Completed)))
                     
-                    .Outcome("CASH", cashPath => cashPath
+                    .Case("CASH", cashPath => cashPath
                         .Step<SagaCashPaymentAsyncActivity>(setup => setup
                             .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                             .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                             .Output(act => act.CashReceived).To(ctx => ctx.WorkflowData.CashReceived)
                             .Output(act => act.Step2Completed).To(ctx => ctx.WorkflowData.Step2Completed)))
                     
-                    .Outcome("CHCK", checkPath => checkPath
+                    .Case("CHCK", checkPath => checkPath
                         .Suspend<OrderConfirmationEvent>("Waiting for check clearance",
                             (evt, ctx) => evt.IsConfirmed,
                             setup => setup
                                 .Input(act => act.ConfirmedProductId).From(ctx => ctx.WorkflowData.ProductId)
                                 .Output(act => act.ConfirmedProductId).To(ctx => ctx.WorkflowData.SuspensionMessage)))
                     
-                    .DefaultOutcome(defaultPath => defaultPath
+                    .Default(defaultPath => defaultPath
                         .Step<SagaLogUnknownPaymentAsyncActivity>(setup => setup
                             .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
                             .Output(act => act.LoggedUnknown).To(ctx => ctx.WorkflowData.LoggedUnknown))));
@@ -1035,7 +1035,7 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
             .Build();
 
         // Act
-_output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend)...");
+_output.WriteLine("TESTING: Switch pattern with CHECK payment (should suspend)...");
         _output.WriteLine($"PaymentMethod: {workflowData.PaymentMethod}");
 
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
@@ -1064,7 +1064,7 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
         // Analytics should not have executed (workflow suspended)
         Assert.False(finished.AnalyticsUpdated, "Analytics should NOT run - workflow is suspended");
 
-        _output.WriteLine("OutcomeOn pattern suspended successfully - Check clearance branch selected");
+        _output.WriteLine("Switch pattern suspended successfully - Check clearance branch selected");
         
         // TEST INPUT MAPPING: Verify that input mapping worked during suspend
         // The suspend should have received the ProductId from workflow data as ConfirmedProductId
@@ -1107,7 +1107,7 @@ _output.WriteLine("TESTING: OutcomeOn pattern with CHECK payment (should suspend
         _output.WriteLine("SUSPEND/RESUME MAPPING TEST PASSED:");
         _output.WriteLine($"  - Input Mapping: ProductId '{finished.ProductId}' available to suspend step");
         _output.WriteLine($"  - Output Mapping: Event ConfirmedProductId '{confirmationEvent.ConfirmedProductId}' -> SuspensionMessage '{finalWorkflowData.SuspensionMessage}'");
-        _output.WriteLine("OutcomeOn pattern resumed and completed successfully");
+        _output.WriteLine("Switch pattern resumed and completed successfully");
     }
     
     public void Dispose()

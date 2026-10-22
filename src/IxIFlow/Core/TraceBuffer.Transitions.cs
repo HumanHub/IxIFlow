@@ -26,6 +26,14 @@ internal sealed partial class TraceBuffer
                 Payload = new ConditionTrace(_scopes!.Id(step), step.StepType, continuation.Id, index, scopeId, path) });
     }
 
+    public void Switch(WorkflowStep step, ContinuationState continuation, SwitchPath path, int? index, string? scopeId)
+    {
+        var now = _time.GetUtcNow().UtcDateTime;
+        if (Accepts(TraceEntryType.SwitchSelected, now))
+            Add(new ExecutionTraceEntry { Timestamp = now, EntryType = TraceEntryType.SwitchSelected,
+                Payload = new SwitchTrace(_scopes!.Id(step), continuation.Id, path, index, scopeId) });
+    }
+
     public void Join(WorkflowStep step, ContinuationState continuation, string joinId, JoinPath path)
     {
         var now = _time.GetUtcNow().UtcDateTime;

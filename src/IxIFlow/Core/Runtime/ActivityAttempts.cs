@@ -63,7 +63,7 @@ internal sealed class ActivityAttempts(
                 scopes, continuation, services);
             prepared = await _activities.PrepareAsync(step, definition, instance, checkpoint.DataOf(continuation),
                 continuation.GetPrevious(services),
-                TryScopeTransitions.CatchFault(checkpoint, continuation, services),
+                TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes),
                 activityCancellation.Token, invocationId, attempt.Id,
                 continuation.Stack[^1].NextStepIndex, !isRecovery && retryInputs == null,
                 (pending?.Inputs ?? retryInputs)?.CodeInputs,
@@ -263,7 +263,7 @@ internal sealed class ActivityAttempts(
         var subject = step.RequestSubject is { } describe
             ? ReplyToken.Digest(describe(WorkflowValueBinding.EvaluationContext(step, checkpoint.DataOf(continuation),
                 continuation.GetPrevious(services),
-                ForEachTransitions.ItemsOf(scopes, checkpoint, continuation))))
+                ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes))))
             : null;
         var wait = new WaitState
         {
@@ -388,7 +388,7 @@ internal sealed class ActivityAttempts(
         {
             var context = WorkflowValueBinding.EvaluationContext(step, checkpoint.DataOf(continuation),
                 continuation.GetPrevious(services),
-                ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+                ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes));
             using var childTypeScope = childDefinitionLease?.EnterTypes();
             var data = ChildInputs.NewData(childDefinition, step, context);
             var prepared = WorkflowInstances.Start(childDefinition, data, instance, pending.Id,

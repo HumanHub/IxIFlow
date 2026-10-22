@@ -46,9 +46,9 @@ definitions:
         event: IxIFlow.Generators.Tests.Answer
         timeout: '01:00:00'
         onTimeout: [{kind: activity, activity: IxIFlow.Generators.Tests.ParityEcho}]
-      - kind: outcome
+      - kind: switch
         value: {path: workflow.Selected}
-        branches: [{value: {kind: constant, value: true}, steps: []}]
+        cases: [{value: {kind: constant, value: true}, steps: []}]
         default: []
     onError:
       - exception: IxIFlow.Generators.Tests.ParityFailure

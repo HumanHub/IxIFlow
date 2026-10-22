@@ -8,7 +8,7 @@ namespace IxIFlow.Core.Runtime;
 /// <summary>Creates the suggestion once, before a wait is saved. Answers never use this value.</summary>
 internal static class WaitSuggestions
 {
-    public static StoredJson? Create(WorkflowStep step, object workflowData, object? previous, ItemValues? items = null)
+    public static StoredJson? Create(WorkflowStep step, object workflowData, object? previous, ItemValues? items = null, object? fault = null)
     {
         if (step.DefaultPayload == null && step.InputMappings.Count == 0)
             return null;
@@ -17,7 +17,7 @@ internal static class WaitSuggestions
         var payload = step.DefaultPayload == null
             ? Activator.CreateInstance(eventType)!
             : JsonSerializer.Deserialize(JsonSerializer.Serialize(step.DefaultPayload, eventType), eventType)!;
-        var values = new MappingContextValues(workflowData, previous);
+        var values = new MappingContextValues(workflowData, previous, fault);
         var mapped = new Dictionary<string, object?>();
         foreach (var mapping in step.InputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Input))
         {

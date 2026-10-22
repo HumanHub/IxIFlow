@@ -81,9 +81,13 @@ public sealed class FlowchartEdges<TData, TPrevious> where TPrevious : class
 
     /// <summary>Selects case labels using one pure evaluation per decision.</summary>
     public FlowchartCases<TData, TPrevious, TValue> Switch<TValue>(
-        Expression<Func<WorkflowContext<TData, TPrevious>, TValue>> switchExpression)
+        Expression<Func<WorkflowContext<TData, TPrevious>, TValue>> switchExpression,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
+        _decision.SourceLocation = sourcePath + ":" + sourceLine;
         var evaluate = switchExpression.Compile();
+        _decision.SwitchValueType = typeof(TValue);
+        _decision.SwitchEquals = (left, right) => EqualityComparer<TValue>.Default.Equals((TValue)left!, (TValue)right!);
         _decision.OutcomeExpression = switchExpression;
         _decision.OutcomeSelector = context => evaluate((WorkflowContext<TData, TPrevious>)context);
         return new(this);
@@ -124,7 +128,7 @@ public sealed class FlowchartCases<TData, TPrevious, TValue> where TPrevious : c
     private readonly FlowchartEdges<TData, TPrevious> _edges;
     internal FlowchartCases(FlowchartEdges<TData, TPrevious> edges) => _edges = edges;
 
-    /// <summary>Adds an edge matched with <see cref="object.Equals(object?, object?)"/>.</summary>
+    /// <summary>Adds an edge matched with the selector type's default equality comparer.</summary>
     public FlowchartCases<TData, TPrevious, TValue> Case(TValue value, string? to,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {

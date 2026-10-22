@@ -9,15 +9,22 @@ public sealed record GraphTableEntry(string CatalogId, WorkflowStepType Kind, st
 
 /// <summary>A keyed node or state and its entry, body and optional exit scope.</summary>
 public sealed record GraphNodeEntry(string Key, string EnterStepId, string Name, bool Final,
-    string? SourceLocation, string BodyScopeId, string? ExitScopeId);
+    string? SourceLocation, string BodyScopeId, string? ExitScopeId)
+{
+    public string? SelectorType { get; init; }
+}
 
 /// <summary>An ordered flowchart edge or state trigger with ordered cases.</summary>
 public sealed record GraphTransitionEntry(string? TriggerStepId, string From, TransitionCause Kind,
     string? Key, string? EventType, string? After, string? ActivityType, IReadOnlyList<GraphCaseEntry> Cases);
 
-/// <summary>A destination and its executable edge, guard, immutable JSON label snapshot and action metadata.</summary>
+/// <summary>A destination and its executable edge, guard, canonical JSON label descriptor and action metadata.</summary>
 public sealed record GraphCaseEntry(string EdgeStepId, string? To, int Order, bool Guarded,
-    object? Label, bool HasAction, string? SourceLocation);
+    object? Label, bool HasAction, string? SourceLocation)
+{
+    public string? LabelType { get; init; }
+    public string? LabelSignature { get; init; }
+}
 
 /// <summary>The flowcharts and state machines in one definition, including nested graphs.</summary>
 public sealed class GraphTable : IReadOnlyList<GraphTableEntry>
@@ -36,7 +43,8 @@ public sealed class GraphTable : IReadOnlyList<GraphTableEntry>
             {
                 var scope = catalog.NodeScope(graph, node.Key);
                 nodes.Add(new(node.Key, catalog.Id(node.Steps[0]), node.Name, false,
-                    node.Steps[0].SourceLocation, scope, null));
+                    node.Steps[0].SourceLocation, scope, null)
+                { SelectorType = node.Steps[^1].SwitchValueType is { } valueType ? WorkflowTypeIdentity.StableName(valueType) : null });
                 for (var i = 0; i < node.Edges.Count; i++)
                 {
                     var edge = node.Edges[i][0];
@@ -87,7 +95,11 @@ public sealed class GraphTable : IReadOnlyList<GraphTableEntry>
         {
             var edge = body[0];
             return new(catalog.Id(edge), edge.Target, order, edge.ConditionExpression != null,
-                edge.EdgeLabel == null ? null : WorkflowJson.SerializeToElement(edge.EdgeLabel), body.Count > 1, edge.SourceLocation);
+                edge.EdgeLabel == null ? null : WorkflowJson.SerializeToElement(SwitchLabelSignature.Of(edge.EdgeLabel)), body.Count > 1, edge.SourceLocation)
+            {
+                LabelType = WorkflowTypeIdentity.StableName(edge.EdgeLabel?.GetType()),
+                LabelSignature = edge.IsDefault ? null : SwitchLabelSignature.Of(edge.EdgeLabel)
+            };
         }
     }
 

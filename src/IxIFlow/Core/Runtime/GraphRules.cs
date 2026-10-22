@@ -45,7 +45,7 @@ internal static class GraphRules
             node.Steps[0].Name = node.Name;
             var decision = node.Steps[^1];
             decision.Id = author + "/decision";
-            var labels = new HashSet<object?>();
+            var labels = new List<object?>();
             for (var index = 0; index < node.Edges.Count; index++)
             {
                 if (node.Edges[index] is not [{ StepType: WorkflowStepType.Edge, Explicit: false } edge])
@@ -58,8 +58,9 @@ internal static class GraphRules
                 if (decision.OutcomeSelector != null && edge.CompiledCondition != null ||
                     decision.OutcomeSelector == null && edge.EdgeLabel != null)
                     throw WorkflowBuildError.Invalid(edge, "A node cannot mix guards and switch cases");
-                if (decision.OutcomeSelector != null && !edge.IsDefault && !labels.Add(edge.EdgeLabel))
-                    throw WorkflowBuildError.Invalid(edge, "A switch cannot repeat a case label");
+                if (decision.OutcomeSelector != null && !edge.IsDefault && labels.Any(label => decision.SwitchEquals!(label, edge.EdgeLabel)))
+                    throw WorkflowBuildError.Invalid(edge, "SWITCH003: a switch cannot repeat a case label");
+                if (decision.OutcomeSelector != null && !edge.IsDefault) labels.Add(edge.EdgeLabel);
             }
             foreach (var exit in Exits(node.Steps))
             {

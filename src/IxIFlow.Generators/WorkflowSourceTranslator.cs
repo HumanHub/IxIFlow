@@ -47,7 +47,7 @@ public static partial class WorkflowSourceTranslator
         if (diagnostic != null)
         {
             var location = DocumentModel.GetLocation(document, diagnostic.Path);
-            throw new WorkflowSourceException(diagnostic.Message, sourcePath, location.Line, location.Column);
+            throw new WorkflowSourceException((diagnostic.Code.StartsWith("SWITCH", StringComparison.Ordinal) ? diagnostic.Code + ": " : "") + diagnostic.Message, sourcePath, location.Line, location.Column);
         }
         return new Translation(document, sourcePath, options).Run();
     }
@@ -99,6 +99,7 @@ public static partial class WorkflowSourceTranslator
                     if (policy.Exception != null) yield return policy.Exception;
                 break;
             case WaitStepDocument wait: yield return wait.Event; break;
+            case SwitchStepDocument { ValueType: { } valueType }: yield return valueType; break;
             case InvokeWorkflowTypeStepDocument invocation:
                 yield return invocation.WorkflowType;
                 if (invocation.DataType != null) yield return invocation.DataType;
@@ -143,6 +144,7 @@ public static partial class WorkflowSourceTranslator
         private readonly Dictionary<string, string> _arguments = new(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _items = new(StringComparer.Ordinal);
         private string? _templatePrefix;
+        private readonly Stack<(string Owner, string Kind, string Type)> _faultBindings = new();
         private string _workflowRoot = "ctx.WorkflowData";
         private int _next;
         private string _previousRoot = "ctx.PreviousStep";
@@ -242,7 +244,7 @@ public static partial class WorkflowSourceTranslator
         }
 
         private string Steps(IEnumerable<WorkflowStepDocument> steps, string builder, string scope,
-            string previousType = "object", WorkflowDocumentScope builderScope = WorkflowDocumentScope.Workflow)
+            string previousType = "object", WorkflowDocumentScope builderScope = WorkflowDocumentScope.Workflow, bool faultExit = false)
         {
             var index = 0;
             foreach (var step in steps)
@@ -322,14 +324,12 @@ public static partial class WorkflowSourceTranslator
                         break;
                     case TryStepDocument attempt:
                         Try(attempt, builder, next, id, previousType);
-                        builderScope = WorkflowDocumentScope.Workflow;
                         break;
                     case SagaStepDocument saga:
                         Saga(saga, builder, next, id, previousType);
-                        builderScope = WorkflowDocumentScope.Workflow;
                         break;
-                    case OutcomeStepDocument outcome:
-                        Outcome(outcome, builder, next, id, previousType);
+                    case SwitchStepDocument outcome:
+                        Switch(outcome, builder, next, id, previousType, builderScope);
                         break;
                     case DelayStepDocument delay:
                         Locate(delay, "duration");
@@ -379,7 +379,9 @@ public static partial class WorkflowSourceTranslator
                 }
                 Line($"{next}.WithId({Quote(id)}, {Quote(path)}, {Math.Max(1, step.Location.Line)});");
                 if (step.Name != null) Line($"{next}.Named({Quote(step.Name)});");
-                builder = next;
+                // Try and Saga retain their incoming previous type. Their policy facets are not
+                // exit builders; keep the enclosing lexical callback for a subsequent body exit.
+                if (!faultExit || _faultBindings.Count == 0 || step is not (TryStepDocument or SagaStepDocument)) builder = next;
             }
             return builder;
         }
@@ -404,7 +406,7 @@ public static partial class WorkflowSourceTranslator
             var body = "body" + _next;
             Line($"var {next} = {builder}.ForEach(itemsExpression: ctx => {selector}, ({body}, {handle}) => {{");
             _items.Add(alias, handle);
-            var last = Steps(step.Steps, body, id + "/body", previousType);
+            var last = Steps(step.Steps, body, id + "/body", previousType, faultExit: true);
             if (step.Result is { } result)
             {
                 Locate(result);
@@ -495,6 +497,9 @@ public static partial class WorkflowSourceTranslator
             }
         }
 
+        private string Label(ExpressionDocument node) => node is ConstantExpressionDocument { Value: null } ? "null" :
+            "SwitchLabel.Value(() => " + Expression(node) + ")";
+
         private string Expression(ExpressionDocument node, string? eventName = null)
         {
             switch (node)
@@ -524,7 +529,7 @@ public static partial class WorkflowSourceTranslator
                 ? SyntaxFactory.Identifier(token.LeadingTrivia, "@event", token.TrailingTrivia) : token);
             var expression = SyntaxFactory.ParseExpression(string.Concat(tokens.Select(token => token.ToFullString())));
             if (expression.ContainsDiagnostics) throw Error(node, "Invalid C# expression: " + code);
-            return new ContextNames(_arguments, _items, eventName, _workflowRoot, _previousRoot, document.Workflow.DataType, options.Members).Visit(expression)!.NormalizeWhitespace().ToFullString();
+            return new ContextNames(_arguments, _items, _faultBindings.Count > 0, eventName, _workflowRoot, _previousRoot, document.Workflow.DataType, options.Members).Visit(expression)!.NormalizeWhitespace().ToFullString();
         }
 
         private string PayloadLiteral(object? value, DocumentNode node) => value switch
@@ -662,7 +667,9 @@ public static partial class WorkflowSourceTranslator
                 var caught = "caught" + ++_next;
                 Locate(handler);
                 Line($".Catch{FaultTypes(handler.Exception, handler.FaultType, handler)}({caught} => {{");
+                _faultBindings.Push((id + "/catches/" + index, "catch", handler.FaultType ?? "IxIFlow.Core.EmptyFault"));
                 Steps(handler.Steps, caught, id + "/catches/" + index, previousType, WorkflowDocumentScope.Catch);
+                _faultBindings.Pop();
                 Line($"}}, id: {(handler.Id == null ? "null" : Quote(handler.Id))})");
             }
             if (step.Finally != null)
@@ -700,7 +707,9 @@ public static partial class WorkflowSourceTranslator
                 var error = "error" + ++_next;
                 Locate(handler);
                 Line($".OnError{FaultTypes(handler.Exception, handler.FaultType, handler)}({error} => {{");
+                _faultBindings.Push((id + "/onError/" + index, "saga", handler.FaultType ?? "IxIFlow.Core.EmptyFault"));
                 var last = Steps(handler.Steps, error, id + "/onError/" + index, previousType, WorkflowDocumentScope.SagaHandler);
+                _faultBindings.Pop();
                 if (handler.Compensate != null || handler.CompensateUpTo != null)
                 {
                     Locate(handler, handler.CompensateUpTo != null ? "compensateUpTo" : "compensate");
@@ -726,26 +735,26 @@ public static partial class WorkflowSourceTranslator
             Line(";");
         }
 
-        private void Outcome(OutcomeStepDocument step, string builder, string next, string id, string previousType)
+        private void Switch(SwitchStepDocument step, string builder, string next, string id, string previousType, WorkflowDocumentScope builderScope)
         {
             var outcomes = "outcomes" + _next;
             Locate(step, "value");
-            Line($"var {next} = {builder}.OutcomeOn(ctx => {Expression(step.Value)}, {outcomes} => {{");
-            for (var index = 0; index < step.Branches.Count; index++)
+            Line($"var {next} = {builder}.Switch{(step.ValueType == null ? "" : "<" + Type(step.ValueType, step, "valueType") + ">")}(ctx => {Expression(step.Value)}, {outcomes} => {{");
+            for (var index = 0; index < step.Cases.Count; index++)
             {
-                var branch = step.Branches[index];
+                var branch = step.Cases[index];
                 var body = "outcome" + ++_next;
                 Locate(branch, "value");
-                Line($"{outcomes}.Outcome({Expression(branch.Value)}, {body} => {{");
-                Steps(branch.Steps, body, id + "/branches/" + index, previousType, WorkflowDocumentScope.Saga);
+                Line($"{outcomes}.Case({Label(branch.Value)}, {body} => {{");
+                Steps(branch.Steps, body, id + "/case/" + index, previousType, builderScope);
                 Line("});");
             }
             if (step.Default != null)
             {
                 var body = "defaultOutcome" + ++_next;
                 Locate(step, "default");
-                Line($"{outcomes}.DefaultOutcome({body} => {{");
-                Steps(step.Default, body, id + "/default", previousType, WorkflowDocumentScope.Saga);
+                Line($"{outcomes}.Default({body} => {{");
+                Steps(step.Default, body, id + "/default", previousType, builderScope);
                 Line("});");
             }
             Line("});");
@@ -759,7 +768,7 @@ public static partial class WorkflowSourceTranslator
             if (key.Length == 0) key = id;
             Locate(step, "event");
             Line($"var {next} = {builder}.{(named == null ? "Suspend" : "WaitFor")}<{eventType}>({Quote(key)}, " +
-                (step.ResumeCondition == null ? "null" : (named == null && scope != WorkflowDocumentScope.Catch ? "resumeExpression: " : "matchesExpression: ") +
+                (step.ResumeCondition == null ? "null" : (named == null && (scope == WorkflowDocumentScope.Saga || _faultBindings.Count == 0) ? "resumeExpression: " : "matchesExpression: ") +
                     "(evt, ctx) => " + Expression(step.ResumeCondition, "evt")) + ", configure: setup => {");
             if (step.DefaultPayload != null)
             {
@@ -777,7 +786,7 @@ public static partial class WorkflowSourceTranslator
                 var body = "timeout" + ++_next;
                 Locate(step, "onTimeout");
                 Line($"setup.OnTimeout({body} => {{");
-                Steps(step.OnTimeout, body, id + "/timeout", previousType);
+                Steps(step.OnTimeout, body, id + "/timeout", previousType, faultExit: true);
                 Line("});");
             }
             Line("});");
@@ -842,7 +851,7 @@ public static partial class WorkflowSourceTranslator
     }
 
     private sealed class ContextNames(IReadOnlyDictionary<string, string> arguments,
-        IReadOnlyDictionary<string, string> items, string? eventName, string workflowRoot, string previousRoot, string dataType, IDictionary<string, string> members) : CSharpSyntaxRewriter
+        IReadOnlyDictionary<string, string> items, bool hasFault, string? eventName, string workflowRoot, string previousRoot, string dataType, IDictionary<string, string> members) : CSharpSyntaxRewriter
     {
         public override SyntaxNode? VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
         {
@@ -859,7 +868,7 @@ public static partial class WorkflowSourceTranslator
             var replacement = name switch
             {
                 "workflow" => workflowRoot, "previousStep" => previousRoot,
-                "fault" => "ctx.Fault", "currentStep" => "ctx.CurrentStep",
+                "fault" => hasFault ? "ctx.Fault" : throw new InvalidOperationException("The fault root is outside its lexical scope"), "currentStep" => "ctx.CurrentStep",
                 "reply" => "ctx.Reply", "answered" => "ctx.Answered", "previousCompensation" => "ctx",
                 "event" => eventName ?? "ctx.ResumeEvent",
                 _ => items.TryGetValue(name, out var handle) ? "ctx.Item(" + handle + ")"

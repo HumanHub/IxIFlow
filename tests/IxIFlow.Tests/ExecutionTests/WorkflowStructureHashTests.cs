@@ -114,9 +114,9 @@ public sealed class WorkflowStructureHashTests
                 setup => setup.Parallel(2).WaitConditionally<int>(
                     (Expression<Func<Data, IReadOnlyList<ItemResult<int>>, bool>>)((_, results) => results.Count > threshold))
                     .Into(ctx => ctx.WorkflowData.Results)).Build(),
-            "outcome" => builder.Saga(saga => saga.Step<Activity>().OutcomeOn(
-                ctx => ctx.PreviousStep.Value + threshold, outcomes => outcomes.Outcome(1, body => body.Step<Activity>())
-                    .DefaultOutcome(body => body.Step<Activity>()))).Build(),
+            "outcome" => builder.Saga(saga => saga.Step<Activity>().Switch(
+                ctx => ctx.PreviousStep.Value + threshold, outcomes => outcomes.Case(1, body => body.Step<Activity>())
+                    .Default(body => body.Step<Activity>()))).Build(),
             "saga-wait" => builder.Saga(saga => saga.Step<Activity>()
                 .WaitFor<Answer>("answer", (_, ctx) => ctx.WorkflowData.Total > threshold)).Build(),
             "saga-request" => builder.Saga(saga => saga.Request<Question>("question",

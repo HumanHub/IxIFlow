@@ -38,10 +38,10 @@ definitions:
         id: work
         activity: IxIFlow.Generators.Tests.ParityWork
         compensation: [{activity: IxIFlow.Generators.Tests.ParityUndo}]
-      - kind: outcome
+      - kind: switch
         id: outcome
         value: {path: workflow.Selected}
-        branches:
+        cases:
           - value: {kind: constant, value: true}
             steps: []
         default: []

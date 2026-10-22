@@ -97,3 +97,5 @@ The activities expose designer IDs as catalog metadata. A consuming editor provi
 An answer that must not reach the wrong wait goes through `IWorkflowClient.ReplyAsync(token, answer)`. The token comes from `IActivityContext.Reply` in a request activity, or from `GetOpenWaitsAsync` for a wait without a request.
 
 Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in `IxIFlow.Core`. `RegisterWorkflow<TWorkflow,TData>()` and `Invoke<TWorkflow,TData>(setup)` read it from the type without constructing the class to discover identity; missing attributes are refused. Typed YAML children need only `workflowType`, with no duplicate name/version field.
+
+[SwitchRouting.cs](IxIFlow.Samples/SwitchRouting.cs) and its [YAML twin](IxIFlow.Samples/Definitions/switch-routing.workflow.yaml) select shipping, hold or manual-review bodies with one typed selector. Both compile to the same structure and routing behavior.

@@ -2,12 +2,12 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public sealed partial class ChildScopeBaselineTests
 {
-    // Recaptured from the built fixture after checkpoint contract 8 / structure hash format 4.
+    // Recaptured from the built fixture after checkpoint contract 9 / structure hash format 5.
     private const string MainBaseline = """
         [
           {
             "Name": "Empty",
-            "Hash": "95F528CFA3E0F4ECD03E67502C487729253DF90C5130552C86335CA898DC0122",
+            "Hash": "E4097440BFD9D23A724FD25F3C3C85134DA73858E4732C4D47B6DA454E4EF36E",
             "ScopeIds": [
               "root"
             ],
@@ -15,7 +15,7 @@ public sealed partial class ChildScopeBaselineTests
           },
           {
             "Name": "Every step",
-            "Hash": "01C4E02E0EE49344A036420606EBC0A48E4426111940949ED8F46039AC414942",
+            "Hash": "BC49D613BDC6AF64465D72F754092BCA3EBA3F7CF6979494023C1C5C6FA259B8",
             "ScopeIds": [
               "root",
               "root/0/sequence",
@@ -202,7 +202,15 @@ public sealed partial class ChildScopeBaselineTests
               "root/22/foreach",
               "root/22/finally",
               "root/22/timeout",
-              "root/22/catch"
+              "root/22/catch",
+              "root/23/sequence",
+              "root/23/then",
+              "root/23/else",
+              "root/23/loop",
+              "root/23/foreach",
+              "root/23/finally",
+              "root/23/timeout",
+              "root/23/catch"
             ],
             "StepIds": [
               "root/0",
@@ -227,12 +235,13 @@ public sealed partial class ChildScopeBaselineTests
               "root/19",
               "root/20",
               "root/21",
-              "root/22"
+              "root/22",
+              "root/23"
             ]
           },
           {
             "Name": "Nested bodies",
-            "Hash": "E478263794D543BA8500E65EDD49CD0AD7D8F80815499897E2C2987F46591087",
+            "Hash": "663DABD3A8101486F8831CC883A2EB0A845C053FA1F997CB6A2B37CDE5EA8225",
             "ScopeIds": [
               "root",
               "root/0/sequence",
@@ -368,16 +377,16 @@ public sealed partial class ChildScopeBaselineTests
               "root/0/sequence/0/branch/2/0/sequence/0/finally",
               "root/0/sequence/0/branch/2/0/sequence/0/timeout",
               "root/0/sequence/0/branch/2/0/sequence/0/catch",
-              "root/0/sequence/0/branch/2/0/sequence/0/outcome/0",
-              "root/0/sequence/0/branch/2/0/sequence/0/outcome/0/0/sequence",
-              "root/0/sequence/0/branch/2/0/sequence/0/outcome/0/0/then",
-              "root/0/sequence/0/branch/2/0/sequence/0/outcome/0/0/else",
-              "root/0/sequence/0/branch/2/0/sequence/0/outcome/0/0/loop",
-              "root/0/sequence/0/branch/2/0/sequence/0/outcome/0/0/foreach",
-              "root/0/sequence/0/branch/2/0/sequence/0/outcome/0/0/finally",
-              "root/0/sequence/0/branch/2/0/sequence/0/outcome/0/0/timeout",
-              "root/0/sequence/0/branch/2/0/sequence/0/outcome/0/0/catch",
-              "root/0/sequence/0/branch/2/0/sequence/0/outcome/1",
+              "root/0/sequence/0/branch/2/0/sequence/0/case/0",
+              "root/0/sequence/0/branch/2/0/sequence/0/case/0/0/sequence",
+              "root/0/sequence/0/branch/2/0/sequence/0/case/0/0/then",
+              "root/0/sequence/0/branch/2/0/sequence/0/case/0/0/else",
+              "root/0/sequence/0/branch/2/0/sequence/0/case/0/0/loop",
+              "root/0/sequence/0/branch/2/0/sequence/0/case/0/0/foreach",
+              "root/0/sequence/0/branch/2/0/sequence/0/case/0/0/finally",
+              "root/0/sequence/0/branch/2/0/sequence/0/case/0/0/timeout",
+              "root/0/sequence/0/branch/2/0/sequence/0/case/0/0/catch",
+              "root/0/sequence/0/branch/2/0/sequence/0/default",
               "root/0/sequence/0/branch/2/0/sequence/1/sequence",
               "root/0/sequence/0/branch/2/0/sequence/1/then",
               "root/0/sequence/0/branch/2/0/sequence/1/else",
@@ -426,7 +435,7 @@ public sealed partial class ChildScopeBaselineTests
               "root/0/sequence/0/branch/2/0/compensation/root/0/sequence/0/branch/2/0/sequence/0/1/finally",
               "root/0/sequence/0/branch/2/0/compensation/root/0/sequence/0/branch/2/0/sequence/0/1/timeout",
               "root/0/sequence/0/branch/2/0/compensation/root/0/sequence/0/branch/2/0/sequence/0/1/catch",
-              "root/0/sequence/0/branch/2/0/compensation/root/0/sequence/0/branch/2/0/sequence/0/outcome/0/0",
+              "root/0/sequence/0/branch/2/0/compensation/root/0/sequence/0/branch/2/0/sequence/0/case/0/0",
               "root/0/then",
               "root/0/else",
               "root/0/loop",
@@ -454,7 +463,7 @@ public sealed partial class ChildScopeBaselineTests
               "root/0/sequence/0/branch/0/0/catch/1",
               "root/0/sequence/0/branch/2/0",
               "root/0/sequence/0/branch/2/0/sequence/0",
-              "root/0/sequence/0/branch/2/0/sequence/0/outcome/0/0",
+              "root/0/sequence/0/branch/2/0/sequence/0/case/0/0",
               "root/0/sequence/0/branch/2/0/sequence/1",
               "root/0/sequence/0/branch/2/0/catch/0",
               "root/0/sequence/0/branch/2/0/catch/0/sequence/0",

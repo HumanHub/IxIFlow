@@ -6,6 +6,7 @@ using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Operations;
+using Microsoft.CodeAnalysis.FlowAnalysis;
 
 namespace IxIFlow.Analyzers;
 
@@ -16,7 +17,7 @@ namespace IxIFlow.Analyzers;
 /// functions are followed where they are called, not where they are declared. What a member leads to is kept per
 /// compilation; a chain deeper than <see cref="MaxDepth"/> is not followed.
 /// </summary>
-internal sealed class WorkflowCode(Compilation compilation, System.Func<ISymbol, string?>? additionalImpurity = null)
+internal sealed partial class WorkflowCode(Compilation compilation, System.Func<ISymbol, string?>? additionalImpurity = null)
 {
     private const int MaxDepth = 32;
 
@@ -41,7 +42,12 @@ internal sealed class WorkflowCode(Compilation compilation, System.Func<ISymbol,
             : null;
         Walk(code, assigned, new HashSet<ISymbol>(SymbolEqualityComparer.Default), (use, member) =>
         {
-            uses.Add((use, member));
+            // Lowered operations lack source parents and a semantic model. Keep the
+            // authored operation for diagnostics whose fixes need the lexical context.
+            var source = use.SemanticModel == null ? Model(use.Syntax.SyntaxTree).GetOperation(use.Syntax, cancellation) : use;
+            // Compiler-generated references can share syntax with an initializer or
+            // statement; retain those references for the caller's member rules.
+            uses.Add((source != null && source.Kind == use.Kind ? source : use, member));
             return false;
         }, cancellation, out _);
         return uses;
@@ -61,12 +67,18 @@ internal sealed class WorkflowCode(Compilation compilation, System.Func<ISymbol,
         System.Func<IOperation, string, bool> note, CancellationToken cancellation, out bool truncated)
     {
         truncated = false;
-        var pending = new Stack<IOperation>();
-        pending.Push(operation);
+        var pending = new Stack<(IOperation Operation, ControlFlowGraph? Graph)>();
+        if (assigned == null && MutationGraph(operation, cancellation) is { } lowered) PushGraph(lowered);
+        else pending.Push((operation, null));
         while (pending.Count > 0)
         {
             cancellation.ThrowIfCancellationRequested();
-            var each = pending.Pop();
+            var (each, graph) = pending.Pop();
+            if (each is IFlowAnonymousFunctionOperation anonymous && graph != null)
+            {
+                PushGraph(graph.GetAnonymousFunctionControlFlowGraph(anonymous, cancellation));
+                continue;
+            }
             if (each is INameOfOperation or ITypeOfOperation || each is ILocalFunctionOperation && each != operation)
                 continue;
             string? member = null;
@@ -79,48 +91,36 @@ internal sealed class WorkflowCode(Compilation compilation, System.Func<ISymbol,
                     return;
                 continue;
             }
-            foreach (var child in each.ChildOperations.Reverse())
-                pending.Push(child);
+            if (each is IObjectCreationOperation { Initializer: { } initializer }) pending.Push((initializer, graph));
+            foreach (var step in AllSteps(MethodSteps(each)).Reverse())
+                if (step.Value != null) pending.Push((step.Value, graph));
+        }
+
+        void PushGraph(ControlFlowGraph graph)
+        {
+            // Lowering exposes the compiler's actual implicit operator/accessor calls,
+            // including the true/false calls of conditional logical operators.
+            foreach (var block in graph.Blocks.Reverse())
+            {
+                if (block.BranchValue != null) pending.Push((block.BranchValue, graph));
+                foreach (var statement in block.Operations.Reverse()) pending.Push((statement, graph));
+            }
         }
     }
 
     // The members an operation runs or uses: what it calls, reads, sets or creates, and the operator it applies.
-    private static IEnumerable<ISymbol> Targets(IOperation operation, IOperation? assigned)
+    private IEnumerable<ISymbol> Targets(IOperation operation, IOperation? assigned)
     {
-        switch (operation)
+        if (operation is IMemberReferenceOperation member)
+            yield return member.Member is IMethodSymbol method ? ResolveImplementation(method, member.Instance) : member.Member;
+        if (operation == assigned && operation is IPropertyReferenceOperation property &&
+            !property.Property.ReturnsByRef && !property.Property.ReturnsByRefReadonly)
         {
-            case IInvocationOperation invocation:
-                yield return invocation.TargetMethod;
-                break;
-            case IObjectCreationOperation { Constructor: { } constructor }:
-                yield return constructor;
-                break;
-            case IPropertyReferenceOperation property:
-                yield return property.Property;
-                var set = operation == assigned ||
-                          property.Parent is IAssignmentOperation assignment && assignment.Target == property;
-                if ((set ? property.Property.SetMethod : property.Property.GetMethod) is { } accessor)
-                    yield return accessor;
-                break;
-            case IMemberReferenceOperation member:
-                yield return member.Member;
-                break;
-            case IBinaryOperation { OperatorMethod: { } binary }:
-                yield return binary;
-                break;
-            case IUnaryOperation { OperatorMethod: { } unary }:
-                yield return unary;
-                break;
-            case IIncrementOrDecrementOperation { OperatorMethod: { } step }:
-                yield return step;
-                break;
-            case ICompoundAssignmentOperation { OperatorMethod: { } compound }:
-                yield return compound;
-                break;
-            case IConversionOperation { OperatorMethod: { } conversion }:
-                yield return conversion;
-                break;
+            if (property.Property.SetMethod != null) yield return ResolveImplementation(property.Property.SetMethod, property.Instance);
+            yield break;
         }
+        foreach (var step in AllSteps(MethodSteps(operation)))
+            if (step.Method != null) yield return step.Method;
     }
 
     // The impure member a member of this compilation leads to, named with the member; none for other members.

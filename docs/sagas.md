@@ -32,7 +32,7 @@ If the selected activity never completed, the up-to policy undoes all completed 
 | `ThenContinue()` | Continue after the saga once compensation succeeds |
 | `ThenContinue(ignoreCompensationErrors: true)` | Continue even when compensation reported errors |
 | `ThenTerminate()` | Raise `SagaTerminatedException`, which an enclosing catch may handle; an unhandled policy termination ends the instance as `Terminated` |
-| `ThenRetry(count)` or `ThenRetry(policy)` | `Compensate()` restarts the saga from its first step, re-evaluating `OutcomeOn`; `CompensateUpTo<TActivity>()` restarts at that activity if it completed, otherwise at the saga's first step; `CompensateNone()` restarts at the failed step |
+| `ThenRetry(count)` or `ThenRetry(policy)` | `Compensate()` restarts the saga from its first step, re-evaluating `Switch`; `CompensateUpTo<TActivity>()` restarts at that activity if it completed, otherwise at the saga's first step; `CompensateNone()` restarts at the failed step |
 | No continuation | Rethrow the original error after the selected undo |
 
 A compensation failure ends as `SagaTerminatedException` after remaining compensation work has been attempted. Exhausted saga retries and a failing retry-handler body also terminate the saga. When retry can no longer proceed because its budget is exhausted, cleanup failed or cancellation intervened, retained steps are undone too. Build rules reject continuation/termination policies that would keep a request whose answer the saga has not read.
@@ -45,11 +45,11 @@ An activity-level saga `OnError` uses the first matching handler. `ThenRetry` re
 
 [RetryQuote.cs](../samples/IxIFlow.Samples/RetryQuote.cs) demonstrates a single-step retry, including `context.Attempt.Number`, earlier errors/notes and distinct attempt IDs. [Payments.cs](../samples/IxIFlow.Recipes/Payments.cs) demonstrates a saga retry with compensation.
 
-## Faults, outcomes and saved progress
+## Faults, switches and saved progress
 
 Typed `OnError<TException,TFault>` handlers project readable exception properties into a durable DTO with matching names/types. Handler mappings use `ctx.Fault`, plus workflow and previous-step data. The exception object itself is not the persisted contract.
 
-A saga uses `OutcomeOn(selector, configure)` to select a typed value, with `Outcome(value, body)` branches and an optional `DefaultOutcome(body)`. The first equal label wins; no match without a default raises `InvalidOperationException` through saga failure handling. Outcome selectors follow the same purity rules as other control flow.
+A saga uses `Switch(selector, configure)` to select a typed value, with `Case(value, body)` branches and an optional `Default(body)`. Labels use `EqualityComparer<TValue>.Default`; duplicate labels are build errors. With no matching case and no default, execution continues after the switch. Selectors follow the same purity rules as other control flow. Case bodies retain compensation registration, and retries inside a case restore its saved position and incoming previous value.
 
 Handler position, accepted events, fault data, completed forward results and compensation progress survive waits and recovery. A resumed handler continues after its saved wait. Retries preserve kept work and replay eligible saved wait outcomes; newly executed requests get the appropriate new activation.
 

@@ -69,7 +69,7 @@ All steps accept `id`; `name` is accepted only in workflow-scope bodies. A name 
 | `result` | `value` ends a result-producing ForEach body path, including timeout paths leaving it |
 | `try` | Body `steps`, ordered `catches`, optional `finally`; catches may specify `exception`, `faultType`, `id`, `steps` |
 | `saga` | Saga `steps` and ordered `onError` handlers |
-| `outcome` | Saga `value` selector, ordered `branches` with label `value` and `steps`, optional `default` steps |
+| `switch` | Typed `value` selector, optional `valueType`, ordered `cases` with label `value` and `steps`, optional `default` steps |
 | `delay` | Positive invariant TimeSpan `duration`; preserves previous-step value |
 | `request` | Activity members plus required `key` and optional `subject`; opens a request reply slot |
 | `waitFor` | Required `key` and `event`; plain event wait or the paired request's reply wait |
@@ -77,7 +77,7 @@ All steps accept `id`; `name` is accepted only in workflow-scope bodies. A name 
 | `invokeWorkflow` | `workflow: { name, version? }`, `input`, `output`, optional `cancelWithParent` (true by default); publishing resolves catalog versions and contracts; local source generation requires an explicit version of another document in the compilation |
 | `invokeWorkflowType` | `workflowType`, optional `dataType` fallback, mappings and `cancelWithParent`; the generator reads the class's `[Workflow("Name", Version = n)]` identity; register the class with `services.RegisterWorkflow<TWorkflow>()` before building the service provider |
 
-The schema describes possible nodes; shared builder rules also enforce where constructs are legal. Saga bodies accept activities/references, requests, waits and outcomes. Saga handlers accept ordinary activities/references and `waitFor`; catch bodies exclude requests, delays, results and outcomes. Timeout paths and result-producing lists retain the fluent API's scope restrictions. Use `name` for a step label; descriptions belong to the workflow.
+The schema describes possible nodes; shared builder rules also enforce where constructs are legal. Saga bodies accept activities/references, requests, waits and switches. Saga handlers accept ordinary activities/references, `waitFor` and switches; catch bodies retain a lexical fault binding through their nested callbacks. Timeout paths and result-producing lists retain the fluent API's scope restrictions. Use `name` for a step label; descriptions belong to the workflow.
 
 Plain and request waits accept `resumeCondition`, `input`, `output`, `defaultPayload`, positive `timeout` and `onTimeout` steps. A default payload is suggested discovery data, not an automatic reply. `timeout` and a nonempty `onTimeout` must be supplied together; the timeout path exits the containing body. `defaultPayload` accepts scalar, list or object literals shaped for the event type. When a wait opens, its pure `input` mappings read the workflow data and previous step, overlay `defaultPayload` (or a new event instance), and save the result as the suggested payload. Recovery and replay use the saved suggestion. Only the submitted event supplies the answer; suggestions never fill in an answer. For request replies, the token is reserved before the request runs; the suggestion is computed when execution reaches `waitFor`, using the completed previous step. Pair requests and reply waits by key in the same body; a plain `suspend` is not a request pairing.
 
@@ -200,3 +200,33 @@ Call input precedence is explicit mapping, then `[DefaultValue]`, then construct
 `WorkflowPublisher` in `IxIFlow.Authoring` publishes YAML drafts with pinned package and workflow imports as verified bundles. It validates, translates and compiles the draft, then calls the generated `Build()` in the publishing process, inside a collectible scratch load context on a dedicated background thread. `WorkflowPublisherOptions.BuildTimeout` defaults to 30 seconds. If the build exceeds that deadline, publication fails with a build-timeout diagnostic and uploads nothing. The thread cannot be stopped: a warning reports that it and its scratch load context are abandoned until the process restarts. Supply an `ILogger<WorkflowPublisher>` to capture these warnings. A completed build is validated before its scratch context is unloaded and its bundle is uploaded and published against the draft revision.
 
 See the [generator guide](../src/IxIFlow.Generators/README.md) for custom filenames, opt-out, MSBuild metadata and explicit project references. Host bundle loading and activity-package dependency resolution and pinning are implemented (see the README's publishing section). YAML inline workflow calls and YAML-defined code activities remain planned. Application hosting, store choice, publishers and client calls use C# configuration.
+
+<!-- snippet: samples/IxIFlow.Samples/Definitions/switch-routing.workflow.yaml -->
+```yaml
+workflow: {name: SwitchRouting, dataType: IxIFlow.Samples.RoutingData}
+definitions:
+  - kind: switch
+    id: route
+    valueType: string
+    value: {path: workflow.Route}
+    cases:
+      - value: {kind: constant, value: ship}
+        steps:
+          - kind: activity
+            activity: samples.label
+            input: [{target: Value, from: {kind: constant, value: shipping}}]
+            output: [{source: Value, to: {path: workflow.Result}}]
+      - value: {kind: constant, value: hold}
+        steps:
+          - kind: activity
+            activity: samples.label
+            input: [{target: Value, from: {kind: constant, value: on hold}}]
+            output: [{source: Value, to: {path: workflow.Result}}]
+    default:
+      - kind: activity
+        activity: samples.label
+        input: [{target: Value, from: {kind: constant, value: manual review}}]
+        output: [{source: Value, to: {path: workflow.Result}}]
+```
+
+Case labels are constant expressions or named `csharp-expression` assets evaluated at definition build, with no workflow, previous, item or fault context. Use `valueType` for ambiguous null/base-type selectors; typed enum, decimal and supported struct labels can use code assets. An explicitly empty `default: []` is retained. An absent default means no-match continues normally. Build reports `SWITCH001` for a missing selector, `SWITCH002` for an incompatible label/type, `SWITCH003` for duplicate cases/defaults and `SWITCH004` for unsupported or incomplete label state. Existing purity diagnostics apply to selectors and label expressions. See [Switch bodies](fluent-api.md#switch-bodies) for equality, label-state and recovery rules.

@@ -51,6 +51,7 @@ public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPrevio
     where TPreviousStepData : class
 {
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
+    internal WorkflowStep Step => _step;
 
     /// <inheritdoc/>
     public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> CancelWithParent(bool cancel)

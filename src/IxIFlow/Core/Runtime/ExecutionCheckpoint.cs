@@ -815,7 +815,7 @@ internal sealed class ActivityInputValue
         problem.GetBaseException().Message, problem);
 }
 
-internal enum FrameKind { Body, Item, Node, Edge, State, StateExit, Transition, Case, Run, Listen, Inline }
+internal enum FrameKind { Body, Item, Node, Edge, State, StateExit, Transition, Case, Run, Listen, Inline, SwitchCase }
 
 internal sealed class GraphState
 {
@@ -1052,6 +1052,7 @@ internal sealed class SagaReply
 /// <summary>A saga frame as it was entered: enough to push it again at a restart point.</summary>
 internal sealed class SagaFrameRecord
 {
+    public FrameKind Kind { get; set; }
     public string ScopeId { get; set; } = "";
 
     /// <summary>The frame it was pushed from, and that frame's step index then; none for the saga body.</summary>

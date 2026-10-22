@@ -35,7 +35,10 @@ public interface IWorkflowDocumentValidator
     Task<WorkflowValidationResult> ValidateAsync(WorkflowDocument document, IWorkflowValidationContext context, CancellationToken cancellationToken = default);
 }
 
+internal sealed record DocumentFaultBinding(string OwnerPath, string Kind, string Type);
+
 internal enum WorkflowDocumentScope { Workflow, Catch, Saga, SagaHandler }
+internal enum FaultBodyExit { None, Result, Timeout }
 
 public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidator
 {
@@ -89,11 +92,6 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             await ValidateActivityTemplateAsync(activityTemplate.Key, activityTemplate.Value, document, diagnostics, context, cancellationToken);
         }
 
-        foreach (var stepTemplate in document.Steps)
-        {
-            await ValidateStepsAsync(stepTemplate.Value.Steps, $"steps.{stepTemplate.Key}.steps", document, diagnostics, context, cancellationToken, stepTemplate.Value.Parameters.Keys);
-        }
-
         await ValidateStepsAsync(document.Definitions, "definitions", document, diagnostics, context, cancellationToken);
         ValidateGraphPlacement(document.Definitions, "definitions", document, diagnostics, null, false, false, []);
 
@@ -108,21 +106,29 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
         IWorkflowValidationContext context,
         CancellationToken cancellationToken,
         IReadOnlyCollection<string>? aliases = null,
-        WorkflowDocumentScope scope = WorkflowDocumentScope.Workflow)
+        WorkflowDocumentScope scope = WorkflowDocumentScope.Workflow,
+        IReadOnlyList<DocumentFaultBinding>? faultBindings = null,
+        ISet<string>? expandingTemplates = null,
+        FaultBodyExit faultExit = FaultBodyExit.None)
     {
+        faultBindings ??= [];
+        expandingTemplates ??= new HashSet<string>(StringComparer.Ordinal);
         aliases ??= [];
+        aliases = aliases.Where(alias => alias != "fault").Concat(faultBindings.Count > 0 ? new[] { "fault" } : Array.Empty<string>()).ToArray();
         var inputRoots = new[] { "workflow", "previousStep" }.Concat(aliases).ToArray();
         for (var index = 0; index < steps.Count; index++)
         {
             var step = steps[index];
             var stepPath = $"{pathPrefix}[{index}]";
 
-            if (!Supports(scope, step))
+            if (!Supports(scope, step) || faultBindings.Count > 0 &&
+                (step is ResultStepDocument && faultExit == FaultBodyExit.None ||
+                 step is TransitionStepDocument && faultExit != FaultBodyExit.Timeout))
             {
                 diagnostics.Add(new("SCOPE001", $"{step.Kind} is not offered by the {scope} fluent builder", WorkflowDiagnosticSeverity.Error, stepPath));
                 continue;
             }
-            if (step.Name != null && scope != WorkflowDocumentScope.Workflow)
+            if (step.Name != null && scope is WorkflowDocumentScope.Saga or WorkflowDocumentScope.SagaHandler)
                 diagnostics.Add(new("SCOPE002", $"Named is not offered by the {scope} fluent builder", WorkflowDiagnosticSeverity.Error, $"{stepPath}.name"));
 
             switch (step)
@@ -133,7 +139,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     await ValidateGraphAsync(step, stepPath, document, diagnostics, context, cancellationToken, aliases);
                     foreach (var child in step.GraphChildScopes())
                         await ValidateStepsAsync(child.Steps, stepPath + child.Path, document,
-                            diagnostics, context, cancellationToken, aliases);
+                            diagnostics, context, cancellationToken, aliases, faultBindings: faultBindings, expandingTemplates: expandingTemplates);
                     break;
                 case ParallelStepDocument parallelStep:
                 {
@@ -143,14 +149,14 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     ValidateCombiners(parallelStep.Combine, stepPath + ".combine", diagnostics);
                     if (parallelStep.Branches != null)
                         foreach (var child in parallelStep.ChildScopes())
-                            await ValidateStepsAsync(child.Steps, $"{stepPath}.branches[{child.Key}].steps", document, diagnostics, context, cancellationToken, aliases);
+                            await ValidateStepsAsync(child.Steps, $"{stepPath}.branches[{child.Key}].steps", document, diagnostics, context, cancellationToken, aliases, faultBindings: faultBindings, expandingTemplates: expandingTemplates);
                     break;
                 }
                 case LoopStepDocument loop:
                 {
                     ValidateExpression(loop.Condition, diagnostics, stepPath + ".condition", inputRoots, document.Code);
                     foreach (var child in loop.ChildScopes())
-                        await ValidateStepsAsync(child.Steps, stepPath + ".steps", document, diagnostics, context, cancellationToken, aliases);
+                        await ValidateStepsAsync(child.Steps, stepPath + ".steps", document, diagnostics, context, cancellationToken, aliases, faultBindings: faultBindings, expandingTemplates: expandingTemplates);
                     break;
                 }
                 case TryStepDocument attempt:
@@ -164,10 +170,10 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                             var handler = attempt.Catches[int.Parse(child.Key!, System.Globalization.CultureInfo.InvariantCulture)];
                             var handlerPath = $"{stepPath}.catches[{child.Key}]";
                             Fault(handler.Exception, handler.FaultType, handlerPath, diagnostics);
-                            await ValidateStepsAsync(child.Steps, handlerPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Catch);
+                            await ValidateStepsAsync(child.Steps, handlerPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Catch, faultBindings: faultBindings.Concat(new[] { new DocumentFaultBinding(handlerPath, "catch", handler.FaultType ?? "IxIFlow.Core.EmptyFault") }).ToArray(), expandingTemplates: expandingTemplates);
                         }
                         else
-                            await ValidateStepsAsync(child.Steps, stepPath + (child.Kind == "finally" ? ".finally" : ".steps"), document, diagnostics, context, cancellationToken, aliases);
+                            await ValidateStepsAsync(child.Steps, stepPath + (child.Kind == "finally" ? ".finally" : ".steps"), document, diagnostics, context, cancellationToken, aliases, faultBindings: faultBindings, expandingTemplates: expandingTemplates);
                     }
                     break;
                 }
@@ -177,7 +183,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     {
                         if (child.Kind == "sequence")
                         {
-                            await ValidateStepsAsync(child.Steps, stepPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Saga);
+                            await ValidateStepsAsync(child.Steps, stepPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Saga, faultBindings: faultBindings, expandingTemplates: expandingTemplates);
                             continue;
                         }
                         var handler = saga.OnError[int.Parse(child.Key!, System.Globalization.CultureInfo.InvariantCulture)];
@@ -199,24 +205,45 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                         if (handler.IgnoreCompensationErrors && handler.Then != "continue")
                             Invalid("SAGA004", "ignoreCompensationErrors is available only for continue", handlerPath + ".ignoreCompensationErrors", diagnostics);
                         if (handler.Retry != null) ValidateRetry(handler.Retry, handlerPath + ".retry", diagnostics);
-                        await ValidateStepsAsync(child.Steps, handlerPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.SagaHandler);
+                        await ValidateStepsAsync(child.Steps, handlerPath + ".steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.SagaHandler, faultBindings: faultBindings.Concat(new[] { new DocumentFaultBinding(handlerPath, "saga", handler.FaultType ?? "IxIFlow.Core.EmptyFault") }).ToArray(), expandingTemplates: expandingTemplates);
                     }
                     break;
                 }
-                case OutcomeStepDocument outcome:
+                case SwitchStepDocument outcome:
                 {
+                    if (HasMissingMember(stepPath + ".value", diagnostics))
+                        Invalid("SWITCH001", "Switch requires a value selector", stepPath + ".value", diagnostics);
+                    if (outcome.ValueType != null && Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseTypeName(outcome.ValueType).ContainsDiagnostics)
+                        Invalid("SWITCH002", "Invalid selector valueType", stepPath + ".valueType", diagnostics);
+                    if (outcome.ValueType == null && outcome.Value is ConstantExpressionDocument { Value: null } && !HasMissingMember(stepPath + ".value", diagnostics))
+                        Invalid("SWITCH001", "A null selector requires an explicit valueType", stepPath + ".valueType", diagnostics);
                     ValidateExpression(outcome.Value, diagnostics, stepPath + ".value", inputRoots, document.Code);
-                    foreach (var child in outcome.ChildScopes())
+                    for (var caseIndex = 0; caseIndex < outcome.Cases.Count; caseIndex++)
                     {
-                        var childIndex = int.Parse(child.Key!, System.Globalization.CultureInfo.InvariantCulture);
-                        if (childIndex < outcome.Branches.Count)
+                        var arm = outcome.Cases[caseIndex];
+                        var labelPath = $"{stepPath}.cases[{caseIndex}].value";
+                        ValidateExpression(arm.Value, diagnostics, labelPath, [], document.Code);
+                        if (arm.Value is ConstantExpressionDocument constant)
                         {
-                            ValidateExpression(outcome.Branches[childIndex].Value, diagnostics, $"{stepPath}.branches[{child.Key}].value", [], document.Code);
-                            await ValidateStepsAsync(child.Steps, $"{stepPath}.branches[{child.Key}].steps", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Saga);
+                            var selectorType = outcome.ValueType ?? (outcome.Value is ConstantExpressionDocument selected ? ScalarType(selected.Value) : null);
+                            if (selectorType != null && !ScalarFits(selectorType, constant.Value))
+                                Invalid("SWITCH002", "Case value is incompatible with selector valueType", labelPath, diagnostics);
+                            if (outcome.Cases.Take(caseIndex).Any(prior => prior.Value is ConstantExpressionDocument other && Equals(other.Value, constant.Value)))
+                                Invalid("SWITCH003", "Duplicate case label", labelPath, diagnostics);
                         }
-                        else
-                            await ValidateStepsAsync(child.Steps, stepPath + ".default", document, diagnostics, context, cancellationToken, aliases, WorkflowDocumentScope.Saga);
+                        if (arm.Value is FunctionExpressionDocument asset && document.Code.TryGetValue(asset.Function, out var codeAsset))
+                        {
+                            var syntax = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression(codeAsset.Source);
+                            var roots = syntax.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>()
+                                .Where(name => name.Parent is not Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax member || member.Name != name)
+                                .Select(name => name.Identifier.ValueText);
+                            if (roots.Any(root => aliases.Contains(root)))
+                                Invalid("EXPR001", "Case labels cannot read item or fault bindings", labelPath, diagnostics);
+                        }
+                        await ValidateStepsAsync(arm.Steps, $"{stepPath}.cases[{caseIndex}].steps", document, diagnostics, context, cancellationToken, aliases, scope, faultBindings: faultBindings, expandingTemplates: expandingTemplates);
                     }
+                    if (outcome.Default != null)
+                        await ValidateStepsAsync(outcome.Default, stepPath + ".default", document, diagnostics, context, cancellationToken, aliases, scope, faultBindings: faultBindings, expandingTemplates: expandingTemplates);
                     break;
                 }
                 case InvokeWorkflowTypeStepDocument invocation:
@@ -255,7 +282,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     }
 
                     ValidateInputMappings(activityStep.Input, diagnostics, $"{stepPath}.input", allowEventRoot: false,
-                        scope is WorkflowDocumentScope.Catch or WorkflowDocumentScope.SagaHandler ? aliases.Append("fault").ToArray() : aliases, document.Code);
+                        aliases, document.Code);
                     await ValidateSagaActivityAsync(activityStep, stepPath, document, diagnostics, context, cancellationToken, aliases, scope);
                     ValidateOutputMappings(activityStep.Output, diagnostics, $"{stepPath}.output");
                     break;
@@ -265,6 +292,8 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     {
                         diagnostics.Add(new WorkflowDiagnostic("STEP005", $"Unknown activity template '{activityReferenceStep.Ref}'", WorkflowDiagnosticSeverity.Error, $"{stepPath}.ref"));
                     }
+                    if (document.Activities.TryGetValue(activityReferenceStep.Ref, out var referencedActivity))
+                        ValidateInputMappings(referencedActivity.Input, diagnostics, $"activities.{activityReferenceStep.Ref}.input", false, aliases, document.Code);
                     break;
 
                 case StepReferenceStepDocument stepReferenceStep:
@@ -276,6 +305,12 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     {
                         diagnostics.Add(new WorkflowDiagnostic("STEP012", $"External step template '{stepReferenceStep.Ref}' has no executable definition", WorkflowDiagnosticSeverity.Error, $"{stepPath}.ref"));
                     }
+                    if (document.Steps.TryGetValue(stepReferenceStep.Ref, out var block) && expandingTemplates.Add(stepReferenceStep.Ref))
+                    {
+                        await ValidateStepsAsync(block.Steps, $"steps.{stepReferenceStep.Ref}.steps", document, diagnostics, context,
+                            cancellationToken, aliases.Concat(block.Parameters.Keys).ToArray(), scope, faultBindings, expandingTemplates);
+                        expandingTemplates.Remove(stepReferenceStep.Ref);
+                    }
                     break;
 
                 case WaitStepDocument suspendStep:
@@ -285,9 +320,9 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     }
 
                     ValidateInputMappings(suspendStep.Input, diagnostics, $"{stepPath}.input", allowEventRoot: false, aliases, document.Code);
-                    await ValidateWaitAsync(suspendStep, stepPath, document, diagnostics, context, cancellationToken, aliases);
+                    await ValidateWaitAsync(suspendStep, stepPath, document, diagnostics, context, cancellationToken, aliases, faultBindings);
                     ValidateOutputMappings(suspendStep.Output, diagnostics, $"{stepPath}.output");
-                    ValidateExpression(suspendStep.ResumeCondition, diagnostics, $"{stepPath}.resumeCondition", (scope == WorkflowDocumentScope.Saga ? new[] { "workflow", "previousStep", "event" } : new[] { "workflow", "event" }).Concat(aliases).ToArray(), document.Code);
+                    ValidateExpression(suspendStep.ResumeCondition, diagnostics, $"{stepPath}.resumeCondition", (scope == WorkflowDocumentScope.Saga || faultBindings.Count > 0 ? new[] { "workflow", "previousStep", "event" } : new[] { "workflow", "event" }).Concat(aliases).ToArray(), document.Code);
                     break;
 
                 case InvokeWorkflowStepDocument invokeWorkflowStep:
@@ -305,7 +340,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                 case ConditionalStepDocument conditionalStep:
                     ValidateExpression(conditionalStep.Condition, diagnostics, $"{stepPath}.condition", new[] { "workflow", "previousStep", "event" }.Concat(aliases).ToArray(), document.Code);
                     foreach (var child in conditionalStep.ChildScopes())
-                        await ValidateStepsAsync(child.Steps, $"{stepPath}.{child.Kind}", document, diagnostics, context, cancellationToken, aliases);
+                        await ValidateStepsAsync(child.Steps, $"{stepPath}.{child.Kind}", document, diagnostics, context, cancellationToken, aliases, faultBindings: faultBindings, expandingTemplates: expandingTemplates);
                     break;
 
                 case ForEachStepDocument each:
@@ -334,15 +369,15 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                         ValidateExpression(parallel.Condition, diagnostics, $"{stepPath}.parallel.condition", ["workflow", "results"], document.Code);
                     }
                     foreach (var child in each.ChildScopes())
-                        await ValidateStepsAsync(child.Steps, $"{stepPath}.steps", document, diagnostics, context, cancellationToken, aliases.Append(each.As).ToArray());
+                        await ValidateStepsAsync(child.Steps, $"{stepPath}.steps", document, diagnostics, context, cancellationToken, aliases.Append(each.As).ToArray(), faultBindings: faultBindings, expandingTemplates: expandingTemplates, faultExit: FaultBodyExit.Result);
                     break;
 
                 case SequenceStepDocument sequenceStep:
                     foreach (var child in sequenceStep.ChildScopes())
-                        await ValidateStepsAsync(child.Steps, $"{stepPath}.steps", document, diagnostics, context, cancellationToken, aliases);
+                        await ValidateStepsAsync(child.Steps, $"{stepPath}.steps", document, diagnostics, context, cancellationToken, aliases, faultBindings: faultBindings, expandingTemplates: expandingTemplates);
                     break;
             }
-            if (step is TryStepDocument or SagaStepDocument) scope = WorkflowDocumentScope.Workflow;
+
         }
     }
 
@@ -382,7 +417,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             }
         }
 
-        ValidateInputMappings(template.Input, diagnostics, $"activities.{templateKey}.input", allowEventRoot: false, aliases: document.Steps.Values.SelectMany(block => block.Parameters.Keys).Distinct().ToArray(), code: document.Code);
+        ValidateInputMappings(template.Input, diagnostics, $"activities.{templateKey}.input", allowEventRoot: false, aliases: document.Steps.Values.SelectMany(block => block.Parameters.Keys).Append("fault").Distinct().ToArray(), code: document.Code);
         ValidateOutputMappings(template.Output, diagnostics, $"activities.{templateKey}.output");
     }
 
@@ -441,6 +476,38 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
         }
     }
 
+    private static string? ScalarType(object? value) => value switch
+    {
+        null => null, string => "string", bool => "bool", int => "int",
+        long number => number is >= int.MinValue and <= int.MaxValue ? "int" : "long",
+        double => "double", decimal => "decimal", _ => null
+    };
+
+    private static bool ScalarFits(string type, object? value)
+    {
+        type = type.Trim();
+        var nullable = type.EndsWith("?", StringComparison.Ordinal);
+        if (nullable) type = type.Substring(0, type.Length - 1);
+        if (type is "object" or "System.Object") return true;
+        if (value == null) return nullable || type is not (
+            "bool" or "System.Boolean" or "byte" or "System.Byte" or "sbyte" or "System.SByte" or
+            "short" or "System.Int16" or "ushort" or "System.UInt16" or "int" or "System.Int32" or
+            "uint" or "System.UInt32" or "long" or "System.Int64" or "ulong" or "System.UInt64" or
+            "nint" or "System.IntPtr" or "nuint" or "System.UIntPtr" or "char" or "System.Char" or
+            "float" or "System.Single" or "double" or "System.Double" or "decimal" or "System.Decimal" or
+            "System.DateTime" or "System.DateTimeOffset" or "System.TimeSpan" or "System.DateOnly" or "System.TimeOnly" or "System.Guid");
+        return type switch
+        {
+            "string" or "System.String" => value is string,
+            "bool" or "System.Boolean" => value is bool,
+            "int" or "System.Int32" => value is int || value is long integer && integer is >= int.MinValue and <= int.MaxValue,
+            "long" or "System.Int64" => value is int or long,
+            "double" or "System.Double" => value is int or long or double,
+            "decimal" or "System.Decimal" => value is int or long or decimal,
+            _ => true // The compiler resolves custom types and normal C# conversions at this member.
+        };
+    }
+
     private static void ValidateExpression(
         ExpressionDocument? expression,
         List<WorkflowDiagnostic> diagnostics,
@@ -469,6 +536,19 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     if (code == null || !code.TryGetValue(functionExpression.Function, out var asset) ||
                         asset is not { Language: "csharp-expression" } || string.IsNullOrWhiteSpace(asset.Source))
                         diagnostics.Add(new WorkflowDiagnostic("EXPR003", $"Unknown function '{functionExpression.Function}'", WorkflowDiagnosticSeverity.Error, $"{path}.function"));
+                    else
+                    {
+                        var tree = Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseExpression(asset.Source);
+                        foreach (var identifier in tree.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>())
+                        {
+                            if (identifier.Parent is Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax access && access.Name == identifier) continue;
+                            var name = identifier.Identifier.ValueText;
+                            if ((name is "workflow" or "previousStep" or "event" or "fault" or "currentStep" or "reply" or "answered") && !allowedRoots.Contains(name) ||
+                                name == "ctx" && (allowedRoots.Count == 0 || !allowedRoots.Contains("fault") &&
+                                    identifier.Parent?.ToString().StartsWith("ctx.Fault", StringComparison.Ordinal) == true))
+                                Invalid("EXPR001", $"Expression root '{name}' is outside its lexical scope", path, diagnostics);
+                        }
+                    }
                 }
                 break;
 
@@ -502,10 +582,10 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
 
     internal static bool Supports(WorkflowDocumentScope scope, WorkflowStepDocument step) => scope switch
     {
-        WorkflowDocumentScope.Saga => step is ActivityStepDocument or ActivityReferenceStepDocument or WaitStepDocument or OutcomeStepDocument,
-        WorkflowDocumentScope.SagaHandler => step is ActivityStepDocument and not RequestStepDocument or ActivityReferenceStepDocument or WaitForStepDocument,
-        WorkflowDocumentScope.Catch => step is not (RequestStepDocument or DelayStepDocument or ResultStepDocument or OutcomeStepDocument),
-        _ => step is not OutcomeStepDocument
+        WorkflowDocumentScope.Saga => step is ActivityStepDocument or ActivityReferenceStepDocument or WaitStepDocument or SwitchStepDocument,
+        WorkflowDocumentScope.SagaHandler => step is ActivityStepDocument and not RequestStepDocument or ActivityReferenceStepDocument or WaitForStepDocument or SwitchStepDocument,
+        WorkflowDocumentScope.Catch => true,
+        _ => true
     };
 
     private async Task ValidateSagaActivityAsync(ActivityStepDocument step, string path, WorkflowDocument document,
@@ -559,7 +639,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
     }
 
     private async Task ValidateWaitAsync(WaitStepDocument wait, string path, WorkflowDocument document,
-        List<WorkflowDiagnostic> diagnostics, IWorkflowValidationContext context, CancellationToken token, IReadOnlyCollection<string> aliases)
+        List<WorkflowDiagnostic> diagnostics, IWorkflowValidationContext context, CancellationToken token, IReadOnlyCollection<string> aliases, IReadOnlyList<DocumentFaultBinding> faultBindings)
     {
         if (wait.Timeout != null)
         {
@@ -571,7 +651,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
         {
             if (wait.Timeout == null && wait.OnTimeout.Count > 0) Invalid("WAIT002", "onTimeout requires a timeout", path + ".onTimeout", diagnostics);
             foreach (var child in wait.ChildScopes())
-                await ValidateStepsAsync(child.Steps, path + ".onTimeout", document, diagnostics, context, token, aliases);
+                await ValidateStepsAsync(child.Steps, path + ".onTimeout", document, diagnostics, context, token, aliases, faultBindings: faultBindings, faultExit: FaultBodyExit.Timeout);
         }
     }
 
@@ -618,7 +698,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
         TimeSpan.TryParseExact(value, "c", CultureInfo.InvariantCulture, out duration) && (positive ? duration > TimeSpan.Zero : duration >= TimeSpan.Zero);
 
     private static bool HasMissingMember(string path, List<WorkflowDiagnostic> diagnostics) =>
-        diagnostics.Any(diagnostic => diagnostic.Code == "MEMBER001" && diagnostic.Path is { } missing &&
+        diagnostics.Any(diagnostic => (diagnostic.Code == "MEMBER001" || diagnostic.Code is "SWITCH001" or "SWITCH002" && diagnostic.Message.StartsWith("Missing '", StringComparison.Ordinal)) && diagnostic.Path is { } missing &&
             (path == missing || path.StartsWith(missing + ".", StringComparison.Ordinal) || path.StartsWith(missing + "[", StringComparison.Ordinal)));
 
     private static void Invalid(string code, string message, string path, List<WorkflowDiagnostic> diagnostics)
@@ -639,7 +719,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                 if (member.IsDefined(typeof(DocumentRequiredAttribute), true) &&
                     (fromSource && !node.Members.ContainsKey(name) || child is string text && string.IsNullOrWhiteSpace(text) || child == null))
                 {
-                    Invalid("MEMBER001", $"Missing '{name}'", memberPath, diagnostics);
+                    Invalid(node is SwitchStepDocument && name == "value" ? "SWITCH001" : node is SwitchCaseDocument && name == "value" ? "SWITCH002" : "MEMBER001", $"Missing '{name}'", memberPath, diagnostics);
                     continue;
                 }
                 var values = DocumentModel.GetValues(node.GetType(), member.Name);
@@ -666,7 +746,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             if (step is ActivityStepDocument activity) yield return activity.Activity;
             if (step is ActivityReferenceStepDocument reference && document.Activities.TryGetValue(reference.Ref, out var template))
                 yield return template.Activity;
-            if (step is OutcomeStepDocument outcome)
+            if (step is SwitchStepDocument outcome)
                 foreach (var child in outcome.ChildScopes())
                     foreach (var activityType in SagaActivities(child.Steps, document))
                         yield return activityType;

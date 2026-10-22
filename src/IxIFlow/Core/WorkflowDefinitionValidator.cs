@@ -44,7 +44,7 @@ public static class WorkflowDefinitionValidator
         WorkflowTypeIdentity.SavedName(dataType) == WorkflowTypeIdentity.SavedName(workflowData.GetType());
 
     /// <summary>The persisted execution contract version; other versions require a separate migration.</summary>
-    public const int CheckpointContractVersion = 8;
+    public const int CheckpointContractVersion = 9;
 
     public static IReadOnlyList<WorkflowVersionDependency> GetDependencies(WorkflowDefinition definition)
     {
@@ -104,6 +104,7 @@ public static class WorkflowDefinitionValidator
                          step.ResumeEventType, step.ReplyType, step.InvokedDataType, step.ResultType })
                          .Prepend(definition.WorkflowDataType).OfType<Type>().Distinct())
                 _ = RedactingJson.ClassifiedPaths(type);
+            SwitchRules.Validate(steps);
             GraphRules.Validate(steps);
             var ids = new HashSet<string>(StringComparer.Ordinal);
             CheckIds(steps, "", ids);
@@ -165,7 +166,7 @@ public static class WorkflowDefinitionValidator
             var supported = step.StepType switch
             {
                 WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow or WorkflowStepType.Sequence or
-                    WorkflowStepType.Conditional or WorkflowStepType.Parallel or WorkflowStepType.Loop or
+                    WorkflowStepType.Conditional or WorkflowStepType.Switch or WorkflowStepType.Parallel or WorkflowStepType.Loop or
                     WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
                     WorkflowStepType.ForEach or WorkflowStepType.ForEachResult or WorkflowStepType.Flowchart or
                     WorkflowStepType.Enter or WorkflowStepType.Decision or WorkflowStepType.Edge or
@@ -190,10 +191,6 @@ public static class WorkflowDefinitionValidator
             if (step.StepType == WorkflowStepType.InlineWorkflow &&
                 (string.IsNullOrWhiteSpace(step.InlineStructureHash) || step.InvokedContractKind != WorkflowInvocationContractKind.ExactPin))
                 throw WorkflowBuildError.Invalid(step, $"Inline workflow at '{id}' has no exact callee pin");
-            if (step.StepMetadata.ContainsKey("OutcomeType") &&
-                (step.OutcomeSelector == null || step.OutcomeBranches.Count == 0))
-                throw WorkflowBuildError.Invalid(step,
-                    $"Outcome step at '{id}' has no branches or selector");
             if (step.StepType == WorkflowStepType.Parallel &&
                 step.ParallelJoinMode == ParallelJoinMode.WaitConditionally &&
                 step.ParallelCompletionCondition == null)

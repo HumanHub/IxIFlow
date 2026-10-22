@@ -106,7 +106,7 @@ including case-insensitive duplicates; the JSON reader accepts duplicate keys wi
 
 The supported catalog includes activities and references, sequences, conditions, `WhileDo`/`DoWhile`,
 general parallel branches and combiners, sequential or parallel `forEach` with results, typed
-catch/finally blocks, sagas with outcome branches, compensation and retry, delays, requests with
+catch/finally blocks, typed switches, sagas with switch cases, compensation and retry, delays, requests with
 replies and timeouts, event waits, suspend/resume and both named and typed child invocations. Explicit inputs
 override YAML and attribute defaults on activities. Wait inputs overlay the declared default payload or a new
 event instance once when the wait opens, saving the suggested payload for discovery and recovery. Only submitted

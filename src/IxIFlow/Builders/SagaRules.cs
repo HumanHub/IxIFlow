@@ -41,7 +41,7 @@ internal static class SagaRules
         {
             var configuration = handler.StepMetadata.GetValueOrDefault("SagaErrorConfig") as SagaErrorConfiguration;
             if (configuration?.ContinuationAction == null &&
-                handler.SequenceSteps.FirstOrDefault(step => step.StepMetadata.ContainsKey("WaitKey")) is { } handlerWait)
+                ParallelRules.Flatten(handler.SequenceSteps).FirstOrDefault(step => step.StepMetadata.ContainsKey("WaitKey")) is { } handlerWait)
                 throw WorkflowBuildError.Invalid(handlerWait,
                     "A saga error handler with WaitFor must end with ThenContinue, ThenRetry, or ThenTerminate");
             if (!handler.StepMetadata.TryGetValue("SagaErrorConfig", out var value) ||
@@ -97,7 +97,7 @@ internal static class SagaRules
             if (step.RequestName is { } name &&
                 body.FindIndex(index + 1, candidate => candidate.ReplyToRequest == name) is var wait and >= 0)
                 yield return (body, step, index, body[wait], wait);
-            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind == "outcome"))
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "case" or "default"))
             foreach (var nested in Requests(scope.Steps))
                 yield return nested;
         }
@@ -108,7 +108,7 @@ internal static class SagaRules
         foreach (var step in body)
         {
             order.Add(step);
-            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind == "outcome"))
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "case" or "default"))
                 Flatten(scope.Steps, order);
         }
     }
@@ -121,7 +121,7 @@ internal static class SagaRules
                 yield return step;
             foreach (var scope in step.ChildScopes().Where(scope => scope.Kind != "inline").OrderBy(scope => scope.Kind switch
                      {
-                         "foreach" => 1, "branch" or "outcome" => 2, _ => 0
+                         "foreach" => 1, "branch" or "case" or "default" => 2, _ => 0
                      }))
             foreach (var saga in Sagas(scope.Steps))
                 yield return saga;

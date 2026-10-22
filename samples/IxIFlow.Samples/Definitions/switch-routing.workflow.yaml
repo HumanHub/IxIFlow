@@ -1,0 +1,24 @@
+workflow: {name: SwitchRouting, dataType: IxIFlow.Samples.RoutingData}
+definitions:
+  - kind: switch
+    id: route
+    valueType: string
+    value: {path: workflow.Route}
+    cases:
+      - value: {kind: constant, value: ship}
+        steps:
+          - kind: activity
+            activity: samples.label
+            input: [{target: Value, from: {kind: constant, value: shipping}}]
+            output: [{source: Value, to: {path: workflow.Result}}]
+      - value: {kind: constant, value: hold}
+        steps:
+          - kind: activity
+            activity: samples.label
+            input: [{target: Value, from: {kind: constant, value: on hold}}]
+            output: [{source: Value, to: {path: workflow.Result}}]
+    default:
+      - kind: activity
+        activity: samples.label
+        input: [{target: Value, from: {kind: constant, value: manual review}}]
+        output: [{source: Value, to: {path: workflow.Result}}]

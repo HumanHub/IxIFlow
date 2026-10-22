@@ -77,10 +77,11 @@ The continuation builder exposes these families. The root builder exposes initia
 | `Sequence` | Group ordered steps; [Quote](../samples/IxIFlow.Samples/Quote.cs) |
 | `If` | Select a then or optional else path; [Quote](../samples/IxIFlow.Samples/Quote.cs) |
 | `WhileDo`, `DoWhile` | Test before or after the body; [Restock](../samples/IxIFlow.Samples/Restock.cs) |
+| `Switch`, `Case`, `Default` | Evaluate one selector and execute one case/default body; no match continues normally |
 | `Parallel` with `Do` | Fork branches, then all/any/conditional join and optional `Combine`; [ParallelQuotes](../samples/IxIFlow.Samples/ParallelQuotes.cs) |
 | `ForEach`, `Result` | Sequential or bounded parallel items and ordered results; [Batch](../samples/IxIFlow.Samples/Batch.cs) |
 | `Try`, `Catch`, `Finally` | Typed saved fault projection and durable cleanup; [FailedQuote](../samples/IxIFlow.Samples/FailedQuote.cs) |
-| `Saga`, `OnError`, `OutcomeOn`, `Outcome` | Compensable steps, typed outcome branches and error policies; [payment recipe](../samples/IxIFlow.Recipes/Payments.cs) and [saga guide](sagas.md) |
+| `Saga`, `OnError` | Compensable steps, typed switch cases and error policies; [payment recipe](../samples/IxIFlow.Recipes/Payments.cs) and [saga guide](sagas.md) |
 | `Request<TActivity>` | Run an `IRequestActivity<TReply>`, opening its reply address before the effect; [approval recipes](../samples/IxIFlow.Recipes/Approvals.cs) |
 | `WaitFor<TEvent>`, `Suspend<TEvent>` | Save an event/reply wait, predicate, output mappings, default suggestion and timeout path; [Review](../samples/IxIFlow.Samples/Review.cs) |
 | `Delay` | Durable positive duration, retaining the preceding value; [Reminder](../samples/IxIFlow.Samples/Reminder.cs) |
@@ -193,3 +194,38 @@ Conditions, mappings, result selectors, wait predicates and combiners can run ag
 Build validation rejects known clock/environment reads, random values, `Guid.NewGuid`, blocking/delays and supported file, network and database I/O in expression trees and delegate IL. It follows nested lambdas/local functions, not ordinary helper bodies. The bundled analyzer reports `IXIF0101` for expressions and `IXIF0102` for combiners, following helper code in the same compilation and checking combiner methods, constructors and initializers. Neither check is a sandbox for arbitrary C#; build validation does not inspect combiner implementations.
 
 Run the resulting definition through [the client](getting-started.md#understand-the-result). C# definitions and [YAML](yaml-authoring.md) share these runtime rules.
+
+## Switch bodies
+
+<!-- snippet: samples/IxIFlow.Samples/SwitchRouting.cs#switch-routing -->
+```csharp
+public static WorkflowDefinition Definition() => Workflow.Create<RoutingData>("SwitchRouting")
+    .Switch(ctx => ctx.WorkflowData.Route, cases => cases
+        .Case("ship", body => body.Step<Label>(s => s.Input(a => a.Value).From(ctx => "shipping")
+            .Output(a => a.Value).To(ctx => ctx.WorkflowData.Result)))
+        .Case("hold", body => body.Step<Label>(s => s.Input(a => a.Value).From(ctx => "on hold")
+            .Output(a => a.Value).To(ctx => ctx.WorkflowData.Result)))
+        .Default(body => body.Step<Label>(s => s.Input(a => a.Value).From(ctx => "manual review")
+            .Output(a => a.Value).To(ctx => ctx.WorkflowData.Result))))
+    .WithId("route").Build();
+```
+
+A switch retains its incoming previous value after the selected body finishes. There is no fall-through. Empty cases, an empty default and no cases are valid. An absent default continues normally when nothing matches. Switch bodies work in sequences, conditions, parallel branches, ForEach, Try/Catch, flowchart nodes and state entry, exit and transition actions. Saga forward cases keep the saga builder's compensation facilities. Error-handler cases contain activities and waits; configure compensation and continuation once on the enclosing handler. A flowchart edge switch continues to choose destinations; a body switch chooses steps.
+
+Labels are typed values supplied while building the definition. Matching and duplicate checks use `EqualityComparer<TValue>.Default`, including typed equality; boxed `1` and `1L` remain distinct. Labels may be null when the selector type permits it, supported immutable scalars, enums, decimals, tuples or structs whose entire stored state consists of supported values. Every instance field, including private and ignored state, participates in the canonical label signature. Mutable reference objects, pointer/delegate state and opaque or unnormalizable layouts are rejected. Build snapshots labels, so mutating an author's original boxed value cannot change a built route or its hash. Custom equality must be deterministic and depend only on represented instance state.
+
+Catch descendants retain `ctx.Fault` through their nested callbacks and activity chains. Nested catches shadow that binding; their sibling Finally and following steps restore the outer binding. An invoked workflow has its own lexical context. Catch bodies support names, durable delays, requests, wait setup and invocation mappings. Result exits are available at a fault-aware ForEach body end and eligible timeout exits; Transition exits are available in graph/state timeout callbacks. Fault-aware state intake predicates read the machine's incoming previous value; accepted-event guards and actions read the event as previous.
+
+Selectors must not mutate existing workflow, previous, item, fault, captured or static state. Build checks reject direct expression-tree writes and recognized collection mutators; the source analyzer also follows visible helpers, constructors, accessors and operators with bounded alias analysis. Initialization of provably fresh objects and replacement collections is allowed. Arbitrary external helpers, virtual dispatch, custom equality and opaque setter effects remain author obligations; these checks are not a proof of arbitrary code purity. A materialized fluent label does not retain proof of how its constructor ran.
+
+Local functions inherit the caller's captured bindings; captured assignments invalidate freshness after a call, including exceptional returns. Anonymous-function bodies treat captures as existing state, while locals allocated inside the body can be fresh. Any call receiving a delegate, or invoking one, conservatively forgets the caller's tracked freshness on normal and exceptional exits, including through visible helpers and constructors. This can reject independent local work after a callback.
+
+Ref locals, ref parameters and ref-returning properties, indexers and methods do not prove fresh storage; allocating a wrapper does not prove its referent is fresh. Ref writes conservatively forget tracked bindings. User-defined conversions and operator results are unknown; only identity, reference, boxing and nullable conversions preserve an existing freshness proof. Concrete `List<T>` and array collection expressions allocate fresh storage; collection-builder results remain unknown. Deconstruction accepts ordinary local targets but forgets each destination's value freshness. Some assignments whose targets Roslyn lowers to captured storage remain unknown and can be rejected. Pattern declarations inherit the matched value's freshness only after a successful match; reference-valued members and getters do not establish freshness.
+
+Implicit calls use the same bounded source analysis and receiver/argument bindings as explicit calls: property/indexer accessors, user-defined conversions and operators (including `true`/`false`), deconstruction methods and element conversions, collection-builder construction, and the `GetEnumerator`/`MoveNext`/`Current`/`Dispose` calls of `foreach`. Read-modify-write access evaluates the receiver and indices once, gets the value before evaluating the right operand, and sets it after the operator and conversions. Ref-returning access remains getter-only. Callback effects invalidate caller proofs on normal and exceptional exits for implicit calls too. Compiler-generated deconstruction output storage is writable, but its values remain unknown. Boolean facts survive only identity and nullable conversions; user-defined conversions and overloaded boolean operators provide no boolean facts.
+
+The analyzer has no return-value or heap-element summaries. A fresh enumerator returned by a helper, a fresh value returned by a getter, deconstructed reference values and collection-builder results therefore remain unknown, even when the source body returns an allocation. Arguments and receivers retain only their proven freshness at evaluation. Ordinary list/array construction, scalar deconstruction into locals and immutable replacement calls remain supported. Statically identifiable interface implementations are followed, including disposal through an interface conversion; arbitrary runtime dispatch and opaque external bodies still cannot establish purity.
+
+Immutable collection operations returning a replacement collection are accepted by both checks; builders and `StringBuilder` retain their mutation checks. Returning the collection type distinguishes replacement-style calls from ordinary collection mutators. Visible custom method bodies are still analyzed, and opaque custom methods remain the author's responsibility. Source following stops at recursion and depth 32; this bounded check is not a general proof of purity.
+
+Selection creates no extra checkpoint. A saved activity/wait/debug stop inside a case resumes that arm; before a boundary, selection can be re-derived. Expression signatures, including selector bodies, are part of the structure hash; changing `Route + 0` to `Route` changes that hash.

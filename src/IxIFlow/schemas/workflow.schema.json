@@ -490,7 +490,7 @@
             "doWhile",
             "try",
             "saga",
-            "outcome",
+            "switch",
             "delay",
             "request",
             "waitFor",
@@ -748,12 +748,12 @@
             ],
             "properties": {
               "kind": {
-                "const": "outcome"
+                "const": "switch"
               }
             }
           },
           "then": {
-            "$ref": "#/definitions/outcomeStep"
+            "$ref": "#/definitions/switchStep"
           }
         },
         {
@@ -2305,7 +2305,7 @@
           "items": {
             "$ref": "#/definitions/step"
           },
-          "description": "Saga activities, requests, waits and outcome branches."
+          "description": "Saga activities, requests, waits and switch cases."
         },
         "onError": {
           "type": "array",
@@ -2395,14 +2395,14 @@
         }
       }
     },
-    "outcomeStep": {
+    "switchStep": {
       "type": "object",
-      "description": "Saga branching selected by a typed value.",
+      "description": "Body selection by a typed value.",
       "additionalProperties": false,
       "properties": {
         "kind": {
           "type": "string",
-          "const": "outcome",
+          "const": "switch",
           "description": "The discriminator selecting the concrete step type."
         },
         "id": {
@@ -2416,23 +2416,30 @@
           ],
           "description": "The explicit step name used by the fluent definition."
         },
+        "valueType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional selector CLR type when inference is ambiguous, including null or a base type."
+        },
         "value": {
           "$ref": "#/definitions/expression",
-          "description": "The expression selecting an outcome value."
+          "description": "The expression selecting a typed value."
         },
-        "branches": {
+        "cases": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/outcomeBranch"
+            "$ref": "#/definitions/switchCase"
           },
-          "description": "Ordered typed outcome labels and saga bodies."
+          "description": "Ordered typed labels and case bodies."
         },
         "default": {
           "type": "array",
           "items": {
             "$ref": "#/definitions/step"
           },
-          "description": "The saga body selected when no label matches."
+          "description": "The body selected when no label matches."
         }
       },
       "required": [
@@ -2440,14 +2447,14 @@
         "value"
       ]
     },
-    "outcomeBranch": {
+    "switchCase": {
       "type": "object",
-      "description": "One typed outcome label and its saga body.",
+      "description": "One typed label and its body.",
       "additionalProperties": false,
       "properties": {
         "value": {
           "$ref": "#/definitions/expression",
-          "description": "The label expression evaluated at build time and passed to Outcome."
+          "description": "The label expression evaluated at build time and passed to Case."
         },
         "steps": {
           "type": "array",

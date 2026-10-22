@@ -270,33 +270,29 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 });
                 break;
 
-            case WorkflowStepType.Conditional:
-                if (step.OutcomeSelector != null)
+            case WorkflowStepType.Switch:
+                checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
+                var switchContext = WorkflowValueBinding.EvaluationContext(step, workflowData,
+                    continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes));
+                var value = step.OutcomeSelector!(switchContext);
+                var arm = step.OutcomeBranches.FindIndex(branch =>
+                    !branch.IsDefault && step.SwitchEquals!(branch.Value, value));
+                if (arm < 0) arm = step.OutcomeBranches.FindIndex(branch => branch.IsDefault);
+                var scope = arm < 0 ? null : scopes.OutcomeScope(step, arm);
+                checkpoint.Trace.Switch(step, continuation, arm < 0 ? SwitchPath.NoMatch :
+                    step.OutcomeBranches[arm].IsDefault ? SwitchPath.Default : SwitchPath.Case, arm < 0 ? null : arm, scope);
+                if (scope == null) position.NextStepIndex++;
+                else continuation.Stack.Add(new ScopePosition
                 {
-                    var outcomeContext = WorkflowValueBinding.EvaluationContext(step, workflowData,
-                        continuation.GetPrevious(services),
-                        ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
-                    var outcome = step.OutcomeSelector(outcomeContext);
-                    var selectedOutcome = step.OutcomeBranches.FindIndex(branch =>
-                        !branch.IsDefault && Equals(branch.Value, outcome));
-                    if (selectedOutcome < 0)
-                        selectedOutcome = step.OutcomeBranches.FindIndex(branch => branch.IsDefault);
-                    if (selectedOutcome < 0)
-                        throw new InvalidOperationException(
-                            $"Outcome step '{step.Id}' has no branch for '{outcome}'");
-                    checkpoint.Trace.Condition(step, continuation, selectedOutcome,
-                        scopes.OutcomeScope(step, selectedOutcome), ConditionPath.Outcome);
-                    continuation.Stack.Add(new ScopePosition
-                    {
-                        ScopeId = scopes.OutcomeScope(step, selectedOutcome),
-                        EntryPrevious = continuation.Previous,
-                        RuntimeEntryPrevious = continuation.RuntimePrevious,
-                        RestorePreviousOnExit = true
-                    });
-                    break;
-                }
+                    ScopeId = scope, Kind = FrameKind.SwitchCase,
+                    EntryPrevious = continuation.Previous, RuntimeEntryPrevious = continuation.RuntimePrevious,
+                    RestorePreviousOnExit = true
+                });
+                break;
+
+            case WorkflowStepType.Conditional:
                 var conditionContext = WorkflowValueBinding.EvaluationContext(step, workflowData,
-                    continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+                    continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes));
                 var selected = step.CompiledCondition?.Invoke(conditionContext)
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                         $"If step '{step.Id}' has no condition");
@@ -331,7 +327,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 {
                     var loopContext = WorkflowValueBinding.EvaluationContext(step, workflowData,
                         continuation.GetPrevious(services),
-                        ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+                        ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes));
                     shouldRun = step.CompiledCondition?.Invoke(loopContext)
                         ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                             $"Loop step '{step.Id}' has no condition");
@@ -393,7 +389,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     StepId = scopes.Id(step),
                     Key = key,
                     DefaultPayloadJson = WaitSuggestions.Create(step, workflowData, continuation.GetPrevious(services),
-                        ForEachTransitions.ItemsOf(scopes, checkpoint, continuation)),
+                        ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes)),
                     Timeout = step.WaitTimeout,
                     DeadlineUtc = StoreNow(checkpoint) + step.WaitTimeout,
                     EventType = (step.ResumeEventType == null ? null : WorkflowTypeIdentity.SavedName(step.ResumeEventType))
@@ -470,7 +466,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         if (wait.DefaultPayloadJson == null)
         {
             wait.DefaultPayloadJson = WaitSuggestions.Create(step, checkpoint.DataOf(continuation),
-                continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+                continuation.GetPrevious(services), ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes));
             checkpoint.TouchOwner(wait.ContinuationId);
         }
         if (wait.Timeout == null && step.WaitTimeout is { } timeout)

@@ -29,8 +29,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../src/IxIFlow.Generators/IxIFlow.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <Using Include="Xunit" />
     <Compile Include="../IxIFlow.Tests/Infrastructure/TimerRecordingClock.cs" Link="Infrastructure/TimerRecordingClock.cs" />
   </ItemGroup>
 
+  <Import Project="../../src/IxIFlow/buildTransitive/IxIFlow.props" />
 </Project>

@@ -67,3 +67,5 @@ Operator calls record the supplied actor, falling back to `IxIFlowOptions.Actor`
 ## Debugger
 
 Breakpoints, all-stop pause, stepping, audited data edits, the Debug Adapter Protocol, inspection and replay are described in [debugging](debugging.md) and [the debug adapter](debug-adapter.md). They build on the committed transition traces, event and operator entries, snapshots, redaction, logging and OpenTelemetry described above.
+
+A body switch records one `StepEntered` pick and one value-free `SwitchSelected` selection (`Case` with an index, `Default`, or `NoMatch`, and the selected scope when present). Selection facts contain no label or selector result. Replay stops at `StepEntered`, folds saved positions and never evaluates the selector. Inspection names the active arm with a `SwitchCase` frame. Into visits the first real child pick; Over stops after the switch; an empty or unmatched body reaches the following pick. `WorkflowDefinition.SwitchTable` and `IWorkflowOperations.GetSwitchTableAsync` provide detached selector-type and canonical case/default descriptors beside the step catalog.

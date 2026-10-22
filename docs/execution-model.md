@@ -47,7 +47,7 @@ The runner commits at effect boundaries: instance start, activity start and outc
 
 Each immutable commit includes an execution epoch, commit ID, expected revision and payload hash. Retrying identical content under the same commit ID returns the original receipt. The store protocol distinguishes a stale epoch, revision conflict, changed inbox state and a retryable failure that did not apply the commit. The host classifies an infrastructure exception as an unknown commit outcome; the executor resends the same immutable commit, with up to three attempts in total. Instance progress and its event settlements, wait changes, child starts, trace entries and terminal outbox event can commit atomically.
 
-Conditions, mappings, wait predicates, result/outcome selectors and combiners must be pure. Read workflow time through `ctx.UtcNow`. Memory and SQLite use the registered `TimeProvider`; SQL Server and PostgreSQL use database time for deadlines and event ordering. Purity validation and analyzers cover supported patterns, not arbitrary external code.
+Conditions, mappings, wait predicates, result/switch selectors and combiners must be pure. Read workflow time through `ctx.UtcNow`. Memory and SQLite use the registered `TimeProvider`; SQL Server and PostgreSQL use database time for deadlines and event ordering. Purity validation and analyzers cover supported patterns, not arbitrary external code.
 
 Every execution acquires a lease and saves its state through fenced commits, including local and single-call execution. Waits, delays and child invocations use the same durable path.
 

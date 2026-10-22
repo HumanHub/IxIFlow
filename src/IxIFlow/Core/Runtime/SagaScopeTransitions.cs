@@ -659,6 +659,7 @@ internal static class SagaScopeTransitions
             var frame = new ScopePosition
             {
                 ScopeId = record.ScopeId,
+                Kind = record.Kind,
                 NextStepIndex = depth + 1 < chain.Count ? chain[depth + 1].Record.IndexInParent : point.StepIndex,
                 EntryPrevious = record.EntryPrevious,
                 RestorePreviousOnExit = record.RestorePreviousOnExit,
@@ -711,7 +712,7 @@ internal static class SagaScopeTransitions
             var parent = index > ownerIndex + 1 ? continuation.Stack[index - 1] : null;
             if (parent != null &&
                 scopes.Steps(parent.ScopeId).ElementAtOrDefault(parent.NextStepIndex) is not
-                    { StepType: WorkflowStepType.Conditional, OutcomeSelector: not null })
+                    { StepType: WorkflowStepType.Switch })
                 break;
             if (parent != null && !scopes.Steps(parent.ScopeId)[parent.NextStepIndex].StepMetadata
                     .ContainsKey("IsSagaStep"))
@@ -721,6 +722,7 @@ internal static class SagaScopeTransitions
                 state.Frames.Add(frame.ActivationId, new SagaFrameRecord
             {
                 ScopeId = frame.ScopeId,
+                Kind = frame.Kind,
                 ParentFrameId = parent?.ActivationId,
                 IndexInParent = parent?.NextStepIndex ?? 0,
                 EntryPrevious = Saved(frame.RuntimeEntryPrevious, frame.EntryPrevious),

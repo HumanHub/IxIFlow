@@ -1,0 +1,4 @@
+workflow: {name: SwitchCompositionstate, dataType: IxIFlow.Tests.Conformance.SwitchScenarios+Data}
+definitions:
+- {kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Seed}
+- {kind: stateMachine, start: a, states: [{key: a, transitions: [{to: done, steps: [{kind: switch, value: {path: workflow.Route}, cases: [{value: {kind: constant, value: 1}, steps: [{kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Forward}, {kind: waitFor, key: inside, event: IxIFlow.Tests.Conformance.SwitchScenarios+Go}]}], default: [{kind: activity, activity: IxIFlow.Tests.Conformance.SwitchScenarios+Seed}]}]}]}, {key: done, final: true}]}

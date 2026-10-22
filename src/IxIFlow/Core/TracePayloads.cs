@@ -7,6 +7,7 @@ namespace IxIFlow.Core;
 [JsonDerivedType(typeof(GraphTrace), "graph")]
 [JsonDerivedType(typeof(InlineTrace), "inline")]
 [JsonDerivedType(typeof(ConditionTrace), "condition")]
+[JsonDerivedType(typeof(SwitchTrace), "switch")]
 [JsonDerivedType(typeof(JoinTrace), "join")]
 [JsonDerivedType(typeof(ItemEndTrace), "itemEnd")]
 [JsonDerivedType(typeof(TimeoutTrace), "timeout")]
@@ -35,7 +36,7 @@ public sealed record ThreadPositionTrace(string ContinuationId, InspectionThread
 public record ControlFlowTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,
     int? Index = null, string? ScopeId = null, string? JoinId = null) : TracePayload;
 
-public enum ConditionPath { Then, Else, Outcome }
+public enum ConditionPath { Then, Else }
 public sealed record ConditionTrace(string StepId, WorkflowStepType StepKind, string ContinuationId,
     int Index, string ScopeId, ConditionPath Path) : TracePayload;
 
@@ -103,3 +104,7 @@ public sealed record GraphTrace(string StepId, string ContinuationId, string Gra
     public string? Trigger { get; init; }
     public int? Count { get; init; }
 }
+
+/// <summary>A value-free switch selection fact; StepEntered is its replay stop.</summary>
+public enum SwitchPath { Case, Default, NoMatch }
+public sealed record SwitchTrace(string StepId, string ContinuationId, SwitchPath Path, int? Index, string? ScopeId) : TracePayload;
