@@ -11,6 +11,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Spec", "D-18")]
 [Trait("Spec", "F-17")]
+[Trait("Feature", "control-flow")]
 public sealed class InlineHydrationIsolationTests
 {
     [Theory]

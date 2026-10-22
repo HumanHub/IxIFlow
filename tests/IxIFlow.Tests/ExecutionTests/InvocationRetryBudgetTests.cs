@@ -11,6 +11,7 @@ using static IxIFlow.Tests.ExecutionTests.CommitBudgetTests;
 namespace IxIFlow.Tests.ExecutionTests;
 
 [Trait("Spec", "D-18")]
+[Trait("Feature", "children")]
 public sealed class InvocationRetryBudgetTests
 {
     [Fact]
