@@ -201,7 +201,7 @@ public sealed class InvocationRetryVerificationScenarios
                 Assert.Equal("Retry", attempt.Disposition);
                 var applied = Assert.Single((await host.Client.GetTraceAsync(id)), entry => entry.EntryType == TraceEntryType.InvocationPolicyApplied);
                 Assert.Equal(fixture.Delay, attempt.RetryAfterUtc!.Value - applied.Timestamp);
-                await fixture.Due(host.Store, id, attempt.RetryAfterUtc.Value);
+                await fixture.Due(host.Store, id, InvocationRetryProfile.RetryDeadline(scheduled));
                 await host.Client.RecoverAsync(id);
             }
             var result = await InvocationRetryProfile.Finished(host.Client, id, action == "retry" ? fixture.Delay : TimeSpan.Zero);

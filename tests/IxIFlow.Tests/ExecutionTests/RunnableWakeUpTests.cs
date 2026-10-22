@@ -46,20 +46,25 @@ public sealed class RunnableWakeUpTests
     [Fact]
     public async Task AHostPollsWhileItsStoreCannotWakeIt()
     {
-        var time = new FakeTimeProvider();
+        var time = new TimerRecordingClock();
         var repository = new InMemoryWorkflowStateRepository(time);
         var wakeUps = new FailingWakeSource();
         var instanceId = await SuspendAsync(Services(time, repository, null));
-        await using var host = await StartAsync(Services(time, repository, wakeUps));
+        var scans = ScanCounter.Wrap(repository);
+        await using var host = await StartAsync(Services(time, scans.Store, wakeUps));
+        await scans.SettledAsync(after: 0);
+        await time.WaitUntilAsync(timers => timers.Count(timer => timer.Pending &&
+            timer.DueTime == PollInterval && timer.Period == Timeout.InfiniteTimeSpan) >= 2,
+            "the poll and failed-listener retry timers");
         await AppendApprovalAsync(repository, instanceId);
 
-        // Each poll interval the host polls, and tries to listen again.
+        // Fire one poll and listener retry, then keep lease time fixed while the host runs.
+        time.Advance(PollInterval);
+        await CompletedAsync(repository, instanceId);
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while ((await repository.GetWorkflowInstanceAsync(instanceId))!.Status != WorkflowStatus.Completed ||
-               wakeUps.Attempts < 2)
+        while (wakeUps.Attempts < 2)
         {
-            Assert.True(DateTime.UtcNow < deadline, "The host never polled");
-            time.Advance(PollInterval);
+            Assert.True(DateTime.UtcNow < deadline, "The host never retried listening");
             await Task.Delay(20);
         }
     }
