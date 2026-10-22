@@ -184,6 +184,9 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            // Watch before trying: when another run on this host holds the lease, such as recovery
+            // woken by the accepted command, its end wakes this wait. Work elsewhere is seen by the poll.
+            using var watch = host.WatchSettled(instanceId, out var settled);
             await host.RunAsync(null, (client, _, _) => client.FinishTerminationAsync(instanceId, incarnation), cancellationToken);
             var current = await GetAsync(instanceId, cancellationToken)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The terminated instance was removed");
@@ -192,7 +195,9 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
             if (current.Status == WorkflowStatus.Terminated) return current;
             if (WorkflowStoreRules.IsTerminal(current.Status))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, $"Termination lost to {current.Status}");
-            await Task.Delay(TimeSpan.FromMilliseconds(100), time, cancellationToken);
+            using var poll = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            await Task.WhenAny(settled, Task.Delay(TimeSpan.FromMilliseconds(100), time, poll.Token));
+            poll.Cancel();
         }
     }
 }
