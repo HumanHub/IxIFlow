@@ -5,7 +5,7 @@ using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
-[Trait("Feature", "control-flow"), Trait("Spec", "D-50")]
+[Trait("Feature", "control-flow"), Trait("Spec", "G-11")]
 public sealed class GraphFramePresentationTests
 {
     [Theory]

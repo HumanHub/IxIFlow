@@ -42,7 +42,7 @@ public sealed partial class SpecTraceabilityTests
     [GeneratedRegex(@"^### (?<id>[A-Z]-\d{2}) .*?^Status: (?<status>[^\r\n]*)", RegexOptions.Multiline | RegexOptions.Singleline)]
     private static partial Regex ItemPattern();
 
-    [GeneratedRegex(@"\[Trait\(""Spec"", ""(?<id>[A-Z]-\d{2})""\)\]")]
+    [GeneratedRegex(@"(?<=[\[,]\s*)Trait\(""Spec"", ""(?<id>[A-Z]-\d{2})""\)")]
     private static partial Regex SpecTraitPattern();
 }
 

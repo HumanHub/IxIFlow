@@ -16,7 +16,7 @@ using Newtonsoft.Json.Linq;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
-[Trait("Feature", "durability"), Trait("Spec", "D-50")]
+[Trait("Feature", "durability"), Trait("Spec", "G-10")]
 public sealed class GraphDebugAdapterTests
 {
     private const string Token = "graph-debugger-application-session-token-for-tests";
