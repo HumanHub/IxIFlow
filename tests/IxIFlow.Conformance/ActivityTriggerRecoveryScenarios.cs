@@ -110,7 +110,7 @@ public sealed partial class ActivityTriggerScenarios
         var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, new Data(), new(), DateTime.UtcNow);
         checkpoint.RootData = new Data();
         checkpoint.Trace.Configure(instance, checkpoint, ExecutionLimits.Default, null, scopes);
-        using var local = new ServiceCollection().BuildServiceProvider();
+        using var local = new ServiceCollection().AddSingleton<IActivityRegistry>(new ActivityRegistry([])).BuildServiceProvider();
         var transitions = new ContinuationTransitions(local, TimeProvider.System);
         var parent = checkpoint.Continuations[0]; parent.SetPrevious(new Incoming());
         void Advance(ContinuationState child) => transitions.Advance(scopes, checkpoint, child, 100, 100);
