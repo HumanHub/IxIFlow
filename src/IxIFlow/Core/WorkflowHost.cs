@@ -589,7 +589,9 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
             foreach (var queue in _instances.Values)
                 while (queue.Count > 0)
                     cancelled.Add(queue.Dequeue());
-            running = _admitted.Select(item => item.Done.Task).ToArray();
+            // Lingering runs are awaited separately once the admitted runs finish.
+            running = _admitted.Select(item => item.Done.Task)
+                .Concat(_debugWakes.Values.Select(done => done.Task)).ToArray();
             // Due instances stay runnable in the store for the next host.
             _due.Clear();
             _dueOf.Clear();
