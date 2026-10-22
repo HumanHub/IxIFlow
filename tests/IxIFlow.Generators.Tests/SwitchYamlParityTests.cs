@@ -291,7 +291,7 @@ public sealed class SwitchYamlParityTests
     [Fact]
     public void SwitchSchemaIsGeneratedFromTheSharedDocumentContract()
     {
-        var schema = File.ReadAllText(WorkflowSchemaFiles.SchemaPath);
+        var schema = File.ReadAllText(WorkflowSchemaFiles.SchemaPath).Replace("\r\n", "\n");
         Assert.Equal(WorkflowDocumentSchema.Write(), schema);
         var parsed = JsonSchema.FromText(schema, new BuildOptions { SchemaRegistry = new SchemaRegistry() });
         // Building the same $id again must use another private registry as well.
