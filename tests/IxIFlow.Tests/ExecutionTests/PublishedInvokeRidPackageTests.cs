@@ -80,7 +80,7 @@ public sealed class PublishedInvokeRidPackageTests
             definitions:
               - kind: invokeWorkflow
                 workflow: {name: Callee, version: 1}
-            """), 0);
+            """), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.False(result.Success);
         var error = Assert.Single(result.Diagnostics);
@@ -90,7 +90,7 @@ public sealed class PublishedInvokeRidPackageTests
         Assert.Contains("Platform", error.Message);
         Assert.Contains("runtime", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Null(await store.GetWorkflowVersionAsync("Caller", 1));
-        Assert.Equal(draft, await store.GetDefinitionAsync("Caller", 1));
+        Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
     }
 
     [Fact]
@@ -112,7 +112,7 @@ public sealed class PublishedInvokeRidPackageTests
         string name, string imports, string definitions)
     {
         var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow",
-            $"workflow: {{name: {name}, dataType: RidInvoke.Data}}\n{imports}\n{definitions}"), 0);
+            $"workflow: {{name: {name}, dataType: RidInvoke.Data}}\n{imports}\n{definitions}"), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
         return result.Version!;

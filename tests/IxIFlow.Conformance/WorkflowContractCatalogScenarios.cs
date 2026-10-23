@@ -33,7 +33,7 @@ public sealed class WorkflowContractCatalogScenarios
             Assert.Equal(row.ContractJson, (await store.GetWorkflowVersionAsync(row.Name, row.Version))!.ContractJson);
             Assert.Equal(row.ContractHash, (await store.GetWorkflowVersionAsync(row.Name, row.Version))!.ContractHash);
         }
-        await store.SetWorkflowVersionStateAsync(row.Name, row.Version, WorkflowVersionState.Deprecated);
+        await store.SetWorkflowVersionStateAsync(row.Name, row.Version, WorkflowVersionState.Deprecated, new CatalogMutationToken((await store.GetWorkflowVersionAsync(row.Name, row.Version))!.LifecycleRevision));
         var saved = (await store.GetWorkflowVersionAsync(row.Name, row.Version))!;
         Assert.Equal(row.ContractJson, saved.ContractJson);
         Assert.Equal(row.ContractHash, saved.ContractHash);

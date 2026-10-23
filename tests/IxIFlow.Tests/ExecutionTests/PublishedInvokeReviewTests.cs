@@ -22,11 +22,11 @@ public sealed class PublishedInvokeReviewTests
         options.SourceOptions.Types["Data"] = "global::" + (dependency ? typeof(PrivateInvokeData).FullName : typeof(FirstData).FullName);
         var publisher = new WorkflowPublisher(store, store, options);
         var callee = await store.SaveDefinitionAsync(new("Callee", 1, "workflow",
-            "workflow: {name: Callee, dataType: Data, input: [], output: []}\ndefinitions: []"), 0);
+            "workflow: {name: Callee, dataType: Data, input: [], output: []}\ndefinitions: []"), null);
         var child = await publisher.PublishAsync(callee.Id);
         Assert.True(child.Success, string.Join("; ", child.Diagnostics));
         var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow",
-            "workflow: {name: Caller, dataType: Data}\ndefinitions:\n  - kind: invokeWorkflow\n    workflow: {name: Callee, version: 1}"), 0);
+            "workflow: {name: Caller, dataType: Data}\ndefinitions:\n  - kind: invokeWorkflow\n    workflow: {name: Callee, version: 1}"), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
     }
@@ -43,7 +43,7 @@ public sealed class PublishedInvokeReviewTests
         options.SourceOptions.Types["Data"] = "global::" + (dependency ? typeof(PrivateInvokeData).FullName : typeof(FirstData).FullName);
         var publisher = new WorkflowPublisher(store, store, options);
         var childDraft = await store.SaveDefinitionAsync(new("Original", 1, "workflow",
-            "workflow: {name: Original, dataType: Data, input: [], output: []}\ndefinitions: []"), 0);
+            "workflow: {name: Original, dataType: Data, input: [], output: []}\ndefinitions: []"), null);
         var child = await publisher.PublishAsync(childDraft.Id);
         Assert.True(child.Success, string.Join("; ", child.Diagnostics));
         await using var stream = await store.OpenAsync(child.Version!.ArtifactDigest!.Value);
@@ -73,7 +73,7 @@ public sealed class PublishedInvokeReviewTests
         var saved = await WorkflowBundleArchive.ReadAsync(new MemoryStream(archive), digest);
         await store.RegisterWorkflowVersionAsync(child.Version with
         {
-            Name = "Callee", ArtifactDigest = digest, PublishedDraftRevision = null,
+            Name = "Callee", ArtifactDigest = digest, PublishedDraft = null,
             ManifestJson = JsonSerializer.Serialize(saved.Manifest)
         });
         var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", """
@@ -81,7 +81,7 @@ public sealed class PublishedInvokeReviewTests
             definitions:
               - kind: invokeWorkflow
                 workflow: {name: Callee, version: 1}
-            """), 0);
+            """), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.False(result.Success);
         var error = Assert.Single(result.Diagnostics);
@@ -91,7 +91,7 @@ public sealed class PublishedInvokeReviewTests
         Assert.True(error.Message.Contains(selected.Name!, StringComparison.Ordinal), error.Message);
         Assert.Null(result.Version);
         Assert.Null(await store.GetWorkflowVersionAsync("Caller", 1));
-        Assert.Equal(draft, await store.GetDefinitionAsync("Caller", 1));
+        Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
     }
 
     [Theory]
@@ -104,7 +104,7 @@ public sealed class PublishedInvokeReviewTests
         var store = new InMemoryWorkflowStateRepository();
         var options = GenericOptions(nested);
         var draft = await store.SaveDefinitionAsync(new("Generic", 1, "workflow",
-            $"workflow: {{name: Generic, dataType: Data, input: [{member}]}}\ndefinitions: []"), 0);
+            $"workflow: {{name: Generic, dataType: Data, input: [{member}]}}\ndefinitions: []"), null);
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         var error = Assert.Single(result.Diagnostics);
         Assert.Equal(code, error.Code);
@@ -113,7 +113,7 @@ public sealed class PublishedInvokeReviewTests
         Assert.True(error.Column > 1);
         Assert.Null(result.Version);
         Assert.Null(await store.GetWorkflowVersionAsync("Generic", 1));
-        Assert.Equal(draft, await store.GetDefinitionAsync("Generic", 1));
+        Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Generic", 1));
     }
 
     [Theory]
@@ -123,7 +123,7 @@ public sealed class PublishedInvokeReviewTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var draft = await store.SaveDefinitionAsync(new("Generic", 1, "workflow",
-            "workflow: {name: Generic, dataType: Data, output: [Value]}\ndefinitions: []"), 0);
+            "workflow: {name: Generic, dataType: Data, output: [Value]}\ndefinitions: []"), null);
         var result = await new WorkflowPublisher(store, store, GenericOptions(nested)).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
         Assert.Equal(typeof(string), IxIFlow.Core.Runtime.WorkflowTypeIdentity.Resolve(

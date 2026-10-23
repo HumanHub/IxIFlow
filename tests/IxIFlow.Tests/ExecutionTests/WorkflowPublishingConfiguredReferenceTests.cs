@@ -61,7 +61,7 @@ public sealed class WorkflowPublishingConfiguredReferenceTests
                         source.Workflows["Child@1"] = new WorkflowSourceReference("global::EntryApplication.Data", 1);
                         var yaml = "workflow:\n  name: Configured\n  version: 1\n  dataType: Data\ndefinitions:\n  - kind: activity\n    activity: Echo\n";
                         var store = new InMemoryWorkflowStateRepository();
-                        var draft = await store.SaveDefinitionAsync(new("Configured", 1, "workflow", yaml), 0);
+                        var draft = await store.SaveDefinitionAsync(new("Configured", 1, "workflow", yaml), null);
                         var valid = await new WorkflowPublisher(store, store, new() { SourceOptions = source }).PublishAsync(draft.Id);
                         if (!valid.Success) throw new Exception(string.Join("; ", valid.Diagnostics));
                         if (valid.Version!.ManifestJson!.Contains("DynamicPlugin")) return 11;
@@ -76,7 +76,7 @@ public sealed class WorkflowPublishingConfiguredReferenceTests
                             default: return 13;
                         }
                         var rejectedStore = new InMemoryWorkflowStateRepository();
-                        var rejected = await rejectedStore.SaveDefinitionAsync(new("Configured", 1, "workflow", yaml), 0);
+                        var rejected = await rejectedStore.SaveDefinitionAsync(new("Configured", 1, "workflow", yaml), null);
                         var publisher = new WorkflowPublisher(rejectedStore, rejectedStore, new() { SourceOptions = source });
                         var cold = await publisher.PublishAsync(rejected.Id);
                         Assembly.Load("DynamicPlugin");
@@ -86,7 +86,7 @@ public sealed class WorkflowPublishingConfiguredReferenceTests
                         if (error.Code != "PUB007" || error.Stage != WorkflowPublishStage.Validate ||
                             !error.Message.Contains(pluginType) || !error.Message.Contains("host reference profile"))
                             throw new Exception(error.ToString());
-                        if (await rejectedStore.GetDefinitionAsync("Configured", 1) != rejected ||
+                        if (await rejectedStore.GetDefinitionAsync("workflow", "Configured", 1) != rejected ||
                             await rejectedStore.GetWorkflowVersionAsync("Configured", 1) != null) return 15;
                         return 0;
                     }

@@ -23,10 +23,19 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetUnschedulableAsync(limit, cursor, cancellationToken), "Reading unschedulable work");
     public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
         Guard(() => _store.CanScheduleAsync(demands, cancellationToken), "Checking live host eligibility");
-    public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
-        Guard(() => _store.GetDefinitionAsync(name, version), "Accessing workflow catalog or artifacts");
-    public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
-        Guard(() => _store.SaveDefinitionAsync(definition, expectedRevision), "Accessing workflow catalog or artifacts");
+    public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected) => Guard(() => _store.DeleteDefinitionAsync(expected), "Accessing workflow catalog or artifacts");
+    public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query) => Guard(() => _store.GetDefinitionsAsync(query), "Accessing workflow catalog or artifacts");
+    public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope) => Guard(() => _store.GetRetirementBlockersAsync(name, version, scope), "Accessing workflow catalog or artifacts");
+    public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter) => Guard(() => _store.BeginPublicationAsync(draftId, hostId, actor, staleAfter), "Accessing workflow catalog or artifacts");
+    public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId) => Guard(() => _store.HeartbeatPublicationAsync(id, hostId), "Accessing workflow catalog or artifacts");
+    public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome) => Guard(() => _store.CompletePublicationAsync(id, hostId, outcome), "Accessing workflow catalog or artifacts");
+    public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope) => Guard(() => _store.GetPublicationAsync(id, scope), "Accessing workflow catalog or artifacts");
+    public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query) => Guard(() => _store.GetPublicationsAsync(query), "Accessing workflow catalog or artifacts");
+    public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => Guard(() => _store.PurgePublicationsAsync(retention, batchSize, cancellationToken), "Accessing workflow catalog or artifacts");
+    public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version) =>
+        Guard(() => _store.GetDefinitionAsync(kind, name, version), "Accessing workflow catalog or artifacts");
+    public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null) =>
+        Guard(() => _store.SaveDefinitionAsync(definition, expected, actor), "Accessing workflow catalog or artifacts");
     public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
         Guard(() => _store.RegisterWorkflowVersionAsync(version, artifacts), "Accessing workflow catalog or artifacts");
     public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
@@ -37,10 +46,10 @@ internal sealed class GuardedStateRepository : IWorkflowStateRepository
         Guard(() => _store.GetWorkflowVersionChangesAsync(afterRevision), "Reading catalog changes");
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
         Guard(() => _store.GetWorkflowVersionsAsync(name), "Accessing workflow catalog or artifacts");
-    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>
-        Guard(() => _store.SetWorkflowVersionStateAsync(name, version, state, artifacts), "Accessing workflow catalog or artifacts");
-    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) =>
-        Guard(() => _store.PublishDefinitionAsync(draftId, version, artifacts), "Accessing workflow catalog or artifacts");
+    public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null) =>
+        Guard(() => _store.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts, actor), "Accessing workflow catalog or artifacts");
+    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null) =>
+        Guard(() => _store.PublishDefinitionAsync(draftId, version, artifacts, actor), "Accessing workflow catalog or artifacts");
     public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
         Guard(() => _store.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken), "Accessing workflow catalog or artifacts");
     public async ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>

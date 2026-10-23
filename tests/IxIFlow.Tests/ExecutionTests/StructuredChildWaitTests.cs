@@ -763,7 +763,7 @@ public sealed class StructuredChildWaitTests
         using var services = Services(repository);
         var registry = services.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(ApprovingChild("RetiredChild"));
-        await registry.RetireWorkflowVersionAsync("RetiredChild", 1);
+        await registry.RetireWorkflowVersionAsync("RetiredChild", 1, new CatalogMutationToken((await registry.GetWorkflowVersionAsync("RetiredChild", 1))!.LifecycleRevision));
         var parent = Workflow.Create<ParentData>("ParentOfRetired")
             .Step<NoopActivity>()
             .Invoke<ChildData>("RetiredChild", 1)

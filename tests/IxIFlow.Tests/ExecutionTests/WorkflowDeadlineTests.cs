@@ -433,10 +433,19 @@ public sealed class WorkflowDeadlineTests
         public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _inner.GetPackageAsync(id, version);
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _inner.GetPackagePageAsync(id, afterVersion, limit);
         public IPayloadStore PayloadStore => _inner.PayloadStore;
-        public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) =>
-            _inner.GetDefinitionAsync(name, version);
-        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
-            _inner.SaveDefinitionAsync(definition, expectedRevision);
+        public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected) => _inner.DeleteDefinitionAsync(expected);
+        public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query) => _inner.GetDefinitionsAsync(query);
+        public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope) => _inner.GetRetirementBlockersAsync(name, version, scope);
+        public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter) => _inner.BeginPublicationAsync(draftId, hostId, actor, staleAfter);
+        public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId) => _inner.HeartbeatPublicationAsync(id, hostId);
+        public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome) => _inner.CompletePublicationAsync(id, hostId, outcome);
+        public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope) => _inner.GetPublicationAsync(id, scope);
+        public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query) => _inner.GetPublicationsAsync(query);
+        public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => _inner.PurgePublicationsAsync(retention, batchSize, cancellationToken);
+        public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version) =>
+            _inner.GetDefinitionAsync(kind, name, version);
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null) =>
+            _inner.SaveDefinitionAsync(definition, expected, actor);
         public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
             _inner.RegisterWorkflowVersionAsync(version, artifacts);
         public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
@@ -445,10 +454,10 @@ public sealed class WorkflowDeadlineTests
         public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => _inner.GetWorkflowVersionChangesAsync(afterRevision);
         public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
             _inner.GetWorkflowVersionsAsync(name);
-        public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) =>
-            _inner.SetWorkflowVersionStateAsync(name, version, state, artifacts);
-        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) =>
-            _inner.PublishDefinitionAsync(draftId, version, artifacts);
+        public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null) =>
+            _inner.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts, actor);
+        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null) =>
+            _inner.PublishDefinitionAsync(draftId, version, artifacts, actor);
         public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
             _inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
         public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>

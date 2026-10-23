@@ -24,7 +24,7 @@ public sealed class PublishedInvokeCheckpointTests
         };
         var source = new InMemoryWorkflowStateRepository();
         var calleeDraft = await source.SaveDefinitionAsync(new("Callee", 1, "workflow",
-            "workflow: {name: Callee, version: 1, dataType: Data}\ndefinitions: []"), 0);
+            "workflow: {name: Callee, version: 1, dataType: Data}\ndefinitions: []"), null);
         var published = await new WorkflowPublisher(source, source, options).PublishAsync(calleeDraft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
         var original = published.Version!;
@@ -41,10 +41,11 @@ public sealed class PublishedInvokeCheckpointTests
         var verified = await WorkflowBundleArchive.ReadAsync(new MemoryStream(bytes), digest);
         var callee = original with { ArtifactDigest = digest, ManifestJson = JsonSerializer.Serialize(verified.Manifest) };
         await store.RegisterWorkflowVersionAsync(callee);
+        callee = (await store.GetWorkflowVersionAsync(callee.Name, callee.Version))!;
         var yaml = imported
             ? "workflow: {name: Caller, version: 1, dataType: Data}\nimports:\n  workflows: [Callee@1]\ndefinitions: []"
             : "workflow: {name: Caller, version: 1, dataType: Data}\ndefinitions:\n  - kind: invokeWorkflow\n    workflow: {name: Callee, version: 1}";
-        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", yaml), null);
 
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
 
@@ -59,7 +60,7 @@ public sealed class PublishedInvokeCheckpointTests
         Assert.Equal(imported ? 3 : 15, error.Column);
         Assert.Contains("Callee@1", error.Message);
         Assert.Contains("republish the callee", error.Message);
-        Assert.Equal(draft, await store.GetDefinitionAsync("Caller", 1));
+        Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
         Assert.Null(await store.GetWorkflowVersionAsync("Caller", 1));
         Assert.Equal(JsonSerializer.Serialize(callee), JsonSerializer.Serialize(Assert.Single(await store.GetWorkflowVersionsAsync())));
     }

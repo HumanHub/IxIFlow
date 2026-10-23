@@ -553,7 +553,7 @@ public sealed class BundleDebugPayloadMergeTests
                   - {target: Secret, from: {kind: path, path: workflow.Secret}}
                 output: [{source: Value, to: {kind: path, path: workflow.Result}}]
             """;
-        var draft = await store.SaveDefinitionAsync(new("BundleDebugMerge", version, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("BundleDebugMerge", version, "workflow", yaml), null);
         var published = await new WorkflowPublisher(store, (IArtifactStore)store).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
         return published.Version!;

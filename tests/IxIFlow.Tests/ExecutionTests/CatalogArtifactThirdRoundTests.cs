@@ -63,9 +63,8 @@ public sealed class CatalogArtifactThirdRoundTests
         if (scenario is Scenario.PublishedCaller or Scenario.DeprecatedCaller)
         {
             if (scenario == Scenario.DeprecatedCaller)
-                await store.SetWorkflowVersionStateAsync(caller, oldVersion, WorkflowVersionState.Deprecated);
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-                store.SetWorkflowVersionStateAsync(child, 1, WorkflowVersionState.Retired));
+                await store.SetWorkflowVersionStateAsync(caller, oldVersion, WorkflowVersionState.Deprecated, new CatalogMutationToken((await store.GetWorkflowVersionAsync(caller, oldVersion))!.LifecycleRevision));
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await store.SetWorkflowVersionStateAsync(child, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(child, 1))!.LifecycleRevision)));
             Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
             Assert.Contains($"is required by caller {caller} v{oldVersion}", error.Message);
             Assert.DoesNotContain("unfinished parent", error.Message);
@@ -90,13 +89,12 @@ public sealed class CatalogArtifactThirdRoundTests
 
         if (scenario == Scenario.UnfinishedParent)
             for (var i = 0; i < 16; i++) await SeedAsync(caller, oldVersion);
-        await store.SetWorkflowVersionStateAsync(caller, oldVersion, WorkflowVersionState.Retired);
+        await store.SetWorkflowVersionStateAsync(caller, oldVersion, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(caller, oldVersion))!.LifecycleRevision));
         await AssertQueryAsync(scenario == Scenario.UnfinishedParent);
 
         if (scenario == Scenario.UnfinishedParent)
         {
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-                store.SetWorkflowVersionStateAsync(child, 1, WorkflowVersionState.Retired));
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await store.SetWorkflowVersionStateAsync(child, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(child, 1))!.LifecycleRevision)));
             Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
             Assert.Contains($"has unfinished parent instances of {caller} v{oldVersion}", error.Message);
             Assert.DoesNotContain("is required by caller", error.Message);
@@ -108,7 +106,7 @@ public sealed class CatalogArtifactThirdRoundTests
             }
             await AssertQueryAsync(false);
         }
-        await store.SetWorkflowVersionStateAsync(child, 1, WorkflowVersionState.Retired);
+        await store.SetWorkflowVersionStateAsync(child, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(child, 1))!.LifecycleRevision));
         Assert.Equal(WorkflowVersionState.Retired, (await store.GetWorkflowVersionAsync(child, 1))!.State);
 
         async Task SeedAsync(string name, int version)

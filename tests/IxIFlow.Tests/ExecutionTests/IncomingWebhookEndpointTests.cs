@@ -434,7 +434,7 @@ public sealed partial class IncomingWebhookEndpointTests
         var registry = new WorkflowCatalog();
         await using var host = new Harness(registry: registry);
         var first = await host.Send("/orders/{orderId}", key: "deactivate");
-        await registry.RetireWorkflowVersionAsync("IncomingWait", 1);
+        await registry.RetireWorkflowVersionAsync("IncomingWait", 1, new CatalogMutationToken((await registry.GetWorkflowVersionAsync("IncomingWait", 1))!.LifecycleRevision));
         var retry = await host.Send("/orders/{orderId}", key: "deactivate");
         Assert.Equal(202, retry.Status);
         Assert.Equal(first.Id, retry.Id);

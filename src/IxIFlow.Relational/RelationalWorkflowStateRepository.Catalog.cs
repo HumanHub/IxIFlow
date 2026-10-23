@@ -14,16 +14,65 @@ public abstract partial class RelationalWorkflowStateRepository
         public string Kind { get; set; } = "";
         public string Source { get; set; } = "";
         public long Revision { get; set; }
-        public WorkflowDraft Value => new(Name, Version, Kind, Source, Revision);
+        public Guid Generation { get; set; }
+        public int SourceLength { get; set; }
+        public DateTime UpdatedAtUtc { get; set; }
+        public string? UpdatedBy { get; set; }
+        public WorkflowDraft Value
+        {
+            get
+            {
+                if (SourceLength != Source.Length) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Draft source length differs from its projection");
+                return new(Name, Version, Kind, Source, Revision) { Generation = Generation, UpdatedAtUtc = Utc(UpdatedAtUtc), UpdatedBy = UpdatedBy };
+            }
+        }
+        public WorkflowDraftSummary Summary => new(Kind, Name, Version, Generation, Revision, SourceLength, Utc(UpdatedAtUtc), UpdatedBy);
     }
 
     private sealed class VersionRow
     {
+        public string Name { get; set; } = "";
+        public int Version { get; set; }
+        public string StructureHash { get; set; } = "";
+        public string? ArtifactDigest { get; set; }
+        public long CatalogRevision { get; set; }
         public string MetadataJson { get; set; } = "";
         public string State { get; set; } = "";
-        public WorkflowVersion Value => JsonSerializer.Deserialize<WorkflowVersion>(MetadataJson)! with
-        { State = Enum.Parse<WorkflowVersionState>(State) };
+        public Guid? PublishedDraftGeneration { get; set; }
+        public long? PublishedDraftRevision { get; set; }
+        public DateTime? PublishedAtUtc { get; set; }
+        public string? PublishedBy { get; set; }
+        public DateTime? StateChangedAtUtc { get; set; }
+        public string? StateChangedBy { get; set; }
+        public long LifecycleRevision { get; set; }
+        public WorkflowVersion Value
+        {
+            get
+            {
+                var row = JsonSerializer.Deserialize<WorkflowVersion>(MetadataJson)!;
+                if (row.Name != Name || row.Version != Version || row.StructureHash != StructureHash || row.ArtifactDigest?.Value != ArtifactDigest || CatalogRevision != LifecycleRevision ||
+                    row.State.ToString() != State || row.PublishedDraft?.Generation != PublishedDraftGeneration || row.PublishedDraft?.Revision != PublishedDraftRevision ||
+                    row.PublishedAtUtc != PublishedAtUtc || row.PublishedBy != PublishedBy || row.StateChangedAtUtc != StateChangedAtUtc || row.StateChangedBy != StateChangedBy || row.LifecycleRevision != LifecycleRevision)
+                {
+                    // A forged document can replace both inventory and audit stamps. Preserve
+                    // the inventory's specific refusal before reporting unrelated projections.
+                    WorkflowCatalogRules.CheckManifestInvocations(row);
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Workflow catalog columns differ from its metadata");
+                }
+                if (row.PublishedDraft is { } draft && (draft.Kind != WorkflowDraftKinds.Workflow || draft.Name != row.Name || draft.Version != row.Version))
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Workflow receipt identity differs from its catalog identity");
+                return row;
+            }
+        }
     }
+
+    private object VersionParameters(WorkflowVersion row) => WithTimes(new
+    {
+        row.Name, row.Version, row.StructureHash, State = row.State.ToString(), ArtifactDigest = row.ArtifactDigest?.Value,
+        MetadataJson = JsonSerializer.Serialize(row), CatalogRevision = row.LifecycleRevision, row.LifecycleRevision,
+        PublishedDraftGeneration = row.PublishedDraft?.Generation, PublishedDraftRevision = row.PublishedDraft?.Revision,
+        row.PublishedBy, row.StateChangedBy
+    }, ("PublishedAtUtc", row.PublishedAtUtc), ("StateChangedAtUtc", row.StateChangedAtUtc));
 
     private sealed class UnfinishedCallerRow
     {
@@ -107,7 +156,7 @@ public abstract partial class RelationalWorkflowStateRepository
         }
     }
 
-    private async Task<T> CatalogWriteAsync<T>(Func<DbConnection, DbTransaction, Task<T>> action)
+    private async Task<T> CatalogWriteAsync<T>(Func<DbConnection, DbTransaction, Task<T>> action, bool protectsStarts = true)
     {
         await EnsureSchemaAsync();
         if (_catalogTransaction.Value is { } current)
@@ -117,7 +166,12 @@ public abstract partial class RelationalWorkflowStateRepository
             await using var connection = await OpenConnectionAsync();
             await using var transaction = await BeginTransactionAsync(connection, Operation.Catalog)
                 ?? throw new InvalidOperationException("Catalog writes require a transaction");
-            await ExecuteOptionalAsync(connection, transaction, Statement.CatalogLock, null);
+            // Starts share the executable-catalog lock, but do not read drafts, attempts or
+            // the revision counter. Serialize content separately, including consistent pages.
+            // Wait for content before excluding starts: a queued mutation must not convoy
+            // starts behind a content writer. Starts never request the content lock.
+            await ExecuteOptionalAsync(connection, transaction, Statement.CatalogContentLock, null);
+            if (protectsStarts) await ExecuteOptionalAsync(connection, transaction, Statement.CatalogLock, null);
             var previous = _catalogTransaction.Value;
             _catalogTransaction.Value = (connection, transaction);
             try
@@ -130,71 +184,94 @@ public abstract partial class RelationalWorkflowStateRepository
         });
     }
 
-    public async Task<WorkflowDraft?> GetDefinitionAsync(string name, int version)
+    public async Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version)
     {
-        WorkflowCatalogRules.ValidateName(name);
+        WorkflowPublicationRules.Key(kind, name, version);
         return await CatalogConnectionAsync(async (connection, transaction) =>
             (await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition),
-                new { Name = name, Version = version }, transaction))?.Value);
+                new { Kind = kind, Name = name, Version = version }, transaction))?.Value);
     }
 
-    public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision)
+    public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null)
     {
-        WorkflowCatalogRules.ValidateName(definition.Name);
-        ArgumentOutOfRangeException.ThrowIfLessThan(definition.Version, 1);
-        ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
-        return SaveDraftAsync();
-
-        Task<WorkflowDraft> SaveDraftAsync() => CatalogConnectionAsync(async (connection, current) =>
+        WorkflowPublicationRules.Save(definition, expected, actor);
+        return CatalogWriteAsync(async (connection, transaction) =>
         {
-            if (current != null) return await WriteAsync(current);
-            await using var transaction = await BeginTransactionAsync(connection, Operation.Catalog)
-                ?? throw new InvalidOperationException("Saving a definition requires a transaction");
-            var result = await WriteAsync(transaction);
-            await transaction.CommitAsync();
-            return result;
-
-            async Task<WorkflowDraft> WriteAsync(DbTransaction transaction)
-            {
-                var saved = definition with { Revision = checked(expectedRevision + 1) };
-                // Insert-if-absent and compare-and-swap updates need no catalog lock.
-                var changed = await connection.ExecuteAsync(RequiredSql(expectedRevision == 0
-                    ? Statement.CatalogDefinitionInsert : Statement.CatalogDefinitionUpdate),
-                    new { saved.Name, saved.Version, saved.Kind, saved.Source, saved.Revision, ExpectedRevision = expectedRevision }, transaction);
-                // Check after the write so a concurrent publication that deleted the old draft
-                // cannot let an insert recreate it. A refusal rolls back this transaction.
-                if (await connection.QuerySingleOrDefaultAsync<VersionRow>(RequiredSql(Statement.CatalogVersion),
-                    new { saved.Name, saved.Version }, transaction) != null)
-                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A published version cannot be edited");
-                if (changed == 0)
-                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed");
-                return saved;
-            }
-        }, Operation.Catalog);
+            if (definition.Kind == WorkflowDraftKinds.Workflow && await connection.QuerySingleOrDefaultAsync<VersionRow>(RequiredSql(Statement.CatalogVersion),
+                new { definition.Name, definition.Version }, transaction) != null)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A published identity cannot be edited");
+            if (definition.Kind == WorkflowDraftKinds.Activity && await connection.QuerySingleOrDefaultAsync<PackageRow>(RequiredSql(Statement.CatalogPackage),
+                new { Id = definition.Name, Version = definition.Version.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".0.0" }, transaction) != null)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A published identity cannot be edited");
+            var current = await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition), definition, transaction);
+            if (expected == null ? current != null : current?.Value.Id != expected)
+                throw new CatalogPreconditionException("The definition identity changed");
+            var generation = expected?.Generation ?? Guid.NewGuid();
+            if (expected == null)
+                while (await connection.ExecuteAsync(RequiredSql(Statement.DraftGenerationInsert), new { definition.Kind, definition.Name, definition.Version, Generation = generation }, transaction) == 0)
+                    generation = Guid.NewGuid();
+            var now = await OutboxNowAsync(connection, transaction);
+            var saved = definition with { Generation = generation, Revision = checked((expected?.Revision ?? 0) + 1), UpdatedAtUtc = now, UpdatedBy = actor };
+            var changed = await connection.ExecuteAsync(RequiredSql(expected == null ? Statement.CatalogDefinitionInsert : Statement.CatalogDefinitionUpdate),
+                WithTimes(new { saved.Kind, saved.Name, saved.Version, saved.Generation, saved.Source, SourceLength = saved.Source.Length,
+                    saved.Revision, saved.UpdatedBy, ExpectedRevision = expected?.Revision }, ("UpdatedAtUtc", now)), transaction);
+            if (changed != 1) throw new CatalogPreconditionException("The definition identity changed");
+            await AdvanceCatalogRevisionAsync(connection, transaction);
+            return saved;
+        }, protectsStarts: false);
     }
 
-    public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) =>
-        CatalogWriteAsync(async (connection, transaction) =>
+    public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected)
+    {
+        WorkflowPublicationRules.Id(expected);
+        return CatalogWriteAsync(async (connection, transaction) =>
+        {
+            if (await connection.ExecuteAsync(RequiredSql(Statement.CatalogDefinitionDelete), expected, transaction) != 1)
+                throw new CatalogPreconditionException("The definition identity changed");
+            await AdvanceCatalogRevisionAsync(connection, transaction);
+            return true;
+        }, protectsStarts: false);
+    }
+
+    // Conformance synchronization after each unprotected hint read, outside any catalog transaction.
+    internal Func<string, Task>? PublicationPreparationReadAsync { get; set; }
+
+    public async Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null)
+    {
+        WorkflowPublicationRules.Actor(actor);
+        ArgumentNullException.ThrowIfNull(artifacts);
+        WorkflowCatalogRules.CheckPublicationArguments(draftId, version);
+        var existing = await GetWorkflowVersionAsync(draftId.Name, draftId.Version);
+        if (PublicationPreparationReadAsync is { } versionRead) await versionRead("Version");
+        var preliminaryDraft = await GetDefinitionAsync(draftId.Kind, draftId.Name, draftId.Version);
+        if (PublicationPreparationReadAsync is { } draftRead) await draftRead("Draft");
+        // These independent reads are hints only. Even a refusal must first resolve a concurrent
+        // same-ID winner under the final transaction. Missing bytes can also belong to a losing build.
+        if (existing == null && preliminaryDraft?.Id == draftId)
+        {
+            try { await WorkflowCatalogRules.CheckArtifactsAsync(version, artifacts); }
+            catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.ArtifactUnavailable) { }
+        }
+        return await CatalogWriteAsync(async (connection, transaction) =>
         {
             var versions = await ReadVersionsAsync(connection, transaction);
-            var existing = versions.SingleOrDefault(row => row.Name == draftId.Name && row.Version == draftId.Version);
+            var winner = versions.SingleOrDefault(row => row.Name == draftId.Name && row.Version == draftId.Version);
             var draft = await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition), draftId, transaction);
-            WorkflowCatalogRules.CheckPublication(draftId, version, draft?.Value, existing);
-            if (existing != null) return existing;
+            WorkflowCatalogRules.CheckPublication(draftId, version, draft?.Value, winner);
+            if (winner != null) return winner;
             WorkflowCatalogRules.CheckInvocations(version, versions);
-            await WorkflowCatalogRules.CheckArtifactsAsync(version, artifacts ?? this);
+            await WorkflowCatalogRules.CheckArtifactsAsync(version, artifacts);
             foreach (var dependency in version.Dependencies ?? [])
                 WorkflowCatalogRules.CheckStartable(versions.SingleOrDefault(row => row.Name == dependency.Name && row.Version == dependency.Version), dependency.Name, dependency.Version);
             var revision = await AdvanceCatalogRevisionAsync(connection, transaction);
-            await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionInsert), new
-            {
-                version.Name, version.Version, version.StructureHash, State = version.State.ToString(),
-                ArtifactDigest = version.ArtifactDigest!.Value.Value, MetadataJson = JsonSerializer.Serialize(version), CatalogRevision = revision
-            }, transaction);
+            var now = await OutboxNowAsync(connection, transaction);
+            var saved = version with { PublishedAtUtc = now, PublishedBy = actor, StateChangedAtUtc = now, StateChangedBy = actor, LifecycleRevision = revision };
+            await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionInsert), VersionParameters(saved), transaction);
             if (await connection.ExecuteAsync(RequiredSql(Statement.CatalogDefinitionDelete), draftId, transaction) != 1)
-                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed");
-            return version;
+                throw new CatalogPreconditionException("The definition identity changed");
+            return saved;
         });
+    }
 
     public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null)
     {
@@ -213,11 +290,10 @@ public abstract partial class RelationalWorkflowStateRepository
                         if (versions.SingleOrDefault(row => row.Name == dependency.Name && row.Version == dependency.Version) is { } child)
                             WorkflowCatalogRules.CheckStartable(child, child.Name, child.Version);
                 var revision = await AdvanceCatalogRevisionAsync(connection, transaction);
-                await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionInsert), new
-                {
-                    version.Name, version.Version, version.StructureHash, State = version.State.ToString(),
-                    ArtifactDigest = version.ArtifactDigest?.Value, MetadataJson = JsonSerializer.Serialize(version), CatalogRevision = revision
-                }, transaction);
+                var now = await OutboxNowAsync(connection, transaction);
+                var saved = version with { PublishedDraft = null, PublishedAtUtc = null, PublishedBy = null,
+                    StateChangedAtUtc = now, StateChangedBy = null, LifecycleRevision = revision };
+                await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionInsert), VersionParameters(saved), transaction);
             }
             return true;
         });
@@ -271,18 +347,20 @@ public abstract partial class RelationalWorkflowStateRepository
         });
     }
 
-    public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null)
+    public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null)
     {
         WorkflowCatalogRules.ValidateName(name);
+        WorkflowPublicationRules.Actor(actor);
         return CatalogWriteAsync(async (connection, transaction) =>
         {
             var versions = await ReadVersionsAsync(connection, transaction);
             var row = versions.SingleOrDefault(row => row.Name == name && row.Version == version)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow version not found");
+            WorkflowPublicationRules.Token(row, expected);
             WorkflowCatalogRules.CheckTransition(row.State, state);
             if (state == WorkflowVersionState.Published)
                 await WorkflowCatalogRules.CheckArtifactsAsync(row, artifacts ?? this);
-            if (row.State == state) return true;
+            if (row.State == state) return row;
             if (state == WorkflowVersionState.Retired)
             {
                 var callers = versions.Where(caller => (caller.Dependencies ?? []).Any(edge => edge.Name == name && edge.Version == version)).ToArray();
@@ -302,9 +380,13 @@ public abstract partial class RelationalWorkflowStateRepository
                         WorkflowCatalogRules.CheckStartable(versions.SingleOrDefault(child => child.Name == dependency.Name && child.Version == dependency.Version),
                             dependency.Name, dependency.Version);
             var revision = await AdvanceCatalogRevisionAsync(connection, transaction);
-            await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionState),
-                new { Name = name, Version = version, State = state.ToString(), CatalogRevision = revision }, transaction);
-            return true;
+            var now = await OutboxNowAsync(connection, transaction);
+            var saved = row with { State = state, LifecycleRevision = revision, StateChangedAtUtc = now, StateChangedBy = actor };
+            var parameters = new DynamicParameters(VersionParameters(saved));
+            parameters.Add("ExpectedRevision", expected.Revision);
+            if (await connection.ExecuteAsync(RequiredSql(Statement.CatalogVersionState), parameters, transaction) != 1)
+                throw new CatalogPreconditionException("The workflow lifecycle revision changed");
+            return saved;
         });
     }
 

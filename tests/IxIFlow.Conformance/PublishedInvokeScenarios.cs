@@ -21,7 +21,7 @@ public sealed class PublishedInvokeScenarios
         var publisher = new WorkflowPublisher(store, store, options);
         async Task<WorkflowVersion> Publish(string name, string yaml)
         {
-            var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", yaml), 0);
+            var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", yaml), null);
             var result = await publisher.PublishAsync(draft.Id);
             Assert.True(result.Success, string.Join("; ", result.Diagnostics));
             return result.Version!;
@@ -100,26 +100,26 @@ public sealed class PublishedInvokeScenarios
         Assert.Contains("immutable", changed.Message);
         foreach (var state in new[] { WorkflowVersionState.Published, WorkflowVersionState.Deprecated })
         {
-            await reopened.SetWorkflowVersionStateAsync(caller.Name, caller.Version, state);
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.SetWorkflowVersionStateAsync(callee.Name, callee.Version, WorkflowVersionState.Retired));
+            await reopened.SetWorkflowVersionStateAsync(caller.Name, caller.Version, state, new CatalogMutationToken((await reopened.GetWorkflowVersionAsync(caller.Name, caller.Version))!.LifecycleRevision));
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await reopened.SetWorkflowVersionStateAsync(callee.Name, callee.Version, WorkflowVersionState.Retired, new CatalogMutationToken((await reopened.GetWorkflowVersionAsync(callee.Name, callee.Version))!.LifecycleRevision)));
             Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
             Assert.Contains("required by caller Caller v1", error.Message);
             Assert.Equal(WorkflowVersionState.Published, (await reopened.GetWorkflowVersionAsync(callee.Name, callee.Version))!.State);
         }
-        await reopened.SetWorkflowVersionStateAsync(caller.Name, caller.Version, WorkflowVersionState.Retired);
+        await reopened.SetWorkflowVersionStateAsync(caller.Name, caller.Version, WorkflowVersionState.Retired, new CatalogMutationToken((await reopened.GetWorkflowVersionAsync(caller.Name, caller.Version))!.LifecycleRevision));
         if (reopened is IAsyncDisposable reopenedDisposable) await reopenedDisposable.DisposeAsync();
 
         var retired = database.NewRepository();
         var retiredCaller = (await retired.GetWorkflowVersionAsync(caller.Name, caller.Version))!;
         Assert.Equal(WorkflowVersionState.Retired, retiredCaller.State);
         Assert.Equal(WorkflowDependencyKind.Child, Assert.Single(retiredCaller.Dependencies!).Kind);
-        var unfinished = await Assert.ThrowsAsync<WorkflowEngineException>(() => retired.SetWorkflowVersionStateAsync(callee.Name, callee.Version, WorkflowVersionState.Retired));
+        var unfinished = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await retired.SetWorkflowVersionStateAsync(callee.Name, callee.Version, WorkflowVersionState.Retired, new CatalogMutationToken((await retired.GetWorkflowVersionAsync(callee.Name, callee.Version))!.LifecycleRevision)));
         Assert.Equal(WorkflowErrorKind.InvalidState, unfinished.Kind);
         Assert.Contains("unfinished parent instances of Caller v1", unfinished.Message);
         var completed = (await retired.GetWorkflowInstanceAsync(instance.InstanceId))!;
         completed.Status = WorkflowStatus.Completed;
         await retired.SeedAsync(completed);
-        await retired.SetWorkflowVersionStateAsync(callee.Name, callee.Version, WorkflowVersionState.Retired);
+        await retired.SetWorkflowVersionStateAsync(callee.Name, callee.Version, WorkflowVersionState.Retired, new CatalogMutationToken((await retired.GetWorkflowVersionAsync(callee.Name, callee.Version))!.LifecycleRevision));
         Assert.Equal(WorkflowVersionState.Retired, (await retired.GetWorkflowVersionAsync(callee.Name, callee.Version))!.State);
     }
 }

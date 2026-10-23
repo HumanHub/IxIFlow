@@ -204,15 +204,24 @@ public sealed class DefinitionValidationTests
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _catalog.GetPackagesAsync(id);
         public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _catalog.GetPackageAsync(id, version);
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _catalog.GetPackagePageAsync(id, afterVersion, limit);
-        public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _catalog.GetDefinitionAsync(name, version);
-        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) => _catalog.SaveDefinitionAsync(definition, expectedRevision);
+        public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected) => _catalog.DeleteDefinitionAsync(expected);
+        public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query) => _catalog.GetDefinitionsAsync(query);
+        public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope) => _catalog.GetRetirementBlockersAsync(name, version, scope);
+        public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter) => _catalog.BeginPublicationAsync(draftId, hostId, actor, staleAfter);
+        public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId) => _catalog.HeartbeatPublicationAsync(id, hostId);
+        public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome) => _catalog.CompletePublicationAsync(id, hostId, outcome);
+        public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope) => _catalog.GetPublicationAsync(id, scope);
+        public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query) => _catalog.GetPublicationsAsync(query);
+        public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => _catalog.PurgePublicationsAsync(retention, batchSize, cancellationToken);
+        public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version) => _catalog.GetDefinitionAsync(kind, name, version);
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null) => _catalog.SaveDefinitionAsync(definition, expected, actor);
         public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) => _catalog.RegisterWorkflowVersionAsync(version, artifacts);
         public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _catalog.GetWorkflowVersionAsync(name, version);
         public Task<long> GetCatalogRevisionAsync() => _catalog.GetCatalogRevisionAsync();
         public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => _catalog.GetWorkflowVersionChangesAsync(afterRevision);
         public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _catalog.GetWorkflowVersionsAsync(name);
-        public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) => _catalog.SetWorkflowVersionStateAsync(name, version, state, artifacts);
-        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) => _catalog.PublishDefinitionAsync(draftId, version, artifacts);
+        public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null) => _catalog.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts, actor);
+        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null) => _catalog.PublishDefinitionAsync(draftId, version, artifacts, actor);
         public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => _catalog.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
         public Task<WorkflowVersion?> GetLatestWorkflowVersionAsync(string name) => _catalog.GetLatestWorkflowVersionAsync(name);
         public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
@@ -224,7 +233,7 @@ public sealed class DefinitionValidationTests
         public async Task<string?> GetWorkflowStructureHashAsync(string name, int version) =>
             await GetWorkflowDefinitionAsync(name, version) is { } definition
                 ? new WorkflowScopeCatalog(definition).StructureHash : null;
-        public Task RetireWorkflowVersionAsync(string name, int version) => throw new NotSupportedException();
+        public Task RetireWorkflowVersionAsync(string name, int version, CatalogMutationToken expected, string? actor = null) => throw new NotSupportedException();
     }
 
     [Fact]

@@ -12,14 +12,17 @@ public sealed partial class SqliteWorkflowStateRepository
         try
         {
             using var schema = await connection.QueryMultipleAsync("""
+                SELECT id, kind, name, version, generation, revision, attempt, state, host_id, started_by, started_at_utc, heartbeat_at_utc, finished_at_utc, outcome_json, catalog_revision FROM ixiflow_publication_attempts WHERE 1=0;
+                SELECT kind, name, version, generation, revision, active_id, last_attempt FROM ixiflow_publication_heads WHERE 1=0;
+                SELECT generation, kind, name, version FROM ixiflow_draft_generations WHERE 1=0;
                 SELECT id, version, fingerprint, activities_json FROM ixiflow_installed_packages WHERE 1=0;
                 SELECT member_id, package_id, package_version, fingerprint FROM ixiflow_host_packages WHERE 1=0;
                 SELECT instance_id, command_id, command_order, command_json FROM ixiflow_workflow_debug_commands WHERE 1=0;
                 SELECT digest, bytes, body, metadata_json FROM ixiflow_workflow_payloads WHERE 1=0;
                 SELECT digest, owner_kind, owner_id FROM ixiflow_workflow_payload_refs WHERE 1=0;
-                SELECT name, version, kind, source, revision, state FROM ixiflow_definitions WHERE 1=0;
+                SELECT name, version, kind, source, revision, generation, source_length, updated_at_utc, updated_by FROM ixiflow_definitions WHERE 1=0;
                 SELECT id, revision FROM ixiflow_catalog_revision WHERE 1=0;
-                SELECT name, version, structure_hash, state, artifact_digest, metadata_json, catalog_revision FROM ixiflow_workflow_versions WHERE 1=0;
+                SELECT name, version, structure_hash, state, artifact_digest, metadata_json, catalog_revision, published_draft_generation, published_draft_revision, published_at_utc, published_by, state_changed_at_utc, state_changed_by, lifecycle_revision FROM ixiflow_workflow_versions WHERE 1=0;
                 SELECT digest, kind, content, created_at_utc FROM ixiflow_artifacts WHERE 1=0;
                 SELECT id, version, digest, metadata_json, dependency_groups_json FROM ixiflow_packages WHERE 1=0;
                 SELECT [instance_id], [incarnation], [workflow_name], [workflow_version], [bundle_digest], [created_at_utc], [stop_kind], [stop_crash_count], [status], [correlation_id], [runnable_at_utc], [ended_at_utc], [state_json], [cancellation_json], [cancellation_acknowledged], [revision], [inbox_sequence], [inbox_read_through], [parent_instance_id], [parent_wait_id], [last_host_id], [demand_set_id], [pinned_host], [pin_expires_at_utc], [pin_inherit] FROM ixiflow_workflow_instances WHERE 1=0;
@@ -44,6 +47,7 @@ public sealed partial class SqliteWorkflowStateRepository
                 SELECT member_id, capability_key, capability_value FROM ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
+            await ValidateDraftKeysAsync(connection, transaction);
             // This required index also distinguishes the StoredJson column encoding from the earlier build.
             if (await connection.ExecuteScalarAsync<long>("SELECT count(*) FROM sqlite_master WHERE type='index' AND name='ixiflow_payload_refs_owner'", transaction: transaction) != 1)
                 throw EarlierBuild();
@@ -59,6 +63,9 @@ public sealed partial class SqliteWorkflowStateRepository
                 "ix_ixiflow_instances_set_pin",
                 "ix_ixiflow_instances_set_runnable",
 
+                "ix_publication_attempt_identity",
+                "ix_publication_history",
+                "ix_publication_finished",
                 "ix_artifacts_created",
                 "ix_workflow_versions_revision",
                 "ix_ixiflow_admissions_expiry",
@@ -99,6 +106,34 @@ public sealed partial class SqliteWorkflowStateRepository
         catch (Exception error) when (error is SqliteException { SqliteErrorCode: 1 })
         {
             throw EarlierBuild(error);
+        }
+    }
+
+    private static async Task ValidateDraftKeysAsync(DbConnection connection, DbTransaction transaction)
+    {
+        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_table_info('ixiflow_definitions') WHERE pk>0 ORDER BY pk", transaction: transaction)).SequenceEqual(new[] { "kind", "name", "version" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_table_info('ixiflow_workflow_versions') WHERE pk>0 ORDER BY pk", transaction: transaction)).SequenceEqual(new[] { "name", "version" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_table_info('ixiflow_draft_generations') WHERE pk>0 ORDER BY pk", transaction: transaction)).SequenceEqual(new[] { "generation" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_table_info('ixiflow_publication_heads') WHERE pk>0 ORDER BY pk", transaction: transaction)).SequenceEqual(new[] { "kind", "name", "version", "generation", "revision" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_table_info('ixiflow_publication_attempts') WHERE pk>0 ORDER BY pk", transaction: transaction)).SequenceEqual(new[] { "id" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_index_info('ix_publication_attempt_identity') ORDER BY seqno", transaction: transaction)).SequenceEqual(new[] { "kind", "name", "version", "generation", "revision", "attempt" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM pragma_index_list('ixiflow_publication_attempts') WHERE name='ix_publication_attempt_identity' AND \"unique\"=1 AND partial=0", transaction: transaction) != 1) throw EarlierBuild();
+        foreach (var (name, columns) in new[]
+        {
+            ("ix_publication_finished", new[] { "finished_at_utc" }),
+            ("ix_publication_history", new[] { "kind", "name", "version", "started_at_utc", "id" })
+        })
+        {
+            // SQLite has no disabled-index state: a full index in this table's live index list is usable.
+            if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM pragma_index_list('ixiflow_publication_attempts') WHERE name=@Name AND \"unique\"=0 AND partial=0", new { Name = name }, transaction) != 1 ||
+                !(await connection.QueryAsync<string>("SELECT CASE WHEN desc=0 AND coll='BINARY' THEN name ELSE '' END FROM pragma_index_xinfo(@Name) WHERE key=1 ORDER BY seqno", new { Name = name }, transaction)).SequenceEqual(columns, StringComparer.Ordinal))
+                throw EarlierBuild();
         }
     }
 

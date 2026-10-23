@@ -91,7 +91,7 @@ public sealed class ActivityPackageMergeTests
                     id: signal
                     event: PackageConditions.Data
                 """;
-            var draft = await store.SaveDefinitionAsync(new("PackageConditions", 1, "workflow", yaml), 0);
+            var draft = await store.SaveDefinitionAsync(new("PackageConditions", 1, "workflow", yaml), null);
             var published = await publisher.PublishAsync(draft.Id);
             Assert.True(published.Success, string.Join("; ", published.Diagnostics));
             var manifest = JsonSerializer.Deserialize<WorkflowBundleManifest>(published.Version!.ManifestJson!)!;

@@ -50,7 +50,7 @@ public sealed class WorkflowContractBundleTests
         var options = new WorkflowPublisherOptions();
         options.SourceOptions.Types["Data"] = "global::" + typeof(WorkflowContractData).FullName;
         options.SourceOptions.Types["Echo"] = "global::" + typeof(Echo).FullName;
-        var draft = await store.SaveDefinitionAsync(new("ContractBundle", 1, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("ContractBundle", 1, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
         var row = result.Version!;
@@ -99,7 +99,7 @@ public sealed class WorkflowContractBundleTests
         var publisherOptions = new WorkflowPublisherOptions();
         publisherOptions.SourceOptions.Types["Data"] = "global::" + typeof(WorkflowContractData).FullName;
         publisherOptions.SourceOptions.Types["Echo"] = "global::" + typeof(Echo).FullName;
-        var draft = await store.SaveDefinitionAsync(new("ContractBundleRoot", 1, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("ContractBundleRoot", 1, "workflow", yaml), null);
         var published = await new WorkflowPublisher(store, store, publisherOptions).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
         var cache = Path.Combine(Path.GetTempPath(), "workflow-contract-root-" + Guid.NewGuid().ToString("N"));

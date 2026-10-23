@@ -40,7 +40,7 @@ public sealed class PublishedInvokeTests
 
     private static async Task<WorkflowVersion> Publish(IWorkflowStateRepository store, string name, int version, string yaml, WorkflowPublisherOptions? options = null)
     {
-        var draft = await store.SaveDefinitionAsync(new(name, version, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new(name, version, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
         return result.Version!;
@@ -60,7 +60,7 @@ public sealed class PublishedInvokeTests
         var store = new InMemoryWorkflowStateRepository();
         await Child(store);
         await Child(store, 2);
-        await store.SetWorkflowVersionStateAsync("Callee", 2, WorkflowVersionState.Deprecated);
+        await store.SetWorkflowVersionStateAsync("Callee", 2, WorkflowVersionState.Deprecated, new CatalogMutationToken((await store.GetWorkflowVersionAsync("Callee", 2))!.LifecycleRevision));
         var version = await Publish(store, "Caller", 1, Caller(deprecated ? "2" : null, "imports: {workflows: [Callee]}"), Options());
         var dependency = Assert.Single(version.Dependencies!);
         Assert.Equal(deprecated ? 2 : 1, dependency.Version);
@@ -81,11 +81,11 @@ public sealed class PublishedInvokeTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var yaml = "workflow: {name: Bad, dataType: Data, " + lists + "}\ndefinitions: []";
-        var draft = await store.SaveDefinitionAsync(new("Bad", 1, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("Bad", 1, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store, Options()).PublishAsync(draft.Id);
         Assert.False(result.Success);
         Assert.Contains(result.Diagnostics, error => error.Code == code && error.Line == 1);
-        Assert.Equal(draft, await store.GetDefinitionAsync("Bad", 1));
+        Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Bad", 1));
     }
 
     [Theory]
@@ -95,7 +95,7 @@ public sealed class PublishedInvokeTests
     {
         var store = new InMemoryWorkflowStateRepository();
         await Child(store, lists: lists);
-        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller("1")), 0);
+        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller("1")), null);
         var result = await new WorkflowPublisher(store, store, Options()).PublishAsync(draft.Id);
         var error = Assert.Single(result.Diagnostics);
         Assert.Equal(code, error.Code);
@@ -125,10 +125,10 @@ public sealed class PublishedInvokeTests
                 Assert.Equal("pinned", result.WorkflowData!.GetType().GetProperty("Result")!.GetValue(result.WorkflowData));
                 Assert.Equal(caller.ArtifactDigest, (await store.GetWorkflowInstanceAsync(result.InstanceId))!.BundleDigest);
             }
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SetWorkflowVersionStateAsync("Callee", 1, WorkflowVersionState.Retired));
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await store.SetWorkflowVersionStateAsync("Callee", 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync("Callee", 1))!.LifecycleRevision)));
             Assert.Contains("required by caller", error.Message);
-            await store.SetWorkflowVersionStateAsync("Caller", 1, WorkflowVersionState.Retired);
-            await store.SetWorkflowVersionStateAsync("Callee", 1, WorkflowVersionState.Retired);
+            await store.SetWorkflowVersionStateAsync("Caller", 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync("Caller", 1))!.LifecycleRevision));
+            await store.SetWorkflowVersionStateAsync("Callee", 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync("Callee", 1))!.LifecycleRevision));
         }
         finally
         {
@@ -194,11 +194,11 @@ public sealed class PublishedInvokeTests
         await publisher.UploadPackageAsync(new MemoryStream(fixtures.Activity));
         await publisher.UploadPackageAsync(new MemoryStream(fixtures.Dependency));
         var yaml = Caller("1", "imports: {catalogs: [fixture.activities@2.0.0]}", "Packaged.Data").Replace("name: Callee", "name: PackageLifecycle");
-        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", yaml), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.Contains(result.Diagnostics, error => error.Code == "PUB010" && error.Message.Contains("fixture.activities"));
         Assert.Null(result.Version);
-        Assert.Equal(draft, await store.GetDefinitionAsync("Caller", 1));
+        Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
     }
 
     [Fact]
@@ -208,7 +208,7 @@ public sealed class PublishedInvokeTests
         using var catalog = new WorkflowCatalog(store);
         var child = Workflow.Create<FirstData>("Callee").Input(data => data.Value).Output(data => data.Value).Build();
         await catalog.RegisterWorkflowAsync(child);
-        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller()), 0);
+        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller()), null);
         var result = await new WorkflowPublisher(catalog, store, Options()).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
         Assert.Equal(new WorkflowVersionDependency("Callee", 1, WorkflowDependencyKind.Child), Assert.Single(result.Version!.Dependencies!));
@@ -235,9 +235,9 @@ public sealed class PublishedInvokeTests
         var stored = await WorkflowBundleArchive.ReadAsync(new MemoryStream(bytes), digest);
         await store.RegisterWorkflowVersionAsync(original with
         {
-            Name = "Incompatible", ArtifactDigest = digest, PublishedDraftRevision = null, ManifestJson = JsonSerializer.Serialize(stored.Manifest)
+            Name = "Incompatible", ArtifactDigest = digest, PublishedDraft = null, ManifestJson = JsonSerializer.Serialize(stored.Manifest)
         });
-        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller("1").Replace("name: Callee", "name: Incompatible")), 0);
+        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller("1").Replace("name: Callee", "name: Incompatible")), null);
         var result = await new WorkflowPublisher(store, store, Options()).PublishAsync(draft.Id);
         Assert.Contains(result.Diagnostics, error => error.Code == "PUB009" && error.Message.Contains("republish the callee"));
         Assert.Null(await store.GetWorkflowVersionAsync("Caller", 1));
@@ -251,10 +251,10 @@ public sealed class PublishedInvokeTests
         var store = new InMemoryWorkflowStateRepository();
         var contract = WorkflowContract.OfType(typeof(FirstData));
         await store.RegisterWorkflowVersionAsync(new("Callee", 1, "hash", contract.ToJson(), contract.Hash, State: state, Invocations: []));
-        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller("1")), 0);
+        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller("1")), null);
         var result = await new WorkflowPublisher(store, store, Options()).PublishAsync(draft.Id);
         Assert.Contains(result.Diagnostics, error => error.Code == "STEP011" && error.Line == 6);
-        Assert.Equal(draft, await store.GetDefinitionAsync("Caller", 1));
+        Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
     }
 
     [Fact]
@@ -293,12 +293,12 @@ public sealed class PublishedInvokeTests
                 WorkflowDataJson = StoredJson.Inline("{}"), WorkflowDataType = WorkflowTypeIdentity.SavedName(typeof(FirstData)), BundleDigest = caller.ArtifactDigest
             };
             await store.SeedAsync(instance, wakeAfter: TimeSpan.Zero);
-            await store.SetWorkflowVersionStateAsync("Caller", 1, WorkflowVersionState.Retired);
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SetWorkflowVersionStateAsync("Callee", 1, WorkflowVersionState.Retired));
+            await store.SetWorkflowVersionStateAsync("Caller", 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync("Caller", 1))!.LifecycleRevision));
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await store.SetWorkflowVersionStateAsync("Callee", 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync("Callee", 1))!.LifecycleRevision)));
             Assert.Contains("unfinished parent instances of Caller v1", error.Message);
             instance.Status = WorkflowStatus.Completed;
             await store.SeedAsync(instance);
-            await store.SetWorkflowVersionStateAsync("Callee", 1, WorkflowVersionState.Retired);
+            await store.SetWorkflowVersionStateAsync("Callee", 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync("Callee", 1))!.LifecycleRevision));
         }
         finally
         {

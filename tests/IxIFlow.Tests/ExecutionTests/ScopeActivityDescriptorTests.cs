@@ -90,7 +90,7 @@ public sealed class ScopeActivityDescriptorTests
             definitions:
               - kind: activity
                 activity: scope.package.noop
-            """), 0);
+            """), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.False(result.Success);
         Assert.Contains(result.Diagnostics, d => d.Message.Contains("scope contract disagrees between reference and runtime assemblies"));

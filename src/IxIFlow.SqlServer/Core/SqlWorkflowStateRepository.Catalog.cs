@@ -2,15 +2,65 @@ namespace IxIFlow.Core;
 
 public sealed partial class SqlWorkflowStateRepository
 {
+    // Name uses non-SC Latin1_General_100_BIN2: SUBSTRING counts UTF-16 code units,
+    // including both halves of a supplementary character, just like string.Length.
+    internal override int CatalogPrefixLength(string value) => value.Length;
+
     private const string CatalogSchema = """
-        CREATE TABLE dbo.IxIFlowDefinitions (
+        CREATE TABLE dbo.IxIFlowPublicationHeads (
+            Kind VARCHAR(10) COLLATE Latin1_General_100_BIN2 NOT NULL CHECK (Kind IN ('workflow','activity','template')),
             Name NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
             Version INT NOT NULL,
-            Kind NVARCHAR(MAX) NOT NULL,
-            Source NVARCHAR(MAX) NOT NULL,
+            Generation UNIQUEIDENTIFIER NOT NULL,
             Revision BIGINT NOT NULL,
-            State VARCHAR(10) NOT NULL CHECK (State = 'Draft'),
-            PRIMARY KEY (Name, Version)
+            ActiveId UNIQUEIDENTIFIER NULL,
+            LastAttempt INT NOT NULL,
+            PRIMARY KEY (Kind, Name, Version, Generation, Revision)
+        );
+        CREATE TABLE dbo.IxIFlowPublicationAttempts (
+            Id UNIQUEIDENTIFIER NOT NULL,
+            IdOrder AS (LOWER(CONVERT(VARCHAR(36), Id)) COLLATE Latin1_General_100_BIN2) PERSISTED,
+            Kind VARCHAR(10) COLLATE Latin1_General_100_BIN2 NOT NULL CHECK (Kind IN ('workflow','activity','template')),
+            Name NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            Version INT NOT NULL,
+            Generation UNIQUEIDENTIFIER NOT NULL,
+            Revision BIGINT NOT NULL,
+            Attempt INT NOT NULL,
+            State VARCHAR(10) NOT NULL CHECK (State IN ('Running','Published','Failed','Abandoned')),
+            HostId UNIQUEIDENTIFIER NOT NULL,
+            StartedBy NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NULL,
+            StartedAtUtc DATETIME2 NOT NULL,
+            HeartbeatAtUtc DATETIME2 NOT NULL,
+            FinishedAtUtc DATETIME2 NULL,
+            OutcomeJson NVARCHAR(MAX) NULL,
+            CatalogRevision BIGINT NOT NULL,
+            PRIMARY KEY (Id)
+        );
+        CREATE UNIQUE INDEX ix_publication_attempt_identity ON dbo.IxIFlowPublicationAttempts (Kind, Name, Version, Generation, Revision, Attempt);
+        CREATE INDEX ix_publication_history ON dbo.IxIFlowPublicationAttempts (Kind, Name, Version, StartedAtUtc, IdOrder);
+        CREATE INDEX ix_publication_finished ON dbo.IxIFlowPublicationAttempts (FinishedAtUtc);
+        CREATE TABLE dbo.IxIFlowDefinitions (
+            Kind VARCHAR(10) COLLATE Latin1_General_100_BIN2 NOT NULL CHECK (Kind IN ('workflow','activity','template')),
+            Name NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            -- Encode surrogate pairs as scalars and fix the VARCHAR result's code page before taking bytes.
+            NameOrder AS (CONVERT(VARBINARY(800), CONVERT(VARCHAR(800), Name COLLATE Latin1_General_100_CI_AS_SC_UTF8) COLLATE Latin1_General_100_CI_AS_SC_UTF8)) PERSISTED,
+            Version INT NOT NULL,
+            Generation UNIQUEIDENTIFIER NOT NULL,
+            Revision BIGINT NOT NULL,
+            Source NVARCHAR(MAX) NOT NULL,
+            SourceLength INT NOT NULL,
+            UpdatedAtUtc DATETIME2 NOT NULL,
+            UpdatedBy NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NULL,
+            PRIMARY KEY (Kind, Name, Version)
+        );
+        CREATE INDEX ix_definitions_page ON dbo.IxIFlowDefinitions (Kind, NameOrder, Version)
+            INCLUDE (Name, Generation, Revision, SourceLength, UpdatedAtUtc, UpdatedBy);
+        CREATE TABLE dbo.IxIFlowDraftGenerations (
+            Generation UNIQUEIDENTIFIER NOT NULL,
+            Kind VARCHAR(10) COLLATE Latin1_General_100_BIN2 NOT NULL CHECK (Kind IN ('workflow','activity','template')),
+            Name NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            Version INT NOT NULL,
+            PRIMARY KEY (Generation)
         );
         CREATE TABLE dbo.IxIFlowCatalogRevision (
             Id INT NOT NULL PRIMARY KEY CHECK (Id = 1),
@@ -23,6 +73,13 @@ public sealed partial class SqlWorkflowStateRepository
             StructureHash NVARCHAR(MAX) NOT NULL,
             State VARCHAR(10) NOT NULL CHECK (State IN ('Draft','Published','Deprecated','Retired')),
             CatalogRevision BIGINT NOT NULL,
+            PublishedDraftGeneration UNIQUEIDENTIFIER NULL,
+            PublishedDraftRevision BIGINT NULL,
+            PublishedAtUtc DATETIME2 NULL,
+            PublishedBy NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NULL,
+            StateChangedAtUtc DATETIME2 NULL,
+            StateChangedBy NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NULL,
+            LifecycleRevision BIGINT NOT NULL,
             ArtifactDigest VARCHAR(71) COLLATE Latin1_General_100_BIN2 NULL,
             MetadataJson NVARCHAR(MAX) NOT NULL,
             PRIMARY KEY (Name, Version)
@@ -57,18 +114,23 @@ public sealed partial class SqlWorkflowStateRepository
         Statement.CatalogSharedLock => """
             DECLARE @catalogLock INT; EXEC @catalogLock = sys.sp_getapplock @Resource=N'IxIFlow.Catalog', @LockMode=N'Shared', @LockOwner=N'Transaction', @LockTimeout=30000; IF @catalogLock < 0 THROW 51000, 'Could not lock the workflow catalog', 1;
             """,
+        Statement.CatalogContentLock => """
+            DECLARE @contentLock INT; EXEC @contentLock = sys.sp_getapplock @Resource=N'IxIFlow.CatalogContent', @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=30000; IF @contentLock < 0 THROW 51000, 'Could not lock the catalog content', 1;
+            """,
         Statement.CatalogInstanceDigests => "SELECT DISTINCT BundleDigest FROM dbo.IxIFlowWorkflowInstances WHERE BundleDigest IS NOT NULL",
         Statement.CatalogRevision => "SELECT Revision FROM dbo.IxIFlowCatalogRevision WHERE Id=1",
         Statement.CatalogRevisionAdvance => "UPDATE dbo.IxIFlowCatalogRevision SET Revision=Revision+1 WHERE Id=1",
-        Statement.CatalogVersionChanges => "SELECT MetadataJson, State FROM dbo.IxIFlowWorkflowVersions WHERE CatalogRevision>@AfterRevision",
+        Statement.CatalogVersionChanges => """
+            SELECT Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE CatalogRevision>@AfterRevision
+            """,
         Statement.CatalogVersions => """
-            SELECT MetadataJson AS MetadataJson, State AS State FROM dbo.IxIFlowWorkflowVersions
+            SELECT Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions
             """,
         Statement.CatalogNamedVersions => """
-            SELECT MetadataJson AS MetadataJson, State AS State FROM dbo.IxIFlowWorkflowVersions WHERE Name=@Name
+            SELECT Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE Name=@Name
             """,
         Statement.CatalogVersion => """
-            SELECT MetadataJson AS MetadataJson, State AS State FROM dbo.IxIFlowWorkflowVersions WHERE Name=@Name AND Version=@Version
+            SELECT Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE Name=@Name AND Version=@Version
             """,
         Statement.CatalogUnfinishedCallers => """
             SELECT TOP (1) caller.Name, caller.Version
@@ -82,22 +144,22 @@ public sealed partial class SqlWorkflowStateRepository
                     AND instance.Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
             """,
         Statement.CatalogVersionInsert => """
-            INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision)
+            INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision, PublishedDraftGeneration, PublishedDraftRevision, PublishedAtUtc, PublishedBy, StateChangedAtUtc, StateChangedBy, LifecycleRevision) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision, @PublishedDraftGeneration, @PublishedDraftRevision, @PublishedAtUtc, @PublishedBy, @StateChangedAtUtc, @StateChangedBy, @LifecycleRevision)
             """,
         Statement.CatalogVersionState => """
-            UPDATE dbo.IxIFlowWorkflowVersions SET State=@State, CatalogRevision=@CatalogRevision WHERE Name=@Name AND Version=@Version
+            UPDATE dbo.IxIFlowWorkflowVersions SET State=@State, MetadataJson=@MetadataJson, CatalogRevision=@CatalogRevision, LifecycleRevision=@LifecycleRevision, StateChangedAtUtc=@StateChangedAtUtc, StateChangedBy=@StateChangedBy WHERE Name=@Name AND Version=@Version AND LifecycleRevision=@ExpectedRevision
             """,
         Statement.CatalogDefinition => """
-            SELECT Name AS Name, Version AS Version, Kind AS Kind, Source AS Source, Revision AS Revision FROM dbo.IxIFlowDefinitions WHERE Name=@Name AND Version=@Version
+            SELECT Name AS Name, Version AS Version, Kind AS Kind, Source AS Source, Revision AS Revision, Generation AS Generation, SourceLength AS SourceLength, UpdatedAtUtc AS UpdatedAtUtc, UpdatedBy AS UpdatedBy FROM dbo.IxIFlowDefinitions WHERE Kind=@Kind AND Name=@Name AND Version=@Version
             """,
         Statement.CatalogDefinitionInsert => """
-            INSERT INTO dbo.IxIFlowDefinitions (Name, Version, Kind, Source, Revision, State) SELECT @Name, @Version, @Kind, @Source, @Revision, 'Draft' WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDefinitions WITH (UPDLOCK,HOLDLOCK) WHERE Name=@Name AND Version=@Version)
+            INSERT INTO dbo.IxIFlowDefinitions (Name, Version, Kind, Source, Revision, Generation, SourceLength, UpdatedAtUtc, UpdatedBy) VALUES (@Name, @Version, @Kind, @Source, @Revision, @Generation, @SourceLength, @UpdatedAtUtc, @UpdatedBy)
             """,
         Statement.CatalogDefinitionUpdate => """
-            UPDATE dbo.IxIFlowDefinitions SET Kind=@Kind, Source=@Source, Revision=@Revision WHERE Name=@Name AND Version=@Version AND Revision=@ExpectedRevision
+            UPDATE dbo.IxIFlowDefinitions SET Source=@Source, SourceLength=@SourceLength, Revision=@Revision, UpdatedAtUtc=@UpdatedAtUtc, UpdatedBy=@UpdatedBy WHERE Kind=@Kind AND Name=@Name AND Version=@Version AND Generation=@Generation AND Revision=@ExpectedRevision
             """,
         Statement.CatalogDefinitionDelete => """
-            DELETE FROM dbo.IxIFlowDefinitions WHERE Name=@Name AND Version=@Version AND Revision=@Revision
+            DELETE FROM dbo.IxIFlowDefinitions WHERE Kind=@Kind AND Name=@Name AND Version=@Version AND Generation=@Generation AND Revision=@Revision
             """,
         Statement.ArtifactPut => """
             MERGE dbo.IxIFlowArtifacts WITH (HOLDLOCK) AS target
@@ -119,6 +181,59 @@ public sealed partial class SqlWorkflowStateRepository
             """,
         Statement.ArtifactCandidates => """
             SELECT TOP (@Limit) Digest FROM dbo.IxIFlowArtifacts WHERE CreatedAtUtc < @Cutoff AND Digest NOT IN (SELECT value FROM OPENJSON(@References)) ORDER BY CreatedAtUtc, Digest
+            """,
+        Statement.DraftGenerationInsert => """
+            INSERT INTO dbo.IxIFlowDraftGenerations (Generation, Kind, Name, Version) SELECT @Generation, @Kind, @Name, @Version WHERE NOT EXISTS (SELECT 1 FROM dbo.IxIFlowDraftGenerations WHERE Generation=@Generation)
+            """,
+        // Explicit lower bounds permit a composite seek; recompilation removes absent optional filters.
+        // Convert parameters to the exact key types, leaving indexed column operands untouched.
+        // SQL string equality pads trailing spaces even with BIN2; compare byte lengths too.
+        Statement.CatalogDefinitionPage => """
+            SELECT TOP (@Limit) Name AS Name, Version AS Version, Kind AS Kind, Revision AS Revision, Generation AS Generation, SourceLength AS SourceLength, UpdatedAtUtc AS UpdatedAtUtc, UpdatedBy AS UpdatedBy
+            FROM dbo.IxIFlowDefinitions
+            WHERE ({scope}) AND (@Kind IS NULL OR Kind=CONVERT(VARCHAR(10),@Kind))
+              AND (@NamePrefix IS NULL OR (SUBSTRING(Name,1,@PrefixLength)=@NamePrefix AND DATALENGTH(SUBSTRING(Name,1,@PrefixLength))=DATALENGTH(@NamePrefix)))
+              AND (@AfterKind IS NULL OR Kind>=CONVERT(VARCHAR(10),@AfterKind))
+              AND (@AfterKind IS NULL OR Kind<>CONVERT(VARCHAR(10),@AfterKind) OR NameOrder>=CONVERT(VARBINARY(800),@AfterNameOrder))
+              AND (@AfterKind IS NULL OR Kind>CONVERT(VARCHAR(10),@AfterKind) OR (Kind=CONVERT(VARCHAR(10),@AfterKind) AND (NameOrder>CONVERT(VARBINARY(800),@AfterNameOrder) OR (NameOrder=CONVERT(VARBINARY(800),@AfterNameOrder) AND Version>@AfterVersion))))
+            ORDER BY Kind, NameOrder, Version
+            OPTION (RECOMPILE)
+            """,
+        Statement.PublicationHead => """
+            SELECT ActiveId AS ActiveId, LastAttempt AS LastAttempt FROM dbo.IxIFlowPublicationHeads WHERE Kind=@Kind AND Name=@Name AND Version=@Version AND Generation=@Generation AND Revision=@Revision
+            """,
+        Statement.PublicationHeadInsert => """
+            INSERT INTO dbo.IxIFlowPublicationHeads (Kind, Name, Version, Generation, Revision, ActiveId, LastAttempt) VALUES (@Kind, @Name, @Version, @Generation, @Revision, @ActiveId, @LastAttempt)
+            """,
+        Statement.PublicationHeadUpdate => """
+            UPDATE dbo.IxIFlowPublicationHeads SET ActiveId=@ActiveId, LastAttempt=@LastAttempt WHERE Kind=@Kind AND Name=@Name AND Version=@Version AND Generation=@Generation AND Revision=@Revision
+            """,
+        Statement.Publication => """
+            SELECT Id AS Id, Kind AS Kind, Name AS Name, Version AS Version, Generation AS Generation, Revision AS Revision, Attempt AS Attempt, State AS State, HostId AS HostId, StartedBy AS StartedBy, StartedAtUtc AS StartedAtUtc, HeartbeatAtUtc AS HeartbeatAtUtc, FinishedAtUtc AS FinishedAtUtc, OutcomeJson AS OutcomeJson, CatalogRevision AS CatalogRevision FROM dbo.IxIFlowPublicationAttempts WHERE Id=@Id
+            """,
+        Statement.PublicationInsert => """
+            INSERT INTO dbo.IxIFlowPublicationAttempts (Id, Kind, Name, Version, Generation, Revision, Attempt, State, HostId, StartedBy, StartedAtUtc, HeartbeatAtUtc, FinishedAtUtc, OutcomeJson, CatalogRevision) VALUES (@Id, @Kind, @Name, @Version, @Generation, @Revision, @Attempt, @State, @HostId, @StartedBy, @StartedAtUtc, @HeartbeatAtUtc, @FinishedAtUtc, @OutcomeJson, @CatalogRevision)
+            """,
+        Statement.PublicationUpdate => """
+            UPDATE dbo.IxIFlowPublicationAttempts SET State=@State, FinishedAtUtc=@FinishedAtUtc, OutcomeJson=@OutcomeJson, CatalogRevision=@CatalogRevision WHERE Id=@Id AND HostId=@HostId AND State='Running'
+            """,
+        Statement.PublicationHeartbeat => """
+            UPDATE dbo.IxIFlowPublicationAttempts SET HeartbeatAtUtc=@Now, CatalogRevision=@CatalogRevision WHERE Id=@Id AND HostId=@HostId AND State='Running'
+            """,
+        Statement.PublicationPage => """
+            SELECT TOP (@Limit) Id AS Id, Kind AS Kind, Name AS Name, Version AS Version, Generation AS Generation, Revision AS Revision, Attempt AS Attempt, State AS State, HostId AS HostId, StartedBy AS StartedBy, StartedAtUtc AS StartedAtUtc, HeartbeatAtUtc AS HeartbeatAtUtc, FinishedAtUtc AS FinishedAtUtc, OutcomeJson AS OutcomeJson, CatalogRevision AS CatalogRevision
+            FROM dbo.IxIFlowPublicationAttempts
+            WHERE Kind=@Kind AND Name=@Name AND Version=@Version AND (@Generation IS NULL OR Generation=@Generation)
+              AND (@AfterTime IS NULL OR StartedAtUtc>=@AfterTime)
+              AND (@AfterTime IS NULL OR StartedAtUtc>@AfterTime OR (StartedAtUtc=@AfterTime AND IdOrder>@AfterIdOrder))
+            ORDER BY StartedAtUtc, IdOrder
+            OPTION (RECOMPILE)
+            """,
+        Statement.PublicationPurgeCandidates => """
+            SELECT TOP (@Limit) Id AS Id FROM dbo.IxIFlowPublicationAttempts WHERE State<>'Running' AND FinishedAtUtc<@Cutoff ORDER BY FinishedAtUtc, Id
+            """,
+        Statement.PublicationDelete => """
+            DELETE FROM dbo.IxIFlowPublicationAttempts WHERE Id=@Id AND State<>'Running'
             """,
         _ => null
     };

@@ -93,9 +93,9 @@ public sealed class CatalogHeartbeatRevisionTests
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
         async Task<WorkflowVersion> Publish(string name)
         {
-            var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", "source"), 0);
+            var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", "source"), null);
             return await store.PublishDefinitionAsync(draft.Id, new(name, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
-                PublishedDraftRevision: draft.Revision, ManifestJson: manifest, Invocations: []));
+                PublishedDraft: draft.Id, ManifestJson: manifest, Invocations: []), store);
         }
         var initial = await Read();
         reads.Reset();
@@ -114,11 +114,11 @@ public sealed class CatalogHeartbeatRevisionTests
                 var snapshot = await Read();
                 Assert.Same(snapshot, await Read());
                 Assert.Equal(0, reads.VersionReads);
-                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Deprecated);
+                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Deprecated, new CatalogMutationToken((await store.GetWorkflowVersionAsync(row.Name, 1))!.LifecycleRevision));
                 Assert.Contains(Key(row), (await Read()).Keys);
                 reads.AssertSingle(row.Name);
                 reads.Reset();
-                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Retired);
+                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(row.Name, 1))!.LifecycleRevision));
                 Assert.Contains(Key(row), (await Read()).Keys);
                 reads.AssertSingle(row.Name);
                 reads.Reset();
@@ -205,7 +205,7 @@ public sealed class CatalogHeartbeatRevisionTests
                 }
                 finally { Volatile.Write(ref done, 1); }
                 Assert.Equal(12, (await reader).Count);
-                Assert.Equal(start + 12, await store.GetCatalogRevisionAsync());
+                Assert.Equal(start + 24, await store.GetCatalogRevisionAsync());
                 var all = await store.GetWorkflowVersionChangesAsync(start);
                 Assert.Equal(12, all.Versions.Count);
                 Assert.All(observedRevisions, revision => Assert.InRange(revision, start + 1, all.Revision));
@@ -216,12 +216,12 @@ public sealed class CatalogHeartbeatRevisionTests
             {
                 var start = await store.GetCatalogRevisionAsync();
                 var row = await Publish(prefix);
-                Assert.Equal(start + 1, await store.GetCatalogRevisionAsync());
-                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Deprecated);
                 Assert.Equal(start + 2, await store.GetCatalogRevisionAsync());
-                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Retired);
+                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Deprecated, new CatalogMutationToken((await store.GetWorkflowVersionAsync(row.Name, 1))!.LifecycleRevision));
+                Assert.Equal(start + 3, await store.GetCatalogRevisionAsync());
+                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(row.Name, 1))!.LifecycleRevision));
                 var delta = await store.GetWorkflowVersionChangesAsync(start);
-                Assert.Equal(start + 3, delta.Revision);
+                Assert.Equal(start + 4, delta.Revision);
                 Assert.Equal(WorkflowVersionState.Retired, Assert.Single(delta.Versions).State);
                 Assert.Contains(Key(row), (await Refresh()).Keys);
                 reads.AssertSingle(row.Name);
@@ -230,15 +230,15 @@ public sealed class CatalogHeartbeatRevisionTests
             case Scenario.NoOps:
             {
                 var beforeDraft = await store.GetCatalogRevisionAsync();
-                var draft = await store.SaveDefinitionAsync(new(prefix, 1, "workflow", "source"), 0);
-                Assert.Equal(beforeDraft, await store.GetCatalogRevisionAsync());
+                var draft = await store.SaveDefinitionAsync(new(prefix, 1, "workflow", "source"), null);
+                Assert.Equal(beforeDraft + 1, await store.GetCatalogRevisionAsync());
                 var row = new WorkflowVersion(prefix, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
-                    PublishedDraftRevision: draft.Revision, ManifestJson: manifest, Invocations: []);
-                await store.PublishDefinitionAsync(draft.Id, row);
+                    PublishedDraft: draft.Id, ManifestJson: manifest, Invocations: []);
+                await store.PublishDefinitionAsync(draft.Id, row, store);
                 var revision = await store.GetCatalogRevisionAsync();
-                await store.PublishDefinitionAsync(draft.Id, row);
+                await store.PublishDefinitionAsync(draft.Id, row, store);
                 await store.RegisterWorkflowVersionAsync(row);
-                await store.SetWorkflowVersionStateAsync(row.Name, 1, row.State);
+                await store.SetWorkflowVersionStateAsync(row.Name, 1, row.State, new CatalogMutationToken((await store.GetWorkflowVersionAsync(row.Name, 1))!.LifecycleRevision));
                 Assert.Equal(revision, await store.GetCatalogRevisionAsync());
                 await Assert.ThrowsAsync<WorkflowEngineException>(() => store.RegisterWorkflowVersionAsync(row with { StructureHash = "other" }));
                 Assert.Equal(revision, await store.GetCatalogRevisionAsync());
@@ -289,7 +289,7 @@ public sealed class CatalogHeartbeatRevisionTests
                 var capabilities = await local.RefreshCapabilitiesAsync(observed);
                 Assert.DoesNotContain(Key(row), capabilities.Keys);
                 Assert.DoesNotContain("bundle-host", capabilities.Keys);
-                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Deprecated);
+                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Deprecated, new CatalogMutationToken((await store.GetWorkflowVersionAsync(row.Name, 1))!.LifecycleRevision));
                 Assert.Same(capabilities, await local.RefreshCapabilitiesAsync(observed));
                 time.Advance(local.HeartbeatInterval);
                 await local.RefreshDemandCapabilitiesAsync(observed, time);
@@ -322,7 +322,7 @@ public sealed class CatalogHeartbeatRevisionTests
                 Assert.Contains(Key(retained), snapshot.Keys);
                 Assert.Contains(Key(removed), snapshot.Keys);
                 var cursor = await store.GetCatalogRevisionAsync();
-                await store.SetWorkflowVersionStateAsync(retained.Name, 1, WorkflowVersionState.Deprecated);
+                await store.SetWorkflowVersionStateAsync(retained.Name, 1, WorkflowVersionState.Deprecated, new CatalogMutationToken((await store.GetWorkflowVersionAsync(retained.Name, 1))!.LifecycleRevision));
                 reads.Reset();
                 // The scalar sees a forward revision, then the store is restored before the delta.
                 reads.BeforeDelta = () =>
@@ -354,7 +354,7 @@ public sealed class CatalogHeartbeatRevisionTests
                 Assert.DoesNotContain(Key(row), (await Refresh()).Keys);
                 reads.AssertSingle(row.Name);
                 reads.Reset();
-                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Published);
+                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Published, new CatalogMutationToken((await store.GetWorkflowVersionAsync(row.Name, 1))!.LifecycleRevision));
                 Assert.Contains(Key(row), (await Refresh()).Keys);
                 reads.AssertSingle(row.Name);
                 break;
@@ -367,7 +367,7 @@ public sealed class CatalogHeartbeatRevisionTests
                 // A catalog view can apply host policy to changed rows. Ensure a negative
                 // result replaces an earlier positive result, including on demand refresh.
                 reads.Transform = version => version.Name == row.Name ? version with { ManifestJson = null } : version;
-                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Deprecated);
+                await store.SetWorkflowVersionStateAsync(row.Name, 1, WorkflowVersionState.Deprecated, new CatalogMutationToken((await store.GetWorkflowVersionAsync(row.Name, 1))!.LifecycleRevision));
                 Assert.DoesNotContain(Key(row), (await Demand()).Keys);
                 reads.AssertSingle(row.Name);
                 break;
@@ -382,10 +382,10 @@ public sealed class CatalogHeartbeatRevisionTests
                 Assert.Single(memo);
                 // Model a catalog policy that withdraws retired bundles from this host's view.
                 reads.Transform = row => row.State == WorkflowVersionState.Retired ? row with { ManifestJson = null } : row;
-                await store.SetWorkflowVersionStateAsync(first.Name, 1, WorkflowVersionState.Retired);
+                await store.SetWorkflowVersionStateAsync(first.Name, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(first.Name, 1))!.LifecycleRevision));
                 await Refresh();
                 Assert.Single(memo);
-                await store.SetWorkflowVersionStateAsync(second.Name, 1, WorkflowVersionState.Retired);
+                await store.SetWorkflowVersionStateAsync(second.Name, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(second.Name, 1))!.LifecycleRevision));
                 await Refresh();
                 Assert.Empty(memo);
                 break;
@@ -730,12 +730,12 @@ public sealed class CatalogHeartbeatRevisionTests
                 "SELECT Revision FROM dbo.IxIFlowCatalogRevision WHERE Id=1", transaction: transaction);
             Assert.Equal(before + 1, revision);
             await holder.ExecuteAsync("""
-                INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision)
+                INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision, LifecycleRevision) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision, @CatalogRevision)
                 """, new
             {
                 held.Name, held.Version, held.StructureHash, State = held.State.ToString(),
                 ArtifactDigest = held.ArtifactDigest!.Value.Value,
-                MetadataJson = System.Text.Json.JsonSerializer.Serialize(held), CatalogRevision = revision
+                MetadataJson = System.Text.Json.JsonSerializer.Serialize(held with { LifecycleRevision = revision }), CatalogRevision = revision
             }, transaction);
             await UntilAsync(() => Volatile.Read(ref reads.RevisionReads) >= 1);
             if (!snapshot)

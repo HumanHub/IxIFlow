@@ -28,7 +28,7 @@ public static class PublishedBundleScenario
         var options = new WorkflowPublisherOptions();
         options.SourceOptions.Types["Data"] = "global::" + typeof(FirstData).FullName;
         options.SourceOptions.Workflows["BundleLifecycle@1"] = new("global::" + typeof(FirstData).FullName, 1);
-        var draft = await store.SaveDefinitionAsync(new("BundleParent", 1, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("BundleParent", 1, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
         return result.Version!;
@@ -55,7 +55,7 @@ public static class PublishedBundleScenario
         options.SourceOptions.Types["Signal"] = "global::" + typeof(Signal).FullName;
         options.SourceOptions.Members["Data.Result"] = "Result";
         options.SourceOptions.Members["Signal.Value"] = "Value";
-        var draft = await store.SaveDefinitionAsync(new("BundleLifecycle", version, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("BundleLifecycle", version, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
         return result.Version!;

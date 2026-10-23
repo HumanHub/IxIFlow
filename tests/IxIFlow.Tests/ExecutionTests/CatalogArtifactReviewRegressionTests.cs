@@ -83,7 +83,7 @@ public sealed class CatalogArtifactReviewRegressionTests
                 for (var i = 0; i < 3; i++) await client.RunAsync(definition, new Data());
                 Assert.Equal(1, recording.Registrations);
                 Assert.True(recording.VersionReads >= 3);
-                await catalog.RetireWorkflowVersionAsync(name, 1);
+                await catalog.RetireWorkflowVersionAsync(name, 1, new CatalogMutationToken((await catalog.GetWorkflowVersionAsync(name, 1))!.LifecycleRevision));
                 await Refused(() => client.RunAsync(definition, new Data()), WorkflowErrorKind.ArtifactUnavailable);
                 Assert.Equal(1, recording.Registrations);
                 await Refused(() => catalog.RegisterWorkflowAsync(Workflow.Create<Data>(name).Step<Noop>().Step<Noop>().Build()),
@@ -92,19 +92,19 @@ public sealed class CatalogArtifactReviewRegressionTests
             }
             case Scenario.DraftRevisions:
             {
-                var initial = await store.SaveDefinitionAsync(new(name, 1, "workflow", "initial"), 0);
+                var initial = await store.SaveDefinitionAsync(new(name, 1, "workflow", "initial"), null);
                 var results = await Task.WhenAll(Enumerable.Range(0, 12).Select(async i =>
                 {
-                    try { return await store.SaveDefinitionAsync(initial with { Source = i.ToString() }, initial.Revision); }
-                    catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidState) { return null; }
+                    try { return await store.SaveDefinitionAsync(initial with { Source = i.ToString() }, initial.Id); }
+                    catch (CatalogPreconditionException) { return null; }
                 }));
                 var winner = Assert.Single(results.OfType<WorkflowDraft>());
                 Assert.Equal(2, winner.Revision);
-                Assert.Equal(winner, await store.GetDefinitionAsync(name, 1));
+                Assert.Equal(winner, await store.GetDefinitionAsync("workflow", name, 1));
                 var inserts = await Task.WhenAll(Enumerable.Range(0, 8).Select(async _ =>
                 {
-                    try { await store.SaveDefinitionAsync(new(name, 2, "workflow", "insert"), 0); return true; }
-                    catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidState) { return false; }
+                    try { await store.SaveDefinitionAsync(new(name, 2, "workflow", "insert"), null); return true; }
+                    catch (CatalogPreconditionException) { return false; }
                 }));
                 Assert.Single(inserts, value => value);
                 break;
@@ -179,7 +179,7 @@ public sealed class CatalogArtifactReviewRegressionTests
                                   SELECT COUNT(*)::int FROM pg_locks
                                   WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database())
                                     AND locktype='advisory'
-                                    AND objid=(hashtext('IxIFlow.Catalog')::bigint & 4294967295)::oid
+                                    AND objid IN ((hashtext('IxIFlow.Catalog')::bigint & 4294967295)::oid, (hashtext('IxIFlow.CatalogContent')::bigint & 4294967295)::oid)
                                     AND mode='ExclusiveLock' AND NOT granted
                                   """) == count),
                             () => transaction.RollbackAsync());
@@ -191,11 +191,13 @@ public sealed class CatalogArtifactReviewRegressionTests
                     parent = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
                     parent.Status = WorkflowStatus.Completed;
                     await store.SeedAsync(parent);
-                    await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired);
+                    await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(name, 1))!.LifecycleRevision));
                     Assert.Equal(WorkflowVersionState.Retired, (await store.GetWorkflowVersionAsync(name, 1))!.State);
 
                     async Task<WorkflowEngineException> RaceAsync(Func<Task> held, Func<int, Task> queued, Func<Task> release)
                     {
+                        var callerToken = new CatalogMutationToken((await store.GetWorkflowVersionAsync(caller, 1))!.LifecycleRevision);
+                        var childToken = new CatalogMutationToken((await store.GetWorkflowVersionAsync(name, 1))!.LifecycleRevision);
                         var starting = Task.Run(() => store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, lease.Epoch, 0,
                             wakeAfter: TimeSpan.Zero)));
                         Task? retiringCaller = null;
@@ -205,9 +207,9 @@ public sealed class CatalogArtifactReviewRegressionTests
                             await held();
                             // Queue both requests before releasing the start. Awaiting caller retirement
                             // here would let the child take its snapshot only after the start committed.
-                            retiringCaller = store.SetWorkflowVersionStateAsync(caller, 1, WorkflowVersionState.Retired);
+                            retiringCaller = store.SetWorkflowVersionStateAsync(caller, 1, WorkflowVersionState.Retired, callerToken);
                             await queued(1);
-                            retiringChild = store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired);
+                            retiringChild = store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired, childToken);
                             await queued(2);
                             await Task.WhenAny(retiringChild, Task.Delay(50)); // Only a bounded blocked assertion.
                             Assert.False(starting.IsCompleted);
@@ -247,29 +249,31 @@ public sealed class CatalogArtifactReviewRegressionTests
                 unrelatedVersion.WorkflowVersion = 2;
                 await store.SeedAsync(unrelatedVersion);
                 await store.SeedAsync(Instance(name + "-unrelated"));
-                await store.SetWorkflowVersionStateAsync(caller, 1, WorkflowVersionState.Retired);
-                await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired);
+                await store.SetWorkflowVersionStateAsync(caller, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(caller, 1))!.LifecycleRevision));
+                await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(name, 1))!.LifecycleRevision));
                 Assert.Equal(WorkflowVersionState.Retired, (await store.GetWorkflowVersionAsync(name, 1))!.State);
                 break;
             }
             case Scenario.Names:
             {
-                await store.SaveDefinitionAsync(new(name, 1, "workflow", "original"), 0);
+                var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", "original"), null);
+                await store.RegisterWorkflowVersionAsync(new(name, 1, "valid", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Invocations: []));
+                var token = new CatalogMutationToken((await store.GetWorkflowVersionAsync(name, 1))!.LifecycleRevision);
                 foreach (var invalid in new[] { name + " ", " " + name, name + "\t", "\n" + name })
                 {
-                    await Assert.ThrowsAsync<ArgumentException>(() => store.SaveDefinitionAsync(new(invalid, 1, "workflow", "bad"), 1));
-                    await Assert.ThrowsAsync<ArgumentException>(() => store.GetDefinitionAsync(invalid, 1));
+                    await Assert.ThrowsAsync<ArgumentException>(() => store.SaveDefinitionAsync(new(invalid, 1, "workflow", "bad"), draft.Id));
+                    await Assert.ThrowsAsync<ArgumentException>(() => store.GetDefinitionAsync("workflow", invalid, 1));
                     await Assert.ThrowsAsync<ArgumentException>(() => store.RegisterWorkflowVersionAsync(new(invalid, 1, "bad", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Invocations: [])));
                     await Assert.ThrowsAsync<ArgumentException>(() => store.GetWorkflowVersionAsync(invalid, 1));
                     await Assert.ThrowsAsync<ArgumentException>(() => store.GetWorkflowVersionsAsync(invalid));
-                    await Assert.ThrowsAsync<ArgumentException>(() => store.SetWorkflowVersionStateAsync(invalid, 1, WorkflowVersionState.Retired));
+                    await Assert.ThrowsAsync<ArgumentException>(() => store.SetWorkflowVersionStateAsync(invalid, 1, WorkflowVersionState.Retired, token));
                     await Assert.ThrowsAsync<ArgumentException>(() => store.RegisterWorkflowVersionAsync(new(name, 2, "bad", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Dependencies: [new(invalid, 1)], Invocations: [new(invalid, 1, "invoke-child", "fixture")])));
                     Assert.Throws<WorkflowEngineException>(() => Definition(invalid));
                     await using var provider = Provider(store, new WorkflowCatalog(store));
                     await Assert.ThrowsAsync<ArgumentException>(() => provider.GetRequiredService<IWorkflowClient>().StartAsync(invalid, new Data()));
                     await Assert.ThrowsAsync<ArgumentException>(() => store.SeedAsync(Instance(invalid)));
                 }
-                Assert.Equal("original", (await store.GetDefinitionAsync(name, 1))!.Source);
+                Assert.Equal("original", (await store.GetDefinitionAsync("workflow", name, 1))!.Source);
                 break;
             }
             case Scenario.Retry:
@@ -283,10 +287,10 @@ public sealed class CatalogArtifactReviewRegressionTests
                 await catalog.RegisterWorkflowAsync(Definition(name, 2));
                 Assert.Equal(id, await client.StartAsync(name, new Data(), options));
                 await Refused(() => client.StartAsync(name, 2, new Data(), options), WorkflowErrorKind.InvalidRequest);
-                await catalog.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Deprecated);
+                await catalog.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Deprecated, new CatalogMutationToken((await catalog.GetWorkflowVersionAsync(name, 1))!.LifecycleRevision));
                 Assert.Equal(id, await client.StartAsync(name, new Data(), options));
-                await catalog.RetireWorkflowVersionAsync(name, 1);
-                await catalog.RetireWorkflowVersionAsync(name, 2);
+                await catalog.RetireWorkflowVersionAsync(name, 1, new CatalogMutationToken((await catalog.GetWorkflowVersionAsync(name, 1))!.LifecycleRevision));
+                await catalog.RetireWorkflowVersionAsync(name, 2, new CatalogMutationToken((await catalog.GetWorkflowVersionAsync(name, 2))!.LifecycleRevision));
                 Assert.Equal(id, await client.StartAsync(name, new Data(), options));
                 Assert.Equal(1, (await store.GetWorkflowInstanceSummaryAsync(id))!.WorkflowVersion);
                 await Refused(() => client.StartAsync(name + "-other", new Data(), options), WorkflowErrorKind.InvalidRequest);
@@ -376,7 +380,7 @@ public sealed class CatalogArtifactReviewRegressionTests
         var digest = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream([67, 1, 0]));
         await store.RegisterWorkflowVersionAsync(new(name, 3, "publish", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, State: WorkflowVersionState.Draft, ArtifactDigest: digest, Invocations: []), artifacts);
         await artifacts.DeleteAsync(digest);
-        await Refused(() => store.SetWorkflowVersionStateAsync(name, 3, WorkflowVersionState.Published, artifacts),
+        await Refused(async () => await store.SetWorkflowVersionStateAsync(name, 3, WorkflowVersionState.Published, new CatalogMutationToken((await store.GetWorkflowVersionAsync(name, 3))!.LifecycleRevision), artifacts),
             WorkflowErrorKind.ArtifactUnavailable);
         Assert.Equal(WorkflowVersionState.Draft, (await store.GetWorkflowVersionAsync(name, 3))!.State);
     }
@@ -396,9 +400,9 @@ public sealed class CatalogArtifactReviewRegressionTests
             var commit = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, lease.Epoch, parent.Revision))
                 .WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(WorkflowCommitStatus.Applied, commit.Status);
-            var draft = await store.SaveDefinitionAsync(new(parent.WorkflowName, 1, "workflow", "draft"), 0)
+            var draft = await store.SaveDefinitionAsync(new(parent.WorkflowName, 1, "workflow", "draft"), null)
                 .WaitAsync(TimeSpan.FromSeconds(5));
-            await store.SaveDefinitionAsync(draft with { Source = "edit" }, 1).WaitAsync(TimeSpan.FromSeconds(5));
+            await store.SaveDefinitionAsync(draft with { Source = "edit" }, draft.Id).WaitAsync(TimeSpan.FromSeconds(5));
         }
         finally { barrier.Release.TrySetResult(); }
         await holding;
@@ -537,8 +541,17 @@ public sealed class CatalogArtifactReviewRegressionTests
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => inner.GetPackagesAsync(id);
         public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => inner.GetPackageAsync(id, version);
         public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => inner.GetPackagePageAsync(id, afterVersion, limit);
-        public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => inner.GetDefinitionAsync(name, version);
-        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) => inner.SaveDefinitionAsync(definition, expectedRevision);
+        public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected) => inner.DeleteDefinitionAsync(expected);
+        public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query) => inner.GetDefinitionsAsync(query);
+        public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope) => inner.GetRetirementBlockersAsync(name, version, scope);
+        public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter) => inner.BeginPublicationAsync(draftId, hostId, actor, staleAfter);
+        public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId) => inner.HeartbeatPublicationAsync(id, hostId);
+        public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome) => inner.CompletePublicationAsync(id, hostId, outcome);
+        public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope) => inner.GetPublicationAsync(id, scope);
+        public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query) => inner.GetPublicationsAsync(query);
+        public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => inner.PurgePublicationsAsync(retention, batchSize, cancellationToken);
+        public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version) => inner.GetDefinitionAsync(kind, name, version);
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null) => inner.SaveDefinitionAsync(definition, expected, actor);
         public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null)
         {
             Interlocked.Increment(ref Registrations);
@@ -552,8 +565,8 @@ public sealed class CatalogArtifactReviewRegressionTests
         public Task<long> GetCatalogRevisionAsync() => inner.GetCatalogRevisionAsync();
         public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => inner.GetWorkflowVersionChangesAsync(afterRevision);
         public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => inner.GetWorkflowVersionsAsync(name);
-        public Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null) => inner.SetWorkflowVersionStateAsync(name, version, state, artifacts);
-        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null) => inner.PublishDefinitionAsync(draftId, version, artifacts);
+        public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null) => inner.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts, actor);
+        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null) => inner.PublishDefinitionAsync(draftId, version, artifacts, actor);
         public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
     }
 

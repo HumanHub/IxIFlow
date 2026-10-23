@@ -229,7 +229,7 @@ public static class ActivityPackageFixture
             await publisher.UploadPackageAsync(new MemoryStream(packages.Activity));
             await publisher.UploadPackageAsync(new MemoryStream(packages.Dependency));
         }
-        var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", version, "workflow", yaml ?? Yaml(version)), 0);
+        var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", version, "workflow", yaml ?? Yaml(version)), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
         return result.Version!;

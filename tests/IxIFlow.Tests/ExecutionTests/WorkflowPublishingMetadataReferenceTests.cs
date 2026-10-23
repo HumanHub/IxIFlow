@@ -71,7 +71,7 @@ public sealed class WorkflowPublishingMetadataReferenceTests
                         CheckLoads(before, "configured type check");
 
                         var store = new InMemoryWorkflowStateRepository();
-                        var draft = await store.SaveDefinitionAsync(new("Metadata", 1, "workflow", yaml), 0);
+                        var draft = await store.SaveDefinitionAsync(new("Metadata", 1, "workflow", yaml), null);
                         var result = await new WorkflowPublisher(store, store, new() { SourceOptions = source }).PublishAsync(draft.Id);
                         if (!result.Success) throw new Exception(string.Join("; ", result.Diagnostics));
                         CheckLoads(before, "publication");

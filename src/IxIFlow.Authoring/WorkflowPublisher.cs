@@ -29,6 +29,7 @@ public sealed class WorkflowPublisherOptions
 public sealed record WorkflowPublishResult(WorkflowVersion? Version, IReadOnlyList<WorkflowPublishDiagnostic> Diagnostics)
 {
     public bool Success => Version != null && Diagnostics.All(item => item.Severity != WorkflowDiagnosticSeverity.Error);
+    public WorkflowPublicationReceipt? Receipt => Success && Version?.PublishedDraft != null ? WorkflowPublicationRules.Receipt(Version) : null;
 }
 
 /// <summary>Publishes immutable workflows with a digest-pinned NuGet dependency closure.</summary>
@@ -55,12 +56,12 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         {
             cancellationToken.ThrowIfCancellationRequested();
             var published = await catalog.GetWorkflowVersionAsync(draftId.Name, draftId.Version);
-            if (published?.PublishedDraftRevision == draftId.Revision && draftId.Revision > 0) return new(published, []);
-            var draft = await catalog.GetDefinitionAsync(draftId.Name, draftId.Version);
-            if (draft == null || draft.Revision != draftId.Revision)
+            if (published?.PublishedDraft == draftId && draftId.Revision > 0) return new(published, []);
+            var draft = await catalog.GetDefinitionAsync(draftId.Kind, draftId.Name, draftId.Version);
+            if (draft == null || draft.Id != draftId)
             {
                 published = await catalog.GetWorkflowVersionAsync(draftId.Name, draftId.Version);
-                if (published?.PublishedDraftRevision == draftId.Revision && draftId.Revision > 0) return new(published, []);
+                if (published?.PublishedDraft == draftId && draftId.Revision > 0) return new(published, []);
                 return Failure("PUB001", "The draft was not found or its revision changed");
             }
             if (draft.Kind != "workflow") return Failure("PUB002", "Only workflow YAML drafts can be published");
@@ -128,7 +129,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             cancellationToken.ThrowIfCancellationRequested();
             var version = new WorkflowVersion(draft.Name, draft.Version, tested.StructureHash,
                 tested.ContractJson, bundle.Manifest.ContractHash,
-                ArtifactDigest: digest, Dependencies: tested.Dependencies, ArtifactReferences: packages.Pins.Select(package => package.Digest).ToArray(), PublishedDraftRevision: draft.Revision,
+                ArtifactDigest: digest, Dependencies: tested.Dependencies, ArtifactReferences: packages.Pins.Select(package => package.Digest).ToArray(), PublishedDraft: draft.Id,
                 ManifestJson: JsonSerializer.Serialize(bundle.Manifest), Invocations: bundle.Manifest.Invocations);
             return new(await catalog.PublishDefinitionAsync(draftId, version, artifacts), diagnostics);
         }

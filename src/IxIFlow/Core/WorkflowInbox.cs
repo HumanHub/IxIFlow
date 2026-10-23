@@ -249,6 +249,17 @@ public sealed record ClosedWait(string WaitId, WaitCloseReason Reason);
 /// </summary>
 public sealed record ChildStart(string ChildInstanceId, string Payload, string ParentWaitId)
 {
+    private readonly string _payload = Payload;
+    public string Payload
+    {
+        get => _payload;
+        init
+        {
+            _payload = value;
+            _child = Read(value);
+        }
+    }
+
     public Guid Incarnation { get; init; } = Guid.NewGuid();
     internal IReadOnlyList<PayloadReference> PayloadReferences => Child is { } child
         ? Runtime.CheckpointPayloads.References(child.ExecutionStateJson,
@@ -256,7 +267,7 @@ public sealed record ChildStart(string ChildInstanceId, string Payload, string P
     private readonly WorkflowInstance? _child = Read(Payload);
 
     /// <summary>
-    /// What a store saves the child by, read from the payload once when the start is made, so a store writes the
+    /// What a store saves the child by, decoded whenever a start's payload is initialized, so a store writes the
     /// payload as it comes and takes its columns from here.
     /// </summary>
     public CommittedInstance? Instance => _child is { } child ? CommittedInstance.Of(child) : null;

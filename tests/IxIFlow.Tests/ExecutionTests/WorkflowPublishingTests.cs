@@ -54,7 +54,7 @@ public sealed class WorkflowPublishingTests
 
     private static async Task RoundTrip(IWorkflowStateRepository store)
     {
-        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), null);
         Assert.Equal(WorkflowVersionState.Draft, draft.State);
         var catalog = new WorkflowCatalog(store);
         Assert.Null(await catalog.GetLatestWorkflowVersionAsync(draft.Name));
@@ -63,8 +63,8 @@ public sealed class WorkflowPublishingTests
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
         var version = Assert.IsType<WorkflowVersion>(result.Version);
         Assert.Equal(WorkflowVersionState.Published, version.State);
-        Assert.Equal(draft.Revision, version.PublishedDraftRevision);
-        Assert.Null(await store.GetDefinitionAsync(draft.Name, draft.Version));
+        Assert.Equal(draft.Id, version.PublishedDraft);
+        Assert.Null(await store.GetDefinitionAsync("workflow", draft.Name, draft.Version));
         Assert.Equal(version.ArtifactDigest, (await store.GetWorkflowVersionAsync(draft.Name, draft.Version))!.ArtifactDigest);
         await using var stored = await store.OpenAsync(version.ArtifactDigest!.Value);
         using var bytes = new MemoryStream();
@@ -106,7 +106,7 @@ public sealed class WorkflowPublishingTests
         Assert.True(retry.Success);
         Assert.Equal(version.ArtifactDigest, retry.Version!.ArtifactDigest);
         Assert.Single(await store.GetWorkflowVersionsAsync());
-        await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SaveDefinitionAsync(draft, 0));
+        await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SaveDefinitionAsync(draft with { Generation = Guid.Empty, Revision = 0 }, null));
     }
 
     private sealed class RoundTripScope;
@@ -134,7 +134,7 @@ public sealed class WorkflowPublishingTests
         if (failure == "translate") options.SourceOptions.ClassName = "bad-class";
         if (failure == "test") YamlTestContracts.AddType(options.SourceOptions, "Echo", typeof(ActivityContractTests.RequiredText));
         var store = new InMemoryWorkflowStateRepository();
-        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", yaml), null);
         var upload = new ObservedArtifacts(store);
         var result = await new WorkflowPublisher(store, upload, options).PublishAsync(draft.Id);
         Assert.False(result.Success);
@@ -143,7 +143,7 @@ public sealed class WorkflowPublishingTests
         Assert.Equal("workflow.yaml", error.Path);
         Assert.Equal(line, error.Line);
         Assert.True(error.Column > 0);
-        Assert.Equal(draft, await store.GetDefinitionAsync(draft.Name, draft.Version));
+        Assert.Equal(draft, await store.GetDefinitionAsync("workflow", draft.Name, draft.Version));
         Assert.Empty(await store.GetWorkflowVersionsAsync());
         Assert.Equal(0, upload.Uploads);
     }
@@ -163,17 +163,17 @@ public sealed class WorkflowPublishingTests
 
     private static async Task StaleRevision(IWorkflowStateRepository store)
     {
-        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), null);
         var upload = new ObservedArtifacts(store, async () =>
         {
             Assert.Null(await store.GetWorkflowVersionAsync(draft.Name, draft.Version));
-            Assert.NotNull(await store.GetDefinitionAsync(draft.Name, draft.Version));
-            await store.SaveDefinitionAsync(draft with { Source = Yaml + "\n# edited" }, draft.Revision);
+            Assert.NotNull(await store.GetDefinitionAsync("workflow", draft.Name, draft.Version));
+            await store.SaveDefinitionAsync(draft with { Source = Yaml + "\n# edited" }, draft.Id);
         });
         var result = await new WorkflowPublisher(store, upload, Options()).PublishAsync(draft.Id);
         Assert.False(result.Success);
         Assert.Equal(WorkflowPublishStage.Publish, Assert.Single(result.Diagnostics).Stage);
-        Assert.Equal(2, (await store.GetDefinitionAsync(draft.Name, draft.Version))!.Revision);
+        Assert.Equal(2, (await store.GetDefinitionAsync("workflow", draft.Name, draft.Version))!.Revision);
         Assert.Empty(await store.GetWorkflowVersionsAsync());
         Assert.True(await store.ExistsAsync(upload.Digest!.Value));
     }
@@ -184,7 +184,7 @@ public sealed class WorkflowPublishingTests
     public async Task SameRevisionConcurrentPublicationsAreIdempotent()
     {
         var store = new InMemoryWorkflowStateRepository();
-        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), null);
         var results = await Task.WhenAll(Enumerable.Range(0, 2).Select(index =>
         {
             var options = Options();
@@ -194,7 +194,7 @@ public sealed class WorkflowPublishingTests
         Assert.All(results, result => Assert.True(result.Success, string.Join("; ", result.Diagnostics)));
         Assert.Equal(results[0].Version!.ArtifactDigest, results[1].Version!.ArtifactDigest);
         Assert.Single(await store.GetWorkflowVersionsAsync());
-        Assert.Null(await store.GetDefinitionAsync(draft.Name, draft.Version));
+        Assert.Null(await store.GetDefinitionAsync("workflow", draft.Name, draft.Version));
     }
 
     [Fact]
@@ -203,7 +203,7 @@ public sealed class WorkflowPublishingTests
         var yaml = Yaml.Replace("dataType: Data", "dataType: " + typeof(Data).FullName!.Replace('+', '.'))
             .Replace("activity: Echo", "activity: " + typeof(YamlMappingActivity).FullName);
         var store = new InMemoryWorkflowStateRepository();
-        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
     }
@@ -212,7 +212,7 @@ public sealed class WorkflowPublishingTests
     public async Task HangingBuildFailsPublicationAtTheDeadlineAndLeavesItsThreadAndContextBehind()
     {
         var store = new InMemoryWorkflowStateRepository();
-        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), null);
         var upload = new ObservedArtifacts(store);
         var timeout = TimeSpan.FromSeconds(1);
         var options = new WorkflowPublisherOptions
@@ -245,7 +245,7 @@ public sealed class WorkflowPublishingTests
         Assert.Equal(LogLevel.Warning, warning.Level);
         Assert.Contains("thread", warning.Message);
         Assert.Contains("load context are abandoned until the process restarts", warning.Message);
-        Assert.Equal(draft, await store.GetDefinitionAsync(draft.Name, draft.Version));
+        Assert.Equal(draft, await store.GetDefinitionAsync("workflow", draft.Name, draft.Version));
         Assert.Empty(await store.GetWorkflowVersionsAsync());
         Assert.Equal(0, upload.Uploads);
 

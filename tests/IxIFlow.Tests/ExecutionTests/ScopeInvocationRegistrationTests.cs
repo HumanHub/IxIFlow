@@ -74,7 +74,7 @@ public sealed class ScopeInvocationRegistrationTests
     {
         using var catalog = new WorkflowCatalog(store);
         await catalog.RegisterWorkflowAsync(RequiringChild());
-        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Yaml), null);
         var result = await new WorkflowPublisher(catalog, store, Options()).PublishAsync(draft.Id);
         Assert.False(result.Success);
         var error = Assert.Single(result.Diagnostics);
@@ -86,7 +86,7 @@ public sealed class ScopeInvocationRegistrationTests
         Assert.Equal(3, error.Line);
         Assert.True(error.Column > 0);
         Assert.Null(await store.GetWorkflowVersionAsync("Caller", 1));
-        Assert.Equal(draft, await store.GetDefinitionAsync("Caller", 1));
+        Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
         Assert.Empty((await store.QueryInstancesAsync(new())).Items);
     });
 
@@ -100,7 +100,7 @@ public sealed class ScopeInvocationRegistrationTests
         var source = new InMemoryWorkflowStateRepository();
         using var original = new WorkflowCatalog(source);
         await original.RegisterWorkflowAsync(Workflow.Create<Data>("RequiringChild").Build());
-        var draft = await source.SaveDefinitionAsync(new("Caller", 1, "workflow", Yaml), 0);
+        var draft = await source.SaveDefinitionAsync(new("Caller", 1, "workflow", Yaml), null);
         var published = await new WorkflowPublisher(original, source, Options()).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
         Assert.Contains("invoke-child", Assert.Single(published.Version!.Invocations!).Step);
@@ -127,7 +127,7 @@ public sealed class ScopeInvocationRegistrationTests
         // Catalog metadata is sufficient for refusal; no executable DTO or bundle
         // is needed to know that this child requires an enclosing scope.
         await store.RegisterWorkflowVersionAsync(new("RequiringChild", 1, "structure", contract.ToJson(), contract.Hash, Invocations: []));
-        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Yaml), null);
         var result = await new WorkflowPublisher(store, store, Options()).PublishAsync(draft.Id);
         var error = Assert.Single(result.Diagnostics);
         Assert.Equal("InvalidDefinition", error.Code);

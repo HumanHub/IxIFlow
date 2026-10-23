@@ -89,7 +89,7 @@ public sealed class PublishedInvokeCodeRegistrationTests
                     workflow: {name: Callee, version: 1}
                     input: [{target: Value, from: {kind: path, path: workflow.Value}}]
                     output: [{source: Value, to: {path: workflow.Value}}]
-                """), 0);
+                """), null);
             var result = await publisher.PublishAsync(draft.Id);
             if (scenario == "matching")
             {
@@ -107,7 +107,7 @@ public sealed class PublishedInvokeCodeRegistrationTests
                 Assert.Contains(scenario == "identity" ? "conflicting identity" : "conflicting contents", error.Message);
                 Assert.Null(result.Version);
                 Assert.Null(await store.GetWorkflowVersionAsync("Caller", 1));
-                Assert.Equal(draft, await store.GetDefinitionAsync("Caller", 1));
+                Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
             }
         }
         finally

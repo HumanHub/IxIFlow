@@ -32,7 +32,8 @@ public abstract partial class RelationalWorkflowStateRepository :
     /// <summary>SQL steps in the shared protocol. Optional steps return null.</summary>
     internal enum Statement
     {
-        CatalogPackages, CatalogPackage, CatalogPackagePage, CatalogPackageInsert, CatalogLock, CatalogSharedLock, CatalogInstanceDigests, CatalogRevision, CatalogRevisionAdvance, CatalogVersionChanges, CatalogVersions, CatalogNamedVersions, CatalogVersion, CatalogUnfinishedCallers, CatalogVersionInsert, CatalogVersionState,
+        CatalogPackages, CatalogPackage, CatalogPackagePage, CatalogPackageInsert, CatalogLock, CatalogContentLock, CatalogSharedLock, CatalogInstanceDigests, CatalogRevision, CatalogRevisionAdvance, CatalogVersionChanges, CatalogVersions, CatalogNamedVersions, CatalogVersion, CatalogUnfinishedCallers, CatalogVersionInsert, CatalogVersionState,
+        CatalogDefinitionPage, DraftGenerationInsert, PublicationHead, PublicationHeadInsert, PublicationHeadUpdate, Publication, PublicationInsert, PublicationUpdate, PublicationHeartbeat, PublicationPage, PublicationPurgeCandidates, PublicationDelete,
         CatalogDefinition, CatalogDefinitionInsert, CatalogDefinitionUpdate, CatalogDefinitionDelete, ArtifactPut, ArtifactRead, ArtifactExists, ArtifactDelete, ArtifactDeleteOld, ArtifactCandidates,
         WebhookDeliveryRead, WebhookDeliveryDelete, WebhookDeliveryInsert, WebhookDeliveryExpire,
         AdmissionLock, AdmissionRead, AdmissionDelete, AdmissionInsert, OwnershipRead, OwnershipInsert, OwnershipDelete, AdmissionExpire, OwnershipExpire,

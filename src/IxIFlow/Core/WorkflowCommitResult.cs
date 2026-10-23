@@ -310,6 +310,12 @@ public sealed class CheckpointCommit
         ArgumentNullException.ThrowIfNull(instance);
         InstanceIds.Validate(instance.InstanceId);
         if (instance.ParentInstanceId != null) InstanceIds.Validate(instance.ParentInstanceId);
+        // Validate the original identity before JSON encoding can replace an unpaired surrogate.
+        // Raw instances may be unnamed, just as at the store's start boundary.
+        WorkflowCatalogRules.ValidateNameWhitespace(instance.WorkflowName);
+        foreach (var child in childStarts ?? [])
+            if (child.Child is { } childInstance)
+                WorkflowCatalogRules.ValidateNameWhitespace(childInstance.WorkflowName);
         if (!admission) ArgumentOutOfRangeException.ThrowIfNegativeOrZero(epoch);
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         commitId ??= Guid.NewGuid().ToString("N");

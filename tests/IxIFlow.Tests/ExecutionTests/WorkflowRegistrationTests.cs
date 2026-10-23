@@ -75,7 +75,7 @@ public sealed class WorkflowRegistrationTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         var registry = provider.GetRequiredService<IWorkflowCatalog>();
-        await registry.RetireWorkflowVersionAsync(definition.Name, definition.Version);
+        await registry.RetireWorkflowVersionAsync(definition.Name, definition.Version, new CatalogMutationToken((await registry.GetWorkflowVersionAsync(definition.Name, definition.Version))!.LifecycleRevision));
         var deactivated = await registry.GetWorkflowDefinitionAsync(definition.Name,
             definition.Version);
         Assert.NotNull(deactivated);
@@ -265,15 +265,14 @@ public sealed class WorkflowRegistrationTests
         var repository = provider.GetRequiredService<IWorkflowStateRepository>();
         var childId = await repository.WaitingInstanceAsync("Customer approval", "approval");
         var catalog = provider.GetRequiredService<IWorkflowCatalog>();
-        await catalog.RetireWorkflowVersionAsync(parent.Name, parent.Version);
-        var retirement = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
-            catalog.RetireWorkflowVersionAsync("Customer approval", 3));
+        await catalog.RetireWorkflowVersionAsync(parent.Name, parent.Version, new CatalogMutationToken((await catalog.GetWorkflowVersionAsync(parent.Name, parent.Version))!.LifecycleRevision));
+        var retirement = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await catalog.RetireWorkflowVersionAsync("Customer approval", 3, new CatalogMutationToken((await catalog.GetWorkflowVersionAsync("Customer approval", 3))!.LifecycleRevision)));
         Assert.Equal(WorkflowErrorKind.InvalidState, retirement.Kind);
         Assert.Contains("unfinished parent", retirement.Message);
 
         EventAssert.Consumed(await engine.ResumeAsync(childId, "approval", new RegistrationEvent()));
         AssertCompleted(await engine.FinishedAsync(started));
-        await catalog.RetireWorkflowVersionAsync("Customer approval", 3);
+        await catalog.RetireWorkflowVersionAsync("Customer approval", 3, new CatalogMutationToken((await catalog.GetWorkflowVersionAsync("Customer approval", 3))!.LifecycleRevision));
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => engine.RunAsync(Parent(2), new ParentData()));
         Assert.Contains("is deactivated", error.Message);

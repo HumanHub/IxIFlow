@@ -310,7 +310,7 @@ public sealed class BundleRound3Tests : IDisposable
         for (var i = 0; i < 2; i++)
         {
             // Revisit the same corrupt manifest through an actual changed-row delta.
-            if (i != 0) await store.SetWorkflowVersionStateAsync(version.Name, version.Version, WorkflowVersionState.Deprecated);
+            if (i != 0) await store.SetWorkflowVersionStateAsync(version.Name, version.Version, WorkflowVersionState.Deprecated, new CatalogMutationToken((await store.GetWorkflowVersionAsync(version.Name, version.Version))!.LifecycleRevision));
             Assert.DoesNotContain("workflow:BundleLifecycle@1", (await settings.RefreshCapabilitiesAsync(counted)).Keys);
             var entry = Assert.Single(MemoEntries(settings.Compatibility)).Value;
             if (cached != null) Assert.Same(cached, entry);
@@ -323,7 +323,7 @@ public sealed class BundleRound3Tests : IDisposable
         Assert.False(Assert.Single(MemoEntries(settings.Compatibility)).Value.Value);
         // Rows are retained by the store; a policy view withdraws this manifest's last reference.
         probe.VersionRows = [version with { State = WorkflowVersionState.Retired, ManifestJson = null }];
-        await store.SetWorkflowVersionStateAsync(version.Name, version.Version, WorkflowVersionState.Retired);
+        await store.SetWorkflowVersionStateAsync(version.Name, version.Version, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(version.Name, version.Version))!.LifecycleRevision));
         Assert.DoesNotContain("workflow:BundleLifecycle@1", (await settings.RefreshCapabilitiesAsync(counted)).Keys);
         Assert.Equal(3, probe.VersionReads);
         Assert.Equal(3, probe.RevisionReads);

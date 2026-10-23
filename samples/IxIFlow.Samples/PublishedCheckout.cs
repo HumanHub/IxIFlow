@@ -36,10 +36,10 @@ public static class PublishedCheckout
         var orders = await store.SaveDefinitionAsync(new("Orders", 1, "workflow", """
             workflow: {name: Orders, dataType: CheckoutData, input: [OrderId], output: [Receipt]}
             definitions: []
-            """), 0);
+            """), null);
         var callee = await publisher.PublishAsync(orders.Id);
         if (!callee.Success) return callee;
-        var checkout = await store.SaveDefinitionAsync(new("Checkout", 1, "workflow", Yaml), 0);
+        var checkout = await store.SaveDefinitionAsync(new("Checkout", 1, "workflow", Yaml), null);
         return await publisher.PublishAsync(checkout.Id);
     }
 }

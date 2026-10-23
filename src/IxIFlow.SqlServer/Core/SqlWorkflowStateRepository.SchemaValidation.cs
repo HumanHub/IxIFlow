@@ -12,14 +12,17 @@ public sealed partial class SqlWorkflowStateRepository
         try
         {
             using var schema = await connection.QueryMultipleAsync("""
+                SELECT Id, IdOrder, Kind, Name, Version, Generation, Revision, Attempt, State, HostId, StartedBy, StartedAtUtc, HeartbeatAtUtc, FinishedAtUtc, OutcomeJson, CatalogRevision FROM dbo.IxIFlowPublicationAttempts WHERE 1=0;
+                SELECT Kind, Name, Version, Generation, Revision, ActiveId, LastAttempt FROM dbo.IxIFlowPublicationHeads WHERE 1=0;
+                SELECT Generation, Kind, Name, Version FROM dbo.IxIFlowDraftGenerations WHERE 1=0;
                 SELECT Id, Version, Fingerprint, ActivitiesJson FROM dbo.IxIFlowInstalledPackages WHERE 1=0;
                 SELECT MemberId, PackageId, PackageVersion, Fingerprint FROM dbo.IxIFlowHostPackages WHERE 1=0;
                 SELECT InstanceId, CommandId, CommandOrder, CommandJson FROM dbo.IxIFlowWorkflowDebugCommands WHERE 1=0;
                 SELECT Digest, Bytes, Body, MetadataJson FROM dbo.IxIFlowWorkflowPayloads WHERE 1=0;
                 SELECT Digest, OwnerKind, OwnerId FROM dbo.IxIFlowWorkflowPayloadRefs WHERE 1=0;
-                SELECT Name, Version, Kind, Source, Revision, State FROM dbo.IxIFlowDefinitions WHERE 1=0;
+                SELECT Name, NameOrder, Version, Kind, Source, Revision, Generation, SourceLength, UpdatedAtUtc, UpdatedBy FROM dbo.IxIFlowDefinitions WHERE 1=0;
                 SELECT Id, Revision FROM dbo.IxIFlowCatalogRevision WHERE 1=0;
-                SELECT Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision FROM dbo.IxIFlowWorkflowVersions WHERE 1=0;
+                SELECT Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision, PublishedDraftGeneration, PublishedDraftRevision, PublishedAtUtc, PublishedBy, StateChangedAtUtc, StateChangedBy, LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE 1=0;
                 SELECT Digest, Kind, Content, CreatedAtUtc FROM dbo.IxIFlowArtifacts WHERE 1=0;
                 SELECT Id, Version, Digest, MetadataJson, DependencyGroupsJson FROM dbo.IxIFlowPackages WHERE 1=0;
                 SELECT [InstanceId], [WorkflowName], [WorkflowVersion], [BundleDigest], [CreatedAtUtc], [StopKind], [StopCrashCount], [Status], [CorrelationId], [RunnableAtUtc], [EndedAtUtc], [StateJson], [CancellationJson], [CancellationAcknowledged], [Revision], [InboxSequence], [InboxReadThrough], [Incarnation], [ParentInstanceId], [ParentWaitId], [LastHostId], [DemandSetId], [PinnedHost], [PinExpiresAtUtc], [PinInherit] FROM dbo.IxIFlowWorkflowInstances WHERE 1=0;
@@ -43,6 +46,7 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT DemandSetId, DemandKey, DemandValue, ExpiresAtUtc, ValueExpiresAtUtc, Inherit, DemandKeyBytes FROM dbo.IxIFlowDemandSetRows WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
+            await ValidateDraftKeysAsync(connection, transaction);
             if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sys.indexes WHERE object_id=OBJECT_ID('dbo.IxIFlowWorkflowPayloadRefs') AND name='IX_IxIFlowPayloadRefs_Owner'", transaction: transaction) != 1)
                 throw EarlierBuild();
             if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.IxIFlowWorkflowInstances') AND name=N'IX_IxIFlowInstances_SetPin'", transaction: transaction) != 1)
@@ -88,6 +92,9 @@ public sealed partial class SqlWorkflowStateRepository
                 "IX_IxIFlowWorkflowLeases_ExpiresAt",
                 "IX_IxIFlowWorkflowWaits_Open",
                 "IX_IxIFlowWorkflowWaits_Page",
+                "ix_publication_attempt_identity",
+                "ix_publication_history",
+                "ix_publication_finished",
                 "ix_artifacts_created",
                 "ix_workflow_versions_revision",
             ];
@@ -100,6 +107,86 @@ public sealed partial class SqlWorkflowStateRepository
         {
             throw EarlierBuild(error);
         }
+    }
+
+    private static async Task ValidateDraftKeysAsync(DbConnection connection, DbTransaction transaction)
+    {
+        await ValidateDraftPageIndexAsync(connection, transaction);
+        if (!(await connection.QueryAsync<string>("SELECT c.name FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id WHERE i.object_id=OBJECT_ID('dbo.IxIFlowDefinitions') AND i.is_primary_key=1 AND ic.key_ordinal>0 ORDER BY ic.key_ordinal", transaction: transaction)).SequenceEqual(new[] { "Kind", "Name", "Version" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("SELECT c.name FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id WHERE i.object_id=OBJECT_ID('dbo.IxIFlowWorkflowVersions') AND i.is_primary_key=1 AND ic.key_ordinal>0 ORDER BY ic.key_ordinal", transaction: transaction)).SequenceEqual(new[] { "Name", "Version" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("SELECT c.name FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id WHERE i.object_id=OBJECT_ID('dbo.IxIFlowDraftGenerations') AND i.is_primary_key=1 AND ic.key_ordinal>0 ORDER BY ic.key_ordinal", transaction: transaction)).SequenceEqual(new[] { "Generation" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("SELECT c.name FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id WHERE i.object_id=OBJECT_ID('dbo.IxIFlowPublicationHeads') AND i.is_primary_key=1 AND ic.key_ordinal>0 ORDER BY ic.key_ordinal", transaction: transaction)).SequenceEqual(new[] { "Kind", "Name", "Version", "Generation", "Revision" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("SELECT c.name FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id WHERE i.object_id=OBJECT_ID('dbo.IxIFlowPublicationAttempts') AND i.is_primary_key=1 AND ic.key_ordinal>0 ORDER BY ic.key_ordinal", transaction: transaction)).SequenceEqual(new[] { "Id" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("SELECT c.name FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id WHERE i.object_id=OBJECT_ID('dbo.IxIFlowPublicationAttempts') AND i.name='ix_publication_attempt_identity' AND i.is_unique=1 AND i.has_filter=0 AND i.is_disabled=0 AND ic.key_ordinal>0 ORDER BY ic.key_ordinal", transaction: transaction)).SequenceEqual(new[] { "Kind", "Name", "Version", "Generation", "Revision", "Attempt" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        foreach (var (name, columns) in new[]
+        {
+            ("ix_publication_finished", new[] { "FinishedAtUtc" }),
+            ("ix_publication_history", new[] { "Kind", "Name", "Version", "StartedAtUtc", "IdOrder" })
+        })
+        {
+            if (!(await connection.QueryAsync<string>("""
+                SELECT CASE WHEN ic.is_descending_key=0 THEN c.name ELSE '' END
+                FROM sys.indexes i
+                JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id
+                JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id
+                WHERE i.object_id=OBJECT_ID('dbo.IxIFlowPublicationAttempts') AND i.name=@Name
+                  AND i.type=2 AND i.is_unique=0 AND i.has_filter=0 AND i.filter_definition IS NULL
+                  AND i.is_disabled=0 AND i.is_hypothetical=0 AND ic.key_ordinal>0
+                ORDER BY ic.key_ordinal
+                """, new { Name = name }, transaction)).SequenceEqual(columns, StringComparer.Ordinal))
+                throw EarlierBuild();
+        }
+        if (await connection.ExecuteScalarAsync<int>("""
+            SELECT COUNT(*) FROM sys.computed_columns c
+            WHERE c.object_id=OBJECT_ID('dbo.IxIFlowPublicationAttempts') AND c.name='IdOrder'
+              AND c.is_persisted=1 AND c.system_type_id=TYPE_ID('varchar') AND c.max_length=36
+              AND c.collation_name='Latin1_General_100_BIN2'
+              AND COLUMNPROPERTY(c.object_id,c.name,'IsDeterministic')=1
+              AND COLUMNPROPERTY(c.object_id,c.name,'IsPrecise')=1
+              AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c.definition,'[',''),']',''),' ',''),'(',''),')',''))
+                  = 'lowerconvertvarchar36,idcollatelatin1_general_100_bin2'
+            """, transaction: transaction) != 1)
+            throw EarlierBuild();
+    }
+
+    private static async Task ValidateDraftPageIndexAsync(DbConnection connection, DbTransaction transaction)
+    {
+        // The persisted UTF-8 bytes order names by code point, independently of NVARCHAR's UTF-16 order.
+        if (await connection.ExecuteScalarAsync<int>("""
+            SELECT COUNT(*) FROM sys.computed_columns c
+            WHERE c.object_id=OBJECT_ID('dbo.IxIFlowDefinitions') AND c.name='NameOrder'
+              AND c.is_persisted=1 AND c.system_type_id=TYPE_ID('varbinary') AND c.max_length=800
+              AND COLUMNPROPERTY(c.object_id,c.name,'IsDeterministic')=1
+              AND COLUMNPROPERTY(c.object_id,c.name,'IsPrecise')=1
+              AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c.definition,'[',''),']',''),' ',''),'(',''),')',''))
+                  = 'convertvarbinary800,convertvarchar800,namecollatelatin1_general_100_ci_as_sc_utf8collatelatin1_general_100_ci_as_sc_utf8'
+            """, transaction: transaction) != 1)
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("""
+            SELECT CASE WHEN ic.is_descending_key=0 THEN c.name ELSE '' END
+            FROM sys.indexes i
+            JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id
+            JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id
+            WHERE i.object_id=OBJECT_ID('dbo.IxIFlowDefinitions') AND i.name='ix_definitions_page'
+              AND i.type=2 AND i.is_unique=0 AND i.has_filter=0 AND i.filter_definition IS NULL
+              AND i.is_disabled=0 AND i.is_hypothetical=0 AND ic.key_ordinal>0
+            ORDER BY ic.key_ordinal
+            """, transaction: transaction)).SequenceEqual(new[] { "Kind", "NameOrder", "Version" }, StringComparer.Ordinal))
+            throw EarlierBuild();
+        if (!(await connection.QueryAsync<string>("""
+            SELECT c.name FROM sys.indexes i
+            JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id
+            JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id
+            WHERE i.object_id=OBJECT_ID('dbo.IxIFlowDefinitions') AND i.name='ix_definitions_page' AND ic.is_included_column=1
+            """, transaction: transaction)).ToHashSet(StringComparer.Ordinal)
+            .SetEquals(new[] { "Name", "Generation", "Revision", "SourceLength", "UpdatedAtUtc", "UpdatedBy" }))
+            throw EarlierBuild();
     }
 
     private static WorkflowEngineException EarlierBuild(Exception? error = null) =>

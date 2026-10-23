@@ -165,8 +165,9 @@ public static class ServiceCollectionExtensions
         if (options.RetentionScanInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(options.RetentionScanInterval), "The retention scan interval must be positive");
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ArtifactRetention, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.PublicationRetention, TimeSpan.Zero);
         services.Replace(ServiceDescriptor.Singleton(new RetentionSettings(options.FinishedInstanceRetention,
-            options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize) { ArtifactRetention = options.ArtifactRetention }));
+            options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize) { ArtifactRetention = options.ArtifactRetention, PublicationRetention = options.PublicationRetention }));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -307,6 +308,9 @@ public class IxIFlowOptions
 
     /// <summary>How long unreferenced artifacts are retained; defaults to 90 days.</summary>
     public TimeSpan ArtifactRetention { get; set; } = TimeSpan.FromDays(90);
+
+    /// <summary>How long finished publication attempts remain available. Defaults to 30 days.</summary>
+    public TimeSpan PublicationRetention { get; set; } = TimeSpan.FromDays(30);
 
     /// <summary>How long terminal rows and their results remain, measured from the first terminal store write. At least one minute.</summary>
     public TimeSpan FinishedInstanceRetention { get; set; } = RetentionSettings.Default.FinishedRetention;

@@ -93,7 +93,7 @@ public sealed class WorkflowPublishingReferenceRegressionTests
                         if (args.Length > 0) { Assembly.Load("ColdApplication"); Assembly.Load("AmbientOnly"); }
                         var yaml = "workflow:\n  name: Cold\n  version: 1\n  dataType: ColdApplication.Data\ndefinitions:\n  - kind: activity\n    activity: ColdApplication.Echo\n    input:\n      - target: Value\n        from: {kind: path, path: workflow.orderId}\n";
                         var store = new InMemoryWorkflowStateRepository();
-                        var draft = await store.SaveDefinitionAsync(new("Cold", 1, "workflow", yaml), 0);
+                        var draft = await store.SaveDefinitionAsync(new("Cold", 1, "workflow", yaml), null);
                         var result = await new WorkflowPublisher(store, store).PublishAsync(draft.Id);
                         if (!result.Success) { Console.Error.WriteLine(string.Join("; ", result.Diagnostics)); return 11; }
                         Console.WriteLine(result.Version!.ArtifactDigest);

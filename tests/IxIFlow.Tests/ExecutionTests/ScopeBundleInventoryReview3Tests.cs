@@ -109,10 +109,10 @@ public sealed class ScopeBundleInventoryReview3Tests
             var metadataOnly = new MetadataOnlyArtifacts(artifacts);
             if (publish)
             {
-                var draft = await store.SaveDefinitionAsync(new(version.Name, version.Version, "workflow", "source"), 0);
-                version = version with { PublishedDraftRevision = draft.Revision };
+                var draft = await store.SaveDefinitionAsync(new(version.Name, version.Version, "workflow", "source"), null);
+                version = version with { PublishedDraft = draft.Id };
                 await store.PublishDefinitionAsync(draft.Id, version, metadataOnly);
-                Assert.Null(await store.GetDefinitionAsync(version.Name, version.Version));
+                Assert.Null(await store.GetDefinitionAsync("workflow", version.Name, version.Version));
             }
             else await store.RegisterWorkflowVersionAsync(version, metadataOnly);
             Assert.Equal(version.Invocations, (await store.GetWorkflowVersionAsync(version.Name, version.Version))!.Invocations);
@@ -269,7 +269,7 @@ public sealed class ScopeBundleInventoryReview3Tests
               - kind: invokeWorkflow
                 id: invoke-child
                 workflow: {name: InventoryChild, version: 1}
-            """), 0);
+            """), null);
         var result = await new WorkflowPublisher(catalog, source, new()
         { SourceOptions = YamlTestContracts.Create(("Data", typeof(Data)), ("Effect", typeof(Effect))) }).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));

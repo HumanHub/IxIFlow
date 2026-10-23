@@ -136,7 +136,7 @@ public sealed class InvocationRetryBundleScenarios
         options.SourceOptions.Types["Echo"] = typeof(Echo).FullName!;
         options.SourceOptions.Types["Fail"] = typeof(Fail).FullName!;
         options.SourceOptions.Workflows["ColdRetryChild@1"] = new(options.SourceOptions.Types["ChildData"], 1);
-        var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", yaml), 0);
+        var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", yaml), null);
         var published = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
         return published.Version!;

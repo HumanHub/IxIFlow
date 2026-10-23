@@ -122,7 +122,7 @@ public sealed class PublishedActivityPackageScenarios
         await publisher.UploadPackageAsync(new MemoryStream(fixture.Activity));
         await publisher.UploadPackageAsync(new MemoryStream(fixture.Dependency));
         var abandoned = await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.orphan", "1.0.0", new())));
-        var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", 1, "workflow", ActivityPackageFixture.Yaml()), 0);
+        var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", 1, "workflow", ActivityPackageFixture.Yaml()), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
         var version = result.Version!;

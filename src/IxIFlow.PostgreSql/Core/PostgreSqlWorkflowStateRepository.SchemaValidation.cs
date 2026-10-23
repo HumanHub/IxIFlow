@@ -12,14 +12,17 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         try
         {
             using var schema = await connection.QueryMultipleAsync("""
+                SELECT id, kind, name, version, generation, revision, attempt, state, host_id, started_by, started_at_utc, heartbeat_at_utc, finished_at_utc, outcome_json, catalog_revision FROM ixiflow_publication_attempts WHERE 1=0;
+                SELECT kind, name, version, generation, revision, active_id, last_attempt FROM ixiflow_publication_heads WHERE 1=0;
+                SELECT generation, kind, name, version FROM ixiflow_draft_generations WHERE 1=0;
                 SELECT id, version, fingerprint, activities_json FROM ixiflow_installed_packages WHERE 1=0;
                 SELECT member_id, package_id, package_version, fingerprint FROM ixiflow_host_packages WHERE 1=0;
                 SELECT instance_id, command_id, command_order, command_json FROM ixiflow_workflow_debug_commands WHERE 1=0;
                 SELECT digest, bytes, body, metadata_json FROM ixiflow_workflow_payloads WHERE 1=0;
                 SELECT digest, owner_kind, owner_id FROM ixiflow_workflow_payload_refs WHERE 1=0;
-                SELECT name, version, kind, source, revision, state FROM ixiflow_definitions WHERE 1=0;
+                SELECT name, version, kind, source, revision, generation, source_length, updated_at_utc, updated_by FROM ixiflow_definitions WHERE 1=0;
                 SELECT id, revision FROM ixiflow_catalog_revision WHERE 1=0;
-                SELECT name, version, structure_hash, state, artifact_digest, metadata_json, catalog_revision FROM ixiflow_workflow_versions WHERE 1=0;
+                SELECT name, version, structure_hash, state, artifact_digest, metadata_json, catalog_revision, published_draft_generation, published_draft_revision, published_at_utc, published_by, state_changed_at_utc, state_changed_by, lifecycle_revision FROM ixiflow_workflow_versions WHERE 1=0;
                 SELECT digest, kind, content, created_at_utc FROM ixiflow_artifacts WHERE 1=0;
                 SELECT id, version, digest, metadata_json, dependency_groups_json FROM ixiflow_packages WHERE 1=0;
                 SELECT instance_id, workflow_name, workflow_version, bundle_digest, created_at_utc, stop_kind, stop_crash_count, status, correlation_id, runnable_at_utc, ended_at_utc, state_json, cancellation_json, cancellation_acknowledged, revision, inbox_sequence, inbox_read_through, incarnation, parent_instance_id, parent_wait_id, last_host_id, demand_set_id, pinned_host, pin_expires_at_utc, pin_inherit FROM ixiflow_workflow_instances WHERE 1=0;
@@ -43,6 +46,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 SELECT member_id, capability_key, capability_value FROM ixiflow_host_capabilities WHERE 1=0;
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
+            await ValidateDraftKeysAsync(connection, transaction);
             if (await connection.ExecuteScalarAsync<int>("SELECT CASE WHEN to_regclass('ixiflow_payload_refs_owner') IS NOT NULL THEN 1 ELSE 0 END", transaction: transaction) != 1)
                 throw EarlierBuild();
             // Check coverage, ordering and the disjoint pin predicates, including the dedicated
@@ -84,6 +88,9 @@ public sealed partial class PostgreSqlWorkflowStateRepository
                 "ix_ixiflow_instances_set_pin_no_expiry",
                 "ix_ixiflow_instances_set_runnable",
 
+                "ix_publication_attempt_identity",
+                "ix_publication_history",
+                "ix_publication_finished",
                 "ix_artifacts_created",
                 "ix_workflow_versions_revision",
                 "ix_ixiflow_admissions_expiry",
@@ -123,9 +130,42 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             if (await connection.ExecuteScalarAsync<int>("SELECT CASE WHEN to_regclass('ixiflow_execution_epoch') IS NOT NULL THEN 1 ELSE 0 END", transaction: transaction) != 1)
                 throw EarlierBuild();
         }
-        catch (Exception error) when (error is PostgresException { SqlState: "42703" or "42P01" })
+        catch (Exception error) when (error is PostgresException { SqlState: "42703" or "42P01" or "42704" })
         {
             throw EarlierBuild(error);
+        }
+    }
+
+    private static async Task ValidateDraftKeysAsync(DbConnection connection, DbTransaction transaction)
+    {
+        foreach (var (table, name, primary, unique, columns) in new (string, string?, bool, bool, string[])[]
+        {
+            ("ixiflow_definitions", null, true, true, ["kind", "name", "version"]),
+            ("ixiflow_workflow_versions", null, true, true, ["name", "version"]),
+            ("ixiflow_draft_generations", null, true, true, ["generation"]),
+            ("ixiflow_publication_heads", null, true, true, ["kind", "name", "version", "generation", "revision"]),
+            ("ixiflow_publication_attempts", null, true, true, ["id"]),
+            ("ixiflow_publication_attempts", "ix_publication_attempt_identity", false, true, ["kind", "name", "version", "generation", "revision", "attempt"]),
+            ("ixiflow_publication_attempts", "ix_publication_finished", false, false, ["finished_at_utc"]),
+            ("ixiflow_publication_attempts", "ix_publication_history", false, false, ["kind", "name", "version", "started_at_utc", "id"])
+        })
+        {
+            if (!(await connection.QueryAsync<string>("""
+                SELECT CASE WHEN i.indoption[k.ord::int-1]=0
+                    AND (a.attcollation=0 OR i.indcollation[k.ord::int-1]='"C"'::regcollation)
+                    THEN a.attname::text ELSE '' END
+                FROM pg_index i
+                JOIN pg_class index_table ON index_table.oid=i.indexrelid
+                JOIN pg_am method ON method.oid=index_table.relam AND method.amname='btree'
+                CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum, ord)
+                LEFT JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum
+                WHERE i.indrelid=to_regclass(@Table) AND i.indisprimary=@Primary AND i.indisunique=@Unique
+                  AND (@Name IS NULL OR i.indexrelid=to_regclass(@Name))
+                  AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indisvalid AND i.indisready AND i.indislive
+                  AND k.ord<=i.indnkeyatts
+                ORDER BY k.ord
+                """, new { Table = table, Name = name, Primary = primary, Unique = unique }, transaction)).SequenceEqual(columns, StringComparer.Ordinal))
+                throw EarlierBuild();
         }
     }
 

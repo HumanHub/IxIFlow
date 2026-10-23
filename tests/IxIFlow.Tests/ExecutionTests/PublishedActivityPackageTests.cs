@@ -131,12 +131,12 @@ public sealed class PublishedActivityPackageTests
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.conflict", "1.0.0", new(),
             $"<dependency id=\"IxIFlow.Abstractions\" version=\"{range}\"/>")));
         var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", 1, "workflow",
-            ActivityPackageFixture.Yaml(extraImport: "fixture.conflict@1.0.0")), 0);
+            ActivityPackageFixture.Yaml(extraImport: "fixture.conflict@1.0.0")), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.False(result.Success);
         Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Message.Contains("shared assembly") && diagnostic.Line > 1);
         Assert.Null(await store.GetWorkflowVersionAsync(draft.Name, 1));
-        Assert.NotNull(await store.GetDefinitionAsync(draft.Name, 1));
+        Assert.NotNull(await store.GetDefinitionAsync("workflow", draft.Name, 1));
     }
 
     [Fact]
@@ -148,7 +148,7 @@ public sealed class PublishedActivityPackageTests
         await publisher.UploadPackageAsync(new MemoryStream(fixture.Activity));
         await publisher.UploadPackageAsync(new MemoryStream(fixture.Dependency));
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.SharedAssemblyConflictPackage()));
-        var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", 1, "workflow", ActivityPackageFixture.Yaml(extraImport: "fixture.assembly-conflict@1.0.0")), 0);
+        var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", 1, "workflow", ActivityPackageFixture.Yaml(extraImport: "fixture.assembly-conflict@1.0.0")), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.False(result.Success);
         Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Message.Contains("IxIFlow.Abstractions") && diagnostic.Message.Contains("99.0.0.0"));
@@ -166,7 +166,7 @@ public sealed class PublishedActivityPackageTests
         var fixture = ActivityPackageFixture.Create();
         await publisher.UploadPackageAsync(new MemoryStream(fixture.Activity));
         await publisher.UploadPackageAsync(new MemoryStream(fixture.Dependency));
-        var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", 1, "workflow", ActivityPackageFixture.Yaml().Replace(from, to)), 0);
+        var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", 1, "workflow", ActivityPackageFixture.Yaml().Replace(from, to)), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.False(result.Success);
         Assert.Null(await store.GetWorkflowVersionAsync(draft.Name, 1));

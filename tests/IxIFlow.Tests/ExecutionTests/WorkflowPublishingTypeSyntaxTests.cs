@@ -86,7 +86,7 @@ public sealed class WorkflowPublishingTypeSyntaxTests
                             // so publishing uses metadata in validation, resolution and compilation.
                             WorkflowCompilation.ReferencePaths(source);
                             var store = new InMemoryWorkflowStateRepository();
-                            var draft = await store.SaveDefinitionAsync(new("TypeSyntax", 1, "workflow", yaml), 0);
+                            var draft = await store.SaveDefinitionAsync(new("TypeSyntax", 1, "workflow", yaml), null);
                             var result = await new WorkflowPublisher(store, store, new() { SourceOptions = source }).PublishAsync(draft.Id);
                             if (!result.Success) throw new Exception(configured + ": " + string.Join("; ", result.Diagnostics));
                             if (result.Version!.ManifestJson!.Contains("DynamicPlugin")) throw new Exception("Plugin entered the profile");
@@ -108,7 +108,7 @@ public sealed class WorkflowPublishingTypeSyntaxTests
                             {
                                 Configure(source, args[0], invalid[i]);
                                 var store = new InMemoryWorkflowStateRepository();
-                                var draft = await store.SaveDefinitionAsync(new("TypeSyntax", 1, "workflow", yaml), 0);
+                                var draft = await store.SaveDefinitionAsync(new("TypeSyntax", 1, "workflow", yaml), null);
                                 var result = await new WorkflowPublisher(store, store, new() { SourceOptions = source }).PublishAsync(draft.Id);
                                 if (result.Success) throw new Exception("Accepted an out-of-profile generic argument");
                                 var error = result.Diagnostics.Single();
@@ -118,7 +118,7 @@ public sealed class WorkflowPublishingTypeSyntaxTests
                                     !error.Message.Contains("host reference profile")) throw new Exception(error.ToString());
                                 if (warm == 0) cold[i] = error;
                                 else if (cold[i] != error) throw new Exception("Cold/warm diagnostics differ");
-                                if (await store.GetDefinitionAsync("TypeSyntax", 1) != draft ||
+                                if (await store.GetDefinitionAsync("workflow", "TypeSyntax", 1) != draft ||
                                     await store.GetWorkflowVersionAsync("TypeSyntax", 1) != null)
                                     throw new Exception("Failed publication changed the draft/version");
                             }

@@ -57,8 +57,8 @@ public sealed class CatalogArtifactDatabaseRegressionTests
             var commit = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(ordinary, ordinaryLease.Epoch, ordinary.Revision))
                 .WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(WorkflowCommitStatus.Applied, commit.Status);
-            var draft = await store.SaveDefinitionAsync(new(name, 2, "workflow", "source"), 0).WaitAsync(TimeSpan.FromSeconds(5));
-            await store.SaveDefinitionAsync(draft with { Source = "edit" }, 1).WaitAsync(TimeSpan.FromSeconds(5));
+            var draft = await store.SaveDefinitionAsync(new(name, 2, "workflow", "source"), null).WaitAsync(TimeSpan.FromSeconds(5));
+            await store.SaveDefinitionAsync(draft with { Source = "edit" }, draft.Id).WaitAsync(TimeSpan.FromSeconds(5));
             // The blocked child-start must not have locked its parent's row before the catalog lock.
             await using var probe = connect();
             await probe.OpenAsync();
@@ -114,8 +114,8 @@ public sealed class CatalogArtifactDatabaseRegressionTests
         await using var connection = connect();
         await connection.OpenAsync();
         var insert = provider == Provider.SqlServer
-            ? "INSERT INTO dbo.IxIFlowWorkflowVersions (Name,Version,StructureHash,State,MetadataJson,CatalogRevision) VALUES (@Name,1,'caller','Retired',@Metadata,@Revision)"
-            : "INSERT INTO ixiflow_workflow_versions (name,version,structure_hash,state,metadata_json,catalog_revision) VALUES (@Name,1,'caller','Retired',@Metadata,@Revision)";
+            ? "INSERT INTO dbo.IxIFlowWorkflowVersions (Name,Version,StructureHash,State,MetadataJson,CatalogRevision,LifecycleRevision) VALUES (@Name,1,'caller','Retired',@Metadata,@Revision,@Revision)"
+            : "INSERT INTO ixiflow_workflow_versions (name,version,structure_hash,state,metadata_json,catalog_revision,lifecycle_revision) VALUES (@Name,1,'caller','Retired',@Metadata,@Revision,@Revision)";
         // Bulk fixture setup obeys the same atomic counter/row stamping invariant as registration.
         await using (var transaction = await connection.BeginTransactionAsync())
         {
@@ -124,7 +124,7 @@ public sealed class CatalogArtifactDatabaseRegressionTests
             var idColumn = provider == Provider.SqlServer ? "Id" : "id";
             await connection.ExecuteAsync($"UPDATE {counter} SET {revisionColumn}={revisionColumn}+1 WHERE {idColumn}=1", transaction: transaction);
             var revision = await connection.QuerySingleAsync<long>($"SELECT {revisionColumn} FROM {counter} WHERE {idColumn}=1", transaction: transaction);
-            await connection.ExecuteAsync(insert, callers.Select(caller => new { caller.Name, Metadata = JsonSerializer.Serialize(caller), Revision = revision }), transaction);
+            await connection.ExecuteAsync(insert, callers.Select(caller => new { caller.Name, Metadata = JsonSerializer.Serialize(caller with { LifecycleRevision = revision }), Revision = revision }), transaction);
             await transaction.CommitAsync();
         }
         var unrelated = Instance(name + "-unrelated");
@@ -148,13 +148,13 @@ public sealed class CatalogArtifactDatabaseRegressionTests
         await connection.ExecuteAsync(update, new { Name = oldName, Json = projected, Id = parent.InstanceId });
         await connection.ExecuteAsync(update, new { Name = unrelated.WorkflowName, Json = "invalid JSON", Id = unrelated.InstanceId });
         await connection.ExecuteAsync(update, new { Name = callers[0].Name, Json = "invalid JSON", Id = terminal.InstanceId });
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired));
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(name, 1))!.LifecycleRevision)));
         Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
         Assert.Contains("unfinished parent", error.Message);
         await connection.ExecuteAsync(provider == Provider.SqlServer
             ? "UPDATE dbo.IxIFlowWorkflowInstances SET Status='Completed' WHERE InstanceId=@Id"
             : "UPDATE ixiflow_workflow_instances SET status='Completed' WHERE instance_id=@Id", new { Id = parent.InstanceId });
-        await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired);
+        await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(name, 1))!.LifecycleRevision));
     }
 
     private static WorkflowInstance Instance(string name) => new()

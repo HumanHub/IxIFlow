@@ -22,12 +22,18 @@ public sealed record WorkflowVersion(string Name, int Version, string StructureH
     WorkflowVersionState State = WorkflowVersionState.Published, ArtifactDigest? ArtifactDigest = null,
     IReadOnlyList<WorkflowVersionDependency>? Dependencies = null,
     IReadOnlyList<ArtifactDigest>? ArtifactReferences = null,
-    long? PublishedDraftRevision = null, string? ManifestJson = null)
+    WorkflowDraftId? PublishedDraft = null, string? ManifestJson = null)
 {
+    public DateTime? PublishedAtUtc { get; init; }
+    public string? PublishedBy { get; init; }
+    public DateTime? StateChangedAtUtc { get; init; }
+    public string? StateChangedBy { get; init; }
+    public long LifecycleRevision { get; init; }
+
     public bool Equals(WorkflowVersion? other) => ReferenceEquals(this, other) || other != null &&
         Name == other.Name && Version == other.Version && StructureHash == other.StructureHash &&
         ContractJson == other.ContractJson && ContractHash == other.ContractHash && State == other.State &&
-        ArtifactDigest == other.ArtifactDigest && PublishedDraftRevision == other.PublishedDraftRevision &&
+        ArtifactDigest == other.ArtifactDigest && PublishedDraft == other.PublishedDraft &&
         ManifestJson == other.ManifestJson && SameValues(Invocations, other.Invocations) &&
         SameValues(Dependencies, other.Dependencies) && SameValues(ArtifactReferences, other.ArtifactReferences);
 
@@ -36,7 +42,7 @@ public sealed record WorkflowVersion(string Name, int Version, string StructureH
         var hash = new HashCode();
         hash.Add(Name); hash.Add(Version); hash.Add(StructureHash);
         hash.Add(ContractJson); hash.Add(ContractHash); hash.Add(State);
-        hash.Add(ArtifactDigest); hash.Add(PublishedDraftRevision); hash.Add(ManifestJson);
+        hash.Add(ArtifactDigest); hash.Add(PublishedDraft); hash.Add(ManifestJson);
         AddValues(ref hash, Invocations);
         AddValues(ref hash, Dependencies);
         AddValues(ref hash, ArtifactReferences);
@@ -62,12 +68,12 @@ public sealed record WorkflowCatalogChanges(long Revision, IReadOnlyList<Workflo
 /// <summary>Editable source, independently revisioned from immutable workflow versions.</summary>
 public sealed record WorkflowDraft(string Name, int Version, string Kind, string Source, long Revision = 0)
 {
-    public WorkflowDraftId Id => new(Name, Version, Revision);
+    public Guid Generation { get; init; }
+    public DateTime? UpdatedAtUtc { get; init; }
+    public string? UpdatedBy { get; init; }
+    public WorkflowDraftId Id => new(Kind, Name, Version, Generation, Revision);
     public WorkflowVersionState State => WorkflowVersionState.Draft;
 }
-
-/// <summary>Identifies the exact source revision being published, including on retries after deletion.</summary>
-public sealed record WorkflowDraftId(string Name, int Version, long Revision);
 
 /// <summary>Durable catalog operations, shared with the instance commit protocol.</summary>
 public interface IWorkflowCatalogStore
@@ -78,8 +84,8 @@ public interface IWorkflowCatalogStore
     Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null);
     Task<WorkflowPackage?> GetPackageAsync(string id, string version);
     Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit);
-    Task<WorkflowDraft?> GetDefinitionAsync(string name, int version);
-    Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision);
+    Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version);
+    Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null);
     Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null);
     Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version);
     Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null);
@@ -90,9 +96,19 @@ public interface IWorkflowCatalogStore
     /// A concurrent write is included or remains visible to a subsequent read from the returned revision.
     /// </summary>
     Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision);
-    Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null);
-    /// <summary>Publishes a version atomically against the draft's revision and deletes the draft.</summary>
-    Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null);
+    Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null);
+    /// <summary>Publishes a version atomically against the draft's complete identity and deletes the draft.</summary>
+    Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null);
+    Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected);
+    Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query);
+    Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope);
+    /// <summary>Joins/starts publication, or returns the abandoned stale attempt when its draft was superseded.</summary>
+    Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter);
+    Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId);
+    Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome);
+    Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope);
+    Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query);
+    Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default);
     /// <summary>Collects old artifacts under the catalog/start lock, retaining catalog references and saved instance pins.</summary>
     Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default);
@@ -108,7 +124,7 @@ public interface IWorkflowCatalog : IWorkflowCatalogStore, IWorkflowDefinitionSo
     Task RegisterWorkflowAsync(WorkflowDefinition definition);
     Task<string?> GetWorkflowStructureHashAsync(string name, int version);
     Task<WorkflowVersion?> GetLatestWorkflowVersionAsync(string name);
-    Task RetireWorkflowVersionAsync(string name, int version);
+    Task RetireWorkflowVersionAsync(string name, int version, CatalogMutationToken expected, string? actor = null);
 }
 
 public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
@@ -219,24 +235,24 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
         (await _store.GetWorkflowVersionsAsync(name)).Where(row => row.State == WorkflowVersionState.Published)
         .MaxBy(row => row.Version);
 
-    public Task RetireWorkflowVersionAsync(string name, int version) =>
-        SetWorkflowVersionStateAsync(name, version, WorkflowVersionState.Retired);
-    public Task<WorkflowDraft?> GetDefinitionAsync(string name, int version) => _store.GetDefinitionAsync(name, version);
+    public Task RetireWorkflowVersionAsync(string name, int version, CatalogMutationToken expected, string? actor = null) =>
+        SetWorkflowVersionStateAsync(name, version, WorkflowVersionState.Retired, expected, actor: actor);
+    public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version) => _store.GetDefinitionAsync(kind, name, version);
     public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) => _store.GetInstalledPackagesAsync(id);
     public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => _store.RegisterPackageAsync(package, artifacts);
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _store.GetPackagesAsync(id);
     public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _store.GetPackageAsync(id, version);
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _store.GetPackagePageAsync(id, afterVersion, limit);
-    public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, long expectedRevision) =>
-        _store.SaveDefinitionAsync(definition, expectedRevision);
+    public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null) =>
+        _store.SaveDefinitionAsync(definition, expected, actor);
     public async Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null)
     {
         await _store.RegisterWorkflowVersionAsync(version, artifacts ?? _artifacts);
         Interlocked.Increment(ref _definitionRevision);
     }
-    public async Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore? artifacts = null)
+    public async Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null)
     {
-        var published = await _store.PublishDefinitionAsync(draftId, version, artifacts ?? _artifacts);
+        var published = await _store.PublishDefinitionAsync(draftId, version, artifacts, actor);
         Interlocked.Increment(ref _definitionRevision);
         return published;
     }
@@ -244,11 +260,21 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
     public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _store.GetWorkflowVersionsAsync(name);
     public Task<long> GetCatalogRevisionAsync() => _store.GetCatalogRevisionAsync();
     public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => _store.GetWorkflowVersionChangesAsync(afterRevision);
-    public async Task SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, IArtifactStore? artifacts = null)
+    public async Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null)
     {
-        await _store.SetWorkflowVersionStateAsync(name, version, state, artifacts ?? _artifacts);
+        var row = await _store.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts ?? _artifacts, actor);
         Interlocked.Increment(ref _definitionRevision);
+        return row;
     }
+    public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected) => _store.DeleteDefinitionAsync(expected);
+    public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query) => _store.GetDefinitionsAsync(query);
+    public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope) => _store.GetRetirementBlockersAsync(name, version, scope);
+    public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter) => _store.BeginPublicationAsync(draftId, hostId, actor, staleAfter);
+    public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId) => _store.HeartbeatPublicationAsync(id, hostId);
+    public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome) => _store.CompletePublicationAsync(id, hostId, outcome);
+    public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope) => _store.GetPublicationAsync(id, scope);
+    public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query) => _store.GetPublicationsAsync(query);
+    public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => _store.PurgePublicationsAsync(retention, batchSize, cancellationToken);
     public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default) => _store.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
 }
@@ -256,6 +282,25 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
 /// <summary>Rules used under each store's catalog/start lock.</summary>
 internal static class WorkflowCatalogRules
 {
+    internal static void CheckManifestInvocations(WorkflowVersion row)
+    {
+        if (row.ManifestJson == null) return;
+        try
+        {
+            using var manifest = System.Text.Json.JsonDocument.Parse(row.ManifestJson);
+            if (manifest.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                manifest.RootElement.TryGetProperty("Invocations", out var inventory) &&
+                (inventory.ValueKind != System.Text.Json.JsonValueKind.Array || row.Invocations == null ||
+                 !SameInvocations(row.Invocations, System.Text.Json.JsonSerializer.Deserialize<WorkflowVersionInvocation[]>(inventory)!)))
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch,
+                    $"Workflow '{row.Name}' v{row.Version} invocation inventory differs from its bundle manifest");
+        }
+        catch (System.Text.Json.JsonException error)
+        {
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Workflow invocation inventory manifest is invalid", error);
+        }
+    }
+
     internal static void CheckBundleDefinition(WorkflowVersion row, WorkflowDefinition definition, WorkflowErrorKind kind)
     {
         var contract = WorkflowDefinitionValidator.GetContract(definition);
@@ -268,9 +313,15 @@ internal static class WorkflowCatalogRules
                 $"Workflow '{row.Name}' v{row.Version} invocation inventory or dependencies differ from its bundle definition");
     }
 
-    internal static bool SameInvocations(IReadOnlyList<WorkflowVersionInvocation> left, IReadOnlyList<WorkflowVersionInvocation> right) =>
-        left.Select(invocation => (invocation.Name, invocation.Version, invocation.Step))
-            .SequenceEqual(right.Select(invocation => (invocation.Name, invocation.Version, invocation.Step)));
+    internal static bool SameInvocations(IReadOnlyList<WorkflowVersionInvocation>? left, IReadOnlyList<WorkflowVersionInvocation>? right) =>
+        ValidInvocations(left) && ValidInvocations(right) &&
+        left!.Select(invocation => (invocation.Name, invocation.Version, invocation.Step))
+            .SequenceEqual(right!.Select(invocation => (invocation.Name, invocation.Version, invocation.Step)));
+
+    private static bool ValidInvocations(IReadOnlyList<WorkflowVersionInvocation>? invocations) =>
+        invocations != null && invocations.All(invocation => invocation != null && invocation.Version > 0 &&
+            !string.IsNullOrWhiteSpace(invocation.Name) && !string.IsNullOrWhiteSpace(invocation.Step) &&
+            !string.IsNullOrWhiteSpace(invocation.SourceLocation));
 
     public static void CheckInvocations(WorkflowVersion candidate, IEnumerable<WorkflowVersion> registered)
     {
@@ -295,33 +346,54 @@ internal static class WorkflowCatalogRules
 
     public static void CheckPublication(WorkflowDraftId id, WorkflowVersion version, WorkflowDraft? draft, WorkflowVersion? existing)
     {
-        Validate(version);
-        if (id.Revision < 1 || version.Name != id.Name || version.Version != id.Version ||
-            version.PublishedDraftRevision != id.Revision || version.State != WorkflowVersionState.Published ||
-            version.ArtifactDigest == null || string.IsNullOrWhiteSpace(version.ManifestJson))
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Invalid draft publication metadata");
-        if (existing != null && existing.PublishedDraftRevision == id.Revision)
+        CheckPublicationArguments(id, version);
+        if (existing != null && existing.PublishedDraft == id)
         {
-            // A revision is the idempotency key: another publisher may have won using
+            // The complete draft identity is the idempotency key: another publisher may have won using
             // a different compiler/reference snapshot. Return its immutable receipt.
             return;
         }
-        if (draft?.Revision != id.Revision || existing != null)
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The definition revision changed or was already published");
+        if (existing != null)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The workflow identity was already published");
+        if (draft?.Id != id)
+            throw new CatalogPreconditionException("The definition identity changed");
+    }
+
+    public static void CheckPublicationArguments(WorkflowDraftId id, WorkflowVersion version)
+    {
+        WorkflowPublicationRules.Id(id);
+        Validate(version);
+        if (id.Kind != WorkflowDraftKinds.Workflow || id.Revision < 1 || version.Name != id.Name || version.Version != id.Version ||
+            version.PublishedDraft != id || version.State != WorkflowVersionState.Published ||
+            version.ArtifactDigest == null || string.IsNullOrWhiteSpace(version.ManifestJson))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Invalid draft publication metadata");
     }
 
     public static void ValidateName(string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ValidateNameWhitespace(name);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(name.Length, 200);
     }
 
     // The raw instance protocol also permits unnamed instances; any supplied name must be exact.
     public static void ValidateNameWhitespace(string name)
     {
         ArgumentNullException.ThrowIfNull(name);
+        ValidateUtf16(name);
         if (name.Length != name.Trim().Length)
             throw new ArgumentException("A workflow name cannot have leading or trailing whitespace", nameof(name));
+    }
+
+    internal static void ValidateUtf16(string value)
+    {
+        for (var i = 0; i < value.Length; i++)
+        {
+            if (!char.IsSurrogate(value[i])) continue;
+            if (!char.IsHighSurrogate(value[i]) || i + 1 == value.Length || !char.IsLowSurrogate(value[i + 1]))
+                throw new ArgumentException("Catalog names and prefixes must contain well-formed UTF-16", nameof(value));
+            i++;
+        }
     }
 
     public static async Task CheckArtifactsAsync(WorkflowVersion row, IArtifactStore artifacts)
@@ -354,7 +426,7 @@ internal static class WorkflowCatalogRules
             ArgumentOutOfRangeException.ThrowIfLessThan(dependency.Version, 1);
             if (!Enum.IsDefined(dependency.Kind)) throw new ArgumentOutOfRangeException(nameof(dependency.Kind));
         }
-        if (row.Invocations == null)
+        if (!ValidInvocations(row.Invocations))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow version requires complete invocation metadata (use an empty list when there are no invocations)");
         foreach (var invocation in row.Invocations)
         {
@@ -373,7 +445,7 @@ internal static class WorkflowCatalogRules
                 $"'{existing.StructureHash}'; loaded structure hash '{loaded.StructureHash}' differs");
         // Source positions are presentation metadata. Each invocation's callee and
         // step identity remain immutable even when the caller's hash is supplied by metadata.
-        if (existing.ArtifactDigest != loaded.ArtifactDigest || existing.PublishedDraftRevision != loaded.PublishedDraftRevision ||
+        if (existing.ArtifactDigest != loaded.ArtifactDigest || existing.PublishedDraft != loaded.PublishedDraft ||
             existing.ManifestJson != loaded.ManifestJson ||
             existing.ContractJson != loaded.ContractJson || existing.ContractHash != loaded.ContractHash ||
             !SameInvocations(existing.Invocations, loaded.Invocations) ||

@@ -49,7 +49,7 @@ public sealed class PublishedInvokePackagePrivateTests
             workflow: {name: Original, dataType: InvokePackage.Data}
             imports: {catalogs: [fixture.invoke-private@1.0.0]}
             definitions: []
-            """), 0);
+            """), null);
         var child = await publisher.PublishAsync(childDraft.Id);
         Assert.True(child.Success, string.Join("; ", child.Diagnostics));
         await using var stream = await store.OpenAsync(child.Version!.ArtifactDigest!.Value);
@@ -77,7 +77,7 @@ public sealed class PublishedInvokePackagePrivateTests
         var saved = await WorkflowBundleArchive.ReadAsync(new MemoryStream(archive), digest);
         await store.RegisterWorkflowVersionAsync(child.Version with
         {
-            Name = "Callee", ArtifactDigest = digest, PublishedDraftRevision = null,
+            Name = "Callee", ArtifactDigest = digest, PublishedDraft = null,
             ManifestJson = JsonSerializer.Serialize(saved.Manifest)
         });
         var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", """
@@ -85,7 +85,7 @@ public sealed class PublishedInvokePackagePrivateTests
             definitions:
               - kind: invokeWorkflow
                 workflow: {name: Callee, version: 1}
-            """), 0);
+            """), null);
         var result = await publisher.PublishAsync(draft.Id);
         if (scenario == "matching")
         {
@@ -101,7 +101,7 @@ public sealed class PublishedInvokePackagePrivateTests
         Assert.Contains(scenario == "identity" ? "conflicting identity" : "conflicting contents", error.Message);
         Assert.Null(result.Version);
         Assert.Null(await store.GetWorkflowVersionAsync("Caller", 1));
-        Assert.Equal(draft, await store.GetDefinitionAsync("Caller", 1));
+        Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
     }
 
     private static (byte[] Runtime, byte[] Reference) Compile(string name, string source, IEnumerable<MetadataReference> references)
