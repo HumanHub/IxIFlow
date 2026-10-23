@@ -132,22 +132,32 @@ internal sealed class CheckpointPayloads(ExecutionLimits limits, PayloadBudget b
         return found.OrderBy(r => r.Digest, StringComparer.Ordinal).ToArray();
     }
 
+    private static readonly JsonSerializerOptions ReferenceOptions = new()
+    {
+        Converters = { new ReferenceReader() }
+    };
+
+    // Reference scans are synchronous and visit only engine-owned types. Cache their
+    // metadata while keeping each call's collector isolated, including nested scans.
+    [ThreadStatic] private static HashSet<PayloadReference>? _readingReferences;
+
     private static void ReadReferences(string json, Type type, HashSet<PayloadReference> found)
     {
-        var options = new JsonSerializerOptions();
-        options.Converters.Add(new ReferenceReader(found));
-        _ = JsonSerializer.Deserialize(json, type, options);
+        var previous = _readingReferences;
+        _readingReferences = found;
+        try { _ = JsonSerializer.Deserialize(json, type, ReferenceOptions); }
+        finally { _readingReferences = previous; }
     }
 
     // Deserialization follows the engine's declared types. In particular an inline StoredJson
     // string is never parsed as another engine object, regardless of its application content.
-    private sealed class ReferenceReader(HashSet<PayloadReference> found) : JsonConverter<StoredJson>
+    private sealed class ReferenceReader : JsonConverter<StoredJson>
     {
         private readonly StoredJsonConverter _wire = new();
         public override StoredJson Read(ref Utf8JsonReader reader, Type type, JsonSerializerOptions options)
         {
             var value = _wire.Read(ref reader, type, options);
-            if (value.Reference is { } reference) found.Add(reference);
+            if (value.Reference is { } reference) _readingReferences!.Add(reference);
             return value;
         }
         public override void Write(Utf8JsonWriter writer, StoredJson value, JsonSerializerOptions options) =>
