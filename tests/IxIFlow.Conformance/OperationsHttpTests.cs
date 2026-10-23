@@ -164,6 +164,7 @@ public sealed class OperationsHttpTests
             { invocationId = pending.Id, kind = "Completed", outputs = new { Number = 42 }, note = "observed", decidedBy = "forged" });
             Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
             Assert.Equal("/ops/instances/resolution", response.Headers.Location!.OriginalString);
+            await factory.ActivityProbe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             var saved = (await store.GetWorkflowInstanceAsync("resolution"))!;
             Assert.Equal(42, JsonSerializer.Deserialize<Data>(saved.WorkflowDataJson.InlineText)!.Number);
             Assert.Contains(await store.GetTraceAsync("resolution"), entry => entry.Entry.Payload is ActivityResolutionTrace { DecidedBy: "operator" });
