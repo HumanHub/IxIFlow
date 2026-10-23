@@ -1,0 +1,27 @@
+$schema: activity.schema.json
+schemaVersion: '1.0'
+activity:
+  key: acme.send-email
+  version: 2
+  name: Send email
+  category: Messaging
+  icon: mail
+  designer: send-email
+  description: Sends one email.
+packages: [MailKit@4.8.0]
+usings: [System.Text]
+input:
+  To: {type: string, required: true, label: Recipient, help: Destination, control: text}
+  Subject: {type: string, default: '(no subject)'}
+  ReplyTo: {type: 'string?', default: null}
+  Retries: {type: int, default: 3}
+  Optional: {type: 'int?'}
+output:
+  MessageId: {type: string, label: Message ID}
+inOut:
+  Attempts: {type: int}
+body: |2-
+  Attempts++;
+  MessageId = await SendAsync(cancellationToken);
+declarations: |+
+  private Task<string> SendAsync(CancellationToken token) => Task.FromResult("sent");

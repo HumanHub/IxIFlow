@@ -1,0 +1,10 @@
+activity:
+  key: acme.double
+  version: 1
+  name: Double
+input:
+  Value: { type: int, default: 3 }
+output:
+  Result: { type: int }
+body: |
+  Result = Value * 2;

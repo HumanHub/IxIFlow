@@ -44,7 +44,7 @@ public sealed class ThrowYamlTests
                 Assert.Equal(7, Assert.IsType<ThrowYamlData>(result.WorkflowData).Result);
             }
         }
-        var schema = JsonSchema.FromText(WorkflowDocumentSchema.Write(), new BuildOptions { SchemaRegistry = new SchemaRegistry() });
+        var schema = JsonSchema.FromText(DocumentSchema.Write(typeof(WorkflowDocument)), new BuildOptions { SchemaRegistry = new SchemaRegistry() });
         Assert.True(schema.Evaluate(System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(WorkflowJsonSerializer.Write(WorkflowYamlSerializer.Read(yaml)))).IsValid);
     }
 

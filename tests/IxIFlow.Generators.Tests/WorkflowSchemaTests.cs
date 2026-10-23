@@ -6,6 +6,8 @@ namespace IxIFlow.Generators.Tests;
 public sealed class WorkflowSchemaTests
 {
     private static readonly Lazy<JsonSchema> Schema = new(() => JsonSchema.FromFile(WorkflowSchemaFiles.SchemaPath));
+    private static readonly Lazy<JsonSchema> ActivitySchema = new(() => JsonSchema.FromFile(
+        Path.Combine(WorkflowSchemaFiles.RepositoryRoot(), "src/IxIFlow/schemas/activity.schema.json")));
     private const string Header = "workflow: {name: Schema, dataType: FlowData}\n";
 
     private static readonly string Root = WorkflowSchemaFiles.RepositoryRoot();
@@ -48,7 +50,7 @@ public sealed class WorkflowSchemaTests
     {
         var used = new HashSet<(Type, string)>();
         foreach (var file in TestDocuments().Concat(Samples()))
-            Collect(WorkflowYamlSerializer.Read(File.ReadAllText(file)));
+            Collect(Read(File.ReadAllText(file)));
         // Inherited members such as a step's name count once, on the type that declares them.
         var missing = typeof(WorkflowDocument).Assembly.GetTypes().Where(type => typeof(DocumentNode).IsAssignableFrom(type))
             .SelectMany(type => DocumentModel.GetMembers(type).Where(member => member.DeclaringType == type)
@@ -111,8 +113,21 @@ public sealed class WorkflowSchemaTests
     [Fact]
     public void MissingWorkflowIsRejected() => Assert.False(Evaluate("definitions: []").IsValid);
 
-    private static EvaluationResults Evaluate(string yaml) => Schema.Value.Evaluate(WorkflowYamlSchemaValueTests.Read(yaml),
-        new EvaluationOptions { OutputFormat = OutputFormat.List });
+    private static DocumentNode Read(string yaml) => WorkflowYamlSerializer.ReadRootKind(yaml) switch
+    {
+        "workflow" => WorkflowYamlSerializer.Read(yaml),
+        "activity" => WorkflowYamlSerializer.ReadActivity(yaml),
+        _ => throw new ArgumentException("Unsupported document root", nameof(yaml))
+    };
+
+    private static EvaluationResults Evaluate(string yaml)
+    {
+        // Schema tests intentionally include missing roots, so select from the raw value.
+        var value = WorkflowYamlSchemaValueTests.Read(yaml);
+        var schema = value.ValueKind == System.Text.Json.JsonValueKind.Object && value.TryGetProperty("activity", out _)
+            ? ActivitySchema.Value : Schema.Value;
+        return schema.Evaluate(value, new EvaluationOptions { OutputFormat = OutputFormat.List });
+    }
 
     private static string Errors(EvaluationResults result) => string.Join("\n",
         (result.Errors ?? []).Select(error => result.InstanceLocation + ": " + error.Value)

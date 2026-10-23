@@ -114,7 +114,7 @@ public sealed class WaitInputYamlTests
         Assert.Equal(readError.Start.Column, sourceError.Column);
         var json = WorkflowYamlSchemaValueTests.Read(yaml);
         Assert.Throws<JsonException>(() => WorkflowJsonSerializer.Read(json.GetRawText()));
-        Assert.False(JsonSchema.FromText(WorkflowDocumentSchema.Write(),
+        Assert.False(JsonSchema.FromText(DocumentSchema.Write(typeof(WorkflowDocument)),
             new BuildOptions { SchemaRegistry = new SchemaRegistry() }).Evaluate(json).IsValid);
     }
 }

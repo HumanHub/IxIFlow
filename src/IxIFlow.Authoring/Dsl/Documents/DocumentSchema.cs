@@ -5,24 +5,27 @@ using System.Text.Json.Nodes;
 
 namespace IxIFlow.Dsl.Documents;
 
-/// <summary>Generates the editor schema from the shared workflow document contract.</summary>
-public static class WorkflowDocumentSchema
+/// <summary>Generates the editor schema from the shared document contract.</summary>
+public static class DocumentSchema
 {
-    /// <summary>The schema's URL in the tagged IxIFlow release that ships it.</summary>
-    public static string Id { get; } = "https://raw.githubusercontent.com/HumanHub/IxIFlow/v" +
-        typeof(IxIFlow.Core.WorkflowDefinition).Assembly.GetName().Version!.ToString(3) + "/src/IxIFlow/schemas/workflow.schema.json";
+    /// <summary>The schema URL for a supported document root.</summary>
+    public static string Id(Type rootType) => "https://raw.githubusercontent.com/HumanHub/IxIFlow/v" +
+        typeof(IxIFlow.Core.WorkflowDefinition).Assembly.GetName().Version!.ToString(3) + "/src/IxIFlow/schemas/" + Kind(rootType) + ".schema.json";
 
-    public static string Write()
+    private static string Kind(Type rootType) => rootType == typeof(WorkflowDocument) ? "workflow" :
+        rootType == typeof(ActivityDocument) ? "activity" : throw new ArgumentException("Unsupported document root", nameof(rootType));
+
+    public static string Write(Type rootType)
     {
         var definitions = new JsonObject();
         var nullability = new NullabilityInfoContext();
         var root = new JsonObject
         {
             ["$schema"] = "http://json-schema.org/draft-07/schema#",
-            ["$id"] = Id,
-            ["title"] = "IxIFlow workflow"
+            ["$id"] = Id(rootType),
+            ["title"] = "IxIFlow " + Kind(rootType)
         };
-        foreach (var property in ObjectSchema(typeof(WorkflowDocument))) root.Add(property.Key, property.Value?.DeepClone());
+        foreach (var property in ObjectSchema(rootType)) root.Add(property.Key, property.Value?.DeepClone());
         root["definitions"] = definitions;
         return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }).Replace("\r\n", "\n") + "\n";
 
@@ -103,6 +106,17 @@ public static class WorkflowDocumentSchema
             };
             if (required.Count > 0) result["required"] = required;
             GraphRules(type, result);
+            if (type == typeof(ActivityDefinitionDocument))
+            {
+                properties["key"]!["pattern"] = "^[a-z][a-z0-9]*([.-][a-z][a-z0-9]*)*$";
+                properties["key"]!["maxLength"] = 100;
+                ((JsonObject)properties["version"]!).Remove("default");
+                properties["version"]!["minimum"] = 1;
+                properties["version"]!["maximum"] = 65534;
+                foreach (var name in new[] { "icon", "designer" }) properties[name]!["pattern"] = "^[a-z][a-z0-9-]*$";
+            }
+            if (type == typeof(ActivityMemberDocument))
+                properties["default"]!["type"] = new JsonArray("null", "string", "boolean", "number");
             return result;
         }
 
@@ -225,7 +239,7 @@ public static class WorkflowDocumentSchema
     }
 
     private static string Describe(MemberInfo member) => member.GetCustomAttribute<DescriptionAttribute>()?.Description ??
-        throw new InvalidOperationException($"{(member is Type ? member.Name : member.DeclaringType!.Name + "." + member.Name)} needs a [Description] for the workflow schema");
+        throw new InvalidOperationException($"{(member is Type ? member.Name : member.DeclaringType!.Name + "." + member.Name)} needs a [Description] for the document schema");
 
     private static JsonArray Strings(IEnumerable<string> values) => new(values.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
 }

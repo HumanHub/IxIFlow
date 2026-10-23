@@ -1,0 +1,194 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/HumanHub/IxIFlow/v1.0.0/src/IxIFlow/schemas/activity.schema.json",
+  "title": "IxIFlow activity",
+  "type": "object",
+  "description": "A standalone C# activity document.",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "The editor schema this document binds to; readers ignore it."
+    },
+    "schemaVersion": {
+      "type": "string",
+      "description": "The document contract version.",
+      "enum": [
+        "1.0"
+      ],
+      "default": "1.0"
+    },
+    "activity": {
+      "$ref": "#/definitions/activityDefinition",
+      "description": "The activity identity and display metadata."
+    },
+    "packages": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Package imports in id@version form."
+    },
+    "usings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "C# namespaces imported by the activity."
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/activityMember"
+      },
+      "description": "Input properties keyed by C# property name."
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/activityMember"
+      },
+      "description": "Output properties keyed by C# property name."
+    },
+    "inOut": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/activityMember"
+      },
+      "description": "Properties used as both inputs and outputs."
+    },
+    "body": {
+      "type": "string",
+      "description": "C# statements executed by the activity, authored as a literal block."
+    },
+    "declarations": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Optional C# class declarations, authored as a literal block."
+    }
+  },
+  "required": [
+    "activity",
+    "body"
+  ],
+  "definitions": {
+    "activityDefinition": {
+      "type": "object",
+      "description": "The identity and descriptive metadata of an activity.",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "The lowercase activity key and package identifier.",
+          "pattern": "^[a-z][a-z0-9]*([.-][a-z][a-z0-9]*)*$",
+          "maxLength": 100
+        },
+        "version": {
+          "type": "integer",
+          "description": "The integer activity version, from 1 through 65534.",
+          "minimum": 1,
+          "maximum": 65534
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The activity display name."
+        },
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The activity category."
+        },
+        "icon": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The lowercase icon name.",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "designer": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The lowercase designer name.",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The activity description."
+        }
+      },
+      "required": [
+        "key",
+        "version"
+      ]
+    },
+    "activityMember": {
+      "type": "object",
+      "description": "A typed activity property and its editor metadata.",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "The C# property type."
+        },
+        "required": {
+          "type": "boolean",
+          "description": "Whether this input requires a value.",
+          "default": false
+        },
+        "default": {
+          "description": "The scalar input default, including an explicitly supplied null.",
+          "type": [
+            "null",
+            "string",
+            "boolean",
+            "number"
+          ]
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The property display label."
+        },
+        "help": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The property help text."
+        },
+        "control": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The editor control used for this property.",
+          "enum": [
+            "text",
+            "code",
+            "binding",
+            "connection",
+            null
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ]
+    }
+  }
+}

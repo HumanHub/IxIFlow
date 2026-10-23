@@ -8,25 +8,40 @@ namespace IxIFlow.Dsl.Documents;
 /// <summary>Reads and writes the shared document directly through YamlDotNet.</summary>
 public static class WorkflowYamlSerializer
 {
-    public static WorkflowDocument Read(string yaml)
+    /// <summary>Reads the single workflow, activity or template kind key.</summary>
+    public static string ReadRootKind(string yaml)
+    {
+        var root = ReadRoot(yaml);
+        var kinds = Entries(root).Where(pair => pair.Key is "workflow" or "activity" or "template").ToArray();
+        if (kinds.Length != 1)
+        {
+            var position = kinds.Length > 1 ? kinds[1].Value : root;
+            throw new YamlException(position.Start, position.End, "A document must contain exactly one workflow, activity or template root kind");
+        }
+        return kinds[0].Key;
+    }
+
+    public static WorkflowDocument Read(string yaml) => (WorkflowDocument)ReadValue(typeof(WorkflowDocument), ReadRoot(yaml))!;
+    public static ActivityDocument ReadActivity(string yaml) => (ActivityDocument)ReadValue(typeof(ActivityDocument), ReadRoot(yaml))!;
+
+    private static YamlMappingNode ReadRoot(string yaml)
     {
         if (yaml is null) throw new ArgumentNullException(nameof(yaml));
-        if (string.IsNullOrWhiteSpace(yaml)) throw new ArgumentException("The value cannot be empty or whitespace.", nameof(yaml));
         var stream = new YamlStream();
         using var reader = new StringReader(yaml);
         stream.Load(reader);
         if (stream.Documents.Count == 0)
-            throw new YamlException(new Mark(0, 1, 1), new Mark(0, 1, 1), "A workflow YAML file must contain one document");
+            throw new YamlException(new Mark(0, 1, 1), new Mark(0, 1, 1), "A YAML file must contain one document");
         if (stream.Documents.Count != 1)
             throw new YamlException(stream.Documents[1].RootNode.Start, stream.Documents[1].RootNode.End,
-                "A workflow YAML file must contain one document");
+                "A YAML file must contain one document");
         if (stream.Documents[0].RootNode is not YamlMappingNode root)
             throw new YamlException(stream.Documents[0].RootNode.Start, stream.Documents[0].RootNode.End,
-                "A workflow YAML root must be a mapping");
-        return (WorkflowDocument)ReadValue(typeof(WorkflowDocument), root)!;
+                "A YAML root must be a mapping");
+        return root;
     }
 
-    public static string Write(WorkflowDocument document)
+    public static string Write(DocumentNode document)
     {
         if (document is null) throw new ArgumentNullException(nameof(document));
         var stream = new YamlStream(new YamlDocument(ToYaml(document)));
@@ -58,14 +73,15 @@ public static class WorkflowYamlSerializer
                 result.SetValue(ReadValue(type.GetElementType()!, array.Children[index]), index);
             return result;
         }
-        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>) && node is YamlSequenceNode sequence)
+        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>))
         {
+            if (node is not YamlSequenceNode sequence) throw Invalid(type, node);
             var list = (IList)Activator.CreateInstance(type)!;
             foreach (var child in sequence.Children) list.Add(ReadValue(type.GetGenericArguments()[0], child));
             return list;
         }
         if (node is not YamlMappingNode mapping) throw Invalid(type, node);
-        var entries = Entries(mapping);
+        var entries = Entries(mapping, type == typeof(Dictionary<string, ActivityMemberDocument>));
         if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Dictionary<,>))
         {
             var dictionary = (IDictionary)Activator.CreateInstance(type)!;
@@ -100,7 +116,15 @@ public static class WorkflowYamlSerializer
                     throw new YamlException(child.Start, child.End,
                         (property.Name == nameof(AssignStepDocument.To) ? "ASSIGN001" : "ASSIGN003") +
                         ": Assign requires a non-null " + DocumentModel.GetName(property) + " expression");
-                var memberValue = child is YamlMappingNode &&
+                // Required nulls retain the shared validator's missing-member diagnostics.
+                if (!property.IsDefined(typeof(DocumentRequiredAttribute), true) &&
+                    child is YamlScalarNode nullScalar && Scalar(nullScalar) == null && !DocumentModel.AllowsNull(property))
+                    throw new YamlException(child.Start, child.End, $"Member '{DocumentModel.GetName(property)}' cannot be null");
+                var memberValue = type == typeof(ActivityMemberDocument) && property.Name == nameof(ActivityMemberDocument.Default)
+                    ? Untyped(child, preserveNumbers: true)
+                    : child is YamlScalarNode optionalNull && Scalar(optionalNull) == null && DocumentModel.AllowsNull(property)
+                    ? null
+                    : child is YamlMappingNode &&
                     (type == typeof(StateTransitionDocument) && property.Name == nameof(StateTransitionDocument.After) ||
                      type == typeof(FlowchartEdgeDocument) && property.Name == nameof(FlowchartEdgeDocument.Case))
                     ? ReadValue(typeof(ExpressionDocument), child) : ReadValue(property.PropertyType, child);
@@ -112,17 +136,34 @@ public static class WorkflowYamlSerializer
         if (value is DocumentNode document)
         {
             document.Location = Location(node);
-            var locations = entries.ToDictionary(pair => pair.Key, pair => Location(pair.Value), StringComparer.OrdinalIgnoreCase);
-            if (entries.TryGetValue("defaults", out var defaults) && defaults is YamlMappingNode defaultValues)
-                foreach (var pair in Entries(defaultValues)) locations.Add("defaults." + pair.Key, Location(pair.Value));
+            var locations = entries.ToDictionary(pair => pair.Key, pair => Location(pair.Value), StringComparer.Ordinal);
+            foreach (var pair in entries) RecordChildren(pair.Value, pair.Key, locations);
             document.Members = locations;
         }
         return value;
     }
 
-    private static Dictionary<string, YamlNode> Entries(YamlMappingNode mapping)
+    private static void RecordChildren(YamlNode value, string path, Dictionary<string, DocumentLocation> locations)
     {
-        var entries = new Dictionary<string, YamlNode>(StringComparer.OrdinalIgnoreCase);
+        if (value is YamlMappingNode mapping)
+            foreach (var pair in Entries(mapping, ordinal: true))
+            {
+                var childPath = path + "." + pair.Key;
+                locations[childPath] = Location(pair.Value);
+                RecordChildren(pair.Value, childPath, locations);
+            }
+        if (value is YamlSequenceNode sequence)
+            for (var index = 0; index < sequence.Children.Count; index++)
+            {
+                var childPath = path + "[" + index + "]";
+                locations[childPath] = Location(sequence.Children[index]);
+                RecordChildren(sequence.Children[index], childPath, locations);
+            }
+    }
+
+    private static Dictionary<string, YamlNode> Entries(YamlMappingNode mapping, bool ordinal = false)
+    {
+        var entries = new Dictionary<string, YamlNode>(ordinal ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
         foreach (var pair in mapping.Children)
         {
             if (pair.Key is not YamlScalarNode key || string.IsNullOrWhiteSpace(key.Value) || entries.ContainsKey(key.Value!))
@@ -132,11 +173,12 @@ public static class WorkflowYamlSerializer
         return entries;
     }
 
-    private static object? Untyped(YamlNode node) => node switch
+    private static object? Untyped(YamlNode node, bool preserveNumbers = false) => node switch
     {
+        YamlScalarNode scalar when preserveNumbers && scalar.Style == ScalarStyle.Plain && DocumentNumber.IsLiteral(scalar.Value) => new DocumentNumber(scalar.Value!),
         YamlScalarNode scalar => Scalar(scalar),
-        YamlSequenceNode sequence => sequence.Children.Select(Untyped).ToList(),
-        YamlMappingNode mapping => Entries(mapping).ToDictionary(pair => pair.Key, pair => Untyped(pair.Value)),
+        YamlSequenceNode sequence => sequence.Children.Select(child => Untyped(child, preserveNumbers)).ToList(),
+        YamlMappingNode mapping => Entries(mapping).ToDictionary(pair => pair.Key, pair => Untyped(pair.Value, preserveNumbers)),
         _ => throw new InvalidOperationException($"Unsupported YAML node {node.GetType().Name}")
     };
 
@@ -144,9 +186,12 @@ public static class WorkflowYamlSerializer
     {
         var value = scalar.Value;
         if (scalar.Style != ScalarStyle.Plain) return value;
-        if (value is null or "null" or "~") return null;
-        if (value == "true") return true;
-        if (value == "false") return false;
+        if (value is null or "" or "null" or "Null" or "NULL" or "~") return null;
+        if (value is "true" or "True" or "TRUE") return true;
+        if (value is "false" or "False" or "FALSE") return false;
+        if (value is ".nan" or ".NaN" or ".NAN") return double.NaN;
+        if (value is ".inf" or ".Inf" or ".INF" or "+.inf" or "+.Inf" or "+.INF") return double.PositiveInfinity;
+        if (value is "-.inf" or "-.Inf" or "-.INF") return double.NegativeInfinity;
         if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer)) return integer;
         if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var number)) return number;
         return value;
@@ -155,7 +200,8 @@ public static class WorkflowYamlSerializer
     private static YamlNode ToYaml(object? value)
     {
         if (value == null) return new YamlScalarNode("null");
-        if (value is string text) return new YamlScalarNode(text) { Style = ScalarStyle.DoubleQuoted };
+        if (value is DocumentNumber numberLiteral) return new YamlScalarNode(numberLiteral.Literal) { Style = ScalarStyle.Plain };
+        if (value is string text) return new YamlScalarNode(text) { Style = text.Contains("\n") ? ScalarStyle.Literal : ScalarStyle.DoubleQuoted };
         if (value is bool flag) return new YamlScalarNode(flag ? "true" : "false");
         if (value is DocumentNode)
         {
@@ -164,8 +210,14 @@ public static class WorkflowYamlSerializer
             {
                 if (value is StateTransitionDocument { Cases: not null } && key.Name is "to" or "when" or "steps") continue;
                 if (key.IsDiscriminator) mapping.Add(key.Name, DocumentModel.GetKind(value.GetType())!.Kind);
-                else if (key.Member?.GetValue(value) is { } child) mapping.Add(key.Name, ToYaml(child));
-                else if (key.Name == "to" || key.Name == "case" && ((DocumentNode)value).Members.ContainsKey(key.Name))
+                else if (key.Member?.GetValue(value) is { } child)
+                {
+                    var yaml = ToYaml(child);
+                    if (value is ActivityDocument && key.Name is "body" or "declarations" && yaml is YamlScalarNode code)
+                        code.Style = ScalarStyle.Literal;
+                    mapping.Add(key.Name, yaml);
+                }
+                else if (key.Name == "to" || key.Member != null && ((DocumentNode)value).Members.ContainsKey(key.Name))
                     mapping.Add(key.Name, ToYaml(null));
             }
             return mapping;

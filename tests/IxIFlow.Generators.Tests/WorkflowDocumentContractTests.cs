@@ -12,7 +12,7 @@ public sealed class WorkflowDocumentContractTests
     [Fact]
     public void SchemaFileMatchesTheDocumentModel()
     {
-        var generated = WorkflowDocumentSchema.Write();
+        var generated = DocumentSchema.Write(typeof(WorkflowDocument));
         Assert.DoesNotContain("\r", generated);
         Assert.EndsWith("\n", generated);
         if (Environment.GetEnvironmentVariable("IXIFLOW_WRITE_SCHEMA") == "1")
@@ -26,8 +26,16 @@ public sealed class WorkflowDocumentContractTests
     }
 
     // One translatable document per closed member; a member declared without a case here fails DeclaredValuesTranslate.
-    private static readonly Dictionary<(Type, string), Func<string, WorkflowDocument>> ValueDocuments = new()
+    private static readonly Dictionary<(Type, string), Func<string, DocumentNode>> ValueDocuments = new()
     {
+        [(typeof(ActivityDocument), nameof(ActivityDocument.SchemaVersion))] = value =>
+            new ActivityDocument { Activity = new() { Key = "acme.values", Version = 1 }, Body = "await Task.Yield();", SchemaVersion = value },
+        [(typeof(ActivityMemberDocument), nameof(ActivityMemberDocument.Control))] = value =>
+            new ActivityDocument
+            {
+                Activity = new() { Key = "acme.values", Version = 1 }, Body = "await Task.Yield();",
+                Input = new() { ["Value"] = new() { Type = "string", Control = value } }
+            },
         [(typeof(WorkflowDocument), nameof(WorkflowDocument.SchemaVersion))] = value =>
             Document(new ActivityStepDocument { Activity = "Multiply" }) with { SchemaVersion = value },
         [(typeof(BinaryExpressionDocument), nameof(BinaryExpressionDocument.Operator))] = value =>
@@ -63,6 +71,13 @@ public sealed class WorkflowDocumentContractTests
             }] }),
     };
 
+    private static string Translate(DocumentNode document) => document switch
+    {
+        WorkflowDocument workflow => WorkflowSourceTranslator.Translate(workflow, "values.yaml"),
+        ActivityDocument activity => ActivitySourceTranslator.Translate(activity, WorkflowYamlSerializer.Write(activity), "values.yaml"),
+        _ => throw new ArgumentException("Unsupported document root", nameof(document))
+    };
+
     private static WorkflowDocument Document(WorkflowStepDocument step) =>
         new() { Workflow = new() { Name = "Values", DataType = "FlowData" }, Definitions = [step] };
 
@@ -83,7 +98,7 @@ public sealed class WorkflowDocumentContractTests
     public void DeclaredValuesTranslate(Type type, string member, string value)
     {
         Assert.True(ValueDocuments.TryGetValue((type, member), out var document), $"Add a translation case for {type.Name}.{member}");
-        Assert.NotEmpty(WorkflowSourceTranslator.Translate(document!(value), "values.yaml"));
+        Assert.NotEmpty(Translate(document!(value)));
     }
 
     [Theory]
@@ -91,7 +106,7 @@ public sealed class WorkflowDocumentContractTests
     public void UndeclaredValuesAreRejected(Type type, string member)
     {
         Assert.True(ValueDocuments.TryGetValue((type, member), out var document), $"Add a translation case for {type.Name}.{member}");
-        Assert.Throws<WorkflowSourceException>(() => WorkflowSourceTranslator.Translate(document!("undeclared"), "values.yaml"));
+        Assert.Throws<WorkflowSourceException>(() => Translate(document!("undeclared")));
     }
 
     [Fact]
@@ -99,8 +114,8 @@ public sealed class WorkflowDocumentContractTests
     {
         var version = typeof(IxIFlow.Core.WorkflowDefinition).Assembly.GetName().Version!.ToString(3);
         Assert.Equal($"https://raw.githubusercontent.com/HumanHub/IxIFlow/v{version}/src/IxIFlow/schemas/workflow.schema.json",
-            WorkflowDocumentSchema.Id);
-        Assert.Equal(WorkflowDocumentSchema.Id, JsonDocument.Parse(File.ReadAllText(WorkflowSchemaFiles.SchemaPath)).RootElement.GetProperty("$id").GetString());
+            DocumentSchema.Id(typeof(WorkflowDocument)));
+        Assert.Equal(DocumentSchema.Id(typeof(WorkflowDocument)), JsonDocument.Parse(File.ReadAllText(WorkflowSchemaFiles.SchemaPath)).RootElement.GetProperty("$id").GetString());
     }
 
     [Fact]

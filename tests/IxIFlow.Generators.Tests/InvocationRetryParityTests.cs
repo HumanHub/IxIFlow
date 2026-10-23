@@ -124,7 +124,7 @@ public sealed class InvocationRetryParityTests
     [Fact]
     public void InvocationRetrySchemaMatchesTheDocumentContract()
     {
-        var generated = WorkflowDocumentSchema.Write();
+        var generated = DocumentSchema.Write(typeof(WorkflowDocument));
         var path = Path.Combine(WorkflowSchemaFiles.RepositoryRoot(), "src/IxIFlow/schemas/workflow.schema.json");
         if (Environment.GetEnvironmentVariable("IXIFLOW_WRITE_SCHEMA") == "1") File.WriteAllText(path, generated);
         Assert.Equal(generated, File.ReadAllText(path).Replace("\r\n", "\n"));

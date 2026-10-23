@@ -6,6 +6,7 @@ using IxIFlow.Dsl.Documents;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 using YamlDotNet.Core;
+using YamlDotNet.RepresentationModel;
 
 namespace IxIFlow.Generators;
 
@@ -16,6 +17,9 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
     private const string ActivityAttribute = "IxIFlow.ActivitySdk.WorkflowActivityAttribute";
     private static readonly DiagnosticDescriptor InvalidDocument = new(
         "IXIYAML001", "Invalid workflow YAML", "{0}", "Authoring", DiagnosticSeverity.Error, true);
+
+    private static readonly DiagnosticDescriptor ActivityRoot = new(
+        "IXIYAML002", "Activity root requires standalone authoring", "Activity documents must be compiled by the standalone authoring API", "Authoring", DiagnosticSeverity.Error, true);
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -214,6 +218,20 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
         foreach (var file in files)
             try
             {
+                if (WorkflowYamlSerializer.ReadRootKind(file.Text) == "activity")
+                {
+                    var yaml = new YamlStream();
+                    using var reader = new StringReader(file.Text);
+                    yaml.Load(reader);
+                    var root = (YamlMappingNode)yaml.Documents[0].RootNode;
+                    var activity = root.Children.Single(pair => pair.Key is YamlScalarNode { Value: "activity" }).Value;
+                    var point = new LinePosition(Math.Max(0, (int)activity.Start.Line - 1), Math.Max(0, (int)activity.Start.Column - 1));
+                    var text = SourceText.From(file.Text);
+                    var position = text.Lines.GetPosition(point);
+                    context.ReportDiagnostic(Diagnostic.Create(ActivityRoot,
+                        Location.Create(file.Path, new TextSpan(position, 0), new LinePositionSpan(point, point))));
+                    continue;
+                }
                 var document = WorkflowYamlSerializer.Read(file.Text);
                 var workflow = document.Workflow;
                 var key = workflow.Name + "@" + workflow.Version;

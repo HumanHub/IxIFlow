@@ -53,12 +53,30 @@ public static class DocumentModel
         return
         [
             .. discriminator is { } kind ? [kind] : Array.Empty<DocumentKey>(),
-            .. type == typeof(WorkflowDocument) ? [new DocumentKey(SchemaKey, null, false)] : Array.Empty<DocumentKey>(),
+            .. type == typeof(WorkflowDocument) || type == typeof(ActivityDocument) ? [new DocumentKey(SchemaKey, null, false)] : Array.Empty<DocumentKey>(),
             .. members.Where(member => member != discriminator?.Member).Select(member => new DocumentKey(GetName(member), member, false))
         ];
     });
 
     public static string GetName(MemberInfo member) => CamelCase(member.Name);
+
+    /// <summary>Whether an explicitly supplied null is permitted by a member's C# contract.</summary>
+    public static bool AllowsNull(PropertyInfo member)
+    {
+        if (member.PropertyType.IsValueType) return Nullable.GetUnderlyingType(member.PropertyType) != null;
+        var annotation = member.CustomAttributes.FirstOrDefault(attribute => attribute.AttributeType.FullName == "System.Runtime.CompilerServices.NullableAttribute");
+        if (annotation != null)
+        {
+            var argument = annotation.ConstructorArguments[0];
+            return (argument.Value is byte flag ? flag : (byte)((IList<CustomAttributeTypedArgument>)argument.Value!)[0].Value!) == 2;
+        }
+        for (var type = member.DeclaringType; type != null; type = type.DeclaringType)
+        {
+            var context = type.CustomAttributes.FirstOrDefault(attribute => attribute.AttributeType.FullName == "System.Runtime.CompilerServices.NullableContextAttribute");
+            if (context != null) return (byte)context.ConstructorArguments[0].Value! == 2;
+        }
+        return false;
+    }
     public static string CamelCase(string name) => char.ToLowerInvariant(name[0]) + name.Substring(1);
     public static DocumentKindAttribute? GetKind(Type type) => Kinds.GetOrAdd(type, static type => type.GetCustomAttribute<DocumentKindAttribute>());
 
@@ -78,8 +96,9 @@ public static class DocumentModel
             var contract = GetKind(candidate)!;
             return hasMember("kind") ? contract.Kind == kind : contract.ImpliedBy is { } member && hasMember(member);
         });
-    public static DocumentLocation GetLocation(WorkflowDocument document, string? path)
+    public static DocumentLocation GetLocation(DocumentNode document, string? path)
     {
+        if (path != null && document.Members.TryGetValue(path, out var exact)) return exact;
         object? current = document;
         var location = document.Location;
         foreach (System.Text.RegularExpressions.Match segment in System.Text.RegularExpressions.Regex.Matches(path ?? "", @"([^\.\[\]]+)|\[(\d+)\]"))

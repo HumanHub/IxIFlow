@@ -37,7 +37,7 @@ public sealed class AssignYamlTests
         foreach (var source in Readers(yaml))
         {
             var document = WorkflowYamlSerializer.Read(source);
-            var schema = JsonSchema.FromText(WorkflowDocumentSchema.Write(), new BuildOptions { SchemaRegistry = new SchemaRegistry() });
+            var schema = JsonSchema.FromText(DocumentSchema.Write(typeof(WorkflowDocument)), new BuildOptions { SchemaRegistry = new SchemaRegistry() });
             Assert.True(schema.Evaluate(System.Text.Json.JsonDocument.Parse(WorkflowJsonSerializer.Write(document)).RootElement).IsValid);
             var generated = GeneratorRegressionTests.Build(source);
             Assert.Equal(WorkflowDefinitionValidator.Inspect(fluent), WorkflowDefinitionValidator.Inspect(generated));
