@@ -36,8 +36,9 @@ internal static class TryScopeTransitions
     }
 
     public static bool Exit(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, ScopePosition owner,
-        ScopePosition child, WorkflowStep step, ContinuationState continuation)
+        ScopePosition child, WorkflowStep step, ContinuationState continuation, out PendingFailure? failure)
     {
+        failure = null;
         var state = owner.TryState;
         if (step.StepType != WorkflowStepType.TryCatch || state == null)
             return false;
@@ -54,7 +55,7 @@ internal static class TryScopeTransitions
 
         if (state.Phase == TryPhase.Finally)
         {
-            var unhandled = state.GetError(checkpoint);
+            var unhandled = state.Error;
             var isCancellationCleanup = state.IsCancellationCleanup;
             owner.TryState = null;
             owner.NextStepIndex++;
@@ -63,15 +64,13 @@ internal static class TryScopeTransitions
                 ContinueCancellation(scopes, checkpoint, continuation);
                 return true;
             }
-            if (unhandled != null)
-                SerializedException.From(unhandled, checkpoint).Propagate(checkpoint);
+            failure = unhandled;
             return true;
         }
 
         if (state.Phase == TryPhase.Catch)
         {
             state.Error = null;
-            state.RuntimeError = null;
         }
         if (step.FinallySteps.Count > 0)
             state.Phase = TryPhase.Finally;
@@ -83,15 +82,16 @@ internal static class TryScopeTransitions
         return true;
     }
 
-    public static bool Capture(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, ContinuationState continuation, Exception error)
+    public static bool Capture(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, ContinuationState continuation, PendingFailure failure)
     {
-        var index = HandlerIndex(scopes, continuation, error);
+        var error = failure.ForPropagation(checkpoint);
+        var index = HandlerIndex(scopes, checkpoint, continuation, failure);
         if (index < 0)
             return false;
         var owner = continuation.Stack[index];
         var state = owner.TryState!;
         var step = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
-        var catchIndex = FindCatchIndex(step, state, error);
+        var catchIndex = FindCatchIndex(step, state, error, failure.ScopeBoundary?.Contains(continuation, continuation.Stack.IndexOf(owner)) == true);
         var selectedCatch = catchIndex >= 0 ? step.CatchBlocks[catchIndex] : null;
         SerializedException savedError;
         if (selectedCatch == null)
@@ -108,22 +108,24 @@ internal static class TryScopeTransitions
                 // The handler cannot receive the fault it declared. Finish this Try's
                 // cleanup, then let an outer handler see the capture failure.
                 error = FaultCapture.ProjectionFailure(error, projectionError);
-                savedError = SerializedException.Capture(error, scopes, checkpoint, continuation, newOccurrence: true);
+                failure = PendingFailure.Capture(error, scopes, checkpoint, continuation, newOccurrence: true);
+                savedError = failure.Error;
                 catchIndex = -1;
             }
         }
-        checkpoint.Trace.DropFrames(continuation, index + 1, ItemEndCause.UnwoundByOuterHandler);
+        checkpoint.Trace.DropFrames(continuation, index + 1, ItemEndCause.UnwoundByOuterHandler, failure);
         continuation.Previous = state.EntryPrevious;
         continuation.RuntimePrevious = state.RuntimeEntryPrevious;
-        state.RuntimeError = error;
-        state.Error = savedError;
+
+        state.Error = new PendingFailure { Error = savedError, ScopeBoundary = failure.ScopeBoundary };
         state.CatchIndex = catchIndex;
         state.Phase = catchIndex >= 0 ? TryPhase.Catch : TryPhase.Finally;
         return true;
     }
 
-    public static int HandlerIndex(WorkflowScopeCatalog scopes, ContinuationState continuation, Exception error)
+    public static int HandlerIndex(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, ContinuationState continuation, PendingFailure failure)
     {
+        var error = failure.ForPropagation(checkpoint);
         for (var index = continuation.Stack.Count - 1; index >= 0; index--)
         {
             var owner = continuation.Stack[index];
@@ -135,7 +137,7 @@ internal static class TryScopeTransitions
             if (step.StepType != WorkflowStepType.TryCatch)
                 continue;
 
-            var catchIndex = FindCatchIndex(step, state, error);
+            var catchIndex = FindCatchIndex(step, state, error, failure.ScopeBoundary?.Contains(continuation, continuation.Stack.IndexOf(owner)) == true);
             if (catchIndex < 0 && step.FinallySteps.Count == 0)
                 continue;
             return index;
@@ -143,9 +145,9 @@ internal static class TryScopeTransitions
         return -1;
     }
 
-    private static int FindCatchIndex(WorkflowStep step, TryScopeState state, Exception error)
+    private static int FindCatchIndex(WorkflowStep step, TryScopeState state, Exception error, bool suppressed)
     {
-        if (state.Phase != TryPhase.Try)
+        if (suppressed || state.Phase != TryPhase.Try)
             return -1;
         var errorType = SerializedException.CatchType(error);
         for (var index = 0; index < step.CatchBlocks.Count; index++)
@@ -154,7 +156,7 @@ internal static class TryScopeTransitions
         return -1;
     }
 
-    internal static SerializedException RethrowError(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
+    internal static PendingFailure RethrowError(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, WorkflowStep step)
     {
         while (true)
@@ -181,11 +183,11 @@ internal static class TryScopeTransitions
                 var state = frame.TryState;
                 if (state?.Phase == TryPhase.Catch && (expected == null ||
                     scopes!.Id(scopes.Steps(frame.ScopeId)[frame.NextStepIndex].CatchBlocks[state.CatchIndex]) == expected))
-                    return state.Error?.Fault?.Read(services);
+                    return state.Error?.Error.Fault?.Read(services);
                 var saga = frame.SagaState;
                 if (saga?.Phase == SagaPhase.Compensating && saga.ErrorHandlerStarted && (expected == null ||
                     scopes!.Id(scopes.Steps(frame.ScopeId)[frame.NextStepIndex].CatchBlocks[saga.ErrorHandlerIndex]) == expected))
-                    return saga.Error?.Fault?.Read(services);
+                    return saga.Error?.Error.Fault?.Read(services);
             }
             if (continuation.ParentJoinId == null) return null;
             var join = checkpoint.Joins.Single(item => item.Id == continuation.ParentJoinId);
@@ -195,17 +197,17 @@ internal static class TryScopeTransitions
 
     public static void EnsureCanWait(ExecutionCheckpoint checkpoint, ContinuationState continuation)
     {
-        RejectUnrestorable(checkpoint.UnhandledError);
+        RejectUnrestorable(checkpoint.UnhandledError?.Error);
         while (true)
         {
-            RejectUnrestorable(continuation.DeferredFailure);
+            RejectUnrestorable(continuation.DeferredFailure?.Error);
             foreach (var frame in continuation.Stack)
             {
                 var tryState = frame.TryState;
-                RejectUnrestorable(tryState?.Error);
+                RejectUnrestorable(tryState?.Error?.Error);
                 var saga = frame.SagaState;
-                RejectUnrestorable(saga?.Error);
-                RejectUnrestorable(saga?.HandlerError);
+                RejectUnrestorable(saga?.Error?.Error);
+                RejectUnrestorable(saga?.HandlerError?.Error);
             }
             if (continuation.ParentJoinId == null)
                 return;
@@ -225,13 +227,13 @@ internal static class TryScopeTransitions
     public static bool IsInsideFinally(ContinuationState continuation) =>
         continuation.Stack.Any(frame => frame.TryState?.Phase == TryPhase.Finally);
 
-    public static void AbortFailedFinally(ExecutionCheckpoint checkpoint, ContinuationState continuation)
+    public static void AbortFailedFinally(ExecutionCheckpoint checkpoint, ContinuationState continuation, PendingFailure? failure = null)
     {
         var index = continuation.Stack.FindIndex(frame => frame.TryState?.Phase == TryPhase.Finally);
         if (index < 0)
             return;
 
-        checkpoint.Trace.DropFrames(continuation, index + 1, ItemEndCause.Failed);
+        checkpoint.Trace.DropFrames(continuation, index + 1, ItemEndCause.Failed, failure);
         var owner = continuation.Stack[index];
         owner.TryState = null;
         owner.NextStepIndex++;
@@ -262,17 +264,17 @@ internal static class TryScopeTransitions
                 continue;
 
             checkpoint.Trace.DropFrames(continuation, index + 1, continuation.CancellationUnwind
-            ? continuation.ItemUnwindCause ?? ItemEndCause.Cancelled : ItemEndCause.UnwoundByOuterHandler);
+            ? continuation.ItemUnwindCause ?? ItemEndCause.Cancelled : ItemEndCause.UnwoundByOuterHandler, continuation.UnwindFailure);
             continuation.Previous = state.EntryPrevious;
             continuation.RuntimePrevious = state.RuntimeEntryPrevious;
             state.Error = null;
-            state.RuntimeError = null;
             state.Phase = TryPhase.Finally;
             state.IsCancellationCleanup = true;
             continuation.Status = ContinuationStatus.Active;
             return;
         }
-        checkpoint.Trace.DropFrames(continuation, 0, continuation.ItemUnwindCause ?? ItemEndCause.Cancelled);
+        checkpoint.Trace.DropFrames(continuation, 0, continuation.ItemUnwindCause ?? ItemEndCause.Cancelled, continuation.UnwindFailure);
+        continuation.UnwindFailure = null;
         continuation.CancellationUnwind = false;
         continuation.Status = ContinuationStatus.Cancelled;
     }

@@ -22,5 +22,10 @@ IXIF0014 | IxIFlow.Contracts | Error | MappingAnalyzer
 IXIF0015 | IxIFlow.Contracts | Error | MappingAnalyzer
 IXIF0016 | IxIFlow.Contracts | Error | MappingAnalyzer
 IXIF0017 | IxIFlow.Contracts | Error | MappingAnalyzer
+IXIF0018 | IxIFlow.Contracts | Warning | ScopeAnalyzer
+IXIF0019 | IxIFlow.Contracts | Error | ScopeAnalyzer
+IXIF0020 | IxIFlow.Contracts | Error | ScopeAnalyzer
+IXIF0021 | IxIFlow.Contracts | Error | ScopeAnalyzer
+IXIF0022 | IxIFlow.Contracts | Error | ScopeAnalyzer
 IXIF0101 | IxIFlow.Purity | Error | PurityAnalyzer
 IXIF0102 | IxIFlow.Purity | Error | PurityAnalyzer

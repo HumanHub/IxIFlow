@@ -671,7 +671,8 @@ public enum TraceEntryType
     /// <summary>An invocation policy selected retry, ignore or propagation.</summary>
     InvocationPolicyApplied,
     FaultRaised,
-    FaultRethrown
+    FaultRethrown,
+    ScopeOpened, ScopeClosed, ScopeCloseFailed
 }
 
 /// <summary>
@@ -679,6 +680,7 @@ public enum TraceEntryType
 /// </summary>
 public class WorkflowDefinition
 {
+    public IReadOnlyList<Type> RequiredScopes { get; set; } = [];
     /// <summary>Declared root inputs; null means no list, empty explicitly declares no inputs.</summary>
     public IReadOnlyList<string>? DeclaredInputs { get; set; }
     /// <summary>Declared root outputs; null means no list, empty explicitly declares no outputs.</summary>
@@ -762,6 +764,11 @@ public class WorkflowDefinition
 /// </summary>
 public class WorkflowStep
 {
+    public List<WorkflowStep> ScopeBodySteps { get; set; } = [];
+    public Type? ScopeValueType { get; set; }
+    public IxIFlow.Builders.RetryPolicy? ScopeRetryPolicy { get; set; }
+    public ScopeThreading ScopeThreading { get; set; }
+    public ScopeConcurrency ScopeConcurrency { get; set; }
     /// <summary>The authoring source location, when available.</summary>
     public string? SourceLocation { get; set; }
 
@@ -1092,6 +1099,7 @@ public class WorkflowStep
         yield return ("finally", null, FinallySteps);
         yield return ("timeout", null, TimeoutSteps);
         yield return ("catch", null, CatchBlocks);
+        yield return ("scope", null, ScopeBodySteps);
         for (var index = 0; index < ParallelBranches.Count; index++)
             yield return ("branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), ParallelBranches[index]);
         foreach (var node in GraphNodes)
@@ -1132,6 +1140,8 @@ public class WorkflowStep
             Name = Name,
             StepType = StepType,
             ActivityType = ActivityType,
+            ScopeValueType = ScopeValueType, ScopeRetryPolicy = ScopeRetryPolicy,
+            ScopeThreading = ScopeThreading, ScopeConcurrency = ScopeConcurrency,
             WorkflowType = WorkflowType,
             InvokedDataType = InvokedDataType,
             InlineStructureHash = InlineStructureHash,
@@ -1329,7 +1339,8 @@ public enum WorkflowStepType
     Switch,
     Assign,
     Throw,
-    Rethrow
+    Rethrow,
+    Scope
 }
 
 /// <summary>

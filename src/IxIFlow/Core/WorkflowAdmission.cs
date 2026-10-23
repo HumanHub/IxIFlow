@@ -81,6 +81,7 @@ internal sealed class WorkflowIngressClient(IWorkflowStateRepository store, IWor
             host.WakeNow(existing.InstanceId);
             return existing;
         }
+        WorkflowDefinitionValidator.CheckRootDataType(definition, data);
         var registered = await registry.GetWorkflowDefinitionAsync(definition.Name, definition.Version);
         var now = time.GetUtcNow().UtcDateTime;
         var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, data, new(), now,

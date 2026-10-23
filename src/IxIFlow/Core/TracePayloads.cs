@@ -6,6 +6,7 @@ namespace IxIFlow.Core;
 [JsonDerivedType(typeof(ControlFlowTrace), "control")]
 [JsonDerivedType(typeof(GraphTrace), "graph")]
 [JsonDerivedType(typeof(InlineTrace), "inline")]
+[JsonDerivedType(typeof(ScopeTrace), "scope")]
 [JsonDerivedType(typeof(ConditionTrace), "condition")]
 [JsonDerivedType(typeof(SwitchTrace), "switch")]
 [JsonDerivedType(typeof(DataAssignedTrace), "assigned")]
@@ -134,3 +135,9 @@ public sealed record SwitchTrace(string StepId, string ContinuationId, SwitchPat
 
 /// <summary>A completed data write, without evaluated keys or values.</summary>
 public sealed record DataAssignedTrace(string StepId, string ContinuationId, string Target) : TracePayload;
+public enum ScopeTraceCause { Closed, Interrupted, Timeout }
+public sealed record ScopeTrace(string StepId, WorkflowStepType StepKind, string ContinuationId, string ActivationId,
+    bool Reopen, int RecordedOpens, ScopeCloseReason? Reason, ScopeTraceCause? Cause) : TracePayload
+{
+    public string InvocationId { get; init; } = "";
+}

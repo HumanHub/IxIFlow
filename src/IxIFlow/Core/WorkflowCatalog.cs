@@ -12,13 +12,47 @@ public enum WorkflowDependencyKind { Child }
 
 public sealed record WorkflowVersionDependency(string Name, int Version, WorkflowDependencyKind Kind = WorkflowDependencyKind.Child);
 
+/// <summary>A child invocation and its authoring position, retained for catalog validation.</summary>
+public sealed record WorkflowVersionInvocation(string Name, int Version, string Step, string SourceLocation);
+
 /// <summary>Immutable version metadata. Only State may change after registration.</summary>
 public sealed record WorkflowVersion(string Name, int Version, string StructureHash,
     string ContractJson, string ContractHash,
+    [property: System.Text.Json.Serialization.JsonRequired] IReadOnlyList<WorkflowVersionInvocation> Invocations,
     WorkflowVersionState State = WorkflowVersionState.Published, ArtifactDigest? ArtifactDigest = null,
     IReadOnlyList<WorkflowVersionDependency>? Dependencies = null,
     IReadOnlyList<ArtifactDigest>? ArtifactReferences = null,
-    long? PublishedDraftRevision = null, string? ManifestJson = null);
+    long? PublishedDraftRevision = null, string? ManifestJson = null)
+{
+    public bool Equals(WorkflowVersion? other) => ReferenceEquals(this, other) || other != null &&
+        Name == other.Name && Version == other.Version && StructureHash == other.StructureHash &&
+        ContractJson == other.ContractJson && ContractHash == other.ContractHash && State == other.State &&
+        ArtifactDigest == other.ArtifactDigest && PublishedDraftRevision == other.PublishedDraftRevision &&
+        ManifestJson == other.ManifestJson && SameValues(Invocations, other.Invocations) &&
+        SameValues(Dependencies, other.Dependencies) && SameValues(ArtifactReferences, other.ArtifactReferences);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(Name); hash.Add(Version); hash.Add(StructureHash);
+        hash.Add(ContractJson); hash.Add(ContractHash); hash.Add(State);
+        hash.Add(ArtifactDigest); hash.Add(PublishedDraftRevision); hash.Add(ManifestJson);
+        AddValues(ref hash, Invocations);
+        AddValues(ref hash, Dependencies);
+        AddValues(ref hash, ArtifactReferences);
+        return hash.ToHashCode();
+    }
+
+    private static bool SameValues<T>(IReadOnlyList<T>? left, IReadOnlyList<T>? right) =>
+        ReferenceEquals(left, right) || left != null && right != null && left.SequenceEqual(right);
+
+    private static void AddValues<T>(ref HashCode hash, IReadOnlyList<T>? values)
+    {
+        hash.Add(values?.Count);
+        if (values != null)
+            foreach (var value in values) hash.Add(value);
+    }
+}
 
 /// <summary>Current rows changed after a revision, and the catalog revision observed atomically with them.
 /// Rows may have changed more than once; the latest row is returned once. Versions are never deleted.
@@ -118,13 +152,18 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
         var dependencies = WorkflowDefinitionValidator.GetDependencies(definition);
         var contract = WorkflowDefinitionValidator.GetContract(definition);
         var registration = new WorkflowVersion(definition.Name, definition.Version, scopes.StructureHash,
-            contract.ToJson(), contract.Hash, Dependencies: dependencies);
+            contract.ToJson(), contract.Hash, Dependencies: dependencies,
+            Invocations: WorkflowDefinitionValidator.GetInvocations(definition));
         await _registrationLock.WaitAsync();
         try
         {
             var key = (definition.Name, definition.Version);
             if (_registrations.TryGetValue(key, out var existing))
+            {
                 WorkflowCatalogRules.CheckRegistration(existing, registration);
+                // This executable's inventory was checked atomically on first attachment.
+                // Later callees are checked against incoming edges when they register.
+            }
             else
             {
                 await _store.RegisterWorkflowVersionAsync(registration, _artifacts);
@@ -155,9 +194,16 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
         if (_bundles == null)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "This host has no bundle cache configured");
         var lease = await _bundles.AcquireAsync(bundleDigest.Value, cancellationToken);
-        if (lease.Definition.Name == name && lease.Definition.Version == version) return lease;
-        lease.Dispose();
-        throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Bundle identity differs from the saved workflow identity");
+        try
+        {
+            if (lease.Definition.Name != name || lease.Definition.Version != version)
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Bundle identity differs from the saved workflow identity");
+            var registered = await _store.GetWorkflowVersionAsync(name, version)
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Bundle has no registered workflow version");
+            WorkflowCatalogRules.CheckBundleDefinition(registered, lease.Definition, WorkflowErrorKind.ArtifactMismatch);
+            return lease;
+        }
+        catch { lease.Dispose(); throw; }
     }
 
     public void Dispose() => _bundles?.Dispose();
@@ -210,6 +256,43 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
 /// <summary>Rules used under each store's catalog/start lock.</summary>
 internal static class WorkflowCatalogRules
 {
+    internal static void CheckBundleDefinition(WorkflowVersion row, WorkflowDefinition definition, WorkflowErrorKind kind)
+    {
+        var contract = WorkflowDefinitionValidator.GetContract(definition);
+        if (row.ContractJson != contract.ToJson() || row.ContractHash != contract.Hash)
+            throw new WorkflowEngineException(kind,
+                $"Workflow '{row.Name}' v{row.Version} contract differs from its bundle definition");
+        if (!SameInvocations(row.Invocations, WorkflowDefinitionValidator.GetInvocations(definition)) ||
+            !(row.Dependencies ?? []).SequenceEqual(WorkflowDefinitionValidator.GetDependencies(definition)))
+            throw new WorkflowEngineException(kind,
+                $"Workflow '{row.Name}' v{row.Version} invocation inventory or dependencies differ from its bundle definition");
+    }
+
+    internal static bool SameInvocations(IReadOnlyList<WorkflowVersionInvocation> left, IReadOnlyList<WorkflowVersionInvocation> right) =>
+        left.Select(invocation => (invocation.Name, invocation.Version, invocation.Step))
+            .SequenceEqual(right.Select(invocation => (invocation.Name, invocation.Version, invocation.Step)));
+
+    public static void CheckInvocations(WorkflowVersion candidate, IEnumerable<WorkflowVersion> registered)
+    {
+        var dependencies = (candidate.Dependencies ?? []).Select(dependency => (dependency.Name, dependency.Version)).ToHashSet();
+        if (!candidate.Invocations.Select(invocation => (invocation.Name, invocation.Version)).ToHashSet().IsSubsetOf(dependencies))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow invocation metadata must refer to declared dependencies");
+        var versions = registered.Where(row => (row.Name, row.Version) != (candidate.Name, candidate.Version))
+            .Append(candidate).ToDictionary(row => (row.Name, row.Version));
+        foreach (var caller in versions.Values)
+            foreach (var invocation in caller.Invocations)
+            {
+                // Only edges made resolvable by this registration need to be checked.
+                if ((caller.Name, caller.Version) != (candidate.Name, candidate.Version) &&
+                    (invocation.Name, invocation.Version) != (candidate.Name, candidate.Version)) continue;
+                if (versions.TryGetValue((invocation.Name, invocation.Version), out var callee) &&
+                    WorkflowContract.Parse(callee.ContractJson).RequiredScopes.Count != 0)
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                        $"{invocation.SourceLocation}: Workflow '{caller.Name}' v{caller.Version}, step '{invocation.Step}' " +
+                        $"cannot invoke '{callee.Name}' v{callee.Version}: an independent child cannot supply required scopes");
+            }
+    }
+
     public static void CheckPublication(WorkflowDraftId id, WorkflowVersion version, WorkflowDraft? draft, WorkflowVersion? existing)
     {
         Validate(version);
@@ -271,6 +354,15 @@ internal static class WorkflowCatalogRules
             ArgumentOutOfRangeException.ThrowIfLessThan(dependency.Version, 1);
             if (!Enum.IsDefined(dependency.Kind)) throw new ArgumentOutOfRangeException(nameof(dependency.Kind));
         }
+        if (row.Invocations == null)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow version requires complete invocation metadata (use an empty list when there are no invocations)");
+        foreach (var invocation in row.Invocations)
+        {
+            ValidateName(invocation.Name);
+            ArgumentOutOfRangeException.ThrowIfLessThan(invocation.Version, 1);
+            ArgumentException.ThrowIfNullOrWhiteSpace(invocation.Step);
+            ArgumentException.ThrowIfNullOrWhiteSpace(invocation.SourceLocation);
+        }
     }
 
     public static void CheckRegistration(WorkflowVersion existing, WorkflowVersion loaded)
@@ -279,9 +371,12 @@ internal static class WorkflowCatalogRules
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 $"Workflow {loaded.Name} v{loaded.Version} is already registered with structure hash " +
                 $"'{existing.StructureHash}'; loaded structure hash '{loaded.StructureHash}' differs");
+        // Source positions are presentation metadata. Each invocation's callee and
+        // step identity remain immutable even when the caller's hash is supplied by metadata.
         if (existing.ArtifactDigest != loaded.ArtifactDigest || existing.PublishedDraftRevision != loaded.PublishedDraftRevision ||
             existing.ManifestJson != loaded.ManifestJson ||
             existing.ContractJson != loaded.ContractJson || existing.ContractHash != loaded.ContractHash ||
+            !SameInvocations(existing.Invocations, loaded.Invocations) ||
             !(existing.Dependencies ?? []).SequenceEqual(loaded.Dependencies ?? []) ||
             !(existing.ArtifactReferences ?? []).SequenceEqual(loaded.ArtifactReferences ?? []))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow version metadata is immutable");
@@ -329,9 +424,15 @@ internal static class WorkflowCatalogRules
 
     public static IReadOnlySet<ArtifactDigest> ArtifactReferences(IEnumerable<WorkflowVersion> rows) =>
         rows.SelectMany(row => (row.ArtifactReferences ?? []).Concat(row.ArtifactDigest is { } digest ? [digest] : [])
-            .Concat(row.ManifestJson == null ? [] : System.Text.Json.JsonSerializer.Deserialize<WorkflowBundleManifest>(row.ManifestJson)!
+            .Concat(row.ManifestJson == null ? [] : System.Text.Json.JsonSerializer.Deserialize<ArtifactManifestReferences>(row.ManifestJson)!
                 .ActivityPackages.Select(package => package.Digest)))
             .ToHashSet();
+
+    // Retention needs only artifact references. Executable manifest validation belongs to loading.
+    private sealed record ArtifactManifestReferences
+    {
+        public IReadOnlyList<WorkflowPackagePin> ActivityPackages { get; init; } = [];
+    }
 
     internal sealed record OrphanPin(IReadOnlyList<ArtifactDigest> Packages, string? Error = null);
 

@@ -9,8 +9,9 @@ namespace IxIFlow.Builders;
 ///     Activity setup builder for first step (no previous step access)
 /// </summary>
 public class ActivitySetupBuilder<TWorkflowData, TActivity> : IActivitySetupBuilder<TWorkflowData, TActivity>
-    where TActivity : IAsyncActivity
+    where TActivity : class
 {
+    internal WorkflowStep Step => _step;
     private readonly WorkflowStep _step;
 
     public ActivitySetupBuilder(WorkflowStep step)
@@ -42,9 +43,10 @@ public class ActivitySetupBuilder<TWorkflowData, TActivity> : IActivitySetupBuil
 /// </summary>
 public class ActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> : IActivitySetupBuilder<TWorkflowData, TActivity,
     TPreviousStepData>
-    where TActivity : IAsyncActivity
+    where TActivity : class
     where TPreviousStepData : class
 {
+    internal WorkflowStep Step => _step;
     private readonly WorkflowStep _step;
 
     public ActivitySetupBuilder(WorkflowStep step)
@@ -77,7 +79,7 @@ public class ActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> :
 /// </summary>
 public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty> : IActivitySetupInputBuilder<TWorkflowData, TActivity,
     TProperty>
-    where TActivity : IAsyncActivity
+    where TActivity : class
 {
     private readonly Expression<Func<TActivity, TProperty>> _propertyExpression;
     private readonly WorkflowStep _step;
@@ -156,7 +158,7 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty> : IA
 /// </summary>
 public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPreviousStepData> : IActivitySetupInputBuilder<TWorkflowData,
     TActivity, TProperty, TPreviousStepData>
-    where TActivity : IAsyncActivity
+    where TActivity : class
     where TPreviousStepData : class
 {
     private readonly Expression<Func<TActivity, TProperty>> _propertyExpression;
@@ -237,7 +239,7 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPre
 /// </summary>
 public class ActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty> : IActivitySetupOutputBuilder<TWorkflowData, TActivity,
     TProperty>
-    where TActivity : IAsyncActivity
+    where TActivity : class
 {
     private readonly Expression<Func<TActivity, TProperty>> _propertyExpression;
     private readonly WorkflowStep _step;

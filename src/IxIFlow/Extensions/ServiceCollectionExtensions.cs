@@ -28,6 +28,7 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(InspectionRedactionPolicy.Default);
         services.AddScoped<IWorkflowDiagnostics, WorkflowDiagnostics>();
         // Core workflow services
+        services.TryAddSingleton<ScopeThreadRegistry>(_ => new ScopeThreadRegistry(64));
         services.TryAddSingleton<HostSettings>(provider => HostSettings.Default with
         { BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
             CapabilityLogger = provider.GetService<ILogger<WorkflowHeartbeatService>>() });
@@ -108,6 +109,8 @@ public static class ServiceCollectionExtensions
             throw new ArgumentOutOfRangeException(nameof(configure), "The branch limit must be positive");
         if (options.MaxActivitiesPerRun <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The activity limit must be positive");
+        if (options.MaxScopeThreadsPerHost <= 0) throw new ArgumentOutOfRangeException(nameof(options.MaxScopeThreadsPerHost));
+        services.Replace(ServiceDescriptor.Singleton(new ScopeThreadRegistry(options.MaxScopeThreadsPerHost)));
         if (options.MaxGraphTransitionsPerPass <= 0)
             throw new ArgumentOutOfRangeException(nameof(options.MaxGraphTransitionsPerPass));
         if (options.MaxForEachItems <= 0)
@@ -151,7 +154,7 @@ public static class ServiceCollectionExtensions
         var hostSettings = (options.Slots, options.DrainTimeout, options.PollInterval, options.HostName, options.HeartbeatInterval);
         services.Replace(ServiceDescriptor.Singleton<HostSettings>(provider =>
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
-            { Debugging = options.Debugging, HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes,
+            { MaxScopeThreadsPerHost = options.MaxScopeThreadsPerHost, Debugging = options.Debugging, HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes,
                 BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
                 CapabilityLogger = provider.GetService<ILogger<WorkflowHeartbeatService>>(),
                 UnschedulableScanInterval = options.UnschedulableScanInterval }));
@@ -382,6 +385,8 @@ public class IxIFlowOptions
     public int MaxForEachItems { get; set; } = ExecutionLimits.DefaultMaxForEachItems;
 
     /// <summary>Maximum node entries of one graph between prepared commits; excess stops for an operator.</summary>
+    public int MaxScopeThreadsPerHost { get; set; } = 64;
+
     public int MaxGraphTransitionsPerPass { get; set; } = ExecutionLimits.DefaultMaxGraphTransitionsPerPass;
 
     /// <summary>

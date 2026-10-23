@@ -184,7 +184,7 @@ public sealed class RecipeTests
         await client.RunAsync(every ? EveryApproverFromListRecipe.Definition(1) : AnyApproverFromListRecipe.Definition(),
             new ApprovalRound { Approvers = ["manager", "director"] });
         Assert.Equal(every ? 1 : 2, gateway.Approvals.Count);
-        var first = gateway.Approvals.First().ReplyToken;
+        var first = gateway.Approvals.Single(request => request.Approver == "manager").ReplyToken;
         var result = await client.ReplyAsync(first, new ApprovalDecision { Approved = true, By = "manager" });
         if (every)
         {

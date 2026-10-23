@@ -34,7 +34,7 @@ public sealed class InvocationRetryBudgetTests
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var commits = store.Commits.ToArray();
         Assert.Equal(12, commits.Length);
-        Assert.True(commits.Max(commit => commit.StateBytes()) < 2600,
+        Assert.True(commits.Max(commit => commit.StateBytes()) < 2800,
             $"Largest commit: {commits.Max(commit => commit.StateBytes())} bytes");
         var saved = (await store.GetWorkflowInstanceAsync(result.InstanceId))!;
         var record = Assert.Single(ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords.Values);

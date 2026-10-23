@@ -279,16 +279,17 @@ public static class WorkflowCompilation
         return InspectDefinition(new CompilationContext(references), assemblyBytes, pdbBytes, inspect);
     }
 
-    internal static T WithDefinition<T>(byte[] assemblyBytes, byte[] pdbBytes, IReadOnlyDictionary<string, byte[]> dependencies, Func<WorkflowDefinition, T> inspect) =>
-        InspectDefinition(new ScratchContext(dependencies), assemblyBytes, pdbBytes, inspect);
+    internal static T WithDefinition<T>(byte[] assemblyBytes, byte[] pdbBytes, IReadOnlyDictionary<string, byte[]> dependencies, Func<WorkflowDefinition, T> inspect, Action<AssemblyLoadContext>? validate = null) =>
+        InspectDefinition(new ScratchContext(dependencies), assemblyBytes, pdbBytes, inspect, validate);
 
-    private static T InspectDefinition<T>(AssemblyLoadContext context, byte[] assemblyBytes, byte[] pdbBytes, Func<WorkflowDefinition, T> inspect)
+    private static T InspectDefinition<T>(AssemblyLoadContext context, byte[] assemblyBytes, byte[] pdbBytes, Func<WorkflowDefinition, T> inspect, Action<AssemblyLoadContext>? validate = null)
     {
         try
         {
             using var assemblyStream = new MemoryStream(assemblyBytes);
             using var pdbStream = new MemoryStream(pdbBytes);
             var assembly = context.LoadFromStream(assemblyStream, pdbStream);
+            validate?.Invoke(context);
             var method = assembly.GetTypes().Select(type => type.GetMethod("Build", BindingFlags.Public | BindingFlags.Static,
                 Type.EmptyTypes)).Single(method => method?.ReturnType == typeof(WorkflowDefinition))!;
             try { return inspect((WorkflowDefinition)method.Invoke(null, null)!); }

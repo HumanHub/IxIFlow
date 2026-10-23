@@ -32,6 +32,12 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         Expression<Func<WorkflowContext<TWorkflowData>, string?>> expression, bool inherit = false) =>
         _workflowBuilder.DemandFrom(key, expression, inherit);
 
+    public IWorkflowBuilder<TWorkflowData, TScope> Scope<TScope>(
+        Action<IScopeSetupBuilder<TWorkflowData, TScope, TPreviousStepData>>? setup,
+        Action<IWorkflowBuilder<TWorkflowData, TScope>> body,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TScope : class, IScopeActivity => _workflowBuilder.Scope(setup, body, sourcePath, sourceLine);
+
     // ISagaContainerBuilder specific methods
     public ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException>(
         Action<ISagaErrorBuilder<TWorkflowData, EmptyFault, TPreviousStepData>> configure,

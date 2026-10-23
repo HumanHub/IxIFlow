@@ -9,14 +9,14 @@ internal static class ActivityActivation
     private static readonly ConditionalWeakTable<object, object> Used = new();
     private static readonly object Sentinel = new();
 
-    public static IAsyncActivity Create(Type activityType, IServiceProvider services, IActivityRegistry registry)
+    public static object Create(Type activityType, IServiceProvider services, IActivityRegistry registry)
     {
-        IAsyncActivity activity;
+        object activity;
         try
         {
             if (!registry.IsRegistered(activityType))
-                return (IAsyncActivity)ActivatorUtilities.CreateInstance(services, activityType);
-            activity = (IAsyncActivity)services.GetRequiredService(activityType);
+                return ActivatorUtilities.CreateInstance(services, activityType);
+            activity = services.GetRequiredService(activityType);
         }
         catch (Exception error)
         {

@@ -28,7 +28,7 @@ internal sealed class ChildCompleted
             Status = instance.Status,
             DataJson = instance.Status != WorkflowStatus.Completed ? StoredJson.Inline("")
                 : instance.WorkflowDataJson,
-            Error = instance.Status == WorkflowStatus.Failed ? checkpoint.UnhandledError : null
+            Error = instance.Status == WorkflowStatus.Failed ? checkpoint.UnhandledError?.Error : null
         });
         return new ParentNotice(parent, wait, $"child-completed-{instance.InstanceId}", EventType, payload)
         {
@@ -96,6 +96,9 @@ internal static class ChildInputs
 
     internal static void CheckContract(WorkflowDefinition definition, WorkflowStep step, WorkflowContract contract)
     {
+        if (step.InvokedContract == null || !contract.RequiredScopes.OrderBy(item => item.Type, StringComparer.Ordinal)
+            .SequenceEqual(step.InvokedContract.RequiredScopes.OrderBy(item => item.Type, StringComparer.Ordinal)))
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Resolved workflow scope requirements differ from its invocation contract");
         if (step.InvokedContractKind == WorkflowInvocationContractKind.ExactPin)
         {
             if (contract.Hash != step.InvokedContractHash)

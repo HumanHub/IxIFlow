@@ -27,7 +27,7 @@ internal static class OperatorTrace
         checkpoint.CancellationRequested = true;
         checkpoint.Debug = checkpoint.Debug with { Evaluation = null, Stepping = null, Stop = null };
         checkpoint.UnhandledError = null;
-        checkpoint.RuntimeUnhandledError = null;
+
         var completedPause = instance.Status == WorkflowStatus.Paused &&
             checkpoint.Continuations[0].Status == ContinuationStatus.Completed;
         ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);

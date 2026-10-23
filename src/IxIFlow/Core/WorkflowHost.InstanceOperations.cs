@@ -50,7 +50,7 @@ public sealed partial class WorkflowHost
         private readonly CancellationWatch _watch = watch ?? new CancellationWatch(repository, timeProvider);
         private WorkflowExecutor? _executor;
         private WorkflowExecutor Executor => LazyInitializer.EnsureInitialized(ref _executor,
-            () => new WorkflowExecutor(services, new ExecutionHost(this)));
+            () => new WorkflowExecutor(services, new ExecutionHost(this), activityExecutor));
         private readonly RunnableNotifications? _notifications = services.GetService(typeof(RunnableNotifications)) as RunnableNotifications;
 
         private void Released(ExecutionLeaseReleaseResult result) => _notifications?.Publish(result.Notice);

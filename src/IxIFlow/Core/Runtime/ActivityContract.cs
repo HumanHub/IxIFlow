@@ -121,7 +121,7 @@ internal static class ActivityContract
 
     internal static bool IsEmpty(object? value) => value == null || value is string { Length: 0 };
 
-    public static void ValidateRequired(IAsyncActivity activity, ActivityInputSnapshot inputs, IServiceProvider services)
+    public static void ValidateRequired(object activity, ActivityInputSnapshot inputs, IServiceProvider services)
     {
         var properties = activity.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance);
         var marked = properties.Any(IsMarked);
@@ -129,7 +129,7 @@ internal static class ActivityContract
                      property.IsDefined(typeof(RequiredAttribute))))
         {
             // A setter-only input can still be validated from its saved value.
-            var value = property.GetMethod != null ? property.GetValue(activity) :
+            var value = property.GetMethod != null ? ActivityPropertyAccess.GetValue(property, activity) :
                 inputs.Properties.TryGetValue(property.Name, out var saved) ? saved.Read(property, services) : null;
             if (IsEmpty(value))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,

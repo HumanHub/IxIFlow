@@ -15,7 +15,7 @@ public sealed class WorkflowContractCatalogScenarios
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
         var contract = WorkflowContract.OfType(typeof(Data));
-        var row = new WorkflowVersion("ContractCatalog", 1, "structure", ContractJson: contract.ToJson(), ContractHash: contract.Hash);
+        var row = new WorkflowVersion("ContractCatalog", 1, "structure", ContractJson: contract.ToJson(), ContractHash: contract.Hash, Invocations: []);
         await store.RegisterWorkflowVersionAsync(row);
         Assert.Equal(row, await store.GetWorkflowVersionAsync(row.Name, row.Version));
         await store.RegisterWorkflowVersionAsync(row);
@@ -38,7 +38,7 @@ public sealed class WorkflowContractCatalogScenarios
         Assert.Equal(row.ContractJson, saved.ContractJson);
         Assert.Equal(row.ContractHash, saved.ContractHash);
         Assert.Equal(WorkflowVersionState.Deprecated, saved.State);
-        var missing = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.RegisterWorkflowVersionAsync(new("MissingContract", 1, "structure", null!, null!)));
+        var missing = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.RegisterWorkflowVersionAsync(new("MissingContract", 1, "structure", null!, null!, Invocations: [])));
         Assert.Equal(WorkflowErrorKind.InvalidRequest, missing.Kind);
     }
 

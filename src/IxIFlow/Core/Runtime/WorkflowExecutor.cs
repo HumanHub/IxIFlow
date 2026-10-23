@@ -14,6 +14,7 @@ public sealed class WorkflowExecutor
     private readonly TimeProvider _time;
     private readonly ContinuationTransitions _transitions;
     private readonly ActivityAttempts _attempts;
+    private readonly IActivityExecutor _activityExecutor;
     private readonly EventIntake _intake;
     private readonly ILogger _logger;
     private readonly ILogger<SensitiveDiagnostics>? _sensitiveDiagnostics;
@@ -25,13 +26,16 @@ public sealed class WorkflowExecutor
     private readonly IServiceProvider _services;
 
     public WorkflowExecutor(IServiceProvider services, IExecutionHost host)
+        : this(services, host, (IActivityExecutor)services.GetService(typeof(IActivityExecutor))!) { }
+
+    internal WorkflowExecutor(IServiceProvider services, IExecutionHost host, IActivityExecutor activityExecutor)
     {
         _host = host;
         _services = services;
         _inspectionPolicy = (InspectionRedactionPolicy)services.GetService(typeof(InspectionRedactionPolicy))!;
         _definitions = (IWorkflowDefinitionSource)services.GetService(typeof(IWorkflowDefinitionSource))!;
         _executorName = (services.GetService(typeof(HostSettings)) as HostSettings ?? HostSettings.Default).Name;
-        var activityExecutor = (IActivityExecutor)services.GetService(typeof(IActivityExecutor))!;
+        _activityExecutor = activityExecutor;
         var time = (TimeProvider)services.GetService(typeof(TimeProvider))!;
         _time = time;
         _logger = LogScope.Logger(services);
@@ -82,6 +86,8 @@ public sealed class WorkflowExecutor
                 assign.Instance.WorkflowVersion, assign.Instance.BundleDigest, signals.AcquisitionToken);
             using var types = definitionLease.EnterTypes();
             var definition = definitionLease.Definition;
+            if (definition.RequiredScopes.Count != 0)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "A workflow requiring scopes cannot start as an independent instance");
             _ = WorkflowDefinitionValidator.ForExecution(definition);
             if (definition.Name != assign.Instance.WorkflowName || definition.Version != assign.Instance.WorkflowVersion)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
@@ -235,6 +241,12 @@ public sealed class WorkflowExecutor
             return await StopForOperatorAsync(definition, instance, checkpoint, workflowData, host,
                 OperatorStopKind.Verification, scopes.Mismatch(definition, checkpoint.StructureHash));
         checkpoint.Trace.Configure(instance, checkpoint, host.Limits, _time, scopes);
+        foreach (var continuation in checkpoint.Continuations.Where(item => item.AuthorizedDispatch != null))
+        {
+            var next = continuation.Stack.Count == 0 ? null : NextStep(scopes, continuation);
+            if (next == null || !continuation.AuthorizedDispatch!.Matches(continuation, scopes.Id(next)))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Saved dispatch authorization differs from its occurrence");
+        }
         // Everything logged during the run carries its instance (G-03).
         using var logScope = _logger.BeginScope(LogScope.ForInstance(instance));
         using var failureBoundary = new FaultCapture.Boundary(checkpoint);
@@ -246,6 +258,8 @@ public sealed class WorkflowExecutor
         using var clock = RunClock.Use(_time);
         checkpoint.RootData = workflowData;
         var inFlight = new Dictionary<string, RunningActivity>();
+        var scopeRuntime = new ScopeRuntime(_services, _activityExecutor,
+            _transitions, _time, scopes, checkpoint, definition, instance, host, definitionLease);
         // Set when a step hit a resource limit: the run starts nothing new and stops once its
         // running activities are committed (D-28).
         string? limitStop = null;
@@ -326,6 +340,8 @@ public sealed class WorkflowExecutor
                             if (pauseCommand != null)
                                 checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.Paused,
                                     Payload = new DebugCommandTrace(pauseCommand.Actor, pauseCommand.Id, checkpoint.Debug.PauseGeneration) });
+                            foreach (var held in checkpoint.Continuations) { held.AuthorizedDispatch = null; checkpoint.Touch(held); }
+                            await scopeRuntime.FinishPassAsync(abandon: false);
                             await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
                             return new(AssignmentOutcomeKind.Idle);
                         }
@@ -337,13 +353,15 @@ public sealed class WorkflowExecutor
                         {
                             await _attempts.SettleAsync(scopes, checkpoint, completedDuringPause, inFlight, instance, host);
                         }
-                        catch (Exception error)
+                        catch (Exception error) when (!IsSettlementInterruption(error) &&
+                            (completedDuringPause.LifecycleSettlement == null || WorkflowEngineException.IsFromWorkflowCode(error)))
                         {
                             AttachStep(error, instance, scopes.Id(completedDuringPause.Step), completedDuringPause.Continuation.PendingActivity);
                             if (!_transitions.CaptureFailure(scopes, checkpoint, completedDuringPause.Continuation,
                                     error, !completedDuringPause.ActivityReturned)) throw;
                         }
-                        await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+                        if (completedDuringPause.CommitSettlement)
+                            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
                         continue;
                     }
                     if (command?.Kind is DebugCommandKind.Continue or DebugCommandKind.Step && instance.Status == WorkflowStatus.Paused && debuggingEnabled)
@@ -404,7 +422,7 @@ public sealed class WorkflowExecutor
                     scopes);
 
                 var unwinding = checkpoint.Continuations.FirstOrDefault(item =>
-                    item.Status == ContinuationStatus.Cancelling && SteppingPolicy.Allows(checkpoint, item.Id) && !inFlight.ContainsKey(item.Id));
+                    item.Status == ContinuationStatus.Cancelling && item.PendingScopeCloses is not { Count: > 0 } && SteppingPolicy.Allows(checkpoint, item.Id) && !inFlight.ContainsKey(item.Id));
                 if (unwinding != null)
                 {
                     checkpoint.Touch(unwinding);
@@ -512,21 +530,35 @@ public sealed class WorkflowExecutor
                         break;
                     }
                     uncommitted.NoteIf(admission.CrossedBy(checkpoint), instance);
+                    var closing = checkpoint.Continuations.FirstOrDefault(item => !inFlight.ContainsKey(item.Id) && scopeRuntime.CanClose(item));
+                    if (closing != null && scopeRuntime.ActiveCount(inFlight.Values) < host.Limits.MaxActivitiesPerRun)
+                    {
+                        await host.PrepareReadAsync(checkpoint, closing, scopes);
+                        var operation = await scopeRuntime.StartCloseAsync(closing);
+                        if (operation != null) inFlight.Add(closing.Id, operation);
+                        continue;
+                    }
                     // At the activity cap, continuations about to start an activity wait their turn;
                     // the rest keep advancing (B-09).
-                    var activitiesFull = inFlight.Values.Count(item =>
-                        item.Step.StepType == WorkflowStepType.Activity) >= host.Limits.MaxActivitiesPerRun;
+                    var activitiesFull = scopeRuntime.ActiveCount(inFlight.Values) >= host.Limits.MaxActivitiesPerRun;
                     var ready = checkpoint.Continuations.Where(item =>
                         item.Status == ContinuationStatus.Active && SteppingPolicy.Allows(checkpoint, item.Id) &&
-                        !inFlight.ContainsKey(item.Id) &&
+                        item.Stack.Count > 0 && item.PendingScopeCloses is not { Count: > 0 } && !inFlight.ContainsKey(item.Id) &&
                         (item.RetryAfterUtc == null || item.RetryAfterUtc <= checkpoint.Clock.ToStore(Now))).ToList();
+                    foreach (var id in waitingForActivity.Keys.ToArray())
+                        if (checkpoint.ContinuationById(id) is not { Status: not (ContinuationStatus.Completed or ContinuationStatus.Cancelled) })
+                            waitingForActivity.Remove(id);
+                    foreach (var waiting in ready.Where(item => NextStep(scopes, item)?.StepType is WorkflowStepType.Activity or WorkflowStepType.Scope && item.PendingActivity?.Resolution == null &&
+                                 (activitiesFull || !scopeRuntime.Available(item))))
+                        waitingForActivity.TryAdd(waiting.Id, waitOrder++);
+                    ready.RemoveAll(item => NextStep(scopes, item)?.StepType is WorkflowStepType.Activity or WorkflowStepType.Scope && item.PendingActivity?.Resolution == null && !scopeRuntime.Available(item));
                     var runnable = ready.FirstOrDefault(item => item.Id == checkpoint.Debug.Evaluation?.BranchId) ?? (activitiesFull
-                        ? ready.FirstOrDefault(item => NextStep(scopes, item)?.StepType != WorkflowStepType.Activity)
+                        ? ready.FirstOrDefault(item => item.PendingActivity?.Resolution != null || NextStep(scopes, item)?.StepType is not (WorkflowStepType.Activity or WorkflowStepType.Scope))
                         : ready.Where(item => waitingForActivity.ContainsKey(item.Id))
                               .MinBy(item => waitingForActivity[item.Id]) ?? ready.FirstOrDefault());
                     if (activitiesFull)
                         foreach (var waiting in ready.Where(item =>
-                                     NextStep(scopes, item)?.StepType == WorkflowStepType.Activity))
+                                     NextStep(scopes, item)?.StepType is WorkflowStepType.Activity or WorkflowStepType.Scope))
                             waitingForActivity.TryAdd(waiting.Id, waitOrder++);
                     if (runnable != null)
                         waitingForActivity.Remove(runnable.Id);
@@ -539,25 +571,33 @@ public sealed class WorkflowExecutor
                     GraphTransitions.PreparePick(scopes, runnable);
                     var position = runnable.Stack[^1];
                     var next = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
-                    if (next != null && SteppingPolicy.StopAtPick(checkpoint, runnable, scopes.Id(next), Now))
-                        break;
-                    if (position.TryState?.Phase is not (TryPhase.Catch or TryPhase.Finally) &&
-                        (debuggingEnabled || checkpoint.Debug.Evaluation != null) && !checkpoint.CancellationRequested && runnable.PendingActivity == null && next != null &&
-                        await BreakpointDispatch.HitAsync(checkpoint, runnable, definition, scopes.Id(next), Now, _services,
-                            () => ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now)))
-                        break;
-                    SteppingPolicy.Dispatched(checkpoint);
-                    if (next?.StepType is WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation)
+                    if (next != null && runnable.AuthorizedDispatch?.Matches(runnable, scopes.Id(next)) != true)
                     {
-                                var activityCancellation = new CancellationTokenSource();
+                        runnable.AuthorizedDispatch = null;
+                        if (SteppingPolicy.StopAtPick(checkpoint, runnable, scopes.Id(next), Now)) break;
+                        if (position.TryState?.Phase is not (TryPhase.Catch or TryPhase.Finally) &&
+                            (debuggingEnabled || checkpoint.Debug.Evaluation != null) && !checkpoint.CancellationRequested && runnable.PendingActivity == null &&
+                            await BreakpointDispatch.HitAsync(checkpoint, runnable, definition, scopes.Id(next), Now, _services,
+                                () => ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now))) break;
+                        SteppingPolicy.Dispatched(checkpoint);
+                        runnable.AuthorizedDispatch = DispatchAuthorization.For(runnable, scopes.Id(next));
+                    }
+                    if (next?.StepType is WorkflowStepType.Activity or WorkflowStepType.Scope or WorkflowStepType.WorkflowInvocation)
+                    {
+                        var activityCancellation = new CancellationTokenSource();
                         RunningActivity? running;
                         try
                         {
-                            if (next.StepType == WorkflowStepType.Activity)
+                            var prerequisite = next.StepType is WorkflowStepType.Activity or WorkflowStepType.Scope
+                                ? await scopeRuntime.PrerequisiteAsync(runnable, next, activityCancellation) : default;
+                            running = prerequisite.Operation;
+                            if (prerequisite.Required) { }
+                            else if (next.StepType == WorkflowStepType.Activity)
                             {
                                 running = await _attempts.StartActivityAsync(scopes, checkpoint, runnable, next,
                                     definition, instance, host,
-                                    activityCancellation);
+                                    activityCancellation, scopeRuntime.ValuesOf(runnable), onStarted: activity => scopeRuntime.Reserve(activity));
+                                if (running != null) scopeRuntime.Reserve(running);
                             }
                             else
                             {
@@ -565,6 +605,11 @@ public sealed class WorkflowExecutor
                                     definition, instance, host,
                                     activityCancellation);
                             }
+                        }
+                        catch (ScopeThreadLimitExceededException limit)
+                        {
+                            activityCancellation.Dispose(); limitStop = limit.Message;
+                            limitHitWhileCancelling = checkpoint.CancellationRequested; break;
                         }
                         catch (Exception error)
                         {
@@ -578,7 +623,7 @@ public sealed class WorkflowExecutor
                             // until the actual task ends, including when the host's grace period expires.
                             var activityLease = definitionLease.Retain();
                             using (ExecutionContextFlow.SuppressIfNeeded())
-                                _ = running.Task.ContinueWith(_ => activityLease.Dispose(), CancellationToken.None,
+                                _ = (running.ActualTask ?? running.Task).ContinueWith(_ => activityLease.Dispose(), CancellationToken.None,
                                     TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                             inFlight.Add(runnable.Id, running);
                         }
@@ -587,6 +632,7 @@ public sealed class WorkflowExecutor
                     }
                     else
                     {
+                        runnable.AuthorizedDispatch = null;
                         var boundary = EffectBoundary.Of(checkpoint);
                         try
                         {
@@ -621,7 +667,7 @@ public sealed class WorkflowExecutor
                     checkpoint.Continuations[0].Status != ContinuationStatus.Completed)
                     continue;
                 if (checkpoint.Continuations.Any(item =>
-                        item.Status == ContinuationStatus.Cancelling && SteppingPolicy.Allows(checkpoint, item.Id) && !inFlight.ContainsKey(item.Id)) ||
+                        item.Status == ContinuationStatus.Cancelling && item.PendingScopeCloses is not { Count: > 0 } && SteppingPolicy.Allows(checkpoint, item.Id) && !inFlight.ContainsKey(item.Id)) ||
                     checkpoint.Joins.Any(item => item.IsCompleting && SteppingPolicy.AllowsJoin(checkpoint, item) &&
                         ContinuationTransitions.CanFinish(checkpoint, item)))
                     continue;
@@ -674,6 +720,7 @@ public sealed class WorkflowExecutor
                 if (inFlight.Count == 0 && host.CanPark && nextWake is { } parkUntil &&
                     parkUntil - Now > host.Limits.ParkRetriesLongerThan)
                 {
+                    await scopeRuntime.FinishPassAsync(abandon: false);
                     if (await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData,
                             scopes, Now, parkFor: parkUntil - Now))
                         return new(AssignmentOutcomeKind.Parked, $"The workflow instance waits for a retry at {parkUntil:O}; it continues then");
@@ -703,7 +750,8 @@ public sealed class WorkflowExecutor
                 {
                     await _attempts.SettleAsync(scopes, checkpoint, completedActivity, inFlight, instance, host);
                 }
-                catch (Exception error)
+                catch (Exception error) when (!IsSettlementInterruption(error) &&
+                    (completedActivity.LifecycleSettlement == null || WorkflowEngineException.IsFromWorkflowCode(error)))
                 {
                     AttachStep(error, instance, scopes.Id(completedActivity.Step),
                         completedActivity.Continuation.PendingActivity);
@@ -711,15 +759,22 @@ public sealed class WorkflowExecutor
                             error, !completedActivity.ActivityReturned))
                         throw;
                 }
-                await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+                if (completedActivity.CommitSettlement)
+                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
             }
 
             signals.ThrowIfStopped();
-            if (checkpoint.UnhandledError != null && checkpoint.Waits.Count == 0 && checkpoint.Joins.Count == 0)
+            // An ended request can still have a wait until the final commit closes it.
+            // The finished root, rather than that stale wait, decides when failure is terminal.
+            if (checkpoint.UnhandledError != null && ContinuationTransitions.RootFinished(checkpoint) && checkpoint.Joins.Count == 0 &&
+                !checkpoint.Continuations.Any(item => item.PendingScopeCloses is { Count: > 0 }) && inFlight.Count == 0)
                 checkpoint.UnhandledError.Propagate(checkpoint);
 
             if (limitStop != null)
+            {
+                await scopeRuntime.FinishPassAsync(abandon: false);
                 return await StopForLimitAsync(instance, checkpoint, checkpoint.RootData, host, scopes, limitStop);
+            }
 
             // A drained run stops before the instance is idle, with branches still to advance or items still
             // to admit; it keeps its status and continues on recovery from what was committed.
@@ -727,7 +782,8 @@ public sealed class WorkflowExecutor
                 (checkpoint.Continuations.Any(item => item.Status == ContinuationStatus.Active) ||
                  ForEachTransitions.MayAdmit(scopes, checkpoint)))
             {
-                if (uncommitted.IsPending(instance))
+                await scopeRuntime.FinishPassAsync(abandon: false);
+                if (uncommitted.IsPending(instance) || checkpoint.Scopes.Count > 0)
                     await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
                 return new(AssignmentOutcomeKind.Drained,
                     "The host stopped before the instance became idle; it continues when recovered");
@@ -755,12 +811,19 @@ public sealed class WorkflowExecutor
             {
                 instance.Status = WorkflowStatus.Suspended;
             }
+            else if (scopeRuntime.HasQuarantine)
+            {
+                await scopeRuntime.FinishPassAsync(abandon: true);
+                await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+                return new(AssignmentOutcomeKind.Drained, "A quarantined scope resource will be reconstructed on recovery");
+            }
             else
             {
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     "Execution stopped without a runnable continuation or wait");
             }
 
+            await scopeRuntime.FinishPassAsync(abandon: false);
             await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
 
             return new(AssignmentOutcomeKind.Idle, instance.Status switch
@@ -788,12 +851,16 @@ public sealed class WorkflowExecutor
         catch (RunCancelledException)
         {
             foreach (var activity in inFlight.Values)
-                activity.Cancellation.Cancel();
+                ScopeOperation.RequestCancellation(activity.Cancellation);
             try
             {
                 await WaitForActivitiesAsync(inFlight);
                 await SettleCancelledRunAsync(definition, instance, checkpoint, checkpoint.RootData, host, inFlight,
                     uncommitted);
+                signals.ThrowIfOwnershipLost();
+                await scopeRuntime.FinishPassAsync(abandon: false);
+                if (checkpoint.Scopes.Count > 0)
+                    await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
             }
             catch (CheckpointLimitExceededException)
             {
@@ -850,7 +917,7 @@ public sealed class WorkflowExecutor
                 ((WorkflowEngineException)ex).At(instance.InstanceId);
 
             signals.ThrowIfOwnershipLost();
-            checkpoint.UnhandledError ??= SerializedException.Capture(ex, scopes, checkpoint,
+            checkpoint.UnhandledError ??= PendingFailure.Capture(ex, scopes, checkpoint,
                 checkpoint.Continuations.FirstOrDefault(c => c.Stack.Count > 0),
                 newOccurrence: !failureBoundary.IsPropagation(ex));
             instance.Status = IsPolicyTermination(ex) ? WorkflowStatus.Terminated : WorkflowStatus.Failed;
@@ -891,6 +958,10 @@ public sealed class WorkflowExecutor
             return new(AssignmentOutcomeKind.Idle, ex.Message,
                 SerializedException.CatchType(ex).FullName, ex.StackTrace);
         }
+        finally
+        {
+            await scopeRuntime.FinishPassAsync(abandon: true);
+        }
     }
 
     private static bool IsPolicyTermination(Exception error) =>
@@ -924,6 +995,10 @@ public sealed class WorkflowExecutor
         return true;
     }
 
+    private static bool IsSettlementInterruption(Exception error) => error is
+        CheckpointInterruptedException or ExecutionOwnershipLostException or RunCancelledException or
+        ResourceLimitExceededException or CheckpointVerificationException or PayloadHydrationLimitException;
+
     // Records where an engine failure happened. Failures raised by workflow code keep their own message.
     private static void AttachStep(Exception error, WorkflowInstance instance, string stepId,
         ActivityInvocationState? pending)
@@ -951,13 +1026,13 @@ public sealed class WorkflowExecutor
             {
                 await _attempts.SettleAsync(scopes, checkpoint, activity, inFlight, instance, host);
             }
-            catch (Exception error) when (!WorkflowEngineException.IsEngineFailure(error))
+            catch (Exception error) when (!IsSettlementInterruption(error) && !WorkflowEngineException.IsEngineFailure(error) &&
+                (activity.LifecycleSettlement == null || WorkflowEngineException.IsFromWorkflowCode(error)))
             {
                 if (!_transitions.CaptureFailure(scopes, checkpoint, activity.Continuation,
                         error, !activity.ActivityReturned))
                 {
-                    checkpoint.UnhandledError = SerializedException.Capture(error, scopes, checkpoint, activity.Continuation, newOccurrence: false);
-                    checkpoint.RuntimeUnhandledError = error;
+                    checkpoint.UnhandledError = PendingFailure.Capture(error, scopes, checkpoint, activity.Continuation, newOccurrence: false);
                     checkpoint.Touch(activity.Continuation);
                     activity.Continuation.Status = ContinuationStatus.Completed;
                 }
@@ -1015,13 +1090,13 @@ public sealed class WorkflowExecutor
         if (uncommitted.IsPending(instance))
             await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, workflowData, scopes, Now);
         foreach (var activity in cancelled)
-            activity.Cancellation.Cancel();
+            ScopeOperation.RequestCancellation(activity.Cancellation);
     }
 
     private async Task AbandonInFlightAsync(Dictionary<string, RunningActivity> inFlight)
     {
         foreach (var activity in inFlight.Values)
-            activity.Cancellation.Cancel();
+            ScopeOperation.RequestCancellation(activity.Cancellation);
         try
         {
             await WaitForActivitiesAsync(inFlight);

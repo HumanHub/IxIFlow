@@ -3,7 +3,7 @@ namespace IxIFlow.Core.Runtime;
 internal sealed record ActivityPreparation(WorkflowStep Step, WorkflowDefinition Definition, WorkflowInstance Instance,
     object Data, object? Previous, object? Fault, CancellationToken CancellationToken, string InvocationId,
     string AttemptId, int StepNumber, bool ApplyInputs, IReadOnlyCollection<string>? CodeInputs,
-    CompensationInputs? CompensationInputs, IDictionary<string, object>? Metadata, ItemValues Items);
+    CompensationInputs? CompensationInputs, IDictionary<string, object>? Metadata, ItemValues Items, ScopeValues Scopes);
 
 /// <summary>Dispatches an activity through the delegate captured by its builder.</summary>
 internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
@@ -13,10 +13,10 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
         CancellationToken cancellationToken, string invocationId, string attemptId, int stepNumber,
         bool applyInputMappings, IReadOnlyCollection<string>? codeInputs = null,
         CompensationInputs? compensationInputs = null, IDictionary<string, object>? metadata = null,
-        ItemValues? items = null) =>
+        ItemValues? items = null, ScopeValues? scopeValues = null) =>
         step.Runtime.Prepare!(executor, new ActivityPreparation(step, definition, instance, workflowData,
             previous, catchFault, cancellationToken, invocationId, attemptId, stepNumber, applyInputMappings,
-            codeInputs, compensationInputs, metadata, items ?? ItemValues.None));
+            codeInputs, compensationInputs, metadata, items ?? ItemValues.None, scopeValues ?? ScopeValues.None));
 
     public static Func<IActivityExecutor, ActivityPreparation, Task<PreparedActivity>> Bind<TData, TPrevious>() =>
         (executor, values) =>
@@ -25,6 +25,7 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
                 values.Data, values.Previous, values.Fault, values.CancellationToken, values.StepNumber,
                 values.CompensationInputs, values.Metadata);
             request.Items = values.Items;
+            request.Scopes = values.Scopes;
             return executor.PrepareTypedActivityAsync(request, values.ApplyInputs, values.InvocationId,
                 values.AttemptId, values.CodeInputs);
         };

@@ -20,7 +20,7 @@ public sealed class WorkflowContractMessageTests
         Assert.Equal(message.StructureHash, restored.StructureHash);
         Assert.Equal(message.AssignmentId, restored.AssignmentId);
         Assert.Equal(contract.Hash, restored.ContractHash);
-        Assert.Equal(13, ExecutionContract.Version);
+        Assert.Equal(14, ExecutionContract.Version);
     }
 
     public sealed class Data { public int Value { get; set; } }

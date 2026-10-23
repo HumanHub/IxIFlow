@@ -106,6 +106,7 @@ internal sealed class StoredCheckpoint
                     : Store(Serialize(new BranchPart
                 {
                     Continuation = branch,
+                    Scopes = checkpoint.Scopes.Where(entry => entry.ContinuationId == branch.Id).ToList() is { Count: > 0 } ownScopes ? ownScopes : null,
                     Joins = joins[branch.Id].ToList() is { Count: > 0 } ownJoins ? ownJoins : null,
                     Waits = waits[branch.Id].ToList() is { Count: > 0 } ownWaits ? ownWaits : null,
                     BoundReplies = replies[branch.Id].ToList() is { Count: > 0 } ownReplies ? ownReplies : null
@@ -216,6 +217,7 @@ internal sealed class StoredCheckpoint
                 branch.Continuation.RetryAfterUtc = retry.RetryAfterUtc;
             checkpoint.Continuations.Add(branch.Continuation);
             checkpoint.Joins.AddRange(branch.Joins ?? []);
+            checkpoint.Scopes.AddRange(branch.Scopes ?? []);
             checkpoint.Waits.AddRange(branch.Waits ?? []);
             checkpoint.BoundReplies.AddRange(branch.BoundReplies ?? []);
         }
@@ -312,6 +314,11 @@ internal sealed class StoredCheckpoint
                         property.Get = value => ((ExecutionCheckpoint)value).Continuations
                             .Where(item => item.ParentJoinId == null).ToList();
                         break;
+                    case nameof(ExecutionCheckpoint.Scopes):
+                        property.ShouldSerialize = (_, value) => value is List<ScopeFrameState> { Count: > 0 };
+                        property.Get = value => ((ExecutionCheckpoint)value) is var checkpoint
+                            ? checkpoint.Scopes.Where(NotOf<ScopeFrameState>(checkpoint, entry => entry.ContinuationId)).ToList() : null;
+                        break;
                     case nameof(ExecutionCheckpoint.Joins):
                         property.Get = value => ((ExecutionCheckpoint)value) is var checkpoint
                             ? checkpoint.Joins.Where(NotOf<ParallelJoinState>(checkpoint, join => join.ParentContinuationId)).ToList()
@@ -384,6 +391,8 @@ internal sealed class StoredCheckpoint
     internal sealed class BranchPart
     {
         public ContinuationState Continuation { get; set; } = null!;
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public List<ScopeFrameState>? Scopes { get; set; }
 
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public List<ParallelJoinState>? Joins { get; set; }

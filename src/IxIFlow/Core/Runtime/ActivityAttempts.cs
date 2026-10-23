@@ -29,7 +29,10 @@ internal sealed class ActivityAttempts(
         WorkflowDefinition definition,
         WorkflowInstance instance,
         ExecutionSession host,
-        CancellationTokenSource activityCancellation)
+        CancellationTokenSource activityCancellation, ScopeValues? scopeValues = null,
+        PreparedActivity? capturedPreparation = null, object? capturedRecoveryState = null, bool captureComplete = false,
+        ActivityAttemptState? capturedAttempt = null, KeptActivityInputs? capturedRetry = null,
+        Action<RunningActivity>? onStarted = null)
     {
         checkpoint.Touch(continuation);
         var pending = continuation.PendingActivity;
@@ -42,12 +45,11 @@ internal sealed class ActivityAttempts(
         // The attempt, its activity's own logging included, logs with its step and invocation (G-03).
         using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(step), invocationId));
         // A step retry continues the invocation its failed attempt began, from the inputs that attempt saved (D-14).
-        var retried = pending == null && continuation.RetryInputs?.InvocationId == invocationId
-            ? continuation.RetryInputs
-            : null;
+        var retried = capturedRetry ?? (pending == null && continuation.RetryInputs?.InvocationId == invocationId
+            ? continuation.RetryInputs : null);
         var retryInputs = retried?.Inputs;
         continuation.RetryInputs = null;
-        var attempt = new ActivityAttemptState
+        var attempt = capturedAttempt ?? new ActivityAttemptState
         {
             StartedAtUtc = Now,
             Host = _hostName,
@@ -61,14 +63,14 @@ internal sealed class ActivityAttempts(
         {
             var compensationInputs = SagaScopeTransitions.PrepareCompensationActivity(
                 scopes, continuation, services);
-            prepared = await _activities.PrepareAsync(step, definition, instance, checkpoint.DataOf(continuation),
+            prepared = capturedPreparation ?? await _activities.PrepareAsync(step, definition, instance, checkpoint.DataOf(continuation),
                 continuation.GetPrevious(services),
                 TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes),
                 activityCancellation.Token, invocationId, attempt.Id,
                 continuation.Stack[^1].NextStepIndex, !isRecovery && retryInputs == null,
                 (pending?.Inputs ?? retryInputs)?.CodeInputs,
                 compensationInputs, SagaScopeTransitions.ActivityMetadata(scopes, continuation, step),
-                ForEachTransitions.ItemsOf(scopes, checkpoint, continuation));
+                ForEachTransitions.ItemsOf(scopes, checkpoint, continuation), scopeValues);
             // The activity sees the attempts before this one from the start, its recovery state's capture
             // included (D-37).
             var earlier = pending?.Attempts ?? retried?.Attempts ?? [];
@@ -76,9 +78,38 @@ internal sealed class ActivityAttempts(
                 earlier.Select(item => item.Seen(services)).ToList()));
             if (pending == null)
             {
-                retryInputs?.Restore(prepared.Activity, services);
-                recoveryState = (prepared.Activity as IRecoverableActivity)?
-                    .CaptureRecoveryStateObject(prepared.Context);
+                if (!captureComplete) retryInputs?.Restore(prepared.Activity, services);
+                if (!captureComplete && prepared.Activity is IRecoverableActivity recoverable)
+                {
+                    if (scopeValues?.HasScopes != true)
+                    {
+                        activityCancellation.Token.ThrowIfCancellationRequested();
+                        capturedRecoveryState = recoverable.CaptureRecoveryStateObject(prepared.Context);
+                    }
+                    else
+                    {
+                        var capture = ObserveDispatchAsync(scopeValues.RunAsync(_ =>
+                        {
+                            try { return Task.FromResult(ActivityRunResult.Returned(recoverable.CaptureRecoveryStateObject(prepared.Context))); }
+                            catch (Exception error) { return Task.FromResult(ActivityRunResult.Threw(error)); }
+                        }, activityCancellation.Token), activityCancellation.Token);
+                        return new RunningActivity(continuation, step, capture, activityCancellation, prepared, continuation.Stack[^1].NextStepIndex)
+                        {
+                            CommitSettlement = false,
+                            PreparationSettlement = async () =>
+                            {
+                                var result = await capture;
+                                if (result.Kind == ActivityRunKind.Skipped || activityCancellation.IsCancellationRequested) return null;
+                                if (result.Error != null) return new RunningActivity(continuation, step, Task.FromResult(result), activityCancellation, prepared, continuation.Stack[^1].NextStepIndex);
+                                var running = await StartActivityAsync(scopes, checkpoint, continuation, step, definition, instance, host,
+                                    activityCancellation, scopeValues, prepared, result.Output, true, attempt, retried, onStarted);
+                                if (running != null) onStarted?.Invoke(running);
+                                return running;
+                            }
+                        };
+                    }
+                }
+                recoveryState = capturedRecoveryState;
                 if (prepared.Activity is IRecoverableActivity && recoveryState == null)
                     throw new InvalidOperationException(
                         $"Activity '{prepared.Activity.GetType().Name}' returned a null recovery state");
@@ -102,8 +133,11 @@ internal sealed class ActivityAttempts(
                 if (pending.Resolution?.Kind == ActivityResolutionKind.Completed)
                 {
                     foreach (var (name, value) in pending.Resolution.OutputProperties)
-                        prepared.Activity.GetType().GetProperty(name)!
-                            .SetValue(prepared.Activity, value?.Read(services));
+                    {
+                        var property = prepared.Activity.GetType().GetProperty(name)!;
+                        var restored = value?.Read(services);
+                        ActivityPropertyAccess.SetValue(property, prepared.Activity, restored);
+                    }
                 }
             }
             if (step.RequestName != null)
@@ -139,6 +173,7 @@ internal sealed class ActivityAttempts(
             return null;
         }
 
+        if (continuation.AuthorizedDispatch is { } authorized) authorized.InvocationId = pending!.Id;
         pending!.ResolutionReason = null;
         pending.ResolutionDiagnostic = null;
         pending.Attempts.Add(attempt);
@@ -165,6 +200,8 @@ internal sealed class ActivityAttempts(
                 startTrace.Metadata!["DecisionNote"] = InspectionRedactionPolicy.Default.Note(pending.Resolution.Note, services);
             checkpoint.Trace.Add(startTrace);
         }
+        // The saved Start owns dispatch from here; keep no duplicate authorization envelope.
+        continuation.AuthorizedDispatch = null;
         // Claiming the attempt is not progress: an activity that kills its owner keeps counting.
         await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now,
             clearsCrashCount: false);
@@ -180,11 +217,22 @@ internal sealed class ActivityAttempts(
         span?.SetTag(Telemetry.InvocationId, invocationId);
         span?.SetTag(Telemetry.AttemptId, attempt.Id);
         span?.SetTag(Telemetry.AttemptNumber, pending.Attempts.Count);
-        var task = Telemetry.AttemptEndedAsync(ObserveActivityAsync(prepared, isRecovery, recoveryState,
-            pending.Resolution, skipCancelledRecovery, pending.Inputs, checkpoint, activityCancellation.Token), span, instance, activityType,
+        var task = Telemetry.AttemptEndedAsync(ObserveDispatchAsync((scopeValues ?? ScopeValues.None).RunAsync(token => ObserveActivityAsync(prepared, isRecovery, recoveryState,
+            pending.Resolution, skipCancelledRecovery, pending.Inputs, checkpoint, token), activityCancellation.Token), activityCancellation.Token), span, instance, activityType,
             System.Diagnostics.Stopwatch.GetTimestamp());
         return new RunningActivity(continuation, step, task, activityCancellation,
             prepared, continuation.Stack[^1].NextStepIndex);
+    }
+
+    private static async Task<ActivityRunResult> ObserveDispatchAsync(Task<ActivityRunResult> dispatch, CancellationToken cancellation)
+    {
+        try { return await dispatch; }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // Cancellation rejected the queued operation before author entry. Settle
+            // its saved claim as NotRun instead of treating it as an unknown outcome.
+            return ActivityRunResult.Skipped();
+        }
     }
 
     private static async Task<ActivityRunResult> ObserveActivityAsync(
@@ -239,7 +287,7 @@ internal sealed class ActivityAttempts(
         try
         {
             ActivityContract.ValidateRequired(prepared.Activity, inputs, prepared.Context.Services);
-            await prepared.Activity.ExecuteAsync(prepared.Context, cancellationToken);
+            await prepared.AsyncActivity.ExecuteAsync(prepared.Context, cancellationToken);
             return ActivityRunResult.Returned(prepared.Activity);
         }
         catch (Exception error)
@@ -415,6 +463,8 @@ internal sealed class ActivityAttempts(
         var childContract = WorkflowDefinitionValidator.GetContract(childDefinition);
         if (childDefinition.WorkflowDataType != null)
             ChildInputs.CheckContract(childDefinition, step, childContract);
+        if (childContract.RequiredScopes.Count != 0)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "An independent child invocation cannot supply required scopes");
         pending.ChildDataType = WorkflowTypeIdentity.SavedName(childDefinition.WorkflowDataType!);
         pending.ChildBundleDigest = childDefinition.BundleDigest;
         if (record.StructureHash != null && (record.StructureHash != childScopes.StructureHash || record.ContractHash != childContract.Hash))
@@ -517,6 +567,21 @@ internal sealed class ActivityAttempts(
         WorkflowInstance instance,
         ExecutionSession host)
     {
+        if (activity.PreparationSettlement != null)
+        {
+            var running = await activity.PreparationSettlement();
+            inFlight.Remove(activity.Continuation.Id);
+            if (running != null) inFlight.Add(running.Continuation.Id, running);
+            else activity.Cancellation.Dispose();
+            return;
+        }
+        if (activity.LifecycleSettlement != null)
+        {
+            try { await activity.LifecycleSettlement(); }
+            finally { inFlight.Remove(activity.Continuation.Id); activity.Cancellation.Dispose(); }
+            return;
+        }
+        activity.Continuation.AuthorizedDispatch = null;
         using var logScope = _logger.BeginScope(LogScope.ForStep(scopes.Id(activity.Step),
             activity.Continuation.PendingActivity?.Id));
         checkpoint.Touch(activity.Continuation);
@@ -764,7 +829,7 @@ internal sealed record ActivityRunResult(
     public static ActivityRunResult Threw(Exception error) =>
         new(ActivityRunKind.Threw, Error: WorkflowEngineException.FromWorkflowCode(error));
     public static ActivityRunResult Propagated(SerializedException failure, ExecutionCheckpoint checkpoint) =>
-        new(ActivityRunKind.Threw, Error: WorkflowEngineException.FromWorkflowCode(failure.ForPropagation(checkpoint)),
+        new(ActivityRunKind.Threw, Error: failure.ForPropagation(checkpoint),
             FailureOccurrence: FailureOccurrence.Propagated);
     public static ActivityRunResult Unresolved(string reason, Exception? error = null) =>
         new(ActivityRunKind.Unresolved, Reason: reason, Error: error);
@@ -780,4 +845,9 @@ internal sealed record RunningActivity(
     int StepNumber)
 {
     public bool ActivityReturned { get; set; }
+    public Func<Task<RunningActivity?>>? PreparationSettlement { get; init; }
+    public Func<Task>? LifecycleSettlement { get; init; }
+    public Task? ActualTask { get; init; }
+    public bool CommitSettlement { get; init; } = true;
+
 }

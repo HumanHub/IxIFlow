@@ -23,7 +23,7 @@ internal static class YamlTestContracts
 
     public static void AddActivity(WorkflowSourceOptions options, ActivityDescriptor activity)
     {
-        AddType(options, activity.Key, activity.ActivityType);
+        AddType(options, activity.Key, activity.ActivityType ?? throw new InvalidOperationException("A YAML test activity requires a CLR type"));
         options.Activities[activity.Key] = new(activity.Key, activity.Version, activity.PackageId, activity.PackageVersion);
         if (activity.PackageId.Length != 0 && activity.PackageVersion.Length != 0)
             options.ResolvedImports.Add(activity.PackageId + "@" + activity.PackageVersion);

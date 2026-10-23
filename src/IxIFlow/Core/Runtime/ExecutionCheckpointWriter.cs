@@ -24,6 +24,7 @@ internal static class ExecutionCheckpointWriter
         checkpoint.Trace.Configure(instance, checkpoint, host.Limits, null, scopes);
         var lastCommitted = SavedForm.Of(instance);
         checkpoint.CloseEndedRequests();
+        checkpoint.CloseEndedScopes();
         OperatorTrace.ChildCancellations(instance, checkpoint, now);
         StoredCheckpoint stored;
         try
@@ -52,7 +53,7 @@ internal static class ExecutionCheckpointWriter
         {
             return await CommitPreparedAsync(host, instance, checkpoint, stored, now, clearsCrashCount, parkFor);
         }
-        catch (CheckpointLimitExceededException)
+        catch (Exception error) when (error is CheckpointLimitExceededException or CheckpointVerificationException)
         {
             lastCommitted.RestoreTo(instance);
             throw;
@@ -97,7 +98,7 @@ internal static class ExecutionCheckpointWriter
             {
                 reply = await host.CheckpointAsync(commit);
             }
-            catch (CheckpointLimitExceededException)
+            catch (Exception error) when (error is CheckpointLimitExceededException or CheckpointVerificationException)
             {
                 SavedForm.Of(host.SavedInstance ?? instance).RestoreTo(instance);
                 checkpoint.RestoreMarks(stored.Marks);

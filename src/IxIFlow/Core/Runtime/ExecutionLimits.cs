@@ -48,6 +48,9 @@ public sealed record ExecutionLimits
     public TimeSpan ParkRetriesLongerThan { get; init; } = DefaultParkRetriesLongerThan;
 
     /// <summary>Serialize every part at each commit and fail it when one changed without being marked.</summary>
+    public TimeSpan ScopeCloseTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    public TimeSpan ReleaseGrace { get; init; } = TimeSpan.FromSeconds(5);
+
     public bool VerifyCheckpointParts { get; init; }
 }
 

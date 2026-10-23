@@ -66,6 +66,13 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
             await Reader.HydrateAsync(continuation.AcceptedWait);
         }
         await Reader.HydrateAsync(continuation.InheritedItems);
+        foreach (var entry in checkpoint.Scopes.Where(entry => entry.ContinuationId == continuation.Id ||
+                     ScopeRuntime.IdsOf(continuation).Contains(entry.Id) || continuation.PendingScopeCloses?.Contains(entry.Id) == true))
+        {
+            await Reader.HydrateAsync(entry.Inputs);
+            await Reader.HydrateAsync(entry.Activity);
+            await Reader.HydrateAsync(entry.CloseError);
+        }
         // Bound replies and branch fires move by reference. Their eventual readers prepare
         // AcceptedWait or the parent's selected Graph.Fired.Event, without loading losing receipts.
         for (var index = 0; index < continuation.Stack.Count; index++)

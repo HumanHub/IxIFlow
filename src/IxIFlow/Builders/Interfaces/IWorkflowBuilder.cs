@@ -16,6 +16,7 @@ public interface IWorkflowBuilder<TWorkflowData>
     /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
     IWorkflowBuilder<TWorkflowData, object> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
+    IWorkflowBuilder<TWorkflowData> RequiresScope<TValue>() where TValue : class;
     /// <summary>Declares root input properties; no arguments declares no inputs.</summary>
     IWorkflowBuilder<TWorkflowData> Input(params Expression<Func<TWorkflowData, object?>>[] members);
     /// <summary>Declares root output properties; no arguments declares no outputs.</summary>
@@ -122,6 +123,12 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
     /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+    /// <summary>Opens a local resource for the nested body.</summary>
+    IWorkflowBuilder<TWorkflowData, TScope> Scope<TScope>(
+        Action<IScopeSetupBuilder<TWorkflowData, TScope, TPreviousStepData>>? setup,
+        Action<IWorkflowBuilder<TWorkflowData, TScope>> body,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TScope : class, IScopeActivity;
 
     /// <summary>Requires a capability; explicitly inherited constraints also apply to children.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Demand(string key, string? value = null, bool inherit = false);

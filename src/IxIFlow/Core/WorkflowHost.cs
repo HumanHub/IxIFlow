@@ -272,6 +272,13 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         return false;
     }
 
+    internal static void RetainScopeWork(Task task)
+    {
+        if (CurrentRun.Value is not { } context || !context.TryEnter()) return;
+        _ = ReleaseAsync();
+        async Task ReleaseAsync() { try { await task.ConfigureAwait(false); } catch { } finally { await context.ExitAsync(); } }
+    }
+
     // An inline call stops with its caller or with the host, whichever comes first.
     private async Task<T> RunInlineAsync<T>(RunContext current,
         Func<SlotClient, RunControl, CancellationToken, Task<T>> operation,
@@ -332,6 +339,8 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         Func<SlotClient, RunControl, CancellationToken, Task<T>> operation,
         CancellationToken cancellationToken, bool recoveryProbe = false)
     {
+        if (ScopeOperation.Current.Value is { Active: true })
+            throw new InvalidOperationException("Return from the scope callback before re-entering workflow execution");
         // A run's context stays with activities that outlive it; once it is closed their calls queue.
         if (TryRunInline(operation, cancellationToken, out var inline))
             return inline;

@@ -16,6 +16,8 @@ public sealed record WorkflowBundleManifest(
     WorkflowCompilerSettings Compiler, IReadOnlyDictionary<string, string> SharedAssemblies,
     IReadOnlyDictionary<string, ArtifactDigest> Entries)
 {
+    [System.Text.Json.Serialization.JsonRequired]
+    public IReadOnlyList<WorkflowVersionInvocation> Invocations { get; init; } = [];
     public string TargetFramework { get; init; } = "net10.0";
     public IReadOnlyList<WorkflowPackagePin> ActivityPackages { get; init; } = [];
 }
@@ -160,10 +162,13 @@ public static class WorkflowBundleArchive
 
     internal static void CheckManifest(WorkflowBundleManifest manifest)
     {
-        if (manifest.FormatVersion != 2 || string.IsNullOrWhiteSpace(manifest.Name) || manifest.Version < 1 ||
+        if (manifest.FormatVersion != 3 || string.IsNullOrWhiteSpace(manifest.Name) || manifest.Version < 1 ||
             string.IsNullOrWhiteSpace(manifest.StructureHash) || string.IsNullOrWhiteSpace(manifest.DataType) ||
             string.IsNullOrWhiteSpace(manifest.EntryType) || string.IsNullOrWhiteSpace(manifest.EngineVersion) ||
-            manifest.CheckpointContractVersion < 1 || manifest.Compiler == null || manifest.SharedAssemblies == null || manifest.Entries == null || manifest.ActivityPackages == null)
+            manifest.CheckpointContractVersion < 1 || manifest.Compiler == null || manifest.SharedAssemblies == null || manifest.Entries == null || manifest.ActivityPackages == null ||
+            manifest.Invocations == null || manifest.Invocations.Any(invocation => invocation == null ||
+                string.IsNullOrWhiteSpace(invocation.Name) || invocation.Name != invocation.Name.Trim() || invocation.Version < 1 ||
+                string.IsNullOrWhiteSpace(invocation.Step) || string.IsNullOrWhiteSpace(invocation.SourceLocation)))
             throw Mismatch("Invalid bundle manifest metadata");
         try
         {

@@ -7,7 +7,7 @@ namespace IxIFlow.Builders.Interfaces;
 /// Configures activity inputs and outputs for workflow steps without previous step data
 /// </summary>
 public interface IActivitySetupBuilder<TWorkflowData, TActivity>
-    where TActivity : IAsyncActivity
+    where TActivity : class
 {
     /// <summary>
     /// Configures an input property for the activity
@@ -30,7 +30,7 @@ public interface IActivitySetupBuilder<TWorkflowData, TActivity>
 /// Configures activity inputs and outputs for workflow steps with previous step data
 /// </summary>
 public interface IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
-    where TActivity : IAsyncActivity
+    where TActivity : class
     where TPreviousStepData : class
 {
     /// <summary>
@@ -55,7 +55,7 @@ public interface IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepDa
 /// </summary>
 public interface IActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty>
     : IActivitySetupBuilder<TWorkflowData, TActivity>
-    where TActivity : IAsyncActivity
+    where TActivity : class
 {
     /// <summary>
     /// Specifies the source of the input value
@@ -70,7 +70,7 @@ public interface IActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty>
 /// </summary>
 public interface IActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPreviousStepData>
     : IActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
-    where TActivity : IAsyncActivity
+    where TActivity : class
     where TPreviousStepData : class
 {
     /// <summary>
@@ -85,7 +85,7 @@ public interface IActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty,
 /// Builder for configuring activity output properties
 /// </summary>
 public interface IActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty> : IActivitySetupBuilder<TWorkflowData, TActivity>
-    where TActivity : IAsyncActivity
+    where TActivity : class
 {
     /// <summary>
     /// Specifies where to store the output value

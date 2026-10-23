@@ -72,7 +72,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             var references = WorkflowCompilation.CreateReferences(_options.SourceOptions, packages.References);
             var sourceOptions = ResolveTypes(document, _options.SourceOptions, references);
             WorkflowCallees.Bind(callees, sourceOptions, references, packages);
-            ResolvePackageActivities(sourceOptions, references, packages);
+            var activityClaims = ResolvePackageActivities(sourceOptions, references, packages);
             foreach (var import in document.Imports.Catalogs.Concat(document.Imports.Workflows)) sourceOptions.ResolvedImports.Add(import);
             var validation = await new WorkflowDocumentValidator().ValidateAsync(document, new WorkflowSourceContracts(sourceOptions), cancellationToken);
             diagnostics.AddRange(validation.Diagnostics.Select(item =>
@@ -94,23 +94,26 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             var (entries, shared) = BundleAssemblies(compilation.Assembly, references.Paths, packages);
             var implementations = packages.RuntimeAssemblies.ToDictionary();
             foreach (var bytes in entries.Values) implementations.TryAdd(ResolvedWorkflowPackages.AssemblyIdentity(bytes).Name!, bytes);
-            var tested = await WorkflowBuild.RunAsync(compilation, implementations, _options.BuildTimeout, _logger, cancellationToken);
+            var tested = await WorkflowBuild.RunAsync(compilation, implementations, _options.BuildTimeout, _logger, cancellationToken, activityClaims);
             if (tested.Error != null)
             {
                 location = tested.Line > 1 ? FindBuildLocation(document, tested.Line, tested.Column) : document.Workflow.Location;
                 return Failure("PUB004", tested.Error);
             }
+            if (tested.Invocations == null)
+                return Failure("PUB004", "The workflow build did not report its invocation metadata");
             if (tested.Name != draft.Name || tested.Version != draft.Version)
             {
                 location = DocumentModel.GetLocation(document, tested.Name != draft.Name ? "workflow.name" : "workflow.version");
                 return Failure("PUB005", $"Declared identity '{tested.Name}' v{tested.Version} does not match draft '{draft.Name}' v{draft.Version}");
             }
             stage = WorkflowPublishStage.Publish;
-            var manifest = new WorkflowBundleManifest(2, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
+            var manifest = new WorkflowBundleManifest(3, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
                 typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
                 tested.CombinerSignature, tested.ContractJson, WorkflowContract.Parse(tested.ContractJson).Hash, WorkflowCompilation.Settings,
                 shared,
-                new Dictionary<string, ArtifactDigest>()) { TargetFramework = _options.TargetFramework, ActivityPackages = packages.Pins };
+                new Dictionary<string, ArtifactDigest>())
+            { Invocations = tested.Invocations, TargetFramework = _options.TargetFramework, ActivityPackages = packages.Pins };
             entries.Add(WorkflowBundleArchive.AssemblyPath, compilation.Assembly);
             entries.Add(WorkflowBundleArchive.PdbPath, compilation.Pdb);
             entries.Add(WorkflowBundleArchive.YamlPath, Encoding.UTF8.GetBytes(WorkflowYamlSerializer.Write(document)));
@@ -126,7 +129,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             var version = new WorkflowVersion(draft.Name, draft.Version, tested.StructureHash,
                 tested.ContractJson, bundle.Manifest.ContractHash,
                 ArtifactDigest: digest, Dependencies: tested.Dependencies, ArtifactReferences: packages.Pins.Select(package => package.Digest).ToArray(), PublishedDraftRevision: draft.Revision,
-                ManifestJson: JsonSerializer.Serialize(bundle.Manifest));
+                ManifestJson: JsonSerializer.Serialize(bundle.Manifest), Invocations: bundle.Manifest.Invocations);
             return new(await catalog.PublishDefinitionAsync(draftId, version, artifacts), diagnostics);
         }
         catch (WorkflowPublishException error)
@@ -236,8 +239,9 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 yield return property;
     }
 
-    private static void ResolvePackageActivities(WorkflowSourceOptions options, WorkflowCompilation.ReferenceSet references, ResolvedWorkflowPackages packages)
+    private static IReadOnlyList<PackageScopeClaim> ResolvePackageActivities(WorkflowSourceOptions options, WorkflowCompilation.ReferenceSet references, ResolvedWorkflowPackages packages)
     {
+        var claims = new List<PackageScopeClaim>();
         IEnumerable<INamedTypeSymbol> Types(INamespaceOrTypeSymbol scope)
         {
             foreach (var member in scope.GetMembers())
@@ -256,9 +260,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 if (attribute == null) continue;
                 var key = attribute.ConstructorArguments[0].Value as string ?? "";
                 var version = attribute.NamedArguments.FirstOrDefault(pair => pair.Key == "Version").Value.Value as string ?? "1.0";
-                if (type.IsAbstract || type.DeclaredAccessibility != Accessibility.Public ||
-                    !type.AllInterfaces.Any(contract => contract.ToDisplayString() == "IxIFlow.Core.IAsyncActivity"))
-                    throw new InvalidOperationException($"Package activity '{key}' must be a public concrete IAsyncActivity");
+                claims.Add(ScopePackageContracts.Describe(type, owner.Id, owner.Version, key, version));
                 if (!options.Activities.TryAdd(key, new(key, version, owner.Id, owner.Version)))
                     throw new InvalidOperationException($"Duplicate package activity key '{key}'");
                 options.Types[key] = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
@@ -266,6 +268,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                     options.Members.TryAdd(key + "." + char.ToLowerInvariant(property.Name[0]) + property.Name[1..], property.Name);
             }
         }
+        return claims;
     }
 
     internal static INamedTypeSymbol? FindType(IAssemblySymbol assembly, string name)

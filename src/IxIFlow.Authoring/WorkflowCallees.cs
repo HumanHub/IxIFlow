@@ -27,14 +27,27 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
     {
         var result = new Dictionary<(string, int), WorkflowCallee>();
         var requests = new Dictionary<(string, int?), WorkflowCallee>();
-        async Task<WorkflowCallee> Resolve(string name, int? version, DocumentLocation location)
+        void CheckInvocation(WorkflowVersion row, InvokeWorkflowStepDocument? step)
+        {
+            if (step == null || WorkflowContract.Parse(row.ContractJson).RequiredScopes.Count == 0) return;
+            var identity = string.IsNullOrWhiteSpace(step.Id) ? step.Name ?? $"invokeWorkflow at line {step.Location.Line}" : step.Id;
+            throw new WorkflowPublishException(WorkflowErrorKind.InvalidDefinition.ToString(),
+                $"Workflow '{document.Workflow.Name}', step '{identity}' cannot invoke " +
+                $"'{row.Name}' v{row.Version}: an independent child cannot supply required scopes", step.Location);
+        }
+        async Task<WorkflowCallee> Resolve(string name, int? version, DocumentLocation location, InvokeWorkflowStepDocument? invocation = null)
         {
             token.ThrowIfCancellationRequested();
-            if (requests.TryGetValue((name, version), out var existing)) return existing;
+            if (requests.TryGetValue((name, version), out var existing))
+            {
+                CheckInvocation(existing.Version, invocation);
+                return existing;
+            }
             var row = version is { } pin ? await catalog.GetWorkflowVersionAsync(name, pin) :
                 (await catalog.GetWorkflowVersionsAsync(name)).Where(row => row.State == WorkflowVersionState.Published).OrderByDescending(row => row.Version).FirstOrDefault();
             if (row == null || row.State is not (WorkflowVersionState.Published or WorkflowVersionState.Deprecated))
                 throw new WorkflowPublishException("STEP011", $"Workflow '{name}' needs a resolved workflow contract and pinned version; the requested catalog version is unavailable", location);
+            CheckInvocation(row, invocation);
             if (result.TryGetValue((row.Name, row.Version), out existing))
             {
                 requests.Add((name, version), existing);
@@ -83,6 +96,14 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
         }
 
         var imports = new List<string>();
+        // Resolve invocations before unused imports so a known scope requirement is
+        // refused before looking for DTO assemblies or downloading a callee bundle.
+        foreach (var step in WorkflowSourceTranslator.Flatten(document.Definitions.Concat(document.Steps.Values.SelectMany(template => template.Steps))).OfType<InvokeWorkflowStepDocument>())
+        {
+            var callee = await Resolve(step.Workflow.Name, step.Workflow.Version, step.Workflow.Location, step);
+            step.Workflow.Version = callee.Version.Version;
+            imports.Add(callee.Version.Name + "@" + callee.Version.Version);
+        }
         foreach (var import in document.Imports.Workflows)
         {
             var at = import.LastIndexOf('@');
@@ -94,12 +115,6 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
                 version = parsed;
             }
             var callee = await Resolve(at < 0 ? import : import[..at], version, document.Imports.Location);
-            imports.Add(callee.Version.Name + "@" + callee.Version.Version);
-        }
-        foreach (var step in WorkflowSourceTranslator.Flatten(document.Definitions.Concat(document.Steps.Values.SelectMany(template => template.Steps))).OfType<InvokeWorkflowStepDocument>())
-        {
-            var callee = await Resolve(step.Workflow.Name, step.Workflow.Version, step.Workflow.Location);
-            step.Workflow.Version = callee.Version.Version;
             imports.Add(callee.Version.Name + "@" + callee.Version.Version);
         }
         document.Imports.Workflows.Clear();

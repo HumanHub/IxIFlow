@@ -94,6 +94,8 @@ internal static class MappingRules
             $"Child workflow step '{step.Name}' has no invoked contract");
         if (step.InvokedContractHash != contract.Hash)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, $"Child workflow step '{step.Name}' has an invalid invoked contract hash");
+        if (step.StepType == WorkflowStepType.WorkflowInvocation && contract.RequiredScopes.Count != 0)
+            throw WorkflowBuildError.Invalid(step, "Child invocation cannot provide required scopes");
         contract.ValidateType(type);
         foreach (var mapping in step.InputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Input))
         {

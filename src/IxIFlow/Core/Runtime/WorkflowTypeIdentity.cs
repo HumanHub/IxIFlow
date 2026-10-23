@@ -53,6 +53,67 @@ public static class WorkflowTypeIdentity
         }
     }
 
+    internal static string CSharpName(Type type)
+    {
+        if (type.IsArray) return CSharpName(type.GetElementType()!) + "[" + new string(',', type.GetArrayRank() - 1) + "]";
+        var arguments = type.IsGenericType ? type.GetGenericArguments() : [];
+        var chain = new Stack<Type>();
+        for (var current = type; current != null; current = current.DeclaringType) chain.Push(current);
+        var parts = new List<string>();
+        var offset = 0;
+        foreach (var part in chain)
+        {
+            var name = Escape(part.Name.Split('`')[0]);
+            var count = part.IsGenericType ? part.GetGenericArguments().Length - (part.DeclaringType?.GetGenericArguments().Length ?? 0) : 0;
+            if (count > 0) { name += "<" + string.Join(", ", arguments.Skip(offset).Take(count).Select(CSharpName)) + ">"; offset += count; }
+            parts.Add(name);
+        }
+        return "global::" + (string.IsNullOrEmpty(type.Namespace) ? "" : string.Join(".", type.Namespace.Split('.').Select(Escape)) + ".") + string.Join(".", parts);
+    }
+
+    internal static string? CSharpName(string? saved)
+    {
+        if (!IsSavedName(saved)) return null;
+        try
+        {
+            var position = Prefix.Length;
+            var result = Display(saved!, ref position, 0);
+            return position == saved!.Length ? result : null;
+        }
+        catch (Exception error) when (error is FormatException or OverflowException or ArgumentException) { return null; }
+    }
+
+    private static string Display(string saved, ref int position, int depth)
+    {
+        if (depth > 64) throw new FormatException("Invalid type nesting");
+        var kind = saved[position++];
+        if (kind is 'A' or 'V')
+        {
+            var rank = kind == 'A' ? Count(saved, ref position) : 1;
+            return Display(saved, ref position, depth + 1) + "[" + new string(',', rank - 1) + "]";
+        }
+        _ = Part(saved, ref position);
+        var name = Part(saved, ref position);
+        var count = Count(saved, ref position);
+        var arguments = new string[count];
+        for (var index = 0; index < count; index++) arguments[index] = Display(saved, ref position, depth + 1);
+        var offset = 0;
+        var parts = name.Split('+').Select(part =>
+        {
+            var tick = part.IndexOf('`');
+            if (tick < 0) return string.Join(".", part.Split('.').Select(Escape));
+            var arity = int.Parse(part.AsSpan(tick + 1), System.Globalization.CultureInfo.InvariantCulture);
+            var result = string.Join(".", part[..tick].Split('.').Select(Escape)) + "<" + string.Join(", ", arguments.Skip(offset).Take(arity)) + ">";
+            offset += arity;
+            return result;
+        }).ToArray();
+        if (offset != count) throw new FormatException("Invalid generic type arity");
+        return "global::" + string.Join(".", parts);
+    }
+
+    private static string Escape(string name) => Keywords.Contains(name) ? "@" + name : name;
+    private static readonly HashSet<string> Keywords = new(("abstract as base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach goto if implicit in int interface internal is lock long namespace new null object operator out override params private protected public readonly ref return sbyte sealed short sizeof stackalloc static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using virtual void volatile while").Split(' '), StringComparer.Ordinal);
+
     public static string StableName(Type? type)
     {
         if (type == null)

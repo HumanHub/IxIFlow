@@ -20,6 +20,11 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
     /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TScope> Scope<TScope>(
+        Action<IScopeSetupBuilder<TWorkflowData, TScope, TPreviousStepData>>? setup,
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TScope>> body,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TScope : class, IScopeActivity;
 
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Named(string name);
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Delay(TimeSpan duration,

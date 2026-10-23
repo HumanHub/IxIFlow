@@ -250,7 +250,7 @@ public sealed class PublishedInvokeTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var contract = WorkflowContract.OfType(typeof(FirstData));
-        await store.RegisterWorkflowVersionAsync(new("Callee", 1, "hash", contract.ToJson(), contract.Hash, state));
+        await store.RegisterWorkflowVersionAsync(new("Callee", 1, "hash", contract.ToJson(), contract.Hash, State: state, Invocations: []));
         var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller("1")), 0);
         var result = await new WorkflowPublisher(store, store, Options()).PublishAsync(draft.Id);
         Assert.Contains(result.Diagnostics, error => error.Code == "STEP011" && error.Line == 6);
@@ -266,6 +266,7 @@ public sealed class PublishedInvokeTests
         var saved = JsonSerializer.Deserialize<WorkflowVersion>(JsonSerializer.Serialize(caller))!;
         Assert.Equal(WorkflowDependencyKind.Child, Assert.Single(saved.Dependencies!).Kind);
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.RegisterWorkflowVersionAsync(caller with { Dependencies = [] }));
+        Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
         Assert.Contains("immutable", error.Message);
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => store.RegisterWorkflowVersionAsync(child with
         {

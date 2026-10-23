@@ -7,6 +7,8 @@ namespace IxIFlow.Core;
 /// </summary>
 public interface IActivityContext
 {
+    TValue Scope<TValue>() where TValue : class => throw new InvalidOperationException($"No enclosing scope provides {typeof(TValue)}");
+    TValue? ScopeOrDefault<TValue>() where TValue : class => null;
     /// <summary>
     ///     Service provider for dependency injection
     /// </summary>

@@ -6,6 +6,8 @@ namespace IxIFlow.Core;
 /// </summary>
 public sealed class WorkflowEngineException : Exception
 {
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Exception, object> WorkflowFailures = new();
+    private static readonly object WorkflowOrigin = new();
     public WorkflowEngineException(WorkflowErrorKind kind, string message, Exception? innerException = null)
         : base(message, innerException)
     {
@@ -32,7 +34,7 @@ public sealed class WorkflowEngineException : Exception
     /// Set when workflow code threw this exception, for example an activity that called another engine.
     /// It is then that step's failure, not the engine's.
     /// </summary>
-    internal bool RaisedByWorkflowCode { get; set; }
+    internal bool RaisedByWorkflowCode => IsFromWorkflowCode(this);
 
     // Lazy context reads still belong to the engine while authored code is on the stack.
     internal bool RaisedByEngineContext { get; set; }
@@ -48,10 +50,12 @@ public sealed class WorkflowEngineException : Exception
     /// <summary>Marks an exception raised by workflow code as that step's failure.</summary>
     internal static Exception FromWorkflowCode(Exception error)
     {
-        if (error is WorkflowEngineException { RaisedByEngineContext: false } engineError)
-            engineError.RaisedByWorkflowCode = true;
+        if (error is not WorkflowEngineException { RaisedByEngineContext: true })
+            WorkflowFailures.GetValue(error, _ => WorkflowOrigin);
         return error;
     }
+
+    internal static bool IsFromWorkflowCode(Exception error) => WorkflowFailures.TryGetValue(error, out _);
 
     public override string Message
     {

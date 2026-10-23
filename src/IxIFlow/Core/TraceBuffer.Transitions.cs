@@ -133,11 +133,27 @@ internal sealed partial class TraceBuffer
         Inline(TraceEntryType.InlineExited, _scopes!.Step(frame.ScopeId[..^"/inline".Length]), continuation, frame, cause);
     }
 
-    public void DropFrames(ContinuationState continuation, int start, ItemEndCause cause)
+    public void ScopeInterrupted(ScopeFrameState entry)
     {
+        var now = _time.GetUtcNow().UtcDateTime;
+        if (Accepts(TraceEntryType.ScopeClosed, now)) Add(new ExecutionTraceEntry
+        {
+            Timestamp = now, EntryType = TraceEntryType.ScopeClosed, StepId = entry.StepId,
+            ContinuationId = entry.ContinuationId, FrameActivationId = entry.Id,
+            Payload = new ScopeTrace(entry.StepId, WorkflowStepType.Scope, entry.ContinuationId, entry.Id,
+                false, entry.RecordedOpens, entry.CloseReason, ScopeTraceCause.Interrupted) { InvocationId = entry.InvocationId }
+        });
+    }
+
+    public void DropFrames(ContinuationState continuation, int start, ItemEndCause cause, PendingFailure? failure = null)
+    {
+        continuation.AuthorizedDispatch = null;
         for (var index = continuation.Stack.Count - 1; index >= start; index--)
         {
             var frame = continuation.Stack[index];
+            if (frame.Kind == FrameKind.Scope)
+                ScopeRuntime.RecordClose(_checkpoint!, continuation, frame.ActivationId,
+                    cause == ItemEndCause.Cancelled ? ScopeCloseReason.Cancelled : ScopeCloseReason.Failed, failure);
             ItemEnded(continuation, frame, cause);
             InlineLeaving(continuation, frame, cause);
             if (frame.Kind is FrameKind.Node or FrameKind.State && index > 0)

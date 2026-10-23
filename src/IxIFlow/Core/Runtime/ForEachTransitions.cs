@@ -132,6 +132,7 @@ internal static class ForEachTransitions
             Sequence = ++checkpoint.BranchesStarted,
             Data = BranchData.Copy(snapshot, checkpoint.DataOf(parent).GetType()),
             InheritedItems = inherited,
+            InheritedScopes = ScopeRuntime.IdsOf(parent) is { Count: > 0 } inheritedScopes ? inheritedScopes : null,
             Previous = parent.RuntimePrevious != null ? SerializedValue.From(parent.RuntimePrevious) : parent.Previous,
             Stack = [new ScopePosition { ScopeId = scopes.ForEachScope(step), Kind = FrameKind.Item, ForEachIndex = index }]
         };

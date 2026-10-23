@@ -7,19 +7,20 @@ namespace IxIFlow.Authoring;
 
 internal sealed record WorkflowBuildResult(string Name = "", int Version = 0, string StructureHash = "",
     string DataType = "", string EntryType = "", string CombinerSignature = "",
-    WorkflowVersionDependency[]? Dependencies = null, string? Error = null, int Line = 1, int Column = 1, string ContractJson = "");
+    WorkflowVersionDependency[]? Dependencies = null, string? Error = null, int Line = 1, int Column = 1, string ContractJson = "",
+    WorkflowVersionInvocation[]? Invocations = null);
 
 internal static class WorkflowBuild
 {
     public static async Task<WorkflowBuildResult> RunAsync(WorkflowCompilationResult compilation, IReadOnlyDictionary<string, byte[]> dependencies, TimeSpan timeout,
-        ILogger logger, CancellationToken cancellationToken)
+        ILogger logger, CancellationToken cancellationToken, IReadOnlyList<PackageScopeClaim>? activityClaims = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var completion = new TaskCompletionSource<WorkflowBuildResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         // A noncooperative Build must neither occupy the pool nor keep the process alive at shutdown.
         var thread = new Thread(() =>
         {
-            try { completion.TrySetResult(Inspect(compilation, dependencies)); }
+            try { completion.TrySetResult(Inspect(compilation, dependencies, activityClaims)); }
             // Includes failures while extracting/formatting the original build diagnostic.
             catch (Exception) { completion.TrySetResult(new(Error: "Build() failed while inspecting its result")); }
         })
@@ -46,7 +47,7 @@ internal static class WorkflowBuild
         }
     }
 
-    private static WorkflowBuildResult Inspect(WorkflowCompilationResult compilation, IReadOnlyDictionary<string, byte[]> dependencies)
+    private static WorkflowBuildResult Inspect(WorkflowCompilationResult compilation, IReadOnlyDictionary<string, byte[]> dependencies, IReadOnlyList<PackageScopeClaim>? activityClaims)
     {
         try
         {
@@ -62,8 +63,9 @@ internal static class WorkflowBuild
                 return new WorkflowBuildResult(definition.Name, definition.Version, structureHash, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(definition.WorkflowDataType!),
                     metadata.GetString(entry.Namespace) + "." + metadata.GetString(entry.Name),
                     WorkflowDefinitionValidator.GetCombinerSignature(definition), WorkflowDefinitionValidator.GetDependencies(definition).ToArray(),
-                    ContractJson: WorkflowDefinitionValidator.GetContract(definition).ToJson());
-            });
+                    ContractJson: WorkflowDefinitionValidator.GetContract(definition).ToJson(),
+                    Invocations: WorkflowDefinitionValidator.GetInvocations(definition).ToArray());
+            }, context => ScopePackageContracts.ValidateRuntime(context, activityClaims ?? []));
         }
         catch (Exception error)
         {

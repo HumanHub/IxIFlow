@@ -20,6 +20,12 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
         new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs).Rethrow(sourcePath, sourceLine);
 
     private readonly List<WorkflowStep> _steps = new();
+    public IWorkflowBuilder<TWorkflowData> RequiresScope<TValue>() where TValue : class
+    {
+        ScopeDeclarations.For(_steps).Add(typeof(TValue));
+        return this;
+    }
+
     private List<string>? declaredInputs;
     private List<string>? declaredOutputs;
 
@@ -158,7 +164,8 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
             Demands = _demands.ToList(),
             DeclaredInputs = declaredInputs?.ToArray(),
             DeclaredOutputs = declaredOutputs?.ToArray(),
-            Steps = _steps
+            Steps = _steps,
+            RequiredScopes = ScopeDeclarations.For(_steps).Distinct().ToArray()
         };
         WorkflowDefinitionValidator.Apply(definition);
         return definition;
@@ -251,6 +258,20 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     {
         _steps.Add(Core.Runtime.ThrowConstruction.Leaf<TWorkflowData, TPreviousStepData>(WorkflowStepType.Rethrow, sourcePath, sourceLine));
         return this;
+    }
+
+    public IWorkflowBuilder<TWorkflowData, TScope> Scope<TScope>(
+        Action<IScopeSetupBuilder<TWorkflowData, TScope, TPreviousStepData>>? setup,
+        Action<IWorkflowBuilder<TWorkflowData, TScope>> body,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TScope : class, IScopeActivity
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        var step = ScopeConstruction.Create<TWorkflowData, TPreviousStepData, TScope>(_steps.Count, sourcePath, sourceLine);
+        setup?.Invoke(new ScopeSetupBuilder<TWorkflowData, TScope, TPreviousStepData>(step));
+        body(new WorkflowBuilder<TWorkflowData, TScope>(step.ScopeBodySteps, string.Empty));
+        _steps.Add(step);
+        return new WorkflowBuilder<TWorkflowData, TScope>(_steps, name, workflowVersion, _demands, declaredInputs, declaredOutputs);
     }
 
     protected readonly List<WorkflowStep> _steps = steps;
@@ -1027,7 +1048,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             Demands = _demands.ToList(),
             DeclaredInputs = declaredInputs?.ToArray(),
             DeclaredOutputs = declaredOutputs?.ToArray(),
-            Steps = _steps
+            Steps = _steps,
+            RequiredScopes = ScopeDeclarations.For(_steps).Distinct().ToArray()
         };
         WorkflowDefinitionValidator.Apply(definition);
         return definition;

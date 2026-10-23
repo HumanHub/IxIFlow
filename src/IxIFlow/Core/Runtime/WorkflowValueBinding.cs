@@ -76,7 +76,9 @@ internal static class WorkflowValueBinding
             var assign = mapping.TargetAssignmentFunction
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Activity output '{mapping.TargetProperty}' has no assignment");
-            assign(context, property.GetValue(output));
+            var value = ActivityPropertyAccess.GetValue(property, output);
+            try { assign(context, value); }
+            catch (Exception error) { WorkflowEngineException.FromWorkflowCode(error); throw; }
         }
     }
 

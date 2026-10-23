@@ -56,9 +56,9 @@ public sealed class ThrowVerificationTests
             Assert.Equal(WorkflowExecutionStatus.Faulted,
                 (await client.ResolveAsync(childId, pending.InvocationId, ActivityResolution.Failed(error))).Status);
             var childState = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState((await store.GetWorkflowInstanceAsync(childId))!));
-            Assert.Equal(restorable, childState.UnhandledError!.IsRestorable);
+            Assert.Equal(restorable, childState.UnhandledError!.Error.IsRestorable);
             Assert.Equal(73, System.Text.Json.JsonSerializer.Deserialize<int>(
-                Assert.Single(childState.UnhandledError.Properties).Value.Json!));
+                Assert.Single(childState.UnhandledError.Error.Properties).Value.Json!));
             await Until(() => Task.FromResult(store.FailedReads > 0));
         }
         store.FailRead = _ => false;
@@ -161,7 +161,7 @@ public sealed class ThrowVerificationTests
             failures.Codes.Add(Code);
             var saved = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState((await store.GetWorkflowInstanceAsync(context.WorkflowInstanceId))!));
             failures.Origins.Add(Assert.Single(saved.Continuations.SelectMany(c => c.Stack), f => f.TryState?.Phase == TryPhase.Catch)
-                .TryState!.Error!.OriginalFaultLocation!);
+                .TryState!.Error!.Error.OriginalFaultLocation!);
         }
     }
 }

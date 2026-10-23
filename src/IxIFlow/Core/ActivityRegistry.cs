@@ -14,7 +14,53 @@ namespace IxIFlow.Core;
 /// <summary>The code and declaration contract of a locally registered activity.</summary>
 public sealed record ActivityDescriptor(string Key, string Version, string Name, string Category, string? Icon,
     string? Designer, IReadOnlyList<ContractMember> Inputs, IReadOnlyList<ContractMember> Outputs,
-    string PackageId, string PackageVersion, [property: JsonIgnore] Type ActivityType);
+    string PackageId, string PackageVersion, [property: JsonIgnore] Type? ActivityType)
+{
+    public ActivityScopeDescriptor? Scope { get; init; }
+    public IReadOnlyList<ScopeRequirement> RequiresScopes { get; init; } = [];
+    public static ActivityDescriptor OfType(Type type, string packageId, string packageVersion)
+    {
+        try { return ActivityDescriptorRules.Describe(type, packageId, packageVersion); }
+        catch (WorkflowEngineException error) { throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, $"Activity '{type.FullName}' {error.Message}", error); }
+    }
+    public static IReadOnlyList<ActivityDescriptor> Scan(Assembly assembly, string packageId, string packageVersion) =>
+        assembly.GetTypes().Where(type => type.IsDefined(typeof(WorkflowActivityAttribute))).Select(type => OfType(type, packageId, packageVersion)).OrderBy(item => item.Key, StringComparer.Ordinal).ToArray();
+    public string ToJson()
+    {
+        ActivityDescriptorRules.Validate(this);
+        return WorkflowJson.Serialize(this with { Inputs = Inputs.OrderBy(item => item.Name, StringComparer.Ordinal).ToArray(),
+            Outputs = Outputs.OrderBy(item => item.Name, StringComparer.Ordinal).ToArray(),
+            RequiresScopes = RequiresScopes.OrderBy(item => item.Type, StringComparer.Ordinal).ToArray() });
+    }
+    public static ActivityDescriptor Parse(string json)
+    {
+        using var document = System.Text.Json.JsonDocument.Parse(json);
+        var names = new[] { "Key", "Version", "Name", "Category", "Icon", "Designer", "Inputs", "Outputs", "PackageId", "PackageVersion", "Scope", "RequiresScopes" };
+        if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object ||
+            !document.RootElement.EnumerateObject().Select(item => item.Name).Order(StringComparer.Ordinal).SequenceEqual(names.Order(StringComparer.Ordinal)))
+            throw new System.Text.Json.JsonException("Invalid activity descriptor shape");
+        var root = document.RootElement;
+        foreach (var member in root.GetProperty("Inputs").EnumerateArray().Concat(root.GetProperty("Outputs").EnumerateArray()))
+            Shape(member, ["Name", "Type", "Required", "HasDefault", "DefaultJson", "DisplayName", "Description", "UIHint"]);
+        foreach (var requirement in root.GetProperty("RequiresScopes").EnumerateArray()) Shape(requirement, ["Type", "TypeName"]);
+        if (root.GetProperty("Scope").ValueKind != System.Text.Json.JsonValueKind.Null)
+            Shape(root.GetProperty("Scope"), ["ValueType", "ValueTypeName", "Concurrency", "Threading"]);
+        var descriptor = WorkflowJson.Deserialize<ActivityDescriptor>(json) ?? throw new System.Text.Json.JsonException("Missing descriptor");
+        ActivityDescriptorRules.Validate(descriptor);
+        return descriptor;
+
+        static void Shape(System.Text.Json.JsonElement element, string[] members)
+        {
+            if (element.ValueKind != System.Text.Json.JsonValueKind.Object ||
+                !element.EnumerateObject().Select(item => item.Name).Order(StringComparer.Ordinal).SequenceEqual(members.Order(StringComparer.Ordinal)))
+                throw new System.Text.Json.JsonException("Invalid nested activity descriptor shape");
+        }
+    }
+    [JsonIgnore] public string ContractHash => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+        WorkflowJson.Serialize(new { Key, Version, Inputs = Inputs.OrderBy(item => item.Name, StringComparer.Ordinal).Select(Member), Outputs = Outputs.OrderBy(item => item.Name, StringComparer.Ordinal).Select(Member),
+            Scope = Scope == null ? null : new { Scope.ValueType, Scope.Concurrency, Scope.Threading }, RequiresScopes = RequiresScopes.Select(item => item.Type).Order(StringComparer.Ordinal) }))));
+    private static object Member(ContractMember member) => new { member.Name, member.Type, member.Required, member.HasDefault, member.DefaultJson };
+}
 
 /// <summary>Immutable installed activity metadata. The fingerprint identifies metadata, not executable code.</summary>
 public sealed record InstalledActivityPackage(string Id, string Version, string Fingerprint, string ActivitiesJson)
@@ -44,21 +90,21 @@ internal sealed class ActivityRegistrations(IServiceCollection services)
     internal void Add(IEnumerable<Type> types)
     {
         var pending = types.Where(type => !_activities.ContainsKey(type)).Select(Describe).ToArray();
-        var keys = _activities.Values.ToDictionary(activity => activity.Key, activity => activity.ActivityType, StringComparer.Ordinal);
+        var keys = _activities.Values.ToDictionary(activity => activity.Key, activity => activity.ActivityType!, StringComparer.Ordinal);
         var assemblies = new Dictionary<string, Assembly>(_assemblies, StringComparer.Ordinal);
         foreach (var activity in pending)
         {
-            if (!keys.TryAdd(activity.Key, activity.ActivityType))
-                throw Refused(activity.ActivityType, $"activity key '{activity.Key}' is already registered");
-            if (assemblies.TryGetValue(activity.PackageId, out var assembly) && assembly != activity.ActivityType.Assembly)
-                throw Refused(activity.ActivityType, $"package id '{activity.PackageId}' belongs to another assembly");
-            assemblies[activity.PackageId] = activity.ActivityType.Assembly;
+            if (!keys.TryAdd(activity.Key, activity.ActivityType!))
+                throw Refused(activity.ActivityType!, $"activity key '{activity.Key}' is already registered");
+            if (assemblies.TryGetValue(activity.PackageId, out var assembly) && assembly != activity.ActivityType!.Assembly)
+                throw Refused(activity.ActivityType!, $"package id '{activity.PackageId}' belongs to another assembly");
+            assemblies[activity.PackageId] = activity.ActivityType!.Assembly;
         }
         foreach (var activity in pending)
         {
-            _activities.Add(activity.ActivityType, activity);
-            _assemblies[activity.PackageId] = activity.ActivityType.Assembly;
-            services.TryAddTransient(activity.ActivityType);
+            _activities.Add(activity.ActivityType!, activity);
+            _assemblies[activity.PackageId] = activity.ActivityType!.Assembly;
+            services.TryAddTransient(activity.ActivityType!);
         }
     }
 
@@ -72,20 +118,13 @@ internal sealed class ActivityRegistrations(IServiceCollection services)
     private static ActivityDescriptor Describe(Type type)
     {
         CheckAssembly(type.Assembly);
-        var attribute = type.GetCustomAttribute<WorkflowActivityAttribute>();
-        if (attribute == null || !type.IsVisible || !type.IsClass || type.IsAbstract || type.IsGenericType ||
-            type.ContainsGenericParameters || !typeof(IAsyncActivity).IsAssignableFrom(type) ||
-            string.IsNullOrWhiteSpace(attribute.Key) || string.IsNullOrWhiteSpace(attribute.Version))
-            throw Refused(type, "requires a visible, concrete, non-generic IAsyncActivity with a non-empty [WorkflowActivity] key and version");
-        var contract = ActivityContract.Describe(type);
         var name = type.Assembly.GetName();
         var id = WorkflowPackageRules.NormalizeId(name.Name!);
         var version = type.Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?? name.Version!.ToString();
         try { version = WorkflowPackageRules.NormalizeVersion(version.Split('+', 2)[0]); }
         catch (WorkflowEngineException error) { throw Refused(type, error.Message); }
-        return new(attribute.Key, attribute.Version, attribute.Name ?? type.Name, attribute.Category ?? "Activities",
-            attribute.Icon, attribute.Designer, contract.Inputs, contract.Outputs, id, version, type);
+        return ActivityDescriptor.OfType(type, id, version);
     }
 
     internal IActivityRegistry Build()
@@ -105,7 +144,7 @@ internal sealed class ActivityRegistrations(IServiceCollection services)
 
 internal sealed class ActivityRegistry(IReadOnlyList<ActivityDescriptor> activities) : IActivityRegistry
 {
-    private readonly FrozenSet<Type> _types = activities.Select(activity => activity.ActivityType).ToFrozenSet();
+    private readonly FrozenSet<Type> _types = activities.Select(activity => activity.ActivityType!).ToFrozenSet();
     private readonly FrozenDictionary<string, ActivityDescriptor> _byKey = activities
         .ToFrozenDictionary(activity => activity.Key, StringComparer.Ordinal);
     public IReadOnlyList<ActivityDescriptor> Activities { get; } = Array.AsReadOnly(activities.ToArray());

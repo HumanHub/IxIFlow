@@ -115,13 +115,34 @@ public sealed partial class WorkflowHost
             var catchFaults = new List<InspectionCatchFault>();
             foreach (var branch in checkpoint.Continuations)
                 foreach (var frame in branch.Stack)
-                    if (frame.TryState is { Phase: TryPhase.Catch, Error.Fault: { } fault } caught)
+                    if (frame.TryState is { Phase: TryPhase.Catch, Error.Error.Fault: { } fault } caught)
                     {
                         await reader.HydrateAsync(fault);
                         var owner = scopes.Steps(frame.ScopeId)[frame.NextStepIndex].CatchBlocks[caught.CatchIndex];
                         catchFaults.Add(new(branch.Id, frame.ActivationId, scopes.Id(owner), fault.Type,
-                            InspectionRedactionPolicy.Default.Value(fault.Read(services)!, services), caught.Error.OriginalFaultLocation));
+                            InspectionRedactionPolicy.Default.Value(fault.Read(services)!, services), caught.Error.Error.OriginalFaultLocation));
                     }
+            var scopeViews = new List<InspectionScope>();
+            foreach (var entry in checkpoint.Scopes)
+            {
+                await reader.HydrateAsync(entry.Inputs);
+                await reader.HydrateAsync(entry.Activity);
+                var step = scopes.Step(entry.StepId);
+                var inputValues = new Dictionary<string, JsonElement>();
+                foreach (var (name, input) in entry.Inputs.Properties)
+                    if (input.Value is { } saved)
+                    {
+                        var property = step.ActivityType!.GetProperty(name)!;
+                        var jsonName = System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Text.Json.Serialization.JsonPropertyNameAttribute>(property)?.Name ?? name;
+                        inputValues[jsonName] = System.Text.Json.JsonSerializer.Deserialize<JsonElement>(saved.Json.InlineText);
+                    }
+                var inputs = InspectionRedactionPolicy.Default.StoredValue(System.Text.Json.JsonSerializer.Serialize(inputValues),
+                    WorkflowTypeIdentity.SavedName(step.ActivityType!), services);
+                var outputs = entry.Activity is { } activity ? InspectionRedactionPolicy.Default.StoredValue(activity.Json.InlineText, activity.Type, services)
+                    : System.Text.Json.JsonSerializer.SerializeToElement<object?>(null);
+                scopeViews.Add(new(entry.Id, entry.ContinuationId, entry.StepId, WorkflowTypeIdentity.SavedName(step.ScopeValueType!),
+                    step.ScopeThreading, step.ScopeConcurrency, entry.Phase.ToString(), entry.RecordedOpens, inputs, outputs));
+            }
             var threads = InspectionProjection.Threads(instance, checkpoint, scopes, Now);
             var debug = checkpoint.Debug;
             var liveFrames = checkpoint.Continuations.SelectMany(c => c.Stack).Select(f => f.ActivationId).ToHashSet(StringComparer.Ordinal);
@@ -153,7 +174,7 @@ public sealed partial class WorkflowHost
                 }).Concat(checkpoint.InlineFrames.Where(pair => liveFrames.Contains(pair.Key)).Select(pair => new InspectionData(pair.Value.OwnerContinuationId,
                     InspectionRedactionPolicy.Default.Value(pair.Value.Value, services))
                     { FrameId = pair.Key, DataType = pair.Value.DataType })).ToArray())
-                { Invocations = InvocationRecords.Inspect(checkpoint), CatchFaults = catchFaults };
+                { Invocations = InvocationRecords.Inspect(checkpoint), CatchFaults = catchFaults, Scopes = scopeViews };
             return InspectionPrivacy.Clean(result, WaitIds(instance, checkpoint));
         }
 

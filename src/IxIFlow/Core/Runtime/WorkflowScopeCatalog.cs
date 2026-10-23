@@ -62,6 +62,7 @@ internal sealed class WorkflowScopeCatalog
         ScopeId(graph, "node", key + "/to/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture));
     public string StateScope(WorkflowStep graph, string key) => ScopeId(graph, "state", key);
     public string StateExitScope(WorkflowStep graph, string key) => ScopeId(graph, "state", key + "/exit");
+    public string ScopeBodyScope(WorkflowStep step) => ScopeId(step, "scope");
     public string InlineScope(WorkflowStep step) => ScopeId(step, "inline");
     public string SequenceScope(WorkflowStep step) => ScopeId(step, "sequence");
     public string ThenScope(WorkflowStep step) => ScopeId(step, "then");
@@ -170,7 +171,8 @@ internal sealed class WorkflowScopeCatalog
         // adding an empty branch changes the topology even when it adds no steps.
         var manifest = new
         {
-            Format = 7,
+            Format = 8,
+            RequiredScopes = definition.RequiredScopes.Select(WorkflowTypeIdentity.StableName).Order(StringComparer.Ordinal),
             Data = WorkflowTypeIdentity.StableName(definition.WorkflowDataType),
             DataTypes = _steps.Values.Select(step => step.WorkflowDataType).Prepend(definition.WorkflowDataType)
                 .OfType<Type>().Distinct().OrderBy(WorkflowTypeIdentity.StableName, StringComparer.Ordinal)
@@ -189,6 +191,8 @@ internal sealed class WorkflowScopeCatalog
                     Activity = WorkflowTypeIdentity.StableName(step.ActivityType),
                     Workflow = WorkflowTypeIdentity.StableName(step.WorkflowType),
                     InvokedData = WorkflowTypeIdentity.StableName(step.InvokedDataType),
+                    ScopeValue = step.ScopeValueType == null ? null : WorkflowTypeIdentity.StableName(step.ScopeValueType),
+                    ScopeRetry = RetrySignature(step.ScopeRetryPolicy), step.ScopeThreading, step.ScopeConcurrency,
                     step.WorkflowName, step.WorkflowVersion, step.CancelWithParent, step.InlineStructureHash,
                     Event = WorkflowTypeIdentity.StableName(step.ResumeEventType),
                     WaitKey = step.StepMetadata.GetValueOrDefault("WaitKey") as string,

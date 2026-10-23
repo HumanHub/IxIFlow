@@ -13,6 +13,9 @@ namespace IxIFlow.Core;
 /// <typeparam name="TPreviousStepData">Type of previous step data</typeparam>
 public class TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> : IActivityContext
 {
+    internal Runtime.ScopeValues Scopes { get; set; } = Runtime.ScopeValues.None;
+    public TValue Scope<TValue>() where TValue : class => ScopeOrDefault<TValue>() ?? throw new InvalidOperationException($"No enclosing scope provides {typeof(TValue)}");
+    public TValue? ScopeOrDefault<TValue>() where TValue : class => Scopes.Find<TValue>();
     public IServiceProvider Services { get; }
     public string WorkflowInstanceId { get; }
     public string InvocationId { get; }
@@ -92,6 +95,7 @@ public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
 
     /// <summary>The items of the <c>ForEach</c> bodies the activity runs in.</summary>
     internal ItemValues Items { get; set; } = ItemValues.None;
+    internal Runtime.ScopeValues Scopes { get; set; } = Runtime.ScopeValues.None;
     public object? CompensationPreviousStepData { get; set; }
     public object? CompensationPreviousChainData { get; set; }
 
@@ -109,7 +113,7 @@ public sealed class PreparedActivity
     private readonly Func<Task> _applyOutputs;
     private readonly Action<object?> _setRecoveryState;
 
-    internal PreparedActivity(IAsyncActivity activity, IActivityContext context,
+    internal PreparedActivity(object activity, IActivityContext context,
         Func<Task> applyOutputs, Action<object?> setRecoveryState, Action<ReplyAddress> setReply,
         Action<ActivityAttempt> setAttempt, Runtime.ActivityInputSnapshot inputs)
     {
@@ -125,7 +129,8 @@ public sealed class PreparedActivity
     private readonly Action<ReplyAddress> _setReply;
     private readonly Action<ActivityAttempt> _setAttempt;
 
-    public IAsyncActivity Activity { get; }
+    public object Activity { get; }
+    public IAsyncActivity AsyncActivity => (IAsyncActivity)Activity;
     public IActivityContext Context { get; }
 
     /// <summary>The inputs as saved; the activity holds copies read back from them.</summary>
@@ -199,7 +204,7 @@ public class ActivityExecutor : IActivityExecutor
             request.StepMetadata,
             _logger,
             invocationId,
-            attemptId);
+            attemptId) { Scopes = request.Scopes };
 
         var inputs = new Runtime.ActivityInputSnapshot();
         if (applyInputMappings || codeInputs is { Count: > 0 })
@@ -222,7 +227,7 @@ public class ActivityExecutor : IActivityExecutor
                 var (saved, copy) = Runtime.ActivityInputValue.Of(property,
                     Runtime.ActivityContract.Default(property, activity.GetType()), _serviceProvider);
                 inputs.Properties[property.Name] = saved;
-                property.SetValue(activity, copy);
+                Runtime.ActivityPropertyAccess.SetValue(property, activity, copy);
             }
         }
 
@@ -237,7 +242,7 @@ public class ActivityExecutor : IActivityExecutor
     }
 
     private async Task ApplyTypedInputMappingsAsync<TWorkflowData, TPreviousStepData>(
-        IAsyncActivity activity,
+        object activity,
         Runtime.ActivityInputSnapshot inputs,
         List<PropertyMapping> inputMappings,
         TWorkflowData workflowData,
@@ -294,7 +299,7 @@ public class ActivityExecutor : IActivityExecutor
                     var (saved, convertedValue) = Runtime.ActivityInputValue.Of(targetProperty,
                         ConvertValue(sourceValue, activity.GetType(), targetProperty), _serviceProvider);
                     inputs.Properties[targetProperty.Name] = saved;
-                    targetProperty.SetValue(activity, convertedValue);
+                    Runtime.ActivityPropertyAccess.SetValue(targetProperty, activity, convertedValue);
 
                     _logger.LogTrace("Applied typed input mapping: {Property}", mapping.TargetProperty);
                 }
@@ -314,7 +319,7 @@ public class ActivityExecutor : IActivityExecutor
     }
 
     private async Task ApplyTypedOutputMappingsAsync<TWorkflowData, TPreviousStepData>(
-        IAsyncActivity activity,
+        object activity,
         List<PropertyMapping> outputMappings,
         TWorkflowData workflowData,
         TPreviousStepData? previousStepData,
@@ -332,7 +337,7 @@ public class ActivityExecutor : IActivityExecutor
                 var sourceProperty = activity.GetType().GetProperty(mapping.TargetProperty);
                 if (sourceProperty != null && sourceProperty.CanRead)
                 {
-                    var sourceValue = sourceProperty.GetValue(activity);
+                    var sourceValue = Runtime.ActivityPropertyAccess.GetValue(sourceProperty, activity);
 
                     var evaluationContext = mapping.ContextFactory!(
                         new Runtime.MappingContextValues(workflowData, previousStepData, catchFault));

@@ -76,7 +76,7 @@ internal sealed class EngineSymbols
 
     public bool IsActivity(ITypeSymbol type) =>
         type is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Struct } named &&
-        named.AllInterfaces.Contains(Activity, SymbolEqualityComparer.Default);
+        (named.AllInterfaces.Contains(Activity, SymbolEqualityComparer.Default) || named.AllInterfaces.Any(item => item.ToDisplayString() == "IxIFlow.Core.IScopeActivity"));
 
     /// <summary>True for a <c>Func</c> or an <c>Expression</c> of one: a parameter that takes workflow code.</summary>
     public bool TakesCode(ITypeSymbol type)

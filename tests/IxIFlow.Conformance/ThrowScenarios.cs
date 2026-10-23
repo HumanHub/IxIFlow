@@ -302,7 +302,7 @@ public sealed class ThrowScenarios
             transitions.Advance(scopes, checkpoint, branch, 100, 100);
             var error = Assert.Throws<BusinessError>(() => transitions.Advance(scopes, checkpoint, branch, 100, 100));
             Assert.True(transitions.CaptureFailure(scopes, checkpoint, branch, error));
-            var saved = branch.Stack[^1].TryState!.Error!;
+            var saved = branch.Stack[^1].TryState!.Error!.Error;
             Assert.NotNull(saved.OriginalFaultLocation); Assert.NotNull(saved.Fault);
             if (artifact) saved.Type = "Unavailable.BusinessError, Unavailable.Artifact";
             else saved.Properties.Remove(FaultProjection.PropertyKey(typeof(BusinessError).GetProperty(nameof(BusinessError.Code))!));

@@ -29,9 +29,16 @@ public sealed class WorkflowContract
     public IReadOnlyList<ContractMember> Inputs { get; }
     public IReadOnlyList<ContractMember> Outputs { get; }
     public bool Declared { get; }
+    public IReadOnlyList<ScopeRequirement> RequiredScopes { get; init; } = [];
+
+    internal WorkflowContract WithRequiredScopes(IEnumerable<Type> types) => new(Inputs, Outputs, Declared)
+    {
+        RequiredScopes = types.Distinct().OrderBy(WorkflowTypeIdentity.SavedName, StringComparer.Ordinal)
+            .Select(type => new ScopeRequirement(WorkflowTypeIdentity.SavedName(type), WorkflowTypeIdentity.CSharpName(type))).ToArray()
+    };
 
     /// <summary>Canonical, compact JSON; its UTF-8 bytes define the contract hash.</summary>
-    public string ToJson() => JsonSerializer.Serialize(new { Inputs, Outputs, Declared });
+    public string ToJson() => JsonSerializer.Serialize(new { Inputs, Outputs, Declared, RequiredScopes = RequiredScopes.OrderBy(item => item.Type, StringComparer.Ordinal).ToArray() });
 
     /// <summary>The uppercase SHA-256 digest of the canonical JSON, as used for structure hashes.</summary>
     public string Hash => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ToJson())));
@@ -41,8 +48,8 @@ public sealed class WorkflowContract
     {
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
-        Shape(root, ["Inputs", "Outputs", "Declared"]);
-        return new(Read(root.GetProperty("Inputs")), Read(root.GetProperty("Outputs")), root.GetProperty("Declared").GetBoolean());
+        Shape(root, ["Inputs", "Outputs", "Declared", "RequiredScopes"]);
+        return new(Read(root.GetProperty("Inputs")), Read(root.GetProperty("Outputs")), root.GetProperty("Declared").GetBoolean()) { RequiredScopes = ReadScopes(root.GetProperty("RequiredScopes")) };
 
         static ContractMember[] Read(JsonElement array) => array.EnumerateArray().Select(item =>
         {
@@ -53,6 +60,15 @@ public sealed class WorkflowContract
                 item.GetProperty("Description").GetString(), item.GetProperty("UIHint").GetString());
         }).ToArray();
     }
+
+    private static ScopeRequirement[] ReadScopes(JsonElement array) => array.EnumerateArray().Select(item =>
+    {
+        Shape(item, ["Type", "TypeName"]);
+        var requirement = new ScopeRequirement(item.GetProperty("Type").GetString()!, item.GetProperty("TypeName").GetString()!);
+        if (!WorkflowTypeIdentity.IsSavedName(requirement.Type) || string.IsNullOrWhiteSpace(requirement.TypeName))
+            throw new JsonException("Invalid scope requirement");
+        return requirement;
+    }).ToArray();
 
     private static void Shape(JsonElement element, string[] names)
     {

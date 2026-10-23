@@ -60,6 +60,12 @@ internal sealed class RedactingJson(IServiceProvider services)
             // Never run an opaque converter just to inspect its output.
             if (type == null || type.IsDefined(typeof(JsonConverterAttribute), true))
                 return "\"\"";
+            if (ActivityTypes.IsActivity(type))
+            {
+                using var saved = JsonDocument.Parse(json);
+                return new Projection(services.GetService(typeof(IRedactorProvider)) as IRedactorProvider)
+                    .ProjectSaved(saved.RootElement, type).GetRawText();
+            }
             return Serialize(JsonSerializer.Deserialize(json, type));
         }
         catch
@@ -111,6 +117,47 @@ internal sealed class RedactingJson(IServiceProvider services)
             {
                 _depth--;
             }
+        }
+
+        // Saved activity state is plain public JSON. Project it without constructing DI activities or running converters.
+        public JsonElement ProjectSaved(JsonElement saved, Type type)
+        {
+            try
+            {
+                if (++_depth > 64 || type.IsDefined(typeof(JsonConverterAttribute), true)) return Erased;
+                if (saved.ValueKind == JsonValueKind.Null) return saved.Clone();
+                type = Nullable.GetUnderlyingType(type) ?? type;
+                if (Scalar(type))
+                    return Project(System.Text.Json.JsonSerializer.Deserialize(saved.GetRawText(), type,
+                        new JsonSerializerOptions { NumberHandling = JsonNumberHandling.AllowReadingFromString }));
+                if (saved.ValueKind == JsonValueKind.Array)
+                {
+                    var element = type.IsArray ? type.GetElementType() : type.GetInterfaces().Prepend(type)
+                        .FirstOrDefault(item => item.IsGenericType && item.GetGenericTypeDefinition() == typeof(IEnumerable<>))?.GenericTypeArguments[0];
+                    return element == null ? Erased : JsonSerializer.SerializeToElement(saved.EnumerateArray().Select(item => ProjectSaved(item, element)).ToArray());
+                }
+                if (saved.ValueKind != JsonValueKind.Object || type == typeof(object) || typeof(IDictionary).IsAssignableFrom(type)) return Erased;
+                var properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public).Where(property => property.GetIndexParameters().Length == 0)
+                    .GroupBy(property => property.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name ?? property.Name)
+                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+                var projected = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+                foreach (var field in saved.EnumerateObject())
+                {
+                    if (!properties.TryGetValue(field.Name, out var property) || property.IsDefined(typeof(JsonConverterAttribute)) ||
+                        property.IsDefined(typeof(JsonExtensionDataAttribute))) { projected[field.Name] = Erased; continue; }
+                    if (Classification(property) is { } classified)
+                    {
+                        // A classified opaque shape is erased; scalar redactors receive its original typed value.
+                        var memberType = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+                        projected[field.Name] = Scalar(memberType) ? Redact(System.Text.Json.JsonSerializer.Deserialize(field.Value.GetRawText(), memberType,
+                            new JsonSerializerOptions { NumberHandling = JsonNumberHandling.AllowReadingFromString }), classified) : Erased;
+                    }
+                    else projected[field.Name] = ProjectSaved(field.Value, property.PropertyType);
+                }
+                return JsonSerializer.SerializeToElement(projected);
+            }
+            catch { return Erased; }
+            finally { _depth--; }
         }
 
         // Replace the property contract, including its type: numbers and objects can become JSON strings.

@@ -94,6 +94,7 @@ public partial class InMemoryWorkflowStateRepository
                 var key = (draftId.Name, draftId.Version);
                 // Draft edits use the instance monitor rather than the catalog gate.
                 WorkflowCatalogRules.CheckPublication(draftId, version, _definitions.GetValueOrDefault(key), null);
+                WorkflowCatalogRules.CheckInvocations(version, _versions.Values);
                 foreach (var dependency in version.Dependencies ?? [])
                     WorkflowCatalogRules.CheckStartable(_versions.GetValueOrDefault((dependency.Name, dependency.Version)), dependency.Name, dependency.Version);
                 var copy = CopyVersion(version);
@@ -118,7 +119,8 @@ public partial class InMemoryWorkflowStateRepository
             {
                 if (_versions.TryGetValue((version.Name, version.Version), out var existing))
                     WorkflowCatalogRules.CheckRegistration(existing, version);
-                else
+                WorkflowCatalogRules.CheckInvocations(version, _versions.Values);
+                if (existing == null)
                 {
                     if (version.State is WorkflowVersionState.Published or WorkflowVersionState.Deprecated)
                         foreach (var dependency in version.Dependencies ?? [])

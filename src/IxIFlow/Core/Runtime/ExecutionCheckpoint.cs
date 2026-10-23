@@ -47,6 +47,7 @@ internal sealed class ExecutionCheckpoint
     [JsonRequired]
     public string StructureHash { get; set; } = "";
     public List<ContinuationState> Continuations { get; set; } = [];
+    public List<ScopeFrameState> Scopes { get; set; } = [];
     public List<ParallelJoinState> Joins { get; set; } = [];
     public Dictionary<string, InlineFrameState> InlineFrames { get; set; } = new(StringComparer.Ordinal);
     public List<WaitState> Waits { get; set; } = [];
@@ -101,7 +102,7 @@ internal sealed class ExecutionCheckpoint
     /// <summary>The execution deadline as the store stamped it, or the run's estimate until it reads it.</summary>
     public DateTime? ExecutionDeadlineUtc { get; set; }
     public bool TimedOut { get; set; }
-    public SerializedException? UnhandledError { get; set; }
+    public PendingFailure? UnhandledError { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<InspectionError>? Diagnostics { get; set; }
 
@@ -170,8 +171,6 @@ internal sealed class ExecutionCheckpoint
 
     public DebugCheckpoint Debug { get; set; } = new();
 
-    [JsonIgnore]
-    public Exception? RuntimeUnhandledError { get; set; }
 
     /// <summary>
     /// What the run has done with the inbox and the waits table since its last commit. It is not
@@ -202,6 +201,7 @@ internal sealed class ExecutionCheckpoint
         if (checkpoint.StoredTrunk)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 "The execution state was read without its branches and lists");
+        checkpoint.ValidateScopeState();
         // The saved admission sequence is the join's durable child order, independent of part order.
         var joins = checkpoint.Joins.ToDictionary(join => join.Id, StringComparer.Ordinal);
         foreach (var branch in checkpoint.Continuations.OrderBy(branch => branch.Sequence))
@@ -235,6 +235,48 @@ internal sealed class ExecutionCheckpoint
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Unsupported execution checkpoint version '{version}'; expected {WorkflowDefinitionValidator.CheckpointContractVersion}. " +
                 "Saved instances from earlier builds cannot be read; no migration is available");
+        ValidateFailures(root);
+    }
+
+    private void ValidateScopeState()
+    {
+        if (Scopes == null) throw new JsonException("Missing scope table");
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in Scopes)
+        {
+            if (entry == null || string.IsNullOrWhiteSpace(entry.Id) || !ids.Add(entry.Id) ||
+                string.IsNullOrWhiteSpace(entry.ContinuationId) || string.IsNullOrWhiteSpace(entry.StepId) ||
+                string.IsNullOrWhiteSpace(entry.InvocationId) || entry.Inputs == null || entry.EnclosingScopeIds == null ||
+                entry.EnclosingScopeIds.Contains(entry.Id) || !Enum.IsDefined(entry.Phase) || entry.RecordedOpens < 0 || entry.OpenFailures < 0 ||
+                entry.Phase is ScopePhase.Open or ScopePhase.Closing && entry.Activity == null ||
+                entry.Phase == ScopePhase.Closing && (entry.CloseReason == null || !Enum.IsDefined(entry.CloseReason.Value)))
+                throw new JsonException("Invalid scope frame state");
+        }
+        foreach (var entry in Scopes)
+            if (entry.EnclosingScopeIds.Any(id => !ids.Contains(id))) throw new JsonException("Missing enclosing scope frame");
+        foreach (var continuation in Continuations)
+        {
+            if (continuation.Stack.Any(frame => frame.Kind == FrameKind.Scope && !ids.Contains(frame.ActivationId)) ||
+                continuation.PendingScopeCloses?.Any(id => !ids.Contains(id)) == true ||
+                continuation.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled) && continuation.InheritedScopes?.Any(id => !ids.Contains(id)) == true)
+                throw new JsonException("Missing scope activation");
+        }
+    }
+
+    private static void ValidateFailures(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Array) { foreach (var item in element.EnumerateArray()) ValidateFailures(item); return; }
+        if (element.ValueKind != JsonValueKind.Object) return;
+        if (element.TryGetProperty(nameof(PendingFailure.ScopeBoundary), out var boundary))
+        {
+            if (!element.TryGetProperty(nameof(PendingFailure.Error), out var error) || error.ValueKind != JsonValueKind.Object || !error.TryGetProperty("Type", out _))
+                throw new System.Text.Json.JsonException("Missing pending failure error");
+            if (boundary.ValueKind != JsonValueKind.Null && (boundary.ValueKind != JsonValueKind.Object ||
+                !boundary.TryGetProperty(nameof(ScopeFailureBoundary.OwnerContinuationId), out var owner) || owner.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(owner.GetString()) ||
+                !boundary.TryGetProperty(nameof(ScopeFailureBoundary.BodyActivationId), out var activation) || activation.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(activation.GetString())))
+                throw new System.Text.Json.JsonException("Invalid scope failure boundary");
+        }
+        foreach (var property in element.EnumerateObject()) ValidateFailures(property.Value);
     }
 
     /// <summary>
@@ -351,6 +393,21 @@ internal sealed class ExecutionCheckpoint
             _marked = null;
         else
             _marked?.UnionWith(marks.Ids);
+    }
+
+    public void CloseEndedScopes()
+    {
+        foreach (var entry in Scopes.ToArray())
+        {
+            var owner = ContinuationById(entry.ContinuationId);
+            if (owner?.Stack.Any(frame => frame.ActivationId == entry.Id) == true ||
+                owner?.PendingScopeCloses?.Contains(entry.Id) == true ||
+                entry.Phase is ScopePhase.Preparing or ScopePhase.Opening && owner?.Stack.Count > 0 ||
+                Continuations.Any(branch => branch.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled) && branch.InheritedScopes?.Contains(entry.Id) == true)) continue;
+            Scopes.Remove(entry);
+            TouchOwner(entry.ContinuationId);
+            Trace.ScopeInterrupted(entry);
+        }
     }
 
     /// <summary>A join's branches, in the order they started, found by ID rather than by scanning for each.</summary>
@@ -523,6 +580,8 @@ internal sealed class ContinuationState
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ItemEndCause? ItemUnwindCause { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PendingFailure? UnwindFailure { get; set; }
 
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string? ParentJoinId { get; set; }
@@ -531,7 +590,7 @@ internal sealed class ContinuationState
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ScopePosition? PendingJoinFrame { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public SerializedException? DeferredFailure { get; set; }
+    public PendingFailure? DeferredFailure { get; set; }
 
     /// <summary>For a branch, its place in the order the instance's branches started; the root's is zero.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -556,6 +615,12 @@ internal sealed class ContinuationState
     /// <summary>For a branch, the <c>ForEach</c> items in force where it was forked.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<InheritedItem>? InheritedItems { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? InheritedScopes { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? PendingScopeCloses { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DispatchAuthorization? AuthorizedDispatch { get; set; }
 
     /// <summary>When the continuation's retry is due, on the store's clock as the run last read it.</summary>
     public DateTime? RetryAfterUtc { get; set; }
@@ -689,7 +754,7 @@ internal sealed class ActivityInputSnapshot
     /// Sets the saved inputs on a recovered attempt's activity, as copies read back from what was saved, so it runs on
     /// exactly what its first attempt ran on.
     /// </summary>
-    public void Restore(IAsyncActivity activity, IServiceProvider services)
+    public void Restore(object activity, IServiceProvider services)
     {
         foreach (var (name, saved) in Properties)
         {
@@ -701,7 +766,8 @@ internal sealed class ActivityInputSnapshot
             if (property.GetSetMethod(nonPublic: true) == null)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Saved activity input '{activity.GetType().Name}.{name}' cannot be restored");
-            property.SetValue(activity, saved.Read(property, services));
+            var value = saved.Read(property, services);
+            ActivityPropertyAccess.SetValue(property, activity, value);
         }
     }
 }
@@ -767,7 +833,7 @@ internal sealed class ActivityInputValue
     }
 
     private object? ReadAs(Type type, PropertyInfo input, IServiceProvider services) =>
-        typeof(IAsyncActivity).IsAssignableFrom(type) && !HasConverter(input)
+        ActivityTypes.IsActivity(type) && !HasConverter(input)
             ? SerializedValue.ReadActivity(type, Value!.Json.InlineText, services)
             : JsonSerializer.Deserialize(Value!.Json.InlineText, type, OptionsFor(input));
 
@@ -836,7 +902,7 @@ internal sealed class ActivityInputValue
         problem.GetBaseException().Message, problem);
 }
 
-internal enum FrameKind { Body, Item, Node, Edge, State, StateExit, Transition, Case, Run, Listen, Inline, SwitchCase }
+internal enum FrameKind { Body, Item, Node, Edge, State, StateExit, Transition, Case, Run, Listen, Inline, SwitchCase, Scope }
 
 internal sealed class GraphState
 {
@@ -956,15 +1022,13 @@ internal sealed class TryScopeState
     public int CatchIndex { get; set; } = -1;
     public bool IsCancellationCleanup { get; set; }
     public SerializedValue? EntryPrevious { get; set; }
-    public SerializedException? Error { get; set; }
+    public PendingFailure? Error { get; set; }
 
     [JsonIgnore]
     public object? RuntimeEntryPrevious { get; set; }
 
-    [JsonIgnore]
-    public Exception? RuntimeError { get; set; }
 
-    public Exception? GetError(ExecutionCheckpoint checkpoint) => Error?.ForPropagation(checkpoint) ?? RuntimeError;
+    public Exception? GetError(ExecutionCheckpoint checkpoint) => Error?.ForPropagation(checkpoint);
 
 }
 
@@ -988,7 +1052,7 @@ internal sealed class SagaScopeState
     public int MaximumRetries { get; set; }
     public List<SagaAcceptedWait> AcceptedWaits { get; set; } = [];
     public int AcceptedWaitCursor { get; set; }
-    public SerializedException? Error { get; set; }
+    public PendingFailure? Error { get; set; }
     public List<string> CompensationErrors { get; set; } = [];
     public bool IsCancellationCleanup { get; set; }
     public SerializedValue? PreviousCompensation { get; set; }
@@ -1005,16 +1069,14 @@ internal sealed class SagaScopeState
 
     /// <summary>The failure of a retry handler's own steps, which ends the saga once the kept steps are undone.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public SerializedException? HandlerError { get; set; }
-
-    [JsonIgnore]
-    public Exception? RuntimeError { get; set; }
+    public PendingFailure? HandlerError { get; set; }
 
 
-    public Exception? GetError(ExecutionCheckpoint checkpoint) => Error?.ForPropagation(checkpoint) ?? RuntimeError;
+
+    public Exception? GetError(ExecutionCheckpoint checkpoint) => Error?.ForPropagation(checkpoint);
 
     public Exception? GetTerminalError(ExecutionCheckpoint checkpoint) => ErrorHandlerIndex >= 0 && ErrorAction != null && Error != null
-        ? new SagaFailureException(Error.Type, Error.Message)
+        ? new SagaFailureException(Error.Error.Type, Error.Error.Message)
         : GetError(checkpoint);
 }
 
@@ -1222,7 +1284,7 @@ internal sealed class SerializedValue
         var type = WorkflowTypeIdentity.Resolve(Type)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Saved value type '{Type}' is unavailable");
-        return typeof(IAsyncActivity).IsAssignableFrom(type)
+        return ActivityTypes.IsActivity(type)
             ? ReadActivity(type, Json.InlineText, services)
             : JsonSerializer.Deserialize(Json.InlineText, type);
     }
@@ -1241,7 +1303,8 @@ internal sealed class SerializedValue
             var options = saved.Options.Value
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Converter for saved activity output '{type.Name}.{saved.Property.Name}' is unavailable");
-            saved.Property.SetValue(activity, JsonSerializer.Deserialize(value.Value.GetRawText(), saved.Property.PropertyType, options));
+            var restored = JsonSerializer.Deserialize(value.Value.GetRawText(), saved.Property.PropertyType, options);
+            ActivityPropertyAccess.SetValue(saved.Property, activity, restored);
         }
         return activity;
     }

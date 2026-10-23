@@ -250,6 +250,20 @@ public class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>(
         return new FaultSagaContainerBuilder<TWorkflowData, TFault, TPreviousStepData>(steps, exceptionType);
     }
 
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TScope> Scope<TScope>(
+        Action<IScopeSetupBuilder<TWorkflowData, TScope, TPreviousStepData>>? setup,
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TScope>> body,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        where TScope : class, IScopeActivity
+    {
+        var step = Core.Runtime.ScopeConstruction.Create<TWorkflowData, TPreviousStepData, TScope>(steps.Count, sourcePath, sourceLine);
+        setup?.Invoke(new ScopeSetupBuilder<TWorkflowData, TScope, TPreviousStepData>(step));
+        body(new CatchWorkflowBuilder<TWorkflowData, TFault, TScope>(step.ScopeBodySteps, exceptionType));
+        steps.Add(step);
+        CaptureFaults(step);
+        return new CatchWorkflowBuilder<TWorkflowData, TFault, TScope>(steps, exceptionType);
+    }
+
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TActivity> Step<TActivity>(
         Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity

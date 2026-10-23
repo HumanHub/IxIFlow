@@ -28,12 +28,17 @@ public static class WorkflowDefinitionValidator
         return Validated.TryGetValue(definition, out var validation) && validation.IsValueCreated
             ? validation.Value.Contract
             // Untyped definitions can be registered; existing build and execution rules decide whether they can run.
-            : definition.WorkflowDataType == null ? new WorkflowContract([], [], false)
-            : WorkflowContract.Derive(definition.WorkflowDataType, definition.DeclaredInputs, definition.DeclaredOutputs);
+            : definition.WorkflowDataType == null ? new WorkflowContract([], [], false).WithRequiredScopes(definition.RequiredScopes)
+            : WorkflowContract.Derive(definition.WorkflowDataType, definition.DeclaredInputs, definition.DeclaredOutputs)
+                .WithRequiredScopes(definition.RequiredScopes);
     }
 
     internal static void CheckRootDataType(WorkflowDefinition definition, object workflowData)
     {
+        if (definition.RequiredScopes.Count != 0)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "A workflow with required scopes can only run inline inside a supplying scope");
+        if (ScopeOperation.Current.Value is { Active: true })
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Return from the scope callback before starting dependent workflow execution");
         if (definition.WorkflowDataType is { } dataType && !AcceptsRootData(dataType, workflowData))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 $"Workflow data type '{workflowData.GetType()}' is not an instance of the definition's data type '{dataType}'");
@@ -44,7 +49,7 @@ public static class WorkflowDefinitionValidator
         WorkflowTypeIdentity.SavedName(dataType) == WorkflowTypeIdentity.SavedName(workflowData.GetType());
 
     /// <summary>The persisted execution contract version; other versions require a separate migration.</summary>
-    public const int CheckpointContractVersion = 12;
+    public const int CheckpointContractVersion = 13;
 
     public static IReadOnlyList<WorkflowVersionDependency> GetDependencies(WorkflowDefinition definition)
     {
@@ -53,6 +58,17 @@ public static class WorkflowDefinitionValidator
             .Where(step => step.WorkflowName != null && step.WorkflowVersion != null)
             .Select(step => new WorkflowVersionDependency(step.WorkflowName!, step.WorkflowVersion!.Value, WorkflowDependencyKind.Child))
             .Distinct().OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ToArray();
+    }
+
+    /// <summary>Returns each independent child invocation with its authoring position.</summary>
+    public static IReadOnlyList<WorkflowVersionInvocation> GetInvocations(WorkflowDefinition definition)
+    {
+        Validate(definition);
+        var scopes = ForExecution(definition);
+        return scopes.AllSteps
+            .Where(pair => pair.Value.StepType == WorkflowStepType.WorkflowInvocation)
+            .Select(pair => new WorkflowVersionInvocation(pair.Value.WorkflowName!, pair.Value.WorkflowVersion!.Value,
+                $"{pair.Value.Name} [{scopes.AuthorId(pair.Value)}, {pair.Key}]", pair.Value.SourceLocation ?? pair.Key)).ToArray();
     }
 
     private static readonly ConditionalWeakTable<WorkflowDefinition, Lazy<Validation>> Validated = new();
@@ -106,6 +122,7 @@ public static class WorkflowDefinitionValidator
                 _ = RedactingJson.ClassifiedPaths(type);
             AssignmentRules.Validate(steps);
             ThrowRules.Validate(steps);
+            ScopeRules.Validate(definition);
             SwitchRules.Validate(steps);
             GraphRules.Validate(steps);
             var ids = new HashSet<string>(StringComparer.Ordinal);
@@ -168,7 +185,7 @@ public static class WorkflowDefinitionValidator
         {
             var supported = step.StepType switch
             {
-                WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow or WorkflowStepType.Sequence or
+                WorkflowStepType.Scope or WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow or WorkflowStepType.Sequence or
                     WorkflowStepType.Assign or WorkflowStepType.Conditional or WorkflowStepType.Switch or WorkflowStepType.Throw or WorkflowStepType.Rethrow or WorkflowStepType.Parallel or WorkflowStepType.Loop or
                     WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
                     WorkflowStepType.ForEach or WorkflowStepType.ForEachResult or WorkflowStepType.Flowchart or
@@ -199,7 +216,7 @@ public static class WorkflowDefinitionValidator
                 step.ParallelCompletionCondition == null)
                 throw WorkflowBuildError.Invalid(step,
                     $"Conditional parallel join at '{id}' has no completion condition");
-            if (step.StepType == WorkflowStepType.Activity && step.ActivityType != null)
+            if (step.StepType is WorkflowStepType.Activity or WorkflowStepType.Scope && step.ActivityType != null)
             {
                 var properties = UnrestorableProperties.GetValue(step.ActivityType, static type => type.GetProperties(
                         BindingFlags.Instance | BindingFlags.Public)

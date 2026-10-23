@@ -163,7 +163,7 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
                 InputOwner(builder) is INamedTypeSymbol owner)
                 return Kind(engine, owner, builder) is ActivityKind or WorkflowKind ? (owner, argument) : (null, null);
         var method = invocation.TargetMethod;
-        if (method.Name is "Step" or "CompensateWith" &&
+        if (method.Name is "Step" or "Scope" or "CompensateWith" &&
             !method.Parameters.Any(parameter => parameter.Type is INamedTypeSymbol { Name: "Action" }) &&
             method.TypeArguments.FirstOrDefault(engine.IsActivity) is INamedTypeSymbol activity)
             return (activity, null);

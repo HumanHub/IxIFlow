@@ -86,7 +86,7 @@ public sealed class CatalogArtifactContractTests
         var name = "Catalog-" + Guid.NewGuid().ToString("N");
         var catalog = new WorkflowCatalog(store);
         WorkflowVersion Row(int version = 1, WorkflowVersionState state = WorkflowVersionState.Published) =>
-            new(name, version, "structure", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, state);
+            new(name, version, "structure", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, State: state, Invocations: []);
         switch (scenario)
         {
             case Scenario.States:
@@ -129,7 +129,7 @@ public sealed class CatalogArtifactContractTests
             case Scenario.Callers:
             case Scenario.UnfinishedParents:
                 await store.RegisterWorkflowVersionAsync(Row());
-                var caller = new WorkflowVersion(name + "-caller", 1, "caller", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Dependencies: [new(name, 1)]);
+                var caller = new WorkflowVersion(name + "-caller", 1, "caller", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Dependencies: [new(name, 1)], Invocations: [new(name, 1, "invoke-child", "fixture")]);
                 await store.RegisterWorkflowVersionAsync(caller);
                 await Refused(() => catalog.RetireWorkflowVersionAsync(name, 1), WorkflowErrorKind.InvalidState);
                 await store.SetWorkflowVersionStateAsync(caller.Name, 1, WorkflowVersionState.Deprecated);
@@ -175,7 +175,7 @@ public sealed class CatalogArtifactContractTests
                 }
                 break;
             case Scenario.RecursiveParent:
-                await store.RegisterWorkflowVersionAsync(Row() with { Dependencies = [new(name, 1)] });
+                await store.RegisterWorkflowVersionAsync(Row() with { Dependencies = [new(name, 1)], Invocations = [new(name, 1, "invoke-child", "fixture")] });
                 var recursive = Instance(name);
                 await store.SeedAsync(recursive, wakeAfter: TimeSpan.Zero);
                 await Refused(() => catalog.RetireWorkflowVersionAsync(name, 1), WorkflowErrorKind.InvalidState);
@@ -368,7 +368,7 @@ public sealed class CatalogArtifactContractTests
         var keep = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
         var indirect = await artifacts.PutAsync(ArtifactKind.Template, new MemoryStream([4, 5, 6]));
         var orphan = await artifacts.PutAsync(ArtifactKind.Package, new MemoryStream([7, 8, 9]));
-        await store.RegisterWorkflowVersionAsync(new(name, 1, "artifacts", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: keep, ArtifactReferences: [indirect]), artifacts);
+        await store.RegisterWorkflowVersionAsync(new(name, 1, "artifacts", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: keep, ArtifactReferences: [indirect], Invocations: []), artifacts);
         await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired);
         await age();
         Assert.Equal(1, await store.PurgeArtifactsAsync(artifacts, TimeSpan.FromDays(90), 1));

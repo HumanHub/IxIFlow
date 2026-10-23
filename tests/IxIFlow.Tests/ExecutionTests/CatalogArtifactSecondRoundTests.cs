@@ -43,7 +43,7 @@ public sealed class CatalogArtifactSecondRoundTests
         var name = "Separate-" + Guid.NewGuid().ToString("N");
         var referenced = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream(Guid.NewGuid().ToByteArray()));
         var orphan = await artifacts.PutAsync(ArtifactKind.Template, new MemoryStream(Guid.NewGuid().ToByteArray()));
-        await catalog.RegisterWorkflowVersionAsync(new(name, 1, "separate", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: referenced), artifacts);
+        await catalog.RegisterWorkflowVersionAsync(new(name, 1, "separate", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: referenced, Invocations: []), artifacts);
         await using (var connection = connect())
         {
             await connection.OpenAsync();
@@ -86,10 +86,10 @@ public sealed class CatalogArtifactSecondRoundTests
         var name = "OneConnection-" + Guid.NewGuid().ToString("N");
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(Guid.NewGuid().ToByteArray()));
         IArtifactStore artifacts = decorated ? new InspectingArtifacts(store, name) : store;
-        await store.RegisterWorkflowVersionAsync(new(name, 1, "one", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest), artifacts)
+        await store.RegisterWorkflowVersionAsync(new(name, 1, "one", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest, Invocations: []), artifacts)
             .WaitAsync(TimeSpan.FromSeconds(5));
-        await store.RegisterWorkflowVersionAsync(new(name, 2, "two", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, WorkflowVersionState.Draft,
-            ArtifactReferences: [digest]), artifacts).WaitAsync(TimeSpan.FromSeconds(5));
+        await store.RegisterWorkflowVersionAsync(new(name, 2, "two", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, State: WorkflowVersionState.Draft,
+            ArtifactReferences: [digest], Invocations: []), artifacts).WaitAsync(TimeSpan.FromSeconds(5));
         await store.SetWorkflowVersionStateAsync(name, 2, WorkflowVersionState.Published, artifacts)
             .WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(WorkflowVersionState.Published, (await store.GetWorkflowVersionAsync(name, 2))!.State);

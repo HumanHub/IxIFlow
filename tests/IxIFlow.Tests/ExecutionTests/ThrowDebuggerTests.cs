@@ -59,7 +59,7 @@ public sealed class ThrowDebuggerTests
             Assert.Equal(WorkflowExecutionStatus.Paused, (await ops.StepAsync(id, selected, kind, "step")).Status);
             var after = ExecutionCheckpoint.Read((await store.GetWorkflowInstanceAsync(id))!.ExecutionStateJson);
             Assert.Equal("Blocked", after.Debug.Stop!.Reason);
-            var saved = after.Continuations.Single(c => c.Id == selected).DeferredFailure!;
+            var saved = after.Continuations.Single(c => c.Id == selected).DeferredFailure!.Error;
             Assert.NotNull(saved); Assert.Null(saved.Fault); Assert.NotEmpty(saved.Properties);
             origin = saved.OriginalFaultLocation!;
             Assert.Equal(held, after.Continuations.Where(c => c.Id != selected).Select(c => Json.Serialize(c)).ToArray());

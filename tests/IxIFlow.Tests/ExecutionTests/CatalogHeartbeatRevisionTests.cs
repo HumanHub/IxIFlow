@@ -95,7 +95,7 @@ public sealed class CatalogHeartbeatRevisionTests
         {
             var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", "source"), 0);
             return await store.PublishDefinitionAsync(draft.Id, new(name, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
-                PublishedDraftRevision: draft.Revision, ManifestJson: manifest));
+                PublishedDraftRevision: draft.Revision, ManifestJson: manifest, Invocations: []));
         }
         var initial = await Read();
         reads.Reset();
@@ -233,7 +233,7 @@ public sealed class CatalogHeartbeatRevisionTests
                 var draft = await store.SaveDefinitionAsync(new(prefix, 1, "workflow", "source"), 0);
                 Assert.Equal(beforeDraft, await store.GetCatalogRevisionAsync());
                 var row = new WorkflowVersion(prefix, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
-                    PublishedDraftRevision: draft.Revision, ManifestJson: manifest);
+                    PublishedDraftRevision: draft.Revision, ManifestJson: manifest, Invocations: []);
                 await store.PublishDefinitionAsync(draft.Id, row);
                 var revision = await store.GetCatalogRevisionAsync();
                 await store.PublishDefinitionAsync(draft.Id, row);
@@ -348,8 +348,8 @@ public sealed class CatalogHeartbeatRevisionTests
             }
             case Scenario.DraftPublication:
             {
-                var row = new WorkflowVersion(prefix, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, WorkflowVersionState.Draft,
-                    ArtifactDigest: digest, ManifestJson: manifest);
+                var row = new WorkflowVersion(prefix, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, State: WorkflowVersionState.Draft,
+                    ArtifactDigest: digest, ManifestJson: manifest, Invocations: []);
                 await store.RegisterWorkflowVersionAsync(row);
                 Assert.DoesNotContain(Key(row), (await Refresh()).Keys);
                 reads.AssertSingle(row.Name);
@@ -450,7 +450,7 @@ public sealed class CatalogHeartbeatRevisionTests
             }
             var digest = await inner.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
             var version = new WorkflowVersion("HeartbeatPublished", 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
-                ManifestJson: CompatibleManifest("HeartbeatPublished"));
+                ManifestJson: CompatibleManifest("HeartbeatPublished"), Invocations: []);
             await inner.RegisterWorkflowVersionAsync(version);
             reads.BeforeRevision = null;
             reads.BeforeRevisionTask = null;
@@ -711,7 +711,7 @@ public sealed class CatalogHeartbeatRevisionTests
         using var heartbeat = new WorkflowHeartbeatService(store, observed, settings, TimeProvider.System, logger, new ActivityRegistry([]));
         var digest = await inner.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
         var held = new WorkflowVersion("HeldPublication", 1, "held-hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
-            ManifestJson: CompatibleManifest("HeldPublication"));
+            ManifestJson: CompatibleManifest("HeldPublication"), Invocations: []);
         var before = await inner.GetCatalogRevisionAsync();
         await heartbeat.StartAsync(CancellationToken.None);
         var registered = Assert.Single(await inner.GetLiveMembersAsync());
@@ -802,7 +802,7 @@ public sealed class CatalogHeartbeatRevisionTests
     {
         var shared = new[] { typeof(WorkflowDefinition).Assembly, typeof(object).Assembly, Assembly.Load("System.Runtime") }
             .Select(assembly => assembly.GetName()).ToDictionary(assembly => assembly.FullName, assembly => assembly.Version!.ToString());
-        return System.Text.Json.JsonSerializer.Serialize(new WorkflowBundleManifest(2, name, 1, "hash", "data", "entry",
+        return System.Text.Json.JsonSerializer.Serialize(new WorkflowBundleManifest(3, name, 1, "hash", "data", "entry",
             typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion, "",
             WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash,
             new("test", "latest", "release", true, "portable"), shared, new[] { WorkflowBundleArchive.AssemblyPath, WorkflowBundleArchive.PdbPath,

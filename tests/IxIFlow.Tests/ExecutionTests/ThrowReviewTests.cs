@@ -42,7 +42,7 @@ public sealed class ThrowReviewTests
             childId = await store.WaitingInstanceAsync(child.Name, "rethrow");
             var savedChild = (await store.GetWorkflowInstanceAsync(childId))!;
             var checkpoint = ExecutionCheckpoint.Read(await StoredCheckpoint.WholeStateAsync(savedChild, Reader()));
-            var caught = Assert.Single(checkpoint.Continuations[0].Stack, f => f.TryState?.Phase == TryPhase.Catch).TryState!.Error!;
+            var caught = Assert.Single(checkpoint.Continuations[0].Stack, f => f.TryState?.Phase == TryPhase.Catch).TryState!.Error!.Error;
             faultPayload = Assert.IsType<PayloadReference>(caught.Fault!.Json.Reference);
             childDataPayload = Assert.IsType<PayloadReference>(savedChild.WorkflowDataJson.Reference);
             Assert.Equal(WorkflowExecutionStatus.Paused,
@@ -94,7 +94,7 @@ public sealed class ThrowReviewTests
             .Catch<Exception>(c => c.Step<Echo>(s => s.Input(x => x.Value).From(ctx => 999)
                 .Output(x => x.Value).To(ctx => ctx.WorkflowData.Result))).Build();
         var (instance, checkpoint, _) = CaughtCheckpoint(definition);
-        var saved = checkpoint.Continuations[0].Stack.Single(f => f.TryState?.Phase == TryPhase.Catch).TryState!.Error!;
+        var saved = checkpoint.Continuations[0].Stack.Single(f => f.TryState?.Phase == TryPhase.Catch).TryState!.Error!.Error;
         saved.Fault!.Type = "Unavailable.Dto, Unavailable.Artifact";
         await AssertEngineFailureAfterRestart(definition, instance, checkpoint, WorkflowErrorKind.ArtifactUnavailable);
     }
@@ -112,7 +112,7 @@ public sealed class ThrowReviewTests
         }).Catch<Exception>(c => c.Step<Echo>(s => s.Input(x => x.Value).From(ctx => 999)
             .Output(x => x.Value).To(ctx => ctx.WorkflowData.Result))).Build();
         var (instance, checkpoint, _) = CaughtCheckpoint(definition);
-        var saved = checkpoint.Continuations[0].Stack.Single(f => f.TryState?.Phase == TryPhase.Catch).TryState!.Error!;
+        var saved = checkpoint.Continuations[0].Stack.Single(f => f.TryState?.Phase == TryPhase.Catch).TryState!.Error!.Error;
         Assert.Equal(restorable, saved.IsRestorable);
         saved.Properties.Clear();
         await AssertEngineFailureAfterRestart(definition, instance, checkpoint, WorkflowErrorKind.InvalidState);
@@ -133,7 +133,7 @@ public sealed class ThrowReviewTests
             Assert.Equal(WorkflowExecutionStatus.Suspended, idle.Status);
             Assert.Equal(WorkflowExecutionStatus.Suspended, (await client.ResumeAsync(id, "raise", new Go())).Status);
             var saved = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState((await store.GetWorkflowInstanceAsync(id))!));
-            Assert.False(saved.UnhandledError!.IsRestorable); Assert.NotEmpty(saved.Joins);
+            Assert.False(saved.UnhandledError!.Error.IsRestorable); Assert.NotEmpty(saved.Joins);
         }
         await using var second = Services(store, catalog);
         var result = await second.GetRequiredService<IWorkflowClient>().ResumeAsync(id, "cleanup", new Go());
@@ -159,7 +159,7 @@ public sealed class ThrowReviewTests
             Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
             var repository = services.GetRequiredService<IWorkflowStateRepository>();
             var checkpoint = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState((await repository.GetWorkflowInstanceAsync(result.InstanceId))!));
-            var fault = Assert.Single(checkpoint.Continuations[0].Stack, f => f.SagaState != null).SagaState!.Error!;
+            var fault = Assert.Single(checkpoint.Continuations[0].Stack, f => f.SagaState != null).SagaState!.Error!.Error;
             var attempts = cached.Attempts.Where(a => a.Instance == result.InstanceId).ToArray();
             Assert.Equal(2, attempts.Length);
             Assert.Equal(attempts[1].Attempt, fault.OriginalFaultLocation!.AttemptId);

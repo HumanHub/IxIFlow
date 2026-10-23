@@ -181,6 +181,7 @@ public abstract partial class RelationalWorkflowStateRepository
             var draft = await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition), draftId, transaction);
             WorkflowCatalogRules.CheckPublication(draftId, version, draft?.Value, existing);
             if (existing != null) return existing;
+            WorkflowCatalogRules.CheckInvocations(version, versions);
             await WorkflowCatalogRules.CheckArtifactsAsync(version, artifacts ?? this);
             foreach (var dependency in version.Dependencies ?? [])
                 WorkflowCatalogRules.CheckStartable(versions.SingleOrDefault(row => row.Name == dependency.Name && row.Version == dependency.Version), dependency.Name, dependency.Version);
@@ -204,7 +205,8 @@ public abstract partial class RelationalWorkflowStateRepository
             var versions = await ReadVersionsAsync(connection, transaction);
             var existing = versions.SingleOrDefault(row => row.Name == version.Name && row.Version == version.Version);
             if (existing != null) WorkflowCatalogRules.CheckRegistration(existing, version);
-            else
+            WorkflowCatalogRules.CheckInvocations(version, versions);
+            if (existing == null)
             {
                 if (version.State is WorkflowVersionState.Published or WorkflowVersionState.Deprecated)
                     foreach (var dependency in version.Dependencies ?? [])

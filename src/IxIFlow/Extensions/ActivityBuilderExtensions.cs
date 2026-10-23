@@ -28,7 +28,7 @@ public static class ActivityBuilderExtensions
     }
 
     /// <summary>Registers one attributed activity. Disposable transient instances live until the run scope ends.</summary>
-    public static IIxIFlowBuilder AddActivity<TActivity>(this IIxIFlowBuilder builder) where TActivity : class, IAsyncActivity
+    public static IIxIFlowBuilder AddActivity<TActivity>(this IIxIFlowBuilder builder) where TActivity : class
     {
         Registrations(builder.Services).Add([typeof(TActivity)]);
         return builder;

@@ -9,6 +9,7 @@ public sealed record InstanceInspection(InspectionSummary Summary, long Revision
     IReadOnlyList<InspectionWait> Waits, IReadOnlyList<InspectionData> Data)
 {
     public IReadOnlyList<InspectionCatchFault> CatchFaults { get; init; } = [];
+    public IReadOnlyList<InspectionScope> Scopes { get; init; } = [];
     public IReadOnlyList<InspectionInvocation> Invocations { get; init; } = [];
 }
 
@@ -40,7 +41,8 @@ public sealed record InspectionDebugState(long PauseGeneration, long AppliedOrde
 }
 public sealed record InspectionThread(string ContinuationId, string Name, string? ParentContinuationId,
     string? ParentJoinId, int Sequence, string? ForkActivationId, string StepId, string AuthorStepId,
-    int StepIndex, string Status, string FrameId, IReadOnlyList<InspectionFrame> Frames);
+    int StepIndex, string Status, string FrameId, IReadOnlyList<InspectionFrame> Frames)
+{ public IReadOnlyList<string> ScopesInForce { get; init; } = []; }
 /// <summary>A saved scope position, including graph phase and visit metadata.</summary>
 public sealed record InspectionFrame(string ActivationId, string Name, string Kind, string ScopeId,
     string? ParentActivationId, int NextStepIndex, int LoopIteration, int? ForEachItemIndex)
@@ -73,3 +75,7 @@ public sealed record InspectionData(string ContinuationId, JsonElement Value)
     public string? FrameId { get; init; }
     public string? DataType { get; init; }
 }
+
+public sealed record InspectionScope(string ActivationId, string OwnerContinuationId, string StepId,
+    string ValueType, ScopeThreading Threading, ScopeConcurrency Concurrency, string Phase, int RecordedOpens,
+    JsonElement Inputs, JsonElement Outputs);

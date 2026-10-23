@@ -768,8 +768,11 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
                     WorkflowTypeIdentity.SavedName(definition.WorkflowDataType!) != bundle.Manifest.DataType ||
                     WorkflowDefinitionValidator.GetCombinerSignature(definition) != bundle.Manifest.CombinerSignature)
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Built definition differs from the verified bundle manifest");
-                if (WorkflowDefinitionValidator.GetContract(definition).ToJson() != bundle.Manifest.Contract)
+                var contract = WorkflowDefinitionValidator.GetContract(definition);
+                if (contract.ToJson() != bundle.Manifest.Contract || contract.Hash != bundle.Manifest.ContractHash)
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Built workflow contract differs from the verified bundle manifest");
+                if (!WorkflowCatalogRules.SameInvocations(bundle.Manifest.Invocations, WorkflowDefinitionValidator.GetInvocations(definition)))
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Built invocation inventory differs from the verified bundle manifest");
                 definition.BundleDigest = digest;
                 definition.BundleContext = context;
                 definition.BundleSources = new Dictionary<string, string>(StringComparer.Ordinal)

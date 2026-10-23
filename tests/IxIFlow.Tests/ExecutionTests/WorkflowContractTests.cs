@@ -71,9 +71,9 @@ public sealed class WorkflowContractTests
     public void CanonicalJsonAndHashHaveAGoldenRepresentation()
     {
         var contract = WorkflowContract.OfType(typeof(Golden));
-        const string expected = "{\"Inputs\":[{\"Name\":\"Value\",\"Type\":\"ixi-type:1:N22:System.Private.CoreLib12:System.Int320:\",\"Required\":false,\"HasDefault\":true,\"DefaultJson\":\"3\",\"DisplayName\":null,\"Description\":null,\"UIHint\":null}],\"Outputs\":[],\"Declared\":true}";
+        const string expected = "{\"Inputs\":[{\"Name\":\"Value\",\"Type\":\"ixi-type:1:N22:System.Private.CoreLib12:System.Int320:\",\"Required\":false,\"HasDefault\":true,\"DefaultJson\":\"3\",\"DisplayName\":null,\"Description\":null,\"UIHint\":null}],\"Outputs\":[],\"Declared\":true,\"RequiredScopes\":[]}";
         Assert.Equal(expected, contract.ToJson());
-        Assert.Equal("57CC467ADB4E8412DEE98FB6D92C4B26DAA2A4E9DCCA7C1C2B8A2FECC4139DFA", contract.Hash);
+        Assert.Equal("C80DE8387ADC72037896E89554E8A0F362788CFD3A7920D074E96149D207C64C", contract.Hash);
         Assert.Equal(expected, WorkflowContract.Parse(expected).ToJson());
         Assert.Equal(contract.Hash, WorkflowContract.Parse(" \n" + expected).Hash);
         var two = WorkflowContract.OfType(typeof(Marked));
@@ -189,9 +189,9 @@ public sealed class WorkflowContractTests
     [InlineData("null")]
     [InlineData("{}")]
     [InlineData("{\"Inputs\":[],\"Outputs\":[],\"Declared\":true,\"Declared\":false}")]
-    [InlineData("{\"Inputs\":null,\"Outputs\":[],\"Declared\":true}")]
+    [InlineData("{\"Inputs\":null,\"Outputs\":[],\"Declared\":true,\"RequiredScopes\":[]}")]
     [InlineData("{\"Inputs\":[],\"Outputs\":[],\"Declared\":\"false\"}")]
-    [InlineData("{\"Inputs\":[{}],\"Outputs\":[],\"Declared\":true}")]
+    [InlineData("{\"Inputs\":[{}],\"Outputs\":[],\"Declared\":true,\"RequiredScopes\":[]}")]
     [Trait("Feature", "authoring")]
     public void ParseRefusesMalformedDescriptors(string json) => Assert.ThrowsAny<Exception>(() => WorkflowContract.Parse(json));
 

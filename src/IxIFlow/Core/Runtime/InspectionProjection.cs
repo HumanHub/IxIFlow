@@ -10,7 +10,7 @@ internal static class InspectionProjection
         var count = 0;
         foreach (var continuation in checkpoint.Continuations)
         {
-            if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled) continue;
+            if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled || continuation.Stack.Count == 0) continue;
             count++;
             if (!positions.TryGetValue(continuation.Id, out var before) ||
                 before.ParentJoinId != continuation.ParentJoinId || before.Sequence != continuation.Sequence ||
@@ -51,7 +51,7 @@ internal static class InspectionProjection
         var threads = new List<InspectionThread>();
         foreach (var continuation in checkpoint.Continuations)
         {
-            if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled) continue;
+            if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled || continuation.Stack.Count == 0) continue;
             var position = continuation.Stack[^1];
             var next = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
             var frames = new List<InspectionFrame>();
@@ -79,7 +79,7 @@ internal static class InspectionProjection
                 checkpoint.Joins.SingleOrDefault(j => j.Id == continuation.ParentJoinId)?.ParentContinuationId,
                 continuation.ParentJoinId, continuation.Sequence, continuation.ForkActivationId,
                 next == null ? "" : scopes.Id(next), next == null ? "" : scopes.AuthorId(next), position.NextStepIndex,
-                continuation.Status.ToString(), position.ActivationId, frames.ToArray()));
+                continuation.Status.ToString(), position.ActivationId, frames.ToArray()) { ScopesInForce = ScopeRuntime.IdsOf(continuation) });
         }
         return threads.ToArray();
     }
