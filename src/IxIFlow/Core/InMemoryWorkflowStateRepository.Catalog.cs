@@ -35,22 +35,83 @@ public partial class InMemoryWorkflowStateRepository
             .OrderBy(row => row.Version, StringComparer.Ordinal).Take(limit).Select(WorkflowPackageRules.Copy).ToArray());
     }
 
-    public async Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts)
+    private readonly Dictionary<(string, string), PackageActivities> _packageActivities = [];
+
+    public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null)
     {
-        WorkflowPackageRules.Validate(package);
+        PackageIndexRules.Registration(package, actor);
+        return AcceptPackageAsync(package, activities, artifacts, actor, false);
+    }
+
+    public async Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest,
+        PackageActivities activities, IArtifactStore artifacts, string? actor = null)
+    {
+        WorkflowPublicationRules.Actor(actor);
+        var package = await GetPackageAsync(id, version);
+        if (package == null || package.Digest != expectedDigest)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package extraction identity changed");
+        return await AcceptPackageAsync(package, activities, artifacts, actor, true);
+    }
+
+    private async Task<PackageRegistration> AcceptPackageAsync(WorkflowPackage package, PackageActivities activities,
+        IArtifactStore artifacts, string? actor, bool completion)
+    {
+        package = WorkflowPackageRules.Copy(package);
+        activities = PackageIndexRules.Snapshot(package, activities);
         await _catalogLock.WaitAsync();
         try
         {
-            if (!await artifacts.ExistsAsync(package.Digest))
-                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Package artifact {package.Digest} is unavailable");
+            lock (_claimLock) WorkflowPackageRules.CheckRegistration(_packages.GetValueOrDefault((package.Id, package.Version)), package);
+            await PackageIndexRules.CheckArtifactsAsync(package, activities, artifacts);
             lock (_claimLock)
             {
                 var key = (package.Id, package.Version);
-                WorkflowPackageRules.CheckRegistration(_packages.GetValueOrDefault(key), package);
-                _packages[key] = WorkflowPackageRules.Copy(package);
+                var existing = _packages.GetValueOrDefault(key);
+                if (completion && existing == null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package disappeared");
+                WorkflowPackageRules.CheckRegistration(existing, package);
+                if (existing?.Withdrawn == true) throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package is withdrawn");
+                foreach (var reference in activities.Closure ?? [])
+                    if (_packages.TryGetValue((reference.Id, reference.Version), out var dependency) &&
+                        (dependency.Digest != reference.Digest || dependency.Withdrawn))
+                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package closure identity changed");
+                var prior = _packageActivities.GetValueOrDefault(key);
+                var merged = prior == null ? activities : PackageIndexRules.Merge(prior, activities);
+                if (existing == null || existing.Origin < package.Origin || !PackageIndexRules.Equal(prior!, merged))
+                {
+                    var revision = checked(_catalogRevision + 1);
+                    var stored = PackageIndexRules.Stamp(package, existing, merged, Now, actor, revision);
+                    _packages[key] = WorkflowPackageRules.Copy(stored);
+                    _packageActivities[key] = merged;
+                    _catalogRevision = revision;
+                }
+                var saved = _packages[key];
+                return new(WorkflowPackageRules.Copy(saved), PackageIndexRules.Snapshot(saved, _packageActivities[key]), existing == null);
             }
         }
         finally { _catalogLock.Release(); }
+    }
+
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity, int limit)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, 1000);
+        if (!Enum.IsDefined(extraction)) throw new ArgumentException("Invalid extraction state");
+        lock (_claimLock) return Task.FromResult<IReadOnlyList<WorkflowPackage>>(_packages.Values
+            .Where(row => _packageActivities[(row.Id, row.Version)].Extraction == extraction &&
+                (afterIdentity == null || string.CompareOrdinal(row.Id + "@" + row.Version, afterIdentity) > 0))
+            .OrderBy(row => row.Id + "@" + row.Version, StringComparer.Ordinal).Take(limit).Select(WorkflowPackageRules.Copy).ToArray());
+    }
+
+    public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit)
+    {
+        missingPackageId = WorkflowPackageRules.NormalizeId(missingPackageId);
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, 1000);
+        lock (_claimLock) return Task.FromResult<IReadOnlyList<WorkflowPackage>>(_packages.Values
+            .Where(row => _packageActivities[(row.Id, row.Version)].Extraction == PackageExtraction.Pending &&
+                _packageActivities[(row.Id, row.Version)].MissingPackageIds.Contains(missingPackageId, StringComparer.Ordinal) &&
+                (afterIdentity == null || string.CompareOrdinal(row.Id + "@" + row.Version, afterIdentity) > 0))
+            .OrderBy(row => row.Id + "@" + row.Version, StringComparer.Ordinal).Take(limit).Select(WorkflowPackageRules.Copy).ToArray());
     }
 
     public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version)

@@ -25,7 +25,7 @@ public sealed partial class SqlWorkflowStateRepository
             Id NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
             Version NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
             Fingerprint VARCHAR(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
-            ActivitiesJson NVARCHAR(MAX) NOT NULL,
+            CatalogRevision BIGINT NOT NULL,
             PRIMARY KEY (Id, Version, Fingerprint)
         );
         CREATE TABLE dbo.IxIFlowHostPackages (
@@ -80,11 +80,11 @@ public sealed partial class SqlWorkflowStateRepository
         Statement.InsertCapability => """
             INSERT INTO dbo.IxIFlowHostCapabilities (MemberId, CapabilityKey, CapabilityValue) VALUES (@MemberId, @Key, @Value)
             """,
-        Statement.InstalledPackages => "SELECT Id, Version, Fingerprint, ActivitiesJson FROM dbo.IxIFlowInstalledPackages WHERE @Id IS NULL OR Id=@Id",
+        Statement.InstalledPackages => "SELECT Id, Version, Fingerprint, CatalogRevision FROM dbo.IxIFlowInstalledPackages WHERE (@Id IS NULL OR Id=@Id)",
         Statement.HostPackages => "SELECT MemberId, PackageId AS Id, PackageVersion AS Version, Fingerprint FROM dbo.IxIFlowHostPackages",
         Statement.InsertInstalledPackage => """
             IF NOT EXISTS (SELECT 1 FROM dbo.IxIFlowInstalledPackages WHERE Id=@Id AND Version=@Version AND Fingerprint=@Fingerprint)
-                INSERT INTO dbo.IxIFlowInstalledPackages (Id, Version, Fingerprint, ActivitiesJson) VALUES (@Id, @Version, @Fingerprint, @ActivitiesJson);
+                INSERT INTO dbo.IxIFlowInstalledPackages (Id, Version, Fingerprint, CatalogRevision) VALUES (@Id, @Version, @Fingerprint, @CatalogRevision);
             """,
         Statement.DeleteHostPackages => "DELETE FROM dbo.IxIFlowHostPackages WHERE MemberId=@MemberId",
         Statement.InsertHostPackage => "INSERT INTO dbo.IxIFlowHostPackages (MemberId, PackageId, PackageVersion, Fingerprint) VALUES (@MemberId, @Id, @Version, @Fingerprint)",

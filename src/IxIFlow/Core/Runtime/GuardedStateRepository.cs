@@ -7,8 +7,21 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
-    public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) =>
-        Guard(() => _store.RegisterPackageAsync(package, artifacts), "Registering package artifact");
+    public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => Guard(() => _store.ListActivitiesAsync(query), "Reading catalog");
+    public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => Guard(() => _store.ListActivityVersionsAsync(key, query), "Reading catalog");
+    public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => Guard(() => _store.GetActivityAsync(key, version, provider, scope), "Reading catalog");
+    public Task<CatalogPage<CatalogPackage>> ListPackagesAsync(CatalogPackageQuery query) => Guard(() => _store.ListPackagesAsync(query), "Reading catalog");
+    public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query) => Guard(() => _store.ListPackageVersionsAsync(id, query), "Reading catalog");
+    public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => Guard(() => _store.GetPackageDetailAsync(id, version, scope), "Reading catalog");
+    public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => Guard(() => _store.GetPackageActivitiesAsync(id, version, query), "Reading catalog");
+    public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => Guard(() => _store.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit), "Reading package work");
+    public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) =>
+        Guard(() => _store.RegisterPackageAsync(package, activities, artifacts, actor), "Registering package artifact");
+    public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) =>
+        Guard(() => _store.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor), "Completing package extraction");
+    public IArtifactStore? CatalogArtifacts { get => _store.CatalogArtifacts; set => _store.CatalogArtifacts = value; }
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity, int limit) =>
+        Guard(() => _store.GetPackageExtractionPageAsync(extraction, afterIdentity, limit), "Reading package extraction work");
     public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) =>
         Guard(() => _store.GetInstalledPackagesAsync(id), "Reading installed activity packages");
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) =>

@@ -1,3 +1,4 @@
+using IxIFlow.Authoring;
 using IxIFlow.Builders;
 using IxIFlow.Core;
 using IxIFlow.Extensions;
@@ -12,6 +13,27 @@ namespace IxIFlow.Samples;
 /// <summary>Small application examples used by the public documentation.</summary>
 public static class DocumentationExamples
 {
+    public static async Task<PackageRegistration> UploadPackageAsync(IWorkflowCatalogStore catalog,
+        IArtifactStore artifacts, WorkflowPublisherOptions publisherOptions, Stream stream,
+        string? actor, CancellationToken cancellationToken)
+    {
+        // snippet: package-ingestion
+        var ingestion = new PackageIngestion(catalog, artifacts, publisherOptions);
+        var candidate = await ingestion.ReadPackageAsync(stream, cancellationToken);
+        var receipt = await ingestion.StorePackageAsync(candidate, actor, cancellationToken);
+        // end-snippet: package-ingestion
+        return receipt;
+    }
+
+    public static void RegisterPackageIndexing(IServiceCollection services, WorkflowPublisherOptions publisherOptions)
+    {
+        // snippet: package-indexing
+        services.AddHostedService(provider => new PackageIndexingService(
+            provider.GetRequiredService<IWorkflowStateRepository>(),
+            provider.GetRequiredService<IArtifactStore>(), publisherOptions));
+        // end-snippet: package-indexing
+    }
+
     public static async Task RunHostedAsync()
     {
         // snippet: hosted-run

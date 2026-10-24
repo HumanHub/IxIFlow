@@ -41,7 +41,10 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
     private const string Path = "workflow.yaml";
 
     public Task<WorkflowPackage> UploadPackageAsync(Stream package, CancellationToken cancellationToken = default) =>
-        WorkflowPackageResolver.UploadAsync(catalog, artifacts, package, _options.PackageReadLimits, cancellationToken);
+        UploadPackageCoreAsync(package, cancellationToken);
+
+    private async Task<WorkflowPackage> UploadPackageCoreAsync(Stream package, CancellationToken token) =>
+        (await new PackageIngestion(catalog, artifacts, _options).UploadPackageAsync(package, cancellationToken: token)).Stored;
 
     public async Task<WorkflowPublishResult> PublishAsync(WorkflowDraftId draftId, CancellationToken cancellationToken = default)
     {
@@ -68,8 +71,9 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             document = WorkflowYamlSerializer.Read(draft.Source);
             location = document.Workflow.Location;
             location = document.Imports.Catalogs.Count > 0 ? document.Imports.Location : document.Workflow.Location;
-            using var packages = await new WorkflowPackageResolver(catalog, artifacts, _options).ResolveAsync(document.Imports.Catalogs, cancellationToken);
+            using var packages = await new WorkflowPackageResolver(catalog, artifacts, _options).ResolveAsync(document.Imports.Catalogs, PackageAcquisition.Persist, [], cancellationToken);
             var callees = await new WorkflowCallees(catalog, artifacts, _options).ResolveAsync(document, packages, cancellationToken);
+            await new WorkflowPackageResolver(catalog, artifacts, _options).RefreshDescriptorsAsync(packages, cancellationToken);
             var references = WorkflowCompilation.CreateReferences(_options.SourceOptions, packages.References);
             var sourceOptions = ResolveTypes(document, _options.SourceOptions, references);
             WorkflowCallees.Bind(callees, sourceOptions, references, packages);
@@ -109,7 +113,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
                 return Failure("PUB005", $"Declared identity '{tested.Name}' v{tested.Version} does not match draft '{draft.Name}' v{draft.Version}");
             }
             stage = WorkflowPublishStage.Publish;
-            var manifest = new WorkflowBundleManifest(3, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
+            var manifest = new WorkflowBundleManifest(4, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
                 typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
                 tested.CombinerSignature, tested.ContractJson, WorkflowContract.Parse(tested.ContractJson).Hash, WorkflowCompilation.Settings,
                 shared,
@@ -243,31 +247,16 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
     private static IReadOnlyList<PackageScopeClaim> ResolvePackageActivities(WorkflowSourceOptions options, WorkflowCompilation.ReferenceSet references, ResolvedWorkflowPackages packages)
     {
         var claims = new List<PackageScopeClaim>();
-        IEnumerable<INamedTypeSymbol> Types(INamespaceOrTypeSymbol scope)
+        foreach (var descriptor in packages.Activities.Values.SelectMany(items => items))
         {
-            foreach (var member in scope.GetMembers())
-            {
-                if (member is INamedTypeSymbol type) yield return type;
-                if (member is INamespaceOrTypeSymbol nested)
-                    foreach (var child in Types(nested)) yield return child;
-            }
-        }
-        foreach (var assembly in references.Assemblies)
-        {
-            if (!packages.Owners.TryGetValue(assembly.Identity.Name, out var owner)) continue;
-            foreach (var type in Types(assembly.GlobalNamespace))
-            {
-                var attribute = type.GetAttributes().SingleOrDefault(attribute => attribute.AttributeClass?.ToDisplayString() == "IxIFlow.ActivitySdk.WorkflowActivityAttribute");
-                if (attribute == null) continue;
-                var key = attribute.ConstructorArguments[0].Value as string ?? "";
-                var version = attribute.NamedArguments.FirstOrDefault(pair => pair.Key == "Version").Value.Value as string ?? "1.0";
-                claims.Add(ScopePackageContracts.Describe(type, owner.Id, owner.Version, key, version));
-                if (!options.Activities.TryAdd(key, new(key, version, owner.Id, owner.Version)))
-                    throw new InvalidOperationException($"Duplicate package activity key '{key}'");
-                options.Types[key] = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                foreach (var property in Properties(type))
-                    options.Members.TryAdd(key + "." + char.ToLowerInvariant(property.Name[0]) + property.Name[1..], property.Name);
-            }
+            var type = references.Assemblies.Where(assembly => assembly.Identity.Name == packages.ActivityAssemblies[descriptor.Key])
+                .Select(assembly => assembly.GetTypeByMetadataName(descriptor.MetadataTypeName)).OfType<INamedTypeSymbol>().Single();
+            claims.Add(ScopePackageContracts.Describe(type, descriptor.PackageId, descriptor.PackageVersion, descriptor.Key, descriptor.Version));
+            if (!options.Activities.TryAdd(descriptor.Key, new(descriptor.Key, descriptor.Version, descriptor.PackageId, descriptor.PackageVersion)))
+                throw new WorkflowPublishException("PUB014", $"Duplicate package activity key '{descriptor.Key}'", new(1, 1));
+            options.Types[descriptor.Key] = descriptor.CSharpTypeName;
+            foreach (var member in descriptor.Inputs.Concat(descriptor.Outputs))
+                options.Members.TryAdd(descriptor.Key + "." + char.ToLowerInvariant(member.Name[0]) + member.Name[1..], member.Name);
         }
         return claims;
     }

@@ -11,8 +11,7 @@ internal sealed record PackageScopeClaim(string Assembly, string MetadataName, s
 /// <summary>Checks package reference declarations against the implementations used by the build host.</summary>
 internal static class ScopePackageContracts
 {
-    private static string SourceName(ITypeSymbol type) => type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat
-        .WithMiscellaneousOptions(SymbolDisplayFormat.FullyQualifiedFormat.MiscellaneousOptions & ~SymbolDisplayMiscellaneousOptions.UseSpecialTypes));
+    private static string SourceName(ITypeSymbol type) => PackageDescriptorAgreement.SourceName(type);
 
     public static PackageScopeClaim Describe(INamedTypeSymbol type, string packageId, string packageVersion, string key, string version)
     {

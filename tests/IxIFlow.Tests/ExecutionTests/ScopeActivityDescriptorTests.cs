@@ -112,7 +112,7 @@ public sealed class ScopeActivityDescriptorTests
         Assert.Null(ActivityDescriptor.Parse(json).ActivityType);
         Assert.Equal(scope.ContractHash, ActivityDescriptor.Parse(json).ContractHash);
         Assert.DoesNotContain("ActivityType", json);
-        Assert.Contains("RequiresScopes", Assert.Single(registry.Packages).ActivitiesJson);
+        Assert.Contains("RequiresScopes", IxIFlow.Core.Runtime.WorkflowJson.Serialize(Assert.Single(registry.Packages).Activities));
     }
 
     [Fact]

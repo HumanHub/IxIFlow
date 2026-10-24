@@ -66,14 +66,14 @@ public sealed class PublishedActivityPackageScenarios
         Assert.Equal("1.0.0", first.Version);
         Assert.Equal(new[] { "2.0.0", "3.0.0" }, (await reopened.GetPackagePageAsync("fixture.metadata", first.Version, 2)).Select(row => row.Version));
         Assert.Empty(await reopened.GetPackagePageAsync("fixture.metadata", "3.0.0", 1));
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.RegisterPackageAsync(exact with { DependencyGroups = [] }, reopened));
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.RegisterPackageAsync(exact with { DependencyGroups = [] }, new([], PackageExtraction.Pending, null, null, []), reopened));
+        Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
         foreach (var version in new[] { "1.0.0-01", "1.0.0-a.00", "1.0.0-BETA" })
         {
-            error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.RegisterPackageAsync(exact with { Version = version }, reopened));
+            error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.RegisterPackageAsync(exact with { Version = version }, new([], PackageExtraction.Pending, null, null, []), reopened));
             Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
         }
-        error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.RegisterPackageAsync(exact with { DependencyGroups = null! }, reopened));
+        error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.RegisterPackageAsync(exact with { DependencyGroups = null! }, new([], PackageExtraction.Pending, null, null, []), reopened));
         Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
     }
 
@@ -105,7 +105,7 @@ public sealed class PublishedActivityPackageScenarios
         Assert.Equal(package.Entries.OrderBy(pair => pair.Key), saved.Entries.OrderBy(pair => pair.Key));
         var different = ActivityPackageFixture.Package("fixture.activities", "1.0.0", new() { ["extra.txt"] = [1] });
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => publisher.UploadPackageAsync(new MemoryStream(different)));
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
+        Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
         Assert.Equal(package.Digest, Assert.Single(await reopened.GetPackagesAsync()).Digest);
     }
 
@@ -174,7 +174,7 @@ public sealed class PublishedActivityPackageScenarios
         gate.SetResult();
         var results = await Task.WhenAll(tasks);
         var winner = Assert.Single(results, result => result.Package != null).Package!;
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, Assert.Single(results, result => result.Error != null).Error!.Kind);
+        Assert.Equal(WorkflowErrorKind.InvalidState, Assert.Single(results, result => result.Error != null).Error!.Kind);
         var saved = Assert.Single(await store.GetPackagesAsync("FIXTURE.CONCURRENT"));
         Assert.Equal("1.0.0-beta", saved.Version);
         Assert.Equal(winner.Digest, saved.Digest);

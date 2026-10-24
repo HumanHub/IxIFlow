@@ -82,8 +82,70 @@ public sealed partial class SqliteWorkflowStateRepository
             dependency_groups_json TEXT NOT NULL,
             digest TEXT COLLATE BINARY NOT NULL,
             metadata_json TEXT NOT NULL,
+            origin TEXT COLLATE BINARY NOT NULL CHECK (origin IN ('Resolved','Uploaded','Published')),
+            extraction TEXT COLLATE BINARY NOT NULL CHECK (extraction IN ('Indexed','Pending','Unloadable')),
+            extraction_detail TEXT COLLATE BINARY NULL,
+            closure_json TEXT COLLATE BINARY NULL,
+            withdrawn INTEGER NOT NULL,
+            withdrawn_at_utc TEXT COLLATE BINARY NULL,
+            withdrawn_by TEXT COLLATE BINARY NULL,
+            registered_at_utc TEXT COLLATE BINARY NOT NULL,
+            registered_by TEXT COLLATE BINARY NULL,
+            published_draft_generation TEXT COLLATE BINARY NULL,
+            published_draft_revision INTEGER NULL,
+            published_draft_name TEXT COLLATE BINARY NULL,
+            published_draft_version INTEGER NULL,
+            published_at_utc TEXT COLLATE BINARY NULL,
+            published_by TEXT COLLATE BINARY NULL,
+            lifecycle_revision INTEGER NOT NULL,
+            catalog_revision INTEGER NOT NULL,
             PRIMARY KEY (id, version)
         );
+        CREATE INDEX ix_packages_origin ON ixiflow_packages (origin, id, version);
+        CREATE TABLE ixiflow_package_activities (
+            package_id TEXT COLLATE BINARY NOT NULL,
+            package_version TEXT COLLATE BINARY NOT NULL,
+            "key" TEXT COLLATE BINARY NOT NULL,
+            version TEXT COLLATE BINARY NOT NULL,
+            metadata_type_name TEXT COLLATE BINARY NOT NULL,
+            csharp_type_name TEXT COLLATE BINARY NOT NULL,
+            display_name TEXT COLLATE BINARY NOT NULL,
+            category TEXT COLLATE BINARY NOT NULL,
+            icon TEXT COLLATE BINARY NULL,
+            search_text TEXT COLLATE BINARY NOT NULL,
+            contract_hash TEXT COLLATE BINARY NOT NULL,
+            descriptor_json TEXT COLLATE BINARY NOT NULL,
+            catalog_revision INTEGER NOT NULL,
+            PRIMARY KEY (package_id, package_version, "key")
+        );
+        CREATE INDEX ix_package_activities_key ON ixiflow_package_activities ("key", version, package_id, package_version);
+        CREATE INDEX ix_package_activities_category ON ixiflow_package_activities (category, "key");
+        CREATE TABLE ixiflow_installed_activities (
+            package_id TEXT COLLATE BINARY NOT NULL,
+            package_version TEXT COLLATE BINARY NOT NULL,
+            "key" TEXT COLLATE BINARY NOT NULL,
+            version TEXT COLLATE BINARY NOT NULL,
+            metadata_type_name TEXT COLLATE BINARY NOT NULL,
+            csharp_type_name TEXT COLLATE BINARY NOT NULL,
+            display_name TEXT COLLATE BINARY NOT NULL,
+            category TEXT COLLATE BINARY NOT NULL,
+            icon TEXT COLLATE BINARY NULL,
+            search_text TEXT COLLATE BINARY NOT NULL,
+            contract_hash TEXT COLLATE BINARY NOT NULL,
+            descriptor_json TEXT COLLATE BINARY NOT NULL,
+            catalog_revision INTEGER NOT NULL,
+            fingerprint TEXT COLLATE BINARY NOT NULL,
+            PRIMARY KEY (package_id, package_version, fingerprint, "key")
+        );
+        CREATE INDEX ix_installed_activities_key ON ixiflow_installed_activities ("key", version, package_id, package_version);
+        CREATE INDEX ix_installed_activities_category ON ixiflow_installed_activities (category, "key");
+        CREATE TABLE ixiflow_package_pending_dependencies (
+            package_id TEXT COLLATE BINARY NOT NULL,
+            package_version TEXT COLLATE BINARY NOT NULL,
+            missing_package_id TEXT COLLATE BINARY NOT NULL,
+            PRIMARY KEY (package_id, package_version, missing_package_id)
+        );
+        CREATE INDEX ix_package_pending_reverse ON ixiflow_package_pending_dependencies (missing_package_id, package_id, package_version);
         CREATE TABLE ixiflow_artifacts (
             digest TEXT COLLATE BINARY NOT NULL PRIMARY KEY,
             kind TEXT NOT NULL,
@@ -95,10 +157,10 @@ public sealed partial class SqliteWorkflowStateRepository
 
     private static string? CatalogSql(Statement statement) => statement switch
     {
-        Statement.CatalogPackages => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=COALESCE(@Id,id)",
-        Statement.CatalogPackage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=@Id AND version=@Version",
-        Statement.CatalogPackagePage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=@Id AND (@AfterVersion IS NULL OR version>@AfterVersion) ORDER BY version LIMIT @Limit",
-        Statement.CatalogPackageInsert => "INSERT INTO ixiflow_packages (id, version, digest, metadata_json, dependency_groups_json) VALUES (@Id, @Version, @Digest, @MetadataJson, @DependencyGroupsJson)",
+        Statement.CatalogPackages => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson, origin AS Origin, extraction AS Extraction, extraction_detail AS ExtractionDetail, closure_json AS ClosureJson, withdrawn AS Withdrawn, withdrawn_at_utc AS WithdrawnAtUtc, withdrawn_by AS WithdrawnBy, registered_at_utc AS RegisteredAtUtc, registered_by AS RegisteredBy, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_draft_name AS PublishedDraftName, published_draft_version AS PublishedDraftVersion, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, lifecycle_revision AS LifecycleRevision, catalog_revision AS CatalogRevision FROM ixiflow_packages WHERE id=COALESCE(@Id,id)",
+        Statement.CatalogPackage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson, origin AS Origin, extraction AS Extraction, extraction_detail AS ExtractionDetail, closure_json AS ClosureJson, withdrawn AS Withdrawn, withdrawn_at_utc AS WithdrawnAtUtc, withdrawn_by AS WithdrawnBy, registered_at_utc AS RegisteredAtUtc, registered_by AS RegisteredBy, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_draft_name AS PublishedDraftName, published_draft_version AS PublishedDraftVersion, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, lifecycle_revision AS LifecycleRevision, catalog_revision AS CatalogRevision FROM ixiflow_packages WHERE id=@Id AND version=@Version",
+        Statement.CatalogPackagePage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson, origin AS Origin, extraction AS Extraction, extraction_detail AS ExtractionDetail, closure_json AS ClosureJson, withdrawn AS Withdrawn, withdrawn_at_utc AS WithdrawnAtUtc, withdrawn_by AS WithdrawnBy, registered_at_utc AS RegisteredAtUtc, registered_by AS RegisteredBy, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_draft_name AS PublishedDraftName, published_draft_version AS PublishedDraftVersion, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, lifecycle_revision AS LifecycleRevision, catalog_revision AS CatalogRevision FROM ixiflow_packages WHERE id=@Id AND (@AfterVersion IS NULL OR version>@AfterVersion) ORDER BY version LIMIT @Limit",
+        Statement.CatalogPackageInsert => "INSERT INTO ixiflow_packages (id, version, digest, metadata_json, dependency_groups_json, origin, extraction, extraction_detail, closure_json, withdrawn, withdrawn_at_utc, withdrawn_by, registered_at_utc, registered_by, published_draft_generation, published_draft_revision, published_draft_name, published_draft_version, published_at_utc, published_by, lifecycle_revision, catalog_revision) VALUES (@Id, @Version, @Digest, @MetadataJson, @DependencyGroupsJson, @Origin, @Extraction, @ExtractionDetail, @ClosureJson, @Withdrawn, @WithdrawnAtUtc, @WithdrawnBy, @RegisteredAtUtc, @RegisteredBy, @PublishedDraftGeneration, @PublishedDraftRevision, @PublishedDraftName, @PublishedDraftVersion, @PublishedAtUtc, @PublishedBy, @LifecycleRevision, @CatalogRevision)",
         Statement.CatalogLock => null,
         Statement.CatalogSharedLock => null,
         Statement.CatalogInstanceDigests => "SELECT DISTINCT bundle_digest FROM ixiflow_workflow_instances WHERE bundle_digest IS NOT NULL",

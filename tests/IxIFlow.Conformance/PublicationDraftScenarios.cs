@@ -307,7 +307,7 @@ public sealed class PublicationDraftScenarios
         var draft = await store.SaveDefinitionAsync(new("activity-name", 2, "activity", "source"), null);
         var digest = await store.PutAsync(ArtifactKind.Package, new MemoryStream([9]));
         await store.RegisterPackageAsync(new("activity-name", "2.0.0", digest,
-            new Dictionary<string, ArtifactDigest> { ["fixture.nuspec"] = ArtifactDigest.Of([1]) }, []), store);
+            new Dictionary<string, ArtifactDigest> { ["fixture.nuspec"] = ArtifactDigest.Of([1]) }, []), new([], PackageExtraction.Pending, null, null, []), store);
         await store.DeleteAsync(digest);
         var changed = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SaveDefinitionAsync(draft with { Source = "edit" }, draft.Id));
         Assert.Equal(WorkflowErrorKind.InvalidState, changed.Kind);

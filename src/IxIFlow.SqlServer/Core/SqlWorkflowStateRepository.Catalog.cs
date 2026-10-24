@@ -4,6 +4,7 @@ public sealed partial class SqlWorkflowStateRepository
 {
     // Name uses non-SC Latin1_General_100_BIN2: SUBSTRING counts UTF-16 code units,
     // including both halves of a supplementary character, just like string.Length.
+    internal override bool CatalogSqlServer => true;
     internal override int CatalogPrefixLength(string value) => value.Length;
 
     private const string CatalogSchema = """
@@ -91,8 +92,70 @@ public sealed partial class SqlWorkflowStateRepository
             Digest VARCHAR(71) COLLATE Latin1_General_100_BIN2 NOT NULL,
             DependencyGroupsJson NVARCHAR(MAX) NOT NULL,
             MetadataJson NVARCHAR(MAX) NOT NULL,
+            [Origin] VARCHAR(10) COLLATE Latin1_General_100_BIN2 NOT NULL CHECK ([Origin] IN ('Resolved','Uploaded','Published')),
+            [Extraction] VARCHAR(10) COLLATE Latin1_General_100_BIN2 NOT NULL CHECK ([Extraction] IN ('Indexed','Pending','Unloadable')),
+            [ExtractionDetail] NVARCHAR(400) COLLATE Latin1_General_100_BIN2 NULL,
+            [ClosureJson] NVARCHAR(MAX) COLLATE Latin1_General_100_BIN2 NULL,
+            [Withdrawn] BIT NOT NULL,
+            [WithdrawnAtUtc] DATETIME2 NULL,
+            [WithdrawnBy] NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NULL,
+            [RegisteredAtUtc] DATETIME2 NOT NULL,
+            [RegisteredBy] NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NULL,
+            [PublishedDraftGeneration] UNIQUEIDENTIFIER NULL,
+            [PublishedDraftRevision] BIGINT NULL,
+            [PublishedDraftName] NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NULL,
+            [PublishedDraftVersion] INT NULL,
+            [PublishedAtUtc] DATETIME2 NULL,
+            [PublishedBy] NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NULL,
+            [LifecycleRevision] BIGINT NOT NULL,
+            [CatalogRevision] BIGINT NOT NULL,
             PRIMARY KEY (Id, Version)
         );
+        CREATE INDEX ix_packages_origin ON dbo.IxIFlowPackages ([Origin], [Id], [Version]);
+        CREATE TABLE dbo.IxIFlowPackageActivities (
+            [PackageId] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [PackageVersion] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Key] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Version] NVARCHAR(50) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [MetadataTypeName] NVARCHAR(MAX) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [CSharpTypeName] NVARCHAR(MAX) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [DisplayName] NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Category] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Icon] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
+            [SearchText] NVARCHAR(400) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [ContractHash] VARCHAR(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [DescriptorJson] NVARCHAR(MAX) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [CatalogRevision] BIGINT NOT NULL,
+            PRIMARY KEY ([PackageId], [PackageVersion], [Key])
+        );
+        CREATE INDEX ix_package_activities_key ON dbo.IxIFlowPackageActivities ([Key], [Version], [PackageId], [PackageVersion]);
+        CREATE INDEX ix_package_activities_category ON dbo.IxIFlowPackageActivities ([Category], [Key]);
+        CREATE TABLE dbo.IxIFlowInstalledActivities (
+            [PackageId] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [PackageVersion] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Key] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Version] NVARCHAR(50) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [MetadataTypeName] NVARCHAR(MAX) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [CSharpTypeName] NVARCHAR(MAX) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [DisplayName] NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Category] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Icon] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
+            [SearchText] NVARCHAR(400) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [ContractHash] VARCHAR(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [DescriptorJson] NVARCHAR(MAX) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [CatalogRevision] BIGINT NOT NULL,
+            [Fingerprint] VARCHAR(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            PRIMARY KEY ([PackageId], [PackageVersion], [Fingerprint], [Key])
+        );
+        CREATE INDEX ix_installed_activities_key ON dbo.IxIFlowInstalledActivities ([Key], [Version], [PackageId], [PackageVersion]);
+        CREATE INDEX ix_installed_activities_category ON dbo.IxIFlowInstalledActivities ([Category], [Key]);
+        CREATE TABLE dbo.IxIFlowPackagePendingDependencies (
+            [PackageId] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [PackageVersion] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [MissingPackageId] NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            PRIMARY KEY ([PackageId], [PackageVersion], [MissingPackageId])
+        );
+        CREATE INDEX ix_package_pending_reverse ON dbo.IxIFlowPackagePendingDependencies ([MissingPackageId], [PackageId], [PackageVersion]);
         CREATE TABLE dbo.IxIFlowArtifacts (
             Digest VARCHAR(71) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
             Kind VARCHAR(10) NOT NULL,
@@ -104,10 +167,10 @@ public sealed partial class SqlWorkflowStateRepository
 
     private static string? CatalogSql(Statement statement) => statement switch
     {
-        Statement.CatalogPackages => "SELECT Id, Version, Digest, MetadataJson, DependencyGroupsJson FROM dbo.IxIFlowPackages WHERE Id=COALESCE(@Id,Id)",
-        Statement.CatalogPackage => "SELECT Id, Version, Digest, MetadataJson, DependencyGroupsJson FROM dbo.IxIFlowPackages WHERE Id=@Id AND Version=@Version",
-        Statement.CatalogPackagePage => "SELECT TOP (@Limit) Id, Version, Digest, MetadataJson, DependencyGroupsJson FROM dbo.IxIFlowPackages WHERE Id=@Id AND (@AfterVersion IS NULL OR Version>@AfterVersion) ORDER BY Version",
-        Statement.CatalogPackageInsert => "INSERT INTO dbo.IxIFlowPackages (Id, Version, Digest, MetadataJson, DependencyGroupsJson) VALUES (@Id, @Version, @Digest, @MetadataJson, @DependencyGroupsJson)",
+        Statement.CatalogPackages => "SELECT Id, Version, Digest, MetadataJson, DependencyGroupsJson, [Origin], [Extraction], [ExtractionDetail], [ClosureJson], [Withdrawn], [WithdrawnAtUtc], [WithdrawnBy], [RegisteredAtUtc], [RegisteredBy], [PublishedDraftGeneration], [PublishedDraftRevision], [PublishedDraftName], [PublishedDraftVersion], [PublishedAtUtc], [PublishedBy], [LifecycleRevision], [CatalogRevision] FROM dbo.IxIFlowPackages WHERE Id=COALESCE(@Id,Id)",
+        Statement.CatalogPackage => "SELECT Id, Version, Digest, MetadataJson, DependencyGroupsJson, [Origin], [Extraction], [ExtractionDetail], [ClosureJson], [Withdrawn], [WithdrawnAtUtc], [WithdrawnBy], [RegisteredAtUtc], [RegisteredBy], [PublishedDraftGeneration], [PublishedDraftRevision], [PublishedDraftName], [PublishedDraftVersion], [PublishedAtUtc], [PublishedBy], [LifecycleRevision], [CatalogRevision] FROM dbo.IxIFlowPackages WHERE Id=@Id AND Version=@Version",
+        Statement.CatalogPackagePage => "SELECT TOP (@Limit) Id, Version, Digest, MetadataJson, DependencyGroupsJson, [Origin], [Extraction], [ExtractionDetail], [ClosureJson], [Withdrawn], [WithdrawnAtUtc], [WithdrawnBy], [RegisteredAtUtc], [RegisteredBy], [PublishedDraftGeneration], [PublishedDraftRevision], [PublishedDraftName], [PublishedDraftVersion], [PublishedAtUtc], [PublishedBy], [LifecycleRevision], [CatalogRevision] FROM dbo.IxIFlowPackages WHERE Id=@Id AND (@AfterVersion IS NULL OR Version>@AfterVersion) ORDER BY Version",
+        Statement.CatalogPackageInsert => "INSERT INTO dbo.IxIFlowPackages (Id, Version, Digest, MetadataJson, DependencyGroupsJson, [Origin], [Extraction], [ExtractionDetail], [ClosureJson], [Withdrawn], [WithdrawnAtUtc], [WithdrawnBy], [RegisteredAtUtc], [RegisteredBy], [PublishedDraftGeneration], [PublishedDraftRevision], [PublishedDraftName], [PublishedDraftVersion], [PublishedAtUtc], [PublishedBy], [LifecycleRevision], [CatalogRevision]) VALUES (@Id, @Version, @Digest, @MetadataJson, @DependencyGroupsJson, @Origin, @Extraction, @ExtractionDetail, @ClosureJson, @Withdrawn, @WithdrawnAtUtc, @WithdrawnBy, @RegisteredAtUtc, @RegisteredBy, @PublishedDraftGeneration, @PublishedDraftRevision, @PublishedDraftName, @PublishedDraftVersion, @PublishedAtUtc, @PublishedBy, @LifecycleRevision, @CatalogRevision)",
         Statement.CatalogLock => """
             DECLARE @catalogLock INT; EXEC @catalogLock = sys.sp_getapplock @Resource=N'IxIFlow.Catalog', @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=30000; IF @catalogLock < 0 THROW 51000, 'Could not lock the workflow catalog', 1;
             """,

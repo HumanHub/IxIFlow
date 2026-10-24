@@ -57,7 +57,7 @@ public sealed class InstalledActivityPackageDatabaseTests
         var sqlServer = connection is SqlConnection;
         var installed = sqlServer ? "dbo.IxIFlowInstalledPackages" : "ixiflow_installed_packages";
         var hosts = sqlServer ? "dbo.IxIFlowHostPackages" : "ixiflow_host_packages";
-        foreach (var (table, column) in new[] { (installed, sqlServer ? "ActivitiesJson" : "activities_json"),
+        foreach (var (table, column) in new[] { (installed, sqlServer ? "CatalogRevision" : "catalog_revision"),
                      (hosts, sqlServer ? "Fingerprint" : "fingerprint") })
         foreach (var missingTable in new[] { true, false })
         {
@@ -89,8 +89,8 @@ public sealed class InstalledActivityPackageDatabaseTests
 
         var store = create();
         var id = "installed.rollback." + Guid.NewGuid().ToString("N");
-        var prior = InstalledActivityPackageTests.Package(id, "[]");
-        var next = InstalledActivityPackageTests.Package(id, "[{\"Key\":\"next\"}]");
+        var prior = InstalledActivityPackageTests.Package(id);
+        var next = InstalledActivityPackageTests.Package(id, "next");
         var member = MemberRegistryContract.Registration() with { InstalledPackages = [prior] };
         await store.RegisterMemberAsync(member);
         var trigger = sqlServer

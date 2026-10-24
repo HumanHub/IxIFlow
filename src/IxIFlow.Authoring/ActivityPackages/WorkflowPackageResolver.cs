@@ -17,9 +17,14 @@ using NuGet.Versioning;
 
 namespace IxIFlow.Authoring;
 
+internal enum PackageAcquisition { CatalogOnly, Scratch, Persist }
+
 internal sealed class ResolvedWorkflowPackages : IDisposable
 {
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "IxIFlow.Publish", Guid.NewGuid().ToString("N"));
+    internal List<PreparedPackage> Prepared { get; } = [];
+    internal Dictionary<string, string> ActivityAssemblies { get; } = new(StringComparer.Ordinal);
+    internal Dictionary<string, IReadOnlyList<ActivityDescriptor>> Activities { get; } = new(StringComparer.Ordinal);
     internal List<WorkflowPackagePin> Pins { get; } = [];
     internal List<string> References { get; } = [];
     internal Dictionary<string, byte[]> RuntimeAssemblies { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -170,9 +175,9 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
         });
     }
 
-    internal static async Task<WorkflowPackage> UploadAsync(IWorkflowCatalogStore catalog, IArtifactStore artifacts,
-        Stream content, WorkflowBundleReadLimits limits, CancellationToken token)
+    internal static async Task<PackageUploadCandidate> ReadAsync(Stream content, WorkflowBundleReadLimits limits, CancellationToken token)
     {
+        limits.Validate();
         WorkflowPackage package;
         byte[] bytes;
         try
@@ -189,17 +194,13 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
             PackageIdValidator.ValidatePackageId(identity.Id);
             package = new WorkflowPackage(identity.Id.ToLowerInvariant(), VersionKey(identity.Version), digest,
                 entries.ToDictionary(pair => pair.Key, pair => ArtifactDigest.Of(pair.Value.Span), StringComparer.Ordinal),
-                ReadDependencyGroups(reader));
+                ReadDependencyGroups(reader)) { Origin = WorkflowPackageOrigin.Uploaded };
         }
         catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.ArtifactMismatch)
         { throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Invalid activity package upload"); }
         catch (Exception error) when (error is not (WorkflowEngineException or OperationCanceledException or OutOfMemoryException))
         { throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Invalid activity package upload"); }
-        if (await artifacts.PutAsync(ArtifactKind.Package, new MemoryStream(bytes), token) != package.Digest)
-            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Artifact store returned a different package digest");
-        token.ThrowIfCancellationRequested();
-        await catalog.RegisterPackageAsync(package, artifacts);
-        return package;
+        return new(package, bytes);
     }
 
     private static WorkflowPackageDependencyGroup[] ReadDependencyGroups(PackageArchiveReader reader) =>
@@ -208,11 +209,40 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
 
     internal static string VersionKey(NuGetVersion version) => version.ToNormalizedString().ToLowerInvariant();
 
-    internal async Task<ResolvedWorkflowPackages> ResolveAsync(IList<string> imports, CancellationToken token)
+    internal static async Task<PackageUploadCandidate> VerifyCandidateAsync(PackageUploadCandidate candidate, WorkflowBundleReadLimits limits, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(candidate);
+        if (candidate.Package == null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Upload candidate metadata is missing");
+        limits.Validate();
+        if (candidate.Bytes.Length > limits.MaxArchiveBytes)
+            throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Package archive exceeds the configured byte limit");
+        var verified = await ReadAsync(new MemoryStream(candidate.Bytes.ToArray(), writable: false), limits, token);
+        if (candidate.Package.Id != verified.Package.Id || candidate.Package.Version != verified.Package.Version)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Upload candidate identity differs from its archive");
+        WorkflowPackageRules.CheckRegistration(candidate.Package, verified.Package);
+        return verified;
+    }
+
+    internal async Task<ResolvedWorkflowPackages> ResolveAsync(IList<string> imports, PackageAcquisition acquisition, IReadOnlyList<PackageUploadCandidate> candidates, CancellationToken token)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxPackageCandidates);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxResolvedPackages);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxPackageResolutionBytes);
+        if (!Enum.IsDefined(acquisition)) throw new ArgumentException("Invalid package acquisition mode");
+        if (candidates.Count > options.MaxPackageCandidates)
+            throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Seeded package count exceeds the configured limit");
+        var seeds = new Dictionary<string, PackageUploadCandidate>(StringComparer.OrdinalIgnoreCase);
+        long seededBytes = 0;
+        foreach (var candidate in candidates)
+        {
+            ArgumentNullException.ThrowIfNull(candidate);
+            if (candidate.Bytes.Length > options.MaxPackageResolutionBytes - seededBytes)
+                throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Seeded package bytes exceed the configured limit");
+            seededBytes += candidate.Bytes.Length;
+            var verified = await VerifyCandidateAsync(candidate, options.PackageReadLimits, token);
+            if (!seeds.TryAdd(verified.Package.Id + "@" + verified.Package.Version, verified)) throw new ArgumentException("Duplicate package candidate");
+        }
+        var missingIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var result = new ResolvedWorkflowPackages();
         if (imports.Count == 0) return result;
         try
@@ -221,7 +251,7 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
             if (framework.IsUnsupported) throw new InvalidOperationException($"Unsupported target framework '{options.TargetFramework}'");
             var repositories = new List<SourceRepository>();
             PackageSourceMapping? mapping = null;
-            if (options.NuGetConfigPath != null)
+            if (acquisition != PackageAcquisition.CatalogOnly && options.NuGetConfigPath != null)
             {
                 var path = Path.GetFullPath(options.NuGetConfigPath);
                 if (!File.Exists(path)) throw new InvalidOperationException("The configured NuGet.Config file does not exist");
@@ -259,6 +289,7 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
 
             IEnumerable<SourceRepository> Sources(string id)
             {
+                if (acquisition == PackageAcquisition.CatalogOnly) return [];
                 var configured = mapping?.IsEnabled == true ? mapping.GetConfiguredPackageSources(id) : null;
                 if (mapping?.IsEnabled == true && (configured == null || configured.Count == 0))
                     throw new InvalidOperationException($"Package '{id}' has no matching NuGet package source mapping");
@@ -280,13 +311,18 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
             {
                 if (versions.TryGetValue(id, out var found)) return found;
                 var all = new HashSet<NuGetVersion>();
+                var withdrawn = new HashSet<NuGetVersion>();
+                if (acquisition != PackageAcquisition.CatalogOnly)
+                    foreach (var seed in seeds.Values.Where(item => item.Package.Id.Equals(id, StringComparison.OrdinalIgnoreCase)))
+                        all.Add(NuGetVersion.Parse(seed.Package.Version));
                 string? after = null;
                 while (true)
                 {
                     token.ThrowIfCancellationRequested();
                     var page = await catalog.GetPackagePageAsync(id, after, 128);
                     foreach (var package in page)
-                        if (await artifacts.ExistsAsync(package.Digest, token))
+                        if (package.Withdrawn) withdrawn.Add(NuGetVersion.Parse(package.Version));
+                        else if (await artifacts.ExistsAsync(package.Digest, token))
                         {
                             all.Add(NuGetVersion.Parse(package.Version));
                             if (all.Count > options.MaxPackageCandidates) throw new InvalidOperationException("Package version candidates exceed the configured limit");
@@ -306,9 +342,20 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
                         if (all.Count > options.MaxPackageCandidates) throw new InvalidOperationException("Package version candidates exceed the configured limit");
                     }
                 }
+                all.ExceptWith(withdrawn);
                 return versions[id] = all.Order().ToArray();
             }
-            Task<WorkflowPackage?> Record(PackageIdentity identity) => catalog.GetPackageAsync(identity.Id, VersionKey(identity.Version));
+            async Task<WorkflowPackage?> Record(PackageIdentity identity)
+            {
+                var row = await catalog.GetPackageAsync(identity.Id, VersionKey(identity.Version));
+                if (row?.Withdrawn == true) throw new WorkflowPublishException("PUB025", "A withdrawn package cannot be used for new authoring", new(1, 1));
+                if (acquisition != PackageAcquisition.CatalogOnly && seeds.TryGetValue(identity.Id + "@" + VersionKey(identity.Version), out var seed))
+                {
+                    WorkflowPackageRules.CheckRegistration(row, seed.Package);
+                    return seed.Package;
+                }
+                return row;
+            }
             var remoteFeeds = new Dictionary<SourceRepository, WorkflowPackageFeed>();
             WorkflowPackageFeed Remote(SourceRepository source)
             {
@@ -334,7 +381,11 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
             async Task EnqueueDependencies(IEnumerable<PackageDependency> dependencies)
             {
                 foreach (var dependency in dependencies.Where(dependency => !Shared(dependency)))
-                    foreach (var version in (await Versions(dependency.Id)).Where(dependency.VersionRange.Satisfies)) Schedule(new(dependency.Id, version));
+                {
+                    var choices = (await Versions(dependency.Id)).Where(dependency.VersionRange.Satisfies).ToArray();
+                    if (choices.Length == 0) missingIds.Add(dependency.Id.ToLowerInvariant());
+                    foreach (var version in choices) Schedule(new(dependency.Id, version));
+                }
             }
             foreach (var import in imports)
             {
@@ -357,7 +408,7 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
                     if (ordinary.Count >= options.MaxPackageCandidates) throw new InvalidOperationException("Package candidates exceed the configured limit");
                     PackageDependency[]? dependencies = null;
                     var record = await Record(identity);
-                    if (record != null && await artifacts.ExistsAsync(record.Digest, token))
+                    if (record != null && (seeds.ContainsKey(identity.Id + "@" + VersionKey(identity.Version)) && acquisition != PackageAcquisition.CatalogOnly || await artifacts.ExistsAsync(record.Digest, token)))
                     {
                         Budget(record.DependencyGroups.Sum(group => (long)group.Framework.Length * 2 +
                             group.Dependencies.Sum(dependency => (long)dependency.Id.Length * 2 + dependency.VersionRange.Length * 2)));
@@ -380,14 +431,23 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
                             }
                             if (dependencies != null) break;
                         }
-                    if (dependencies == null) { ordinary[identity] = []; continue; } // Missing candidates cannot poison a different valid closure.
+                    if (dependencies == null)
+                    {
+                        if (acquisition == PackageAcquisition.CatalogOnly) throw new WorkflowPublishException("PUB030", "Catalog package content is unavailable", new(1, 1));
+                        missingIds.Add(identity.Id.ToLowerInvariant()); ordinary[identity] = []; continue;
+                    } // Missing candidates cannot poison a different valid closure.
                     Budget(dependencies.Sum(dependency => (long)dependency.Id.Length * 2 + dependency.VersionRange.ToString().Length * 2));
                     ordinary[identity] = dependencies.Where(dependency => !Shared(dependency)).ToArray();
                     var incompatible = dependencies.FirstOrDefault(dependency => Shared(dependency) && !SharedSatisfied(dependency));
                     if (incompatible != null)
                     {
                         if (roots.Contains(identity, PackageIdentityComparer.Default))
+                        {
+                            if (seeds.ContainsKey(identity.Id + "@" + VersionKey(identity.Version)))
+                                throw new PackageClosureUnavailableException([incompatible.Id.ToLowerInvariant()]);
                             throw new InvalidOperationException($"Package '{identity}' requires shared assembly package '{incompatible.Id}' {incompatible.VersionRange}; the profile cannot satisfy it");
+                        }
+                        missingIds.Add(incompatible.Id.ToLowerInvariant());
                         continue;
                     }
                     available[identity] = new(identity.Id, identity.Version, ordinary[identity], true, repositories.FirstOrDefault()!);
@@ -398,9 +458,10 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
             {
                 if (archives.ContainsKey(identity)) return;
                 var record = await Record(identity);
-                byte[]? bytes = null;
+                byte[]? bytes = acquisition != PackageAcquisition.CatalogOnly && seeds.TryGetValue(identity.Id + "@" + VersionKey(identity.Version), out var seed)
+                    ? seed.Bytes.ToArray() : null;
                 var charged = false;
-                if (record != null)
+                if (bytes == null && record != null)
                 {
                     await using var stored = await artifacts.OpenAsync(record.Digest, token);
                     if (stored != null)
@@ -410,6 +471,8 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
                         bytes = buffer.ToArray();
                     }
                 }
+                if (bytes == null && acquisition == PackageAcquisition.CatalogOnly)
+                    throw new WorkflowPublishException("PUB030", "Catalog package content is unavailable", new(1, 1));
                 if (bytes == null)
                     foreach (var source in Sources(identity.Id))
                     {
@@ -447,12 +510,14 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
             {
                 if (++rounds > options.MaxPackageCandidates) throw new InvalidOperationException("Package runtime resolution did not converge within the candidate limit");
                 await ExpandMetadata();
-                var candidates = available.Values.Where(package => !rootVersions.TryGetValue(package.Id, out var pin) || package.Version == pin);
+                var choices = available.Values.Where(package => !rootVersions.TryGetValue(package.Id, out var pin) || package.Version == pin);
                 var context = new PackageResolverContext(DependencyBehavior.Lowest, roots.Select(root => root.Id), roots.Select(root => root.Id), [], roots,
-                    candidates, repositories.Select(source => source.PackageSource), NullLogger.Instance);
+                    choices, repositories.Select(source => source.PackageSource), NullLogger.Instance);
                 try { resolved = new PackageResolver().Resolve(context, token).OrderBy(package => package.Id, StringComparer.OrdinalIgnoreCase).ToArray(); }
                 catch (Exception error) when (error is not (OperationCanceledException or OutOfMemoryException))
-                { throw new InvalidOperationException($"NuGet could not resolve the package closure for {string.Join(", ", roots.Select(root => root.Id + "@" + VersionKey(root.Version)))}"); }
+                {
+                    if (missingIds.Count != 0) throw new PackageClosureUnavailableException(missingIds.Order(StringComparer.Ordinal).ToArray());
+                    throw new InvalidOperationException($"NuGet could not resolve the package closure for {string.Join(", ", roots.Select(root => root.Id + "@" + VersionKey(root.Version)))}"); }
                 if (resolved.Length > options.MaxResolvedPackages) throw new InvalidOperationException("Resolved package count exceeds the configured limit");
                 foreach (var identity in resolved) await Acquire(identity);
                 graph = baseGraph;
@@ -467,7 +532,11 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
                     foreach (var identity in rejected)
                     {
                         if (roots.Contains(identity, PackageIdentityComparer.Default))
+                        {
+                            if (seeds.ContainsKey(identity.Id + "@" + VersionKey(identity.Version)))
+                                throw new PackageClosureUnavailableException([identity.Id.ToLowerInvariant()]);
                             throw new InvalidOperationException($"Package '{identity}' has an incompatible shared assembly runtime requirement");
+                        }
                         available.Remove(identity);
                     }
                     // Runtime constraints belong to this tentative closure, never the next trial.
@@ -512,26 +581,89 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
                 var (package, entries, bytes) = archives[identity];
                 var pin = SelectAssets(package, entries, framework, graph) with
                 { ApplicableRuntimeIdentifiers = neutralClosure.Contains(identity.Id) ? null : ridClosures.Where(pair => pair.Value.Contains(identity.Id)).Select(pair => pair.Key).Order(StringComparer.Ordinal).ToArray() };
-                VerifySharedReferences(pin, entries);
+                VerifySharedReferences(pin, entries, seeds.ContainsKey(package.Id + "@" + package.Version));
                 bool Private(string path) => !WorkflowSharedAssemblies.IsShared(ResolvedWorkflowPackages.AssemblyIdentity(entries[path]));
                 pin = pin with { ReferenceAssemblies = pin.ReferenceAssemblies.Where(Private).ToArray(),
                     RuntimeAssets = pin.RuntimeAssets.ToDictionary(pair => pair.Key, pair => pair.Value with { ManagedAssemblies = pair.Value.ManagedAssemblies.Where(Private).ToArray() }, StringComparer.Ordinal) };
-                if (pin.ReferenceAssemblies.Count != 0 && pin.RuntimeAssets.Count == 0)
+                if (pin.ReferenceAssemblies.Count != 0 && pin.RuntimeAssets.Count == 0 && !seeds.ContainsKey(package.Id + "@" + package.Version))
                     throw new InvalidOperationException($"Package '{identity}' has reference assets without a runtime implementation");
                 if (pin.ReferenceAssemblies.Count != 0)
                     foreach (var selection in pin.RuntimeAssets.Where(pair => pair.Key != "" || !pin.RequiresRuntimeIdentifier).Select(pair => pair.Value))
                         foreach (var reference in pin.ReferenceAssemblies)
-                            if (!selection.ManagedAssemblies.Any(path => ResolvedWorkflowPackages.AssemblyIdentity(entries[path]).Name == ResolvedWorkflowPackages.AssemblyIdentity(entries[reference]).Name))
+                            if (!selection.ManagedAssemblies.Any(path => ResolvedWorkflowPackages.AssemblyIdentity(entries[path]).Name == ResolvedWorkflowPackages.AssemblyIdentity(entries[reference]).Name) && !seeds.ContainsKey(package.Id + "@" + package.Version))
                                 throw new InvalidOperationException($"Package '{identity}' has no runtime implementation for reference '{reference}'");
-                await UploadAsync(catalog, artifacts, new MemoryStream(bytes), options.PackageReadLimits, token);
                 result.Add(pin, entries, neutralClosure.Contains(identity.Id));
             }
-            CheckRuntimeClosure(result, graph.Runtimes.Keys);
+            if (candidates.Count == 0) CheckRuntimeClosure(result, graph.Runtimes.Keys);
+            var descriptors = await PackageDescriptorReader.ReadAsync(result, options.BuildTimeout, token);
+            foreach (var (id, activities) in descriptors.Packages) result.Activities.Add(id, activities);
+            foreach (var (key, assembly) in descriptors.Assemblies) result.ActivityAssemblies.Add(key, assembly);
+            PackageDescriptorAgreement.Validate(result, WorkflowCompilation.CreateReferences(options.SourceOptions, result.References));
+            await ReconcileAsync(result, token);
+            var rid = System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier;
+            foreach (var identity in resolved)
+            {
+                var (package, entries, bytes) = archives[identity];
+                var pin = result.Pins.Single(item => item.Id == package.Id);
+                var reached = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var work = new Queue<string>(available[identity].Dependencies.Select(item => item.Id));
+                while (work.TryDequeue(out var dependency))
+                    if (!dependency.Equals(package.Id, StringComparison.OrdinalIgnoreCase) && reached.Add(dependency))
+                        foreach (var child in available[byId[dependency]].Dependencies) work.Enqueue(child.Id);
+                var closure = resolved.Where(item => reached.Contains(item.Id)).Select(item => archives[item].Package)
+                    .OrderBy(item => item.Id, StringComparer.Ordinal).Select(item => new WorkflowPackageReference(item.Id, item.Version, item.Digest)).ToArray();
+                var runtime = pin.AppliesTo(rid) ? pin.RuntimeAssets.GetValueOrDefault(rid) ?? (!pin.RequiresRuntimeIdentifier ? pin.RuntimeAssets.GetValueOrDefault("") : null) : null;
+                var unloadable = (runtime?.ManagedAssemblies.Count ?? 0) == 0 &&
+                    (pin.ReferenceAssemblies.Count != 0 || pin.RuntimeAssets.Values.Any(selection => selection.ManagedAssemblies.Count != 0));
+                if (unloadable && pin.AppliesTo(rid) && !seeds.ContainsKey(package.Id + "@" + package.Version))
+                    throw new WorkflowPublishException("PUB017", "No managed package implementation is available for this publisher runtime", new(1, 1));
+                result.Prepared.Add(new(new(package, bytes), new(result.Activities[package.Id], unloadable ? PackageExtraction.Unloadable : PackageExtraction.Indexed,
+                    unloadable ? "No managed implementation is available for this runtime" : null, closure, [])));
+            }
+            if (acquisition == PackageAcquisition.Persist)
+            {
+                await PackageIngestion.PersistAsync(catalog, artifacts, result.Prepared, null, token);
+                using var indexing = new PackageIndexingService(catalog, artifacts, options);
+                await indexing.RevisitAsync(result.Prepared.Select(item => item.Candidate.Package.Id).ToArray(), token);
+            }
             imports.Clear();
             foreach (var root in roots) imports.Add(root.Id.ToLowerInvariant() + "@" + VersionKey(root.Version));
             return result;
         }
+        catch (PackageClosureUnavailableException) when (acquisition == PackageAcquisition.CatalogOnly)
+        {
+            result.Dispose();
+            throw new WorkflowPublishException("PUB030", "Catalog package dependency closure is unavailable", new(1, 1));
+        }
         catch { result.Dispose(); throw; }
+    }
+
+    internal async Task RefreshDescriptorsAsync(ResolvedWorkflowPackages result, CancellationToken token)
+    {
+        var descriptors = await PackageDescriptorReader.ReadAsync(result, options.BuildTimeout, token);
+        result.Activities.Clear();
+        result.ActivityAssemblies.Clear();
+        foreach (var (id, activities) in descriptors.Packages) result.Activities.Add(id, activities);
+        foreach (var (key, assembly) in descriptors.Assemblies) result.ActivityAssemblies.Add(key, assembly);
+        PackageDescriptorAgreement.Validate(result, WorkflowCompilation.CreateReferences(options.SourceOptions, result.References));
+        await ReconcileAsync(result, token);
+    }
+
+    private async Task ReconcileAsync(ResolvedWorkflowPackages result, CancellationToken token)
+    {
+        foreach (var pin in result.Pins)
+        {
+            token.ThrowIfCancellationRequested();
+            var rid = System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier;
+            var selected = pin.AppliesTo(rid) ? pin.RuntimeAssets.GetValueOrDefault(rid) ??
+                (!pin.RequiresRuntimeIdentifier ? pin.RuntimeAssets.GetValueOrDefault("") : null) : null;
+            if (selected == null) continue;
+            var known = await catalog.GetPackageDetailAsync(pin.Id, pin.Version, CatalogScope.Unrestricted);
+            if (known?.Summary.Extraction != PackageExtraction.Indexed) continue;
+            var stored = known.Activities.Activities.Select(item => (item.Key, item.ContractHash)).OrderBy(item => item.Key, StringComparer.Ordinal);
+            var current = result.Activities[pin.Id].Select(item => (item.Key, item.ContractHash)).OrderBy(item => item.Key, StringComparer.Ordinal);
+            if (!stored.SequenceEqual(current)) throw new WorkflowPublishException("PUB015", "The selected dependency closure changes the indexed activity contract", new(1, 1));
+        }
     }
 
     private static void CheckRuntimeClosure(ResolvedWorkflowPackages result, IEnumerable<string> runtimes)
@@ -589,7 +721,7 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
         return new(package.Id, package.Version, package.Digest, package.Entries, references, assets, requiresRid);
     }
 
-    private static void VerifySharedReferences(WorkflowPackagePin pin, IReadOnlyDictionary<string, ReadOnlyMemory<byte>> entries)
+    private static void VerifySharedReferences(WorkflowPackagePin pin, IReadOnlyDictionary<string, ReadOnlyMemory<byte>> entries, bool seeded)
     {
         foreach (var path in pin.ReferenceAssemblies.Concat(pin.RuntimeAssets.Values.SelectMany(assets => assets.ManagedAssemblies)).Distinct())
         {
@@ -597,7 +729,7 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
             var metadata = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(pe);
             var own = ResolvedWorkflowPackages.AssemblyIdentity(entries[path]);
             if (WorkflowSharedAssemblies.Identity(own.Name!) is { } provided && (provided.Version != own.Version || !WorkflowSharedAssemblies.IsShared(own)))
-                throw new InvalidOperationException($"Package '{pin.Id}' supplies shared assembly '{own.Name}' {own.Version}; profile provides {provided.Version}");
+                throw seeded ? new PackageClosureUnavailableException([own.Name!.ToLowerInvariant()]) : new InvalidOperationException($"Package '{pin.Id}' supplies shared assembly '{own.Name}' {own.Version}; profile provides {provided.Version}");
             foreach (var handle in metadata.AssemblyReferences)
             {
                 var reference = metadata.GetAssemblyReference(handle);
@@ -610,7 +742,7 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
                     else requested.SetPublicKeyToken(metadata.GetBlobBytes(reference.PublicKeyOrToken));
                 }
                 if (WorkflowSharedAssemblies.Identity(name) is { } shared && (reference.Version > shared.Version || !WorkflowSharedAssemblies.IsShared(requested)))
-                    throw new InvalidOperationException($"Package '{pin.Id}@{pin.Version}' requires shared assembly '{name}' {reference.Version}; profile provides {shared.Version}");
+                    throw seeded ? new PackageClosureUnavailableException([name.ToLowerInvariant()]) : new InvalidOperationException($"Package '{pin.Id}@{pin.Version}' requires shared assembly '{name}' {reference.Version}; profile provides {shared.Version}");
             }
         }
     }

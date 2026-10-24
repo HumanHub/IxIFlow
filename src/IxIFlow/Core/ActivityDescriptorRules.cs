@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.ComponentModel;
 using IxIFlow.ActivitySdk;
 using IxIFlow.Core.Runtime;
 
@@ -21,13 +22,14 @@ public static class ActivityDescriptorRules
             throw Invalid("Scope concurrency and threading require a scope implementation");
         var contract = ActivityContract.Describe(type);
         var result = new ActivityDescriptor(attribute.Key, attribute.Version, attribute.Name ?? type.Name,
-            attribute.Category ?? "Activities", attribute.Icon, attribute.Designer, contract.Inputs, contract.Outputs,
-            WorkflowPackageRules.NormalizeId(packageId), WorkflowPackageRules.NormalizeVersion(packageVersion), type)
+            attribute.Category ?? "Activities", type.GetCustomAttribute<DescriptionAttribute>()?.Description, attribute.Icon, attribute.Designer, contract.Inputs, contract.Outputs,
+            WorkflowPackageRules.NormalizeId(packageId), WorkflowPackageRules.NormalizeVersion(packageVersion), type.FullName!, WorkflowTypeIdentity.CSharpName(type))
         {
+            ActivityType = type,
             Scope = scope == null ? null : new(WorkflowTypeIdentity.SavedName(scope), WorkflowTypeIdentity.CSharpName(scope),
                 ActivityTypes.Concurrency(type), ActivityTypes.Threading(type)),
-            RequiresScopes = ActivityTypes.Requirements(type).OrderBy(WorkflowTypeIdentity.SavedName, StringComparer.Ordinal)
-                .Select(item => new ScopeRequirement(WorkflowTypeIdentity.SavedName(item), WorkflowTypeIdentity.CSharpName(item))).ToArray()
+            RequiresScopes = Array.AsReadOnly(ActivityTypes.Requirements(type).OrderBy(WorkflowTypeIdentity.SavedName, StringComparer.Ordinal)
+                .Select(item => new ScopeRequirement(WorkflowTypeIdentity.SavedName(item), WorkflowTypeIdentity.CSharpName(item))).ToArray())
         };
         Validate(result);
         return result;
@@ -36,20 +38,29 @@ public static class ActivityDescriptorRules
     public static void Validate(ActivityDescriptor descriptor)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
-        if (string.IsNullOrWhiteSpace(descriptor.Key) || descriptor.Key.Length > 100 ||
+        if (string.IsNullOrWhiteSpace(descriptor.Key) || descriptor.Key != descriptor.Key.Trim() || descriptor.Key.Length > 100 ||
             string.IsNullOrWhiteSpace(descriptor.Version) || descriptor.Version.Length > 50 ||
+            string.IsNullOrWhiteSpace(descriptor.Name) || descriptor.Name.Length > 200 ||
+            string.IsNullOrWhiteSpace(descriptor.Category) || descriptor.Category.Length > 100 ||
+            !WorkflowPackageRules.ValidId(descriptor.PackageId) || WorkflowPackageRules.NormalizeId(descriptor.PackageId) != descriptor.PackageId ||
+            WorkflowPackageRules.NormalizeVersion(descriptor.PackageVersion) != descriptor.PackageVersion ||
+            string.IsNullOrWhiteSpace(descriptor.MetadataTypeName) ||
+            WorkflowTypeIdentity.CSharpName($"ixi-type:1:N1:X{descriptor.MetadataTypeName.Length}:{descriptor.MetadataTypeName}0:") != descriptor.CSharpTypeName ||
+            descriptor.MetadataTypeName.Split('+', '.').Any(part => part.Length == 0 || !(char.IsLetter(part[0]) || part[0] == '_') || part.Any(c => !(char.IsLetterOrDigit(c) || c == '_'))) ||
             descriptor.Inputs == null || descriptor.Outputs == null || descriptor.RequiresScopes == null)
             throw Invalid("Invalid activity descriptor");
         _ = new WorkflowContract(descriptor.Inputs, descriptor.Outputs, false);
+        if (descriptor.Inputs.Concat(descriptor.Outputs).Any(member => member.UIHint is not (null or "text" or "code" or "binding" or "connection")))
+            throw Invalid("Invalid activity member UI hint");
         foreach (var token in new[] { descriptor.Icon, descriptor.Designer }.OfType<string>())
-            if (!System.Text.RegularExpressions.Regex.IsMatch(token, "^[a-z][a-z0-9-]*$"))
+            if (token.Length > 100 || !System.Text.RegularExpressions.Regex.IsMatch(token, "^[a-z][a-z0-9-]*$"))
                 throw Invalid("Invalid activity icon or designer token");
         foreach (var requirement in descriptor.RequiresScopes)
-            if (requirement == null || !WorkflowTypeIdentity.IsSavedName(requirement.Type) || WorkflowTypeIdentity.CSharpName(requirement.Type) != requirement.TypeName)
+            if (requirement == null || !WorkflowTypeIdentity.IsSavedName(requirement.Type) || string.IsNullOrWhiteSpace(requirement.TypeName) || WorkflowTypeIdentity.CSharpName(requirement.Type) != requirement.TypeName)
                 throw Invalid("Invalid scope requirement");
         if (descriptor.RequiresScopes.Select(item => item.Type).Distinct(StringComparer.Ordinal).Count() != descriptor.RequiresScopes.Count)
             throw Invalid("Duplicate scope requirements");
-        if (descriptor.Scope is { } scope && (!WorkflowTypeIdentity.IsSavedName(scope.ValueType) ||
+        if (descriptor.Scope is { } scope && (!WorkflowTypeIdentity.IsSavedName(scope.ValueType) || string.IsNullOrWhiteSpace(scope.ValueTypeName) ||
             WorkflowTypeIdentity.CSharpName(scope.ValueType) != scope.ValueTypeName || !Enum.IsDefined(scope.Concurrency) || !Enum.IsDefined(scope.Threading)))
             throw Invalid("Invalid scope descriptor");
         if (descriptor.ActivityType is { } type)

@@ -124,14 +124,14 @@ public sealed class ActivityPackageRound2Tests : IDisposable
             var publisher = new WorkflowPublisher(store, store);
             await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.transitive", "1.0.0", new()
             { [$"runtimes/{rid}/native/fixture_primary{extension}"] = ActivityPackageFixture.NativeLibraryBytes("fixture_primary", rid) })));
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => new WorkflowPackageResolver(store, store, new()).ResolveAsync(new List<string> { "fixture.transitive@1.0.0" }, default));
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => new WorkflowPackageResolver(store, store, new()).ResolveAsync(new List<string> { "fixture.transitive@1.0.0" }, PackageAcquisition.Persist, [], default));
             Assert.Contains("fixture_helper", error.Message);
             await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.transitive", "2.0.0", new()
             {
                 [$"runtimes/{rid}/native/fixture_primary{extension}"] = ActivityPackageFixture.NativeLibraryBytes("fixture_primary", rid),
                 [$"runtimes/{rid}/native/fixture_helper{extension}"] = ActivityPackageFixture.NativeLibraryBytes("fixture_helper", rid)
             })));
-            using var accepted = await new WorkflowPackageResolver(store, store, new()).ResolveAsync(new List<string> { "fixture.transitive@2.0.0" }, default);
+            using var accepted = await new WorkflowPackageResolver(store, store, new()).ResolveAsync(new List<string> { "fixture.transitive@2.0.0" }, PackageAcquisition.Persist, [], default);
             Assert.Single(accepted.Pins);
         }
     }
@@ -287,7 +287,7 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         var selected = await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.metadata", "1.0.0", new())));
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.root", "1.0.0", new(), "<dependency id=\"fixture.metadata\" version=\"[1.0.0,3.0.0)\"/>")));
         var artifacts = new RecordingArtifacts(store);
-        using var resolved = await new WorkflowPackageResolver(store, artifacts, new()).ResolveAsync(new List<string> { "fixture.root@1.0.0" }, default);
+        using var resolved = await new WorkflowPackageResolver(store, artifacts, new()).ResolveAsync(new List<string> { "fixture.root@1.0.0" }, PackageAcquisition.Persist, [], default);
         Assert.DoesNotContain(unselected.Digest, artifacts.Opened);
         Assert.Equal(1, artifacts.Opened.Count(digest => digest == selected.Digest));
         Assert.Equal(2, artifacts.Opened.Count);
@@ -299,11 +299,11 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         var store = new InMemoryWorkflowStateRepository();
         var package = await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.history", "1.0.0", new())));
         var historical = await store.PutAsync(ArtifactKind.Package, new MemoryStream([1]));
-        for (var i = 2; i < 2055; i++) await store.RegisterPackageAsync(package with { Version = i + ".0.0", Digest = historical }, store);
+        for (var i = 2; i < 2055; i++) await store.RegisterPackageAsync(package with { Version = i + ".0.0", Digest = historical }, new([], PackageExtraction.Pending, null, null, []), store);
         await store.DeleteAsync(historical);
         foreach (var import in new[] { "fixture.history@1.0.0", "fixture.history" })
         {
-            using var resolved = await new WorkflowPackageResolver(store, store, new() { MaxPackageCandidates = 1 }).ResolveAsync(new List<string> { import }, default);
+            using var resolved = await new WorkflowPackageResolver(store, store, new() { MaxPackageCandidates = 1 }).ResolveAsync(new List<string> { import }, PackageAcquisition.Persist, [], default);
             Assert.Equal("1.0.0", Assert.Single(resolved.Pins).Version);
         }
     }
@@ -318,7 +318,7 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.a", "2.0.0", new())));
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.b", "1.0.0", new())));
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.root", "1.0.0", new(), "<dependency id=\"fixture.a\" version=\"[1.0.0,3.0.0)\"/><dependency id=\"fixture.b\" version=\"[1.0.0]\"/>")));
-        using var resolved = await new WorkflowPackageResolver(store, store, new()).ResolveAsync(new List<string> { "fixture.root@1.0.0" }, default);
+        using var resolved = await new WorkflowPackageResolver(store, store, new()).ResolveAsync(new List<string> { "fixture.root@1.0.0" }, PackageAcquisition.Persist, [], default);
         Assert.Equal("2.0.0", resolved.Pins.Single(pin => pin.Id == "fixture.a").Version);
         Assert.DoesNotContain(resolved.Pins, pin => pin.Id == "fixture.missing");
     }
@@ -343,7 +343,7 @@ public sealed class ActivityPackageRound2Tests : IDisposable
             ["linux-x64"] = new Dictionary<string, object> { ["fixture.root"] = new Dictionary<string, string> { ["fixture.linux-x64"] = "[1.0.0]" } }
         } });
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.root", "1.0.0", new() { ["runtime.json"] = Encoding.UTF8.GetBytes(graph) })));
-        using var resolved = await new WorkflowPackageResolver(store, store, new()).ResolveAsync(new List<string> { "fixture.root@1.0.0" }, default);
+        using var resolved = await new WorkflowPackageResolver(store, store, new()).ResolveAsync(new List<string> { "fixture.root@1.0.0" }, PackageAcquisition.Persist, [], default);
         Assert.Empty(resolved.References);
         var implementation = Assert.Single(resolved.RuntimeAssemblies);
         var assembly = Assembly.Load(implementation.Value);
@@ -372,7 +372,7 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         var path = Path.Combine(Folder(), "NuGet.Config");
         await File.WriteAllTextAsync(path, $"<configuration><packageSources><clear/><add key=\"offline\" value=\"{Folder("feed")}\"/></packageSources><packageSourceMapping><packageSource key=\"offline\"><package pattern=\"other.*\"/></packageSource></packageSourceMapping></configuration>");
         var store = new InMemoryWorkflowStateRepository();
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = path }).ResolveAsync(new List<string> { "fixture.unmapped" }, default));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = path }).ResolveAsync(new List<string> { "fixture.unmapped" }, PackageAcquisition.Persist, [], default));
         Assert.Contains("fixture.unmapped", error.Message);
         Assert.Contains("source mapping", error.Message);
     }
@@ -385,7 +385,7 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         var path = Path.Combine(Folder(), "NuGet.Config");
         await File.WriteAllTextAsync(path, $"<configuration><packageSources><clear/><add key=\"safe-source\" value=\"{feed}\"/></packageSources></configuration>");
         var store = new InMemoryWorkflowStateRepository();
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = path }).ResolveAsync(new List<string> { "fixture.broken@1.0.0" }, default));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = path }).ResolveAsync(new List<string> { "fixture.broken@1.0.0" }, PackageAcquisition.Persist, [], default));
         Assert.Contains("safe-source", error.Message);
         Assert.Contains("fixture.broken", error.Message);
         Assert.DoesNotContain("very-secret", error.ToString());

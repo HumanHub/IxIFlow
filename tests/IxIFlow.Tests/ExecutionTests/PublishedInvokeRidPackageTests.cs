@@ -99,7 +99,7 @@ public sealed class PublishedInvokeRidPackageTests
         var store = new InMemoryWorkflowStateRepository();
         await UploadClosure(new WorkflowPublisher(store, store), "fixture.root", "fixture.win", "fixture.linux");
         var resolver = new WorkflowPackageResolver(store, store, new());
-        using var callee = await resolver.ResolveAsync(new List<string> { "fixture.root@1.0.0" }, default);
+        using var callee = await resolver.ResolveAsync(new List<string> { "fixture.root@1.0.0" }, PackageAcquisition.Persist, [], default);
         using var caller = new ResolvedWorkflowPackages();
         foreach (var pin in callee.Pins) caller.Add(pin, callee.Contents[pin.Id], compile: false);
         await resolver.UnionAsync(caller, callee.Pins, new DocumentLocation(1, 1), default);

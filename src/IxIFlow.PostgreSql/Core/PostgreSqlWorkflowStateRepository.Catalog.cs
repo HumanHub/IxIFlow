@@ -82,8 +82,70 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             dependency_groups_json text NOT NULL,
             digest text COLLATE "C" NOT NULL,
             metadata_json text NOT NULL,
+            origin varchar(10) COLLATE "C" NOT NULL CHECK (origin IN ('Resolved','Uploaded','Published')),
+            extraction varchar(10) COLLATE "C" NOT NULL CHECK (extraction IN ('Indexed','Pending','Unloadable')),
+            extraction_detail varchar(400) COLLATE "C" NULL,
+            closure_json text COLLATE "C" NULL,
+            withdrawn boolean NOT NULL,
+            withdrawn_at_utc timestamptz NULL,
+            withdrawn_by varchar(200) COLLATE "C" NULL,
+            registered_at_utc timestamptz NOT NULL,
+            registered_by varchar(200) COLLATE "C" NULL,
+            published_draft_generation uuid NULL,
+            published_draft_revision bigint NULL,
+            published_draft_name varchar(200) COLLATE "C" NULL,
+            published_draft_version int NULL,
+            published_at_utc timestamptz NULL,
+            published_by varchar(200) COLLATE "C" NULL,
+            lifecycle_revision bigint NOT NULL,
+            catalog_revision bigint NOT NULL,
             PRIMARY KEY (id, version)
         );
+        CREATE INDEX ix_packages_origin ON ixiflow_packages (origin, id, version);
+        CREATE TABLE ixiflow_package_activities (
+            package_id varchar(100) COLLATE "C" NOT NULL,
+            package_version varchar(100) COLLATE "C" NOT NULL,
+            "key" varchar(100) COLLATE "C" NOT NULL,
+            version varchar(50) COLLATE "C" NOT NULL,
+            metadata_type_name text COLLATE "C" NOT NULL,
+            csharp_type_name text COLLATE "C" NOT NULL,
+            display_name varchar(200) COLLATE "C" NOT NULL,
+            category varchar(100) COLLATE "C" NOT NULL,
+            icon varchar(100) COLLATE "C" NULL,
+            search_text varchar(400) COLLATE "C" NOT NULL,
+            contract_hash varchar(64) COLLATE "C" NOT NULL,
+            descriptor_json text COLLATE "C" NOT NULL,
+            catalog_revision bigint NOT NULL,
+            PRIMARY KEY (package_id, package_version, "key")
+        );
+        CREATE INDEX ix_package_activities_key ON ixiflow_package_activities ("key", version, package_id, package_version);
+        CREATE INDEX ix_package_activities_category ON ixiflow_package_activities (category, "key");
+        CREATE TABLE ixiflow_installed_activities (
+            package_id varchar(100) COLLATE "C" NOT NULL,
+            package_version varchar(100) COLLATE "C" NOT NULL,
+            "key" varchar(100) COLLATE "C" NOT NULL,
+            version varchar(50) COLLATE "C" NOT NULL,
+            metadata_type_name text COLLATE "C" NOT NULL,
+            csharp_type_name text COLLATE "C" NOT NULL,
+            display_name varchar(200) COLLATE "C" NOT NULL,
+            category varchar(100) COLLATE "C" NOT NULL,
+            icon varchar(100) COLLATE "C" NULL,
+            search_text varchar(400) COLLATE "C" NOT NULL,
+            contract_hash varchar(64) COLLATE "C" NOT NULL,
+            descriptor_json text COLLATE "C" NOT NULL,
+            catalog_revision bigint NOT NULL,
+            fingerprint varchar(64) COLLATE "C" NOT NULL,
+            PRIMARY KEY (package_id, package_version, fingerprint, "key")
+        );
+        CREATE INDEX ix_installed_activities_key ON ixiflow_installed_activities ("key", version, package_id, package_version);
+        CREATE INDEX ix_installed_activities_category ON ixiflow_installed_activities (category, "key");
+        CREATE TABLE ixiflow_package_pending_dependencies (
+            package_id varchar(100) COLLATE "C" NOT NULL,
+            package_version varchar(100) COLLATE "C" NOT NULL,
+            missing_package_id varchar(100) COLLATE "C" NOT NULL,
+            PRIMARY KEY (package_id, package_version, missing_package_id)
+        );
+        CREATE INDEX ix_package_pending_reverse ON ixiflow_package_pending_dependencies (missing_package_id, package_id, package_version);
         CREATE TABLE ixiflow_artifacts (
             digest text COLLATE "C" NOT NULL PRIMARY KEY,
             kind TEXT NOT NULL,
@@ -98,10 +160,10 @@ public sealed partial class PostgreSqlWorkflowStateRepository
 
     private static string? CatalogSql(Statement statement) => statement switch
     {
-        Statement.CatalogPackages => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=COALESCE(@Id,id)",
-        Statement.CatalogPackage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=@Id AND version=@Version",
-        Statement.CatalogPackagePage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson FROM ixiflow_packages WHERE id=@Id AND (@AfterVersion IS NULL OR version>@AfterVersion) ORDER BY version LIMIT @Limit",
-        Statement.CatalogPackageInsert => "INSERT INTO ixiflow_packages (id, version, digest, metadata_json, dependency_groups_json) VALUES (@Id, @Version, @Digest, @MetadataJson, @DependencyGroupsJson)",
+        Statement.CatalogPackages => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson, origin AS Origin, extraction AS Extraction, extraction_detail AS ExtractionDetail, closure_json AS ClosureJson, withdrawn AS Withdrawn, withdrawn_at_utc AS WithdrawnAtUtc, withdrawn_by AS WithdrawnBy, registered_at_utc AS RegisteredAtUtc, registered_by AS RegisteredBy, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_draft_name AS PublishedDraftName, published_draft_version AS PublishedDraftVersion, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, lifecycle_revision AS LifecycleRevision, catalog_revision AS CatalogRevision FROM ixiflow_packages WHERE id=COALESCE(@Id,id)",
+        Statement.CatalogPackage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson, origin AS Origin, extraction AS Extraction, extraction_detail AS ExtractionDetail, closure_json AS ClosureJson, withdrawn AS Withdrawn, withdrawn_at_utc AS WithdrawnAtUtc, withdrawn_by AS WithdrawnBy, registered_at_utc AS RegisteredAtUtc, registered_by AS RegisteredBy, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_draft_name AS PublishedDraftName, published_draft_version AS PublishedDraftVersion, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, lifecycle_revision AS LifecycleRevision, catalog_revision AS CatalogRevision FROM ixiflow_packages WHERE id=@Id AND version=@Version",
+        Statement.CatalogPackagePage => "SELECT id AS Id, version AS Version, digest AS Digest, metadata_json AS MetadataJson, dependency_groups_json AS DependencyGroupsJson, origin AS Origin, extraction AS Extraction, extraction_detail AS ExtractionDetail, closure_json AS ClosureJson, withdrawn AS Withdrawn, withdrawn_at_utc AS WithdrawnAtUtc, withdrawn_by AS WithdrawnBy, registered_at_utc AS RegisteredAtUtc, registered_by AS RegisteredBy, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_draft_name AS PublishedDraftName, published_draft_version AS PublishedDraftVersion, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, lifecycle_revision AS LifecycleRevision, catalog_revision AS CatalogRevision FROM ixiflow_packages WHERE id=@Id AND (@AfterVersion IS NULL OR version>@AfterVersion) ORDER BY version LIMIT @Limit",
+        Statement.CatalogPackageInsert => "INSERT INTO ixiflow_packages (id, version, digest, metadata_json, dependency_groups_json, origin, extraction, extraction_detail, closure_json, withdrawn, withdrawn_at_utc, withdrawn_by, registered_at_utc, registered_by, published_draft_generation, published_draft_revision, published_draft_name, published_draft_version, published_at_utc, published_by, lifecycle_revision, catalog_revision) VALUES (@Id, @Version, @Digest, @MetadataJson, @DependencyGroupsJson, @Origin, @Extraction, @ExtractionDetail, @ClosureJson, @Withdrawn, @WithdrawnAtUtc, @WithdrawnBy, @RegisteredAtUtc, @RegisteredBy, @PublishedDraftGeneration, @PublishedDraftRevision, @PublishedDraftName, @PublishedDraftVersion, @PublishedAtUtc, @PublishedBy, @LifecycleRevision, @CatalogRevision)",
         Statement.CatalogLock => """
             SELECT pg_advisory_xact_lock(hashtext('IxIFlow.Catalog'))
             """,

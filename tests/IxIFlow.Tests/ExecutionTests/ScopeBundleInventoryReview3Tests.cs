@@ -23,7 +23,7 @@ public sealed class ScopeBundleInventoryReview3Tests
     {
         var (artifacts, version) = await Bundle.Value;
         var bundle = await ReadBundle(artifacts, version);
-        Assert.Equal(3, bundle.Manifest.FormatVersion);
+        Assert.Equal(4, bundle.Manifest.FormatVersion);
         Assert.Equal(version.Invocations, bundle.Manifest.Invocations);
         Assert.Equal("InventoryChild", Assert.Single(bundle.Manifest.Invocations).Name);
         Assert.Contains("invoke-child", Assert.Single(bundle.Manifest.Invocations).Step);

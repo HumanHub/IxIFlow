@@ -865,7 +865,7 @@ internal sealed class ActivityInputValue
 
     /// <summary>Serializes a value with the input's saved type and property-level JSON settings.</summary>
     internal static string Serialize(PropertyInfo input, object? value) =>
-        JsonSerializer.Serialize(value, SavedType(input, value), OptionsFor(input));
+        WorkflowJson.Serialize(value, SavedType(input, value), OptionsFor(input));
 
     private static bool HasConverter(PropertyInfo input) => input.IsDefined(typeof(JsonConverterAttribute));
 

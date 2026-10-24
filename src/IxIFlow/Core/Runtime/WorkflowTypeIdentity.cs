@@ -55,6 +55,8 @@ public static class WorkflowTypeIdentity
 
     internal static string CSharpName(Type type)
     {
+        if (type.IsPointer || type.IsByRef || type.IsFunctionPointer || type.ContainsGenericParameters)
+            throw new ArgumentException("A portable C# type name requires a closed value type", nameof(type));
         if (type.IsArray) return CSharpName(type.GetElementType()!) + "[" + new string(',', type.GetArrayRank() - 1) + "]";
         var arguments = type.IsGenericType ? type.GetGenericArguments() : [];
         var chain = new Stack<Type>();
@@ -94,6 +96,15 @@ public static class WorkflowTypeIdentity
         }
         _ = Part(saved, ref position);
         var name = Part(saved, ref position);
+        foreach (var nested in name.Split('+'))
+        {
+            var tick = nested.IndexOf('`');
+            var plain = tick < 0 ? nested : nested[..tick];
+            if (plain.Split('.').Any(part => part.Length == 0 || !(char.IsLetter(part[0]) || part[0] == '_') ||
+                part.Any(c => !(char.IsLetterOrDigit(c) || c == '_' || char.GetUnicodeCategory(c) is
+                    System.Globalization.UnicodeCategory.NonSpacingMark or System.Globalization.UnicodeCategory.SpacingCombiningMark or System.Globalization.UnicodeCategory.ConnectorPunctuation))))
+                throw new FormatException("Invalid portable metadata type name");
+        }
         var count = Count(saved, ref position);
         var arguments = new string[count];
         for (var index = 0; index < count; index++) arguments[index] = Display(saved, ref position, depth + 1);

@@ -162,7 +162,7 @@ public static class WorkflowBundleArchive
 
     internal static void CheckManifest(WorkflowBundleManifest manifest)
     {
-        if (manifest.FormatVersion != 3 || string.IsNullOrWhiteSpace(manifest.Name) || manifest.Version < 1 ||
+        if (manifest.FormatVersion != 4 || string.IsNullOrWhiteSpace(manifest.Name) || manifest.Version < 1 ||
             string.IsNullOrWhiteSpace(manifest.StructureHash) || string.IsNullOrWhiteSpace(manifest.DataType) ||
             string.IsNullOrWhiteSpace(manifest.EntryType) || string.IsNullOrWhiteSpace(manifest.EngineVersion) ||
             manifest.CheckpointContractVersion < 1 || manifest.Compiler == null || manifest.SharedAssemblies == null || manifest.Entries == null || manifest.ActivityPackages == null ||

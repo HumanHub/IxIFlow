@@ -84,8 +84,8 @@ public sealed class InstalledActivityPackageTests
         IWorkflowStateRepository? competing = null)
     {
         var id = "installed." + Guid.NewGuid().ToString("N");
-        var first = Package(id, "[{\"Key\":\"first\"}]");
-        var second = Package(id, "[{\"Key\":\"second\"}]");
+        var first = Package(id, "first");
+        var second = Package(id, "second");
         var member = MemberRegistryContract.Registration() with { InstalledPackages = [first] };
         if (scenario == InstalledPackageScenario.CoexistingFingerprints)
         {
@@ -102,7 +102,7 @@ public sealed class InstalledActivityPackageTests
             {
                 case InstalledPackageScenario.Registration:
                     var saved = await Read(first.Fingerprint);
-                    Assert.Equal(first.ActivitiesJson, saved.ActivitiesJson);
+                    Assert.Equal(IxIFlow.Core.Runtime.WorkflowJson.Serialize(first.Activities), IxIFlow.Core.Runtime.WorkflowJson.Serialize(saved.Activities));
                     Assert.Equal(first.Version, saved.Version);
                     Assert.Equal(member.Capabilities.OrderBy(pair => pair.Key),
                         Assert.Single(await store.GetLiveMembersAsync(), row => row.Id == member.Id).Capabilities.OrderBy(pair => pair.Key));
@@ -202,7 +202,7 @@ public sealed class InstalledActivityPackageTests
             foreach (var (package, members) in new[] { (first, new[] { firstMember.Id, thirdMember.Id }), (second, new[] { secondMember.Id }) })
             {
                 var saved = Assert.Single(packages, row => row.Fingerprint == package.Fingerprint);
-                Assert.Equal(package.ActivitiesJson, saved.ActivitiesJson);
+                Assert.Equal(IxIFlow.Core.Runtime.WorkflowJson.Serialize(package.Activities), IxIFlow.Core.Runtime.WorkflowJson.Serialize(saved.Activities));
                 Assert.Equal(package.Version, saved.Version);
                 Assert.Equal(members.Order(), saved.Hosts.Order());
             }
@@ -218,8 +218,8 @@ public sealed class InstalledActivityPackageTests
     private static async Task VerifySqliteCoexistingFingerprints(string connectionString, TimeProvider time)
     {
         var id = "installed." + Guid.NewGuid().ToString("N");
-        var first = Package(id, "[{\"Key\":\"first\"}]");
-        var second = Package(id, "[{\"Key\":\"second\"}]");
+        var first = Package(id, "first");
+        var second = Package(id, "second");
         var firstMember = MemberRegistryContract.Registration() with { InstalledPackages = [first] };
         var secondMember = MemberRegistryContract.Registration() with { InstalledPackages = [second] };
         // SQLite takes exclusive file ownership for the repository's lifetime, so owners replace each other.
@@ -234,15 +234,25 @@ public sealed class InstalledActivityPackageTests
         Assert.Equal(2, packages.Count);
         var old = Assert.Single(packages, package => package.Fingerprint == first.Fingerprint);
         var current = Assert.Single(packages, package => package.Fingerprint == second.Fingerprint);
-        Assert.Equal(first.ActivitiesJson, old.ActivitiesJson);
-        Assert.Equal(second.ActivitiesJson, current.ActivitiesJson);
+        Assert.Equal(IxIFlow.Core.Runtime.WorkflowJson.Serialize(first.Activities), IxIFlow.Core.Runtime.WorkflowJson.Serialize(old.Activities));
+        Assert.Equal(IxIFlow.Core.Runtime.WorkflowJson.Serialize(second.Activities), IxIFlow.Core.Runtime.WorkflowJson.Serialize(current.Activities));
         Assert.Empty(old.Hosts);
         Assert.Equal(new[] { secondMember.Id }, current.Hosts);
         await replacement.UnregisterMemberAsync(secondMember.Id);
     }
 
-    internal static InstalledActivityPackage Package(string id, string json) => new(id, "1.0.0",
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(json))), json);
+    internal static InstalledActivityPackage Package(string id, params string[] keys)
+    {
+        var activities = keys.Select(key => ActivityDescriptor.OfType(typeof(InstalledFixture), id, "1.0.0") with { Key = key }).ToArray();
+        var json = InstalledPackageRules.Json(activities);
+        return new(id, "1.0.0", Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(json))), activities);
+    }
+
+    [IxIFlow.ActivitySdk.WorkflowActivity("installed.fixture")]
+    public sealed class InstalledFixture : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
 
     private static async Task AssertMarksRemoved(Func<DbConnection> open, Guid id)
     {
@@ -258,7 +268,7 @@ public sealed class InstalledActivityPackageTests
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.Installed", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         var cs = "Data Source=" + Path.Combine(folder, "installed.db");
-        var package = Package("installed.replacement", "[]");
+        var package = Package("installed.replacement");
         var prior = MemberRegistryContract.Registration() with { InstalledPackages = [package] };
         try
         {

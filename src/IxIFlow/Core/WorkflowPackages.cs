@@ -5,7 +5,27 @@ namespace IxIFlow.Core;
 
 /// <summary>An immutable, content-addressed nupkg registered in the publishing catalog.</summary>
 public sealed record WorkflowPackage(string Id, string Version, ArtifactDigest Digest,
-    IReadOnlyDictionary<string, ArtifactDigest> Entries, IReadOnlyList<WorkflowPackageDependencyGroup> DependencyGroups);
+    IReadOnlyDictionary<string, ArtifactDigest> Entries, IReadOnlyList<WorkflowPackageDependencyGroup> DependencyGroups)
+{
+    public WorkflowPackageOrigin Origin { get; init; }
+    public WorkflowDraftId? PublishedDraft { get; init; }
+    public IReadOnlyList<WorkflowPackageReference>? Closure { get; init; }
+    public bool Withdrawn { get; init; }
+    public DateTime? WithdrawnAtUtc { get; init; }
+    public string? WithdrawnBy { get; init; }
+    public long LifecycleRevision { get; init; }
+    public DateTime RegisteredAtUtc { get; init; }
+    public string? RegisteredBy { get; init; }
+    public DateTime? PublishedAtUtc { get; init; }
+    public string? PublishedBy { get; init; }
+}
+
+public enum WorkflowPackageOrigin { Resolved, Uploaded, Published }
+public enum PackageExtraction { Indexed, Pending, Unloadable }
+public sealed record WorkflowPackageReference(string Id, string Version, ArtifactDigest Digest);
+public sealed record PackageActivities(IReadOnlyList<ActivityDescriptor> Activities, PackageExtraction Extraction,
+    string? Detail, IReadOnlyList<WorkflowPackageReference>? Closure, IReadOnlyList<string> MissingPackageIds);
+public sealed record PackageRegistration(WorkflowPackage Stored, PackageActivities Activities, bool Created);
 
 public sealed record WorkflowPackageDependency(string Id, string VersionRange);
 public sealed record WorkflowPackageDependencyGroup(string Framework, IReadOnlyList<WorkflowPackageDependency> Dependencies);
@@ -137,7 +157,7 @@ internal static class WorkflowPackageRules
     internal static WorkflowPackage Copy(WorkflowPackage package) => JsonSerializer.Deserialize<WorkflowPackage>(JsonSerializer.Serialize(package))!;
     internal static void Validate(WorkflowPackage package)
     {
-        if (!ValidId(package.Id) || package.Id != package.Id.ToLowerInvariant() ||
+        if (!Enum.IsDefined(package.Origin) || !ValidId(package.Id) || package.Id != package.Id.ToLowerInvariant() ||
             !CanonicalVersion(package.Version) || package.Entries == null || package.Entries.Count == 0 || package.DependencyGroups == null ||
             package.DependencyGroups.Any(group => group == null || string.IsNullOrWhiteSpace(group.Framework) || group.Dependencies == null ||
                 group.Dependencies.Any(dependency => dependency == null || !ValidId(dependency.Id) || string.IsNullOrWhiteSpace(dependency.VersionRange))))
@@ -156,6 +176,6 @@ internal static class WorkflowPackageRules
         if (existing != null && (existing.Digest != package.Digest || existing.Entries.Count != package.Entries.Count ||
             existing.Entries.Any(pair => !package.Entries.TryGetValue(pair.Key, out var hash) || hash != pair.Value) ||
             JsonSerializer.Serialize(existing.DependencyGroups) != JsonSerializer.Serialize(package.DependencyGroups)))
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, $"Package '{package.Id}@{package.Version}' is immutable");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, $"Package '{package.Id}@{package.Version}' is immutable");
     }
 }

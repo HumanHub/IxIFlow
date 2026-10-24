@@ -68,9 +68,9 @@ public sealed class LocalActivityRegistrationTests
         Assert.True(metadata.Inputs[2].HasDefault);
         Assert.Equal("null", metadata.Inputs[2].DefaultJson);
         var package = Assert.Single(registry.Packages);
-        Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(package.ActivitiesJson))), package.Fingerprint);
-        Assert.DoesNotContain("ActivityType", package.ActivitiesJson);
-        Assert.DoesNotContain("\n", package.ActivitiesJson);
+        Assert.Equal(Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(IxIFlow.Core.Runtime.WorkflowJson.Serialize(package.Activities)))), package.Fingerprint);
+        Assert.DoesNotContain("ActivityType", IxIFlow.Core.Runtime.WorkflowJson.Serialize(package.Activities));
+        Assert.DoesNotContain("\n", IxIFlow.Core.Runtime.WorkflowJson.Serialize(package.Activities));
         var reverse = new ServiceCollection();
         reverse.AddIxIFlow().AddActivity<Injected>().AddActivity<Metadata>();
         using var second = reverse.BuildServiceProvider();

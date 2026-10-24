@@ -27,7 +27,7 @@ public sealed partial class SqliteWorkflowStateRepository
             id TEXT COLLATE BINARY NOT NULL,
             version TEXT COLLATE BINARY NOT NULL,
             fingerprint TEXT COLLATE BINARY NOT NULL,
-            activities_json TEXT NOT NULL,
+            catalog_revision BIGINT NOT NULL,
             PRIMARY KEY (id, version, fingerprint)
         );
         CREATE TABLE ixiflow_host_packages (
@@ -79,10 +79,10 @@ public sealed partial class SqliteWorkflowStateRepository
         Statement.InsertCapability => """
             INSERT INTO ixiflow_host_capabilities (member_id, capability_key, capability_value) VALUES (@MemberId, @Key, @Value)
             """,
-        Statement.InstalledPackages => "SELECT id AS Id, version AS Version, fingerprint AS Fingerprint, activities_json AS ActivitiesJson FROM ixiflow_installed_packages WHERE @Id IS NULL OR id=@Id",
+        Statement.InstalledPackages => "SELECT id AS Id, version AS Version, fingerprint AS Fingerprint, catalog_revision AS CatalogRevision FROM ixiflow_installed_packages WHERE (@Id IS NULL OR id=@Id)",
         Statement.HostPackages => "SELECT member_id AS MemberId, package_id AS Id, package_version AS Version, fingerprint AS Fingerprint FROM ixiflow_host_packages",
         Statement.InsertInstalledPackage => """
-            INSERT INTO ixiflow_installed_packages (id, version, fingerprint, activities_json) VALUES (@Id, @Version, @Fingerprint, @ActivitiesJson)
+            INSERT INTO ixiflow_installed_packages (id, version, fingerprint, catalog_revision) VALUES (@Id, @Version, @Fingerprint, @CatalogRevision)
             ON CONFLICT (id, version, fingerprint) DO NOTHING;
             """,
         Statement.DeleteHostPackages => "DELETE FROM ixiflow_host_packages WHERE member_id=@MemberId",

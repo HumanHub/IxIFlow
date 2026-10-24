@@ -87,12 +87,36 @@ public abstract partial class RelationalWorkflowStateRepository
         public string Digest { get; set; } = "";
         public string MetadataJson { get; set; } = "";
         public string DependencyGroupsJson { get; set; } = "";
+        public string Origin { get; set; } = "";
+        public string Extraction { get; set; } = "";
+        public string? ExtractionDetail { get; set; }
+        public string? ClosureJson { get; set; }
+        public bool Withdrawn { get; set; }
+        public DateTime? WithdrawnAtUtc { get; set; }
+        public string? WithdrawnBy { get; set; }
+        public DateTime RegisteredAtUtc { get; set; }
+        public string? RegisteredBy { get; set; }
+        public Guid? PublishedDraftGeneration { get; set; }
+        public long? PublishedDraftRevision { get; set; }
+        public string? PublishedDraftName { get; set; }
+        public int? PublishedDraftVersion { get; set; }
+        public DateTime? PublishedAtUtc { get; set; }
+        public string? PublishedBy { get; set; }
+        public long LifecycleRevision { get; set; }
+        public long CatalogRevision { get; set; }
         public WorkflowPackage Value
         {
             get
             {
                 var package = JsonSerializer.Deserialize<WorkflowPackage>(MetadataJson)!;
-                if (package.Id != Id || package.Version != Version || package.Digest.Value != Digest || JsonSerializer.Serialize(package.DependencyGroups) != DependencyGroupsJson)
+                if (package.Id != Id || package.Version != Version || package.Digest.Value != Digest || JsonSerializer.Serialize(package.DependencyGroups) != DependencyGroupsJson ||
+                    package.Origin.ToString() != Origin || !Enum.TryParse<PackageExtraction>(Extraction, out var extraction) || !Enum.IsDefined(extraction) ||
+                    (package.Closure == null ? null : JsonSerializer.Serialize(package.Closure)) != ClosureJson ||
+                    package.Withdrawn != Withdrawn || package.WithdrawnAtUtc != WithdrawnAtUtc || package.WithdrawnBy != WithdrawnBy ||
+                    package.RegisteredAtUtc != RegisteredAtUtc || package.RegisteredBy != RegisteredBy ||
+                    package.PublishedDraft?.Generation != PublishedDraftGeneration || package.PublishedDraft?.Revision != PublishedDraftRevision ||
+                    package.PublishedDraft?.Name != PublishedDraftName || package.PublishedDraft?.Version != PublishedDraftVersion ||
+                    package.PublishedAtUtc != PublishedAtUtc || package.PublishedBy != PublishedBy || package.LifecycleRevision != LifecycleRevision || CatalogRevision != LifecycleRevision)
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Package catalog columns differ from its metadata");
                 WorkflowPackageRules.Validate(package);
                 return package;
@@ -116,22 +140,6 @@ public abstract partial class RelationalWorkflowStateRepository
         return await CatalogConnectionAsync<IReadOnlyList<WorkflowPackage>>(async (connection, transaction) =>
             (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackagePage),
                 new { Id = id.ToLowerInvariant(), AfterVersion = afterVersion, Limit = limit }, transaction)).Select(row => row.Value).ToArray());
-    }
-
-    public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts)
-    {
-        WorkflowPackageRules.Validate(package);
-        return CatalogWriteAsync(async (connection, transaction) =>
-        {
-            if (!await artifacts.ExistsAsync(package.Digest))
-                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Package artifact {package.Digest} is unavailable");
-            var existing = (await connection.QuerySingleOrDefaultAsync<PackageRow>(RequiredSql(Statement.CatalogPackage), new { package.Id, package.Version }, transaction))?.Value;
-            WorkflowPackageRules.CheckRegistration(existing, package);
-            if (existing == null)
-                await connection.ExecuteAsync(RequiredSql(Statement.CatalogPackageInsert), new
-                { package.Id, package.Version, Digest = package.Digest.Value, MetadataJson = JsonSerializer.Serialize(package), DependencyGroupsJson = JsonSerializer.Serialize(package.DependencyGroups) }, transaction);
-            return true;
-        });
     }
 
     private async Task<IReadOnlyList<WorkflowVersion>> ReadVersionsAsync(DbConnection connection, DbTransaction? transaction) =>

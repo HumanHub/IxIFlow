@@ -12,16 +12,18 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 namespace IxIFlow.Core;
 
 /// <summary>The code and declaration contract of a locally registered activity.</summary>
-public sealed record ActivityDescriptor(string Key, string Version, string Name, string Category, string? Icon,
+public sealed record ActivityDescriptor(string Key, string Version, string Name, string Category, string? Description, string? Icon,
     string? Designer, IReadOnlyList<ContractMember> Inputs, IReadOnlyList<ContractMember> Outputs,
-    string PackageId, string PackageVersion, [property: JsonIgnore] Type? ActivityType)
+    string PackageId, string PackageVersion, string MetadataTypeName, string CSharpTypeName)
 {
+    [JsonIgnore] public Type? ActivityType { get; init; }
     public ActivityScopeDescriptor? Scope { get; init; }
     public IReadOnlyList<ScopeRequirement> RequiresScopes { get; init; } = [];
     public static ActivityDescriptor OfType(Type type, string packageId, string packageVersion)
     {
         try { return ActivityDescriptorRules.Describe(type, packageId, packageVersion); }
         catch (WorkflowEngineException error) { throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, $"Activity '{type.FullName}' {error.Message}", error); }
+        catch (ArgumentException error) { throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, $"Activity '{type.FullName}' has an invalid portable contract", error); }
     }
     public static IReadOnlyList<ActivityDescriptor> Scan(Assembly assembly, string packageId, string packageVersion) =>
         assembly.GetTypes().Where(type => type.IsDefined(typeof(WorkflowActivityAttribute))).Select(type => OfType(type, packageId, packageVersion)).OrderBy(item => item.Key, StringComparer.Ordinal).ToArray();
@@ -35,19 +37,23 @@ public sealed record ActivityDescriptor(string Key, string Version, string Name,
     public static ActivityDescriptor Parse(string json)
     {
         using var document = System.Text.Json.JsonDocument.Parse(json);
-        var names = new[] { "Key", "Version", "Name", "Category", "Icon", "Designer", "Inputs", "Outputs", "PackageId", "PackageVersion", "Scope", "RequiresScopes" };
+        var names = new[] { "Key", "Version", "Name", "Category", "Description", "Icon", "Designer", "Inputs", "Outputs", "PackageId", "PackageVersion", "MetadataTypeName", "CSharpTypeName", "Scope", "RequiresScopes" };
         if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object ||
             !document.RootElement.EnumerateObject().Select(item => item.Name).Order(StringComparer.Ordinal).SequenceEqual(names.Order(StringComparer.Ordinal)))
             throw new System.Text.Json.JsonException("Invalid activity descriptor shape");
         var root = document.RootElement;
         foreach (var member in root.GetProperty("Inputs").EnumerateArray().Concat(root.GetProperty("Outputs").EnumerateArray()))
-            Shape(member, ["Name", "Type", "Required", "HasDefault", "DefaultJson", "DisplayName", "Description", "UIHint"]);
+            Shape(member, ["Name", "Type", "TypeName", "Required", "HasDefault", "DefaultJson", "DisplayName", "Description", "UIHint"]);
         foreach (var requirement in root.GetProperty("RequiresScopes").EnumerateArray()) Shape(requirement, ["Type", "TypeName"]);
         if (root.GetProperty("Scope").ValueKind != System.Text.Json.JsonValueKind.Null)
             Shape(root.GetProperty("Scope"), ["ValueType", "ValueTypeName", "Concurrency", "Threading"]);
         var descriptor = WorkflowJson.Deserialize<ActivityDescriptor>(json) ?? throw new System.Text.Json.JsonException("Missing descriptor");
         ActivityDescriptorRules.Validate(descriptor);
-        return descriptor;
+        return descriptor with
+        {
+            Inputs = Array.AsReadOnly(descriptor.Inputs.ToArray()), Outputs = Array.AsReadOnly(descriptor.Outputs.ToArray()),
+            RequiresScopes = Array.AsReadOnly(descriptor.RequiresScopes.ToArray())
+        };
 
         static void Shape(System.Text.Json.JsonElement element, string[] members)
         {
@@ -63,8 +69,13 @@ public sealed record ActivityDescriptor(string Key, string Version, string Name,
 }
 
 /// <summary>Immutable installed activity metadata. The fingerprint identifies metadata, not executable code.</summary>
-public sealed record InstalledActivityPackage(string Id, string Version, string Fingerprint, string ActivitiesJson)
+public sealed record InstalledActivityPackage(string Id, string Version, string Fingerprint, IReadOnlyList<ActivityDescriptor> Activities)
 {
+    public bool Equals(InstalledActivityPackage? other) => ReferenceEquals(this, other) || other != null &&
+        Id == other.Id && Version == other.Version && Fingerprint == other.Fingerprint &&
+        InstalledPackageRules.Json(Activities) == InstalledPackageRules.Json(other.Activities) && Hosts.SequenceEqual(other.Hosts);
+    public override int GetHashCode() => HashCode.Combine(Id, Version, Fingerprint);
+
     /// <summary>The live members that registered this exact metadata.</summary>
     public IReadOnlyList<Guid> Hosts { get; init; } = [];
 }
@@ -152,9 +163,10 @@ internal sealed class ActivityRegistry(IReadOnlyList<ActivityDescriptor> activit
         .GroupBy(activity => (activity.PackageId, activity.PackageVersion))
         .OrderBy(group => group.Key.PackageId, StringComparer.Ordinal).Select(group =>
         {
-            var json = WorkflowJson.Serialize(group.OrderBy(activity => activity.Key, StringComparer.Ordinal).ToArray());
+            var items = group.OrderBy(activity => activity.Key, StringComparer.Ordinal).ToArray();
+            var json = InstalledPackageRules.Json(items);
             return new InstalledActivityPackage(group.Key.PackageId, group.Key.PackageVersion,
-                Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(json))), json);
+                Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(json))), Array.AsReadOnly(items));
         }).ToArray());
     public ActivityDescriptor? Find(string key) => _byKey.GetValueOrDefault(key);
     public bool IsRegistered(Type type) => _types.Contains(type);
@@ -162,17 +174,19 @@ internal sealed class ActivityRegistry(IReadOnlyList<ActivityDescriptor> activit
 
 internal static class InstalledPackageRules
 {
+    internal static string Json(IReadOnlyList<ActivityDescriptor> activities) =>
+        "[" + string.Join(",", activities.OrderBy(item => item.Key, StringComparer.Ordinal).Select(item => item.ToJson())) + "]";
+
     internal static InstalledActivityPackage Snapshot(InstalledActivityPackage package)
     {
         ArgumentNullException.ThrowIfNull(package);
         if (package.Version == null || WorkflowPackageRules.NormalizeId(package.Id) != package.Id ||
-            WorkflowPackageRules.NormalizeVersion(package.Version) != package.Version ||
-            package.ActivitiesJson == null || package.Fingerprint !=
-                Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(package.ActivitiesJson))))
+            WorkflowPackageRules.NormalizeVersion(package.Version) != package.Version || package.Activities == null ||
+            package.Activities.Select(item => item.Key).Distinct(StringComparer.Ordinal).Count() != package.Activities.Count ||
+            package.Activities.Any(item => item.PackageId != package.Id || item.PackageVersion != package.Version) ||
+            package.Fingerprint != Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(Json(package.Activities)))))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Invalid installed activity package metadata");
-        using var json = System.Text.Json.JsonDocument.Parse(package.ActivitiesJson);
-        if (json.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array)
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Installed activities must be a JSON array");
-        return package with { Hosts = [] };
+        return package with { Activities = Array.AsReadOnly(package.Activities.OrderBy(item => item.Key, StringComparer.Ordinal)
+            .Select(item => ActivityDescriptor.Parse(item.ToJson())).ToArray()), Hosts = [] };
     }
 }

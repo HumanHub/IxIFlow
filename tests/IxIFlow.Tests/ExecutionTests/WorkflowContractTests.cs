@@ -71,9 +71,9 @@ public sealed class WorkflowContractTests
     public void CanonicalJsonAndHashHaveAGoldenRepresentation()
     {
         var contract = WorkflowContract.OfType(typeof(Golden));
-        const string expected = "{\"Inputs\":[{\"Name\":\"Value\",\"Type\":\"ixi-type:1:N22:System.Private.CoreLib12:System.Int320:\",\"Required\":false,\"HasDefault\":true,\"DefaultJson\":\"3\",\"DisplayName\":null,\"Description\":null,\"UIHint\":null}],\"Outputs\":[],\"Declared\":true,\"RequiredScopes\":[]}";
+        const string expected = "{\"Inputs\":[{\"Name\":\"Value\",\"Type\":\"ixi-type:1:N22:System.Private.CoreLib12:System.Int320:\",\"TypeName\":\"global::System.Int32\",\"Required\":false,\"HasDefault\":true,\"DefaultJson\":\"3\",\"DisplayName\":null,\"Description\":null,\"UIHint\":null}],\"Outputs\":[],\"Declared\":true,\"RequiredScopes\":[]}";
         Assert.Equal(expected, contract.ToJson());
-        Assert.Equal("C80DE8387ADC72037896E89554E8A0F362788CFD3A7920D074E96149D207C64C", contract.Hash);
+        Assert.Equal("A1B5F1A4C663EB54F3379938DB55D1742524987CD7EF31E89B72462ABA016FE0", contract.Hash);
         Assert.Equal(expected, WorkflowContract.Parse(expected).ToJson());
         Assert.Equal(contract.Hash, WorkflowContract.Parse(" \n" + expected).Hash);
         var two = WorkflowContract.OfType(typeof(Marked));
@@ -297,7 +297,7 @@ public sealed class WorkflowContractTests
         Assert.Equal(WorkflowInvocationContractKind.ExactPin, invocation.Clone().InvokedContractKind);
         var member = Assert.Single(WorkflowContract.OfType(typeof(Golden)).Inputs);
         Assert.Throws<WorkflowEngineException>(() => Parent().Invoke<Golden>("Child", 1,
-            new WorkflowContract([member with { Type = WorkflowTypeIdentity.SavedName(typeof(string)) }], [], true)).Build());
+            new WorkflowContract([member with { Type = WorkflowTypeIdentity.SavedName(typeof(string)), TypeName = WorkflowTypeIdentity.CSharpName(typeof(string)) }], [], true)).Build());
         Assert.Throws<WorkflowEngineException>(() => Parent().Invoke<Golden>("Child", 1,
             new WorkflowContract([member with { Name = "Missing" }], [], true)).Build());
         Assert.Throws<WorkflowEngineException>(() => Parent().Invoke<BadInput>("Child", 1,

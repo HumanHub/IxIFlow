@@ -53,8 +53,8 @@ public sealed class WorkflowContract
 
         static ContractMember[] Read(JsonElement array) => array.EnumerateArray().Select(item =>
         {
-            Shape(item, ["Name", "Type", "Required", "HasDefault", "DefaultJson", "DisplayName", "Description", "UIHint"]);
-            return new ContractMember(item.GetProperty("Name").GetString()!, item.GetProperty("Type").GetString()!,
+            Shape(item, ["Name", "Type", "TypeName", "Required", "HasDefault", "DefaultJson", "DisplayName", "Description", "UIHint"]);
+            return new ContractMember(item.GetProperty("Name").GetString()!, item.GetProperty("Type").GetString()!, item.GetProperty("TypeName").GetString()!,
                 item.GetProperty("Required").GetBoolean(), item.GetProperty("HasDefault").GetBoolean(),
                 item.GetProperty("DefaultJson").GetString(), item.GetProperty("DisplayName").GetString(),
                 item.GetProperty("Description").GetString(), item.GetProperty("UIHint").GetString());
@@ -85,7 +85,8 @@ public sealed class WorkflowContract
         foreach (var member in members)
         {
             if (member == null || string.IsNullOrWhiteSpace(member.Name) || !names.Add(member.Name) ||
-                !WorkflowTypeIdentity.IsSavedName(member.Type) || member.HasDefault != (member.DefaultJson != null))
+                !WorkflowTypeIdentity.IsSavedName(member.Type) || string.IsNullOrWhiteSpace(member.TypeName) ||
+                WorkflowTypeIdentity.CSharpName(member.Type) != member.TypeName || member.HasDefault != (member.DefaultJson != null))
                 throw new ArgumentException("Invalid workflow contract member");
             if (member.HasDefault) using (JsonDocument.Parse(member.DefaultJson!)) { }
         }
@@ -153,7 +154,7 @@ public sealed class WorkflowContract
                 defaultJson = WorkflowJson.Serialize(ActivityContract.Default(property, type, "Workflow"), property.PropertyType);
             }
             var display = property.GetCustomAttribute<DisplayAttribute>();
-            var member = new ContractMember(property.Name, WorkflowTypeIdentity.SavedName(property.PropertyType),
+            var member = new ContractMember(property.Name, WorkflowTypeIdentity.SavedName(property.PropertyType), WorkflowTypeIdentity.CSharpName(property.PropertyType),
                 required, hasDefault, defaultJson, display?.GetName(), display?.GetDescription(), property.GetCustomAttribute<UIHintAttribute>()?.UIHint);
             if (input) ins.Add(member);
             if (output) outs.Add(member);

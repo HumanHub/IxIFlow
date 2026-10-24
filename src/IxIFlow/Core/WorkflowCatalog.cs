@@ -78,9 +78,21 @@ public sealed record WorkflowDraft(string Name, int Version, string Kind, string
 /// <summary>Durable catalog operations, shared with the instance commit protocol.</summary>
 public interface IWorkflowCatalogStore
 {
+    /// <summary>The artifact source used for current catalog availability; null uses the store's own artifacts.</summary>
+    IArtifactStore? CatalogArtifacts { get; set; }
     /// <summary>Lists installed metadata variants and their live host marks, optionally filtered by normalized id.</summary>
     Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null);
-    Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts);
+    Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query);
+    Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query);
+    Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope);
+    Task<CatalogPage<CatalogPackage>> ListPackagesAsync(CatalogPackageQuery query);
+    Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query);
+    Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope);
+    Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query);
+    Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null);
+    Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null);
+    Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit);
+    Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity, int limit);
     Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null);
     Task<WorkflowPackage?> GetPackageAsync(string id, string version);
     Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit);
@@ -117,6 +129,7 @@ public interface IWorkflowCatalogStore
 /// <summary>Persistent version catalog and the code definitions this host can execute.</summary>
 public interface IWorkflowCatalog : IWorkflowCatalogStore, IWorkflowDefinitionSource
 {
+    Task<IReadOnlyList<CatalogHost>> GetPackageHostsAsync(string id, string version, string? build, CatalogScope scope);
     Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version);
     /// <summary>Monotonically increases after a local catalog mutation or executable registration.</summary>
     long DefinitionRevision { get; }
@@ -127,7 +140,7 @@ public interface IWorkflowCatalog : IWorkflowCatalogStore, IWorkflowDefinitionSo
     Task RetireWorkflowVersionAsync(string name, int version, CatalogMutationToken expected, string? actor = null);
 }
 
-public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
+public sealed partial class WorkflowCatalog : IWorkflowCatalog, IDisposable
 {
     private readonly IWorkflowCatalogStore _store;
     private readonly ConcurrentDictionary<(string, int), WorkflowDefinition> _definitions = new();
@@ -148,6 +161,8 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
     {
         _store = store;
         _artifacts = artifacts;
+        var artifactSource = artifacts is RepositoryArtifactStore repositoryArtifacts ? repositoryArtifacts.Repository : artifacts;
+        if (artifactSource != null && !ReferenceEquals(artifactSource, store)) store.CatalogArtifacts = artifacts;
         if (bundles != null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(bundles.CacheDirectory);
@@ -239,7 +254,18 @@ public sealed class WorkflowCatalog : IWorkflowCatalog, IDisposable
         SetWorkflowVersionStateAsync(name, version, WorkflowVersionState.Retired, expected, actor: actor);
     public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version) => _store.GetDefinitionAsync(kind, name, version);
     public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) => _store.GetInstalledPackagesAsync(id);
-    public Task RegisterPackageAsync(WorkflowPackage package, IArtifactStore artifacts) => _store.RegisterPackageAsync(package, artifacts);
+    public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => _store.ListActivitiesAsync(query);
+    public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => _store.ListActivityVersionsAsync(key, query);
+    public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => _store.GetActivityAsync(key, version, provider, scope);
+    public Task<CatalogPage<CatalogPackage>> ListPackagesAsync(CatalogPackageQuery query) => _store.ListPackagesAsync(query);
+    public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query) => _store.ListPackageVersionsAsync(id, query);
+    public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => _store.GetPackageDetailAsync(id, version, scope);
+    public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => _store.GetPackageActivitiesAsync(id, version, query);
+    public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => _store.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit);
+    public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _store.RegisterPackageAsync(package, activities, artifacts, actor);
+    public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _store.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
+    public IArtifactStore? CatalogArtifacts { get => _store.CatalogArtifacts; set => _store.CatalogArtifacts = value; }
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity, int limit) => _store.GetPackageExtractionPageAsync(extraction, afterIdentity, limit);
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _store.GetPackagesAsync(id);
     public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _store.GetPackageAsync(id, version);
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _store.GetPackagePageAsync(id, afterVersion, limit);

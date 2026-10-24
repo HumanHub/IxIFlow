@@ -12,10 +12,13 @@ public sealed partial class SqlWorkflowStateRepository
         try
         {
             using var schema = await connection.QueryMultipleAsync("""
+                SELECT [PackageId], [PackageVersion], [Key], [Version], [MetadataTypeName], [CSharpTypeName], [DisplayName], [Category], [Icon], [SearchText], [ContractHash], [DescriptorJson], [CatalogRevision] FROM dbo.IxIFlowPackageActivities WHERE 1=0;
+                SELECT [PackageId], [PackageVersion], [Key], [Version], [MetadataTypeName], [CSharpTypeName], [DisplayName], [Category], [Icon], [SearchText], [ContractHash], [DescriptorJson], [CatalogRevision], [Fingerprint] FROM dbo.IxIFlowInstalledActivities WHERE 1=0;
+                SELECT [PackageId], [PackageVersion], [MissingPackageId] FROM dbo.IxIFlowPackagePendingDependencies WHERE 1=0;
                 SELECT Id, IdOrder, Kind, Name, Version, Generation, Revision, Attempt, State, HostId, StartedBy, StartedAtUtc, HeartbeatAtUtc, FinishedAtUtc, OutcomeJson, CatalogRevision FROM dbo.IxIFlowPublicationAttempts WHERE 1=0;
                 SELECT Kind, Name, Version, Generation, Revision, ActiveId, LastAttempt FROM dbo.IxIFlowPublicationHeads WHERE 1=0;
                 SELECT Generation, Kind, Name, Version FROM dbo.IxIFlowDraftGenerations WHERE 1=0;
-                SELECT Id, Version, Fingerprint, ActivitiesJson FROM dbo.IxIFlowInstalledPackages WHERE 1=0;
+                SELECT Id, Version, Fingerprint, CatalogRevision FROM dbo.IxIFlowInstalledPackages WHERE 1=0;
                 SELECT MemberId, PackageId, PackageVersion, Fingerprint FROM dbo.IxIFlowHostPackages WHERE 1=0;
                 SELECT InstanceId, CommandId, CommandOrder, CommandJson FROM dbo.IxIFlowWorkflowDebugCommands WHERE 1=0;
                 SELECT Digest, Bytes, Body, MetadataJson FROM dbo.IxIFlowWorkflowPayloads WHERE 1=0;
@@ -24,7 +27,7 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT Id, Revision FROM dbo.IxIFlowCatalogRevision WHERE 1=0;
                 SELECT Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision, PublishedDraftGeneration, PublishedDraftRevision, PublishedAtUtc, PublishedBy, StateChangedAtUtc, StateChangedBy, LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE 1=0;
                 SELECT Digest, Kind, Content, CreatedAtUtc FROM dbo.IxIFlowArtifacts WHERE 1=0;
-                SELECT Id, Version, Digest, MetadataJson, DependencyGroupsJson FROM dbo.IxIFlowPackages WHERE 1=0;
+                SELECT [Id], [Version], [Digest], [MetadataJson], [DependencyGroupsJson], [Origin], [Extraction], [ExtractionDetail], [ClosureJson], [Withdrawn], [WithdrawnAtUtc], [WithdrawnBy], [RegisteredAtUtc], [RegisteredBy], [PublishedDraftGeneration], [PublishedDraftRevision], [PublishedDraftName], [PublishedDraftVersion], [PublishedAtUtc], [PublishedBy], [LifecycleRevision], [CatalogRevision] FROM dbo.IxIFlowPackages WHERE 1=0;
                 SELECT [InstanceId], [WorkflowName], [WorkflowVersion], [BundleDigest], [CreatedAtUtc], [StopKind], [StopCrashCount], [Status], [CorrelationId], [RunnableAtUtc], [EndedAtUtc], [StateJson], [CancellationJson], [CancellationAcknowledged], [Revision], [InboxSequence], [InboxReadThrough], [Incarnation], [ParentInstanceId], [ParentWaitId], [LastHostId], [DemandSetId], [PinnedHost], [PinExpiresAtUtc], [PinInherit] FROM dbo.IxIFlowWorkflowInstances WHERE 1=0;
                 SELECT [InstanceId], [EventId], [Sequence], [EventType], [EventKey], [TargetWaitId], [Subject], [StoredPayloadJson], [PayloadHash], [ReceivedAtUtc], [Outcome], [WaitId], [Rejection], [SettledAtUtc], [NoticeJson] FROM dbo.IxIFlowWorkflowEvents WHERE 1=0;
                 SELECT [InstanceId], [PartKey], [Json] FROM dbo.IxIFlowWorkflowParts WHERE 1=0;
@@ -47,6 +50,7 @@ public sealed partial class SqlWorkflowStateRepository
                 """, transaction: transaction);
             while (!schema.IsConsumed) await schema.ReadAsync();
             await ValidateDraftKeysAsync(connection, transaction);
+            await ValidatePackageKeysAsync(connection, transaction);
             if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sys.indexes WHERE object_id=OBJECT_ID('dbo.IxIFlowWorkflowPayloadRefs') AND name='IX_IxIFlowPayloadRefs_Owner'", transaction: transaction) != 1)
                 throw EarlierBuild();
             if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.IxIFlowWorkflowInstances') AND name=N'IX_IxIFlowInstances_SetPin'", transaction: transaction) != 1)
@@ -187,6 +191,33 @@ public sealed partial class SqlWorkflowStateRepository
             """, transaction: transaction)).ToHashSet(StringComparer.Ordinal)
             .SetEquals(new[] { "Name", "Generation", "Revision", "SourceLength", "UpdatedAtUtc", "UpdatedBy" }))
             throw EarlierBuild();
+    }
+
+    private static async Task ValidatePackageKeysAsync(DbConnection connection, DbTransaction transaction)
+    {
+        foreach (var (table, name, primary, columns) in new (string, string?, bool, string[])[]
+        {
+            ("dbo.IxIFlowPackages", null, true, ["Id", "Version"]),
+            ("dbo.IxIFlowInstalledPackages", null, true, ["Id", "Version", "Fingerprint"]),
+            ("dbo.IxIFlowPackageActivities", null, true, ["PackageId", "PackageVersion", "Key"]),
+            ("dbo.IxIFlowInstalledActivities", null, true, ["PackageId", "PackageVersion", "Fingerprint", "Key"]),
+            ("dbo.IxIFlowPackagePendingDependencies", null, true, ["PackageId", "PackageVersion", "MissingPackageId"]),
+            ("dbo.IxIFlowPackages", "ix_packages_origin", false, ["Origin", "Id", "Version"]),
+            ("dbo.IxIFlowPackageActivities", "ix_package_activities_key", false, ["Key", "Version", "PackageId", "PackageVersion"]),
+            ("dbo.IxIFlowPackageActivities", "ix_package_activities_category", false, ["Category", "Key"]),
+            ("dbo.IxIFlowInstalledActivities", "ix_installed_activities_key", false, ["Key", "Version", "PackageId", "PackageVersion"]),
+            ("dbo.IxIFlowInstalledActivities", "ix_installed_activities_category", false, ["Category", "Key"]),
+            ("dbo.IxIFlowPackagePendingDependencies", "ix_package_pending_reverse", false, ["MissingPackageId", "PackageId", "PackageVersion"]),
+        })
+            if (!(await connection.QueryAsync<string>("""
+                SELECT CASE WHEN ic.is_descending_key=0 AND (c.collation_name IS NULL OR c.collation_name='Latin1_General_100_BIN2') THEN c.name ELSE '' END
+                FROM sys.indexes i JOIN sys.index_columns ic ON ic.object_id=i.object_id AND ic.index_id=i.index_id
+                JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id
+                WHERE i.object_id=OBJECT_ID(@Table) AND i.is_primary_key=@Primary AND i.is_unique=@Primary
+                  AND (@Name IS NULL OR i.name=@Name) AND i.has_filter=0 AND i.filter_definition IS NULL
+                  AND i.is_disabled=0 AND i.is_hypothetical=0 AND ic.key_ordinal>0 ORDER BY ic.key_ordinal
+                """, new { Table = table, Name = name, Primary = primary }, transaction)).SequenceEqual(columns, StringComparer.Ordinal))
+                throw EarlierBuild();
     }
 
     private static WorkflowEngineException EarlierBuild(Exception? error = null) =>

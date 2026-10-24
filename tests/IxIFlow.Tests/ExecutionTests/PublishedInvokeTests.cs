@@ -169,7 +169,7 @@ public sealed class PublishedInvokeTests
         var store = new InMemoryWorkflowStateRepository();
         await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(ActivityPackageFixture.NativeActivityPackage()));
         var resolver = new WorkflowPackageResolver(store, store, new());
-        using var callee = await resolver.ResolveAsync(new List<string> { "fixture.native-call@1.0.0" }, CancellationToken.None);
+        using var callee = await resolver.ResolveAsync(new List<string> { "fixture.native-call@1.0.0" }, PackageAcquisition.Persist, [], CancellationToken.None);
         var original = Assert.Single(callee.Pins);
         Assert.True(original.RequiresRuntimeIdentifier);
         using var caller = new ResolvedWorkflowPackages();

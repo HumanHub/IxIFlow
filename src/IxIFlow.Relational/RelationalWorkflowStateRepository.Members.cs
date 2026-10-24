@@ -43,7 +43,7 @@ public abstract partial class RelationalWorkflowStateRepository
         if (id != null) id = WorkflowPackageRules.NormalizeId(id);
         return RegistryAsync<IReadOnlyList<InstalledActivityPackage>>(async (connection, transaction, now) =>
         {
-            var packages = await connection.QueryAsync<InstalledActivityPackage>(new CommandDefinition(
+            var packages = await connection.QueryAsync<InstalledPackageRow>(new CommandDefinition(
                 RequiredSql(Statement.InstalledPackages), new { Id = id }, transaction));
             var marks = await connection.QueryAsync<HostPackageRow>(new CommandDefinition(
                 RequiredSql(Statement.HostPackages), transaction: transaction));
@@ -51,7 +51,9 @@ public abstract partial class RelationalWorkflowStateRepository
                 .Select(member => member.MemberId).ToHashSet();
             var hosts = marks.Where(mark => live.Contains(mark.MemberId))
                 .ToLookup(mark => (mark.Id, mark.Version, mark.Fingerprint), mark => mark.MemberId);
-            return packages.OrderBy(package => package.Id, StringComparer.Ordinal)
+            var content = new List<InstalledActivityPackage>();
+            foreach (var row in packages) content.Add(await ReadInstalledPackageAsync(connection, transaction, row));
+            return content.OrderBy(package => package.Id, StringComparer.Ordinal)
                 .ThenBy(package => package.Version, StringComparer.Ordinal).ThenBy(package => package.Fingerprint, StringComparer.Ordinal)
                 .Select(package => package with { Hosts = Array.AsReadOnly(
                     hosts[(package.Id, package.Version, package.Fingerprint)].Order().ToArray()) }).ToArray();
@@ -102,11 +104,28 @@ public abstract partial class RelationalWorkflowStateRepository
             await ReplaceCapabilitiesAsync(connection, transaction, member.Id, member.Capabilities, cancellationToken);
             await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.DeleteHostPackages),
                 new { MemberId = member.Id }, transaction, cancellationToken: cancellationToken));
+            if (member.InstalledPackages.Count != 0)
+                await ExecuteOptionalAsync(connection, transaction, Statement.CatalogContentLock, null);
             foreach (var package in member.InstalledPackages)
             {
-                await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.InsertInstalledPackage),
-                    new { package.Id, package.Version, package.Fingerprint, package.ActivitiesJson }, transaction,
-                    cancellationToken: cancellationToken));
+                var known = await connection.QuerySingleOrDefaultAsync<InstalledPackageRow>(
+                    RequiredSql(Statement.InstalledPackages) + " AND Version=@Version AND Fingerprint=@Fingerprint",
+                    new { package.Id, package.Version, package.Fingerprint }, transaction);
+                if (known == null)
+                {
+                    var revision = await AdvanceCatalogRevisionAsync(connection, transaction!);
+                    await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.InsertInstalledPackage),
+                        new { package.Id, package.Version, package.Fingerprint, CatalogRevision = revision }, transaction,
+                        cancellationToken: cancellationToken));
+                    foreach (var activity in package.Activities)
+                        await InsertActivityAsync(connection, transaction!, activity, revision, package.Fingerprint);
+                }
+                else
+                {
+                    var stored = await ReadInstalledPackageAsync(connection, transaction, known);
+                    if (InstalledPackageRules.Json(stored.Activities) != InstalledPackageRules.Json(package.Activities))
+                        throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Installed package metadata is immutable");
+                }
                 await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.InsertHostPackage),
                     new { MemberId = member.Id, package.Id, package.Version, package.Fingerprint }, transaction,
                     cancellationToken: cancellationToken));

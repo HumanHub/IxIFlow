@@ -59,7 +59,7 @@ public sealed class WorkflowContractBundleTests
         Assert.Equal(expected.Hash, row.ContractHash);
         await using var archive = (await store.OpenAsync(row.ArtifactDigest!.Value))!;
         var bundle = await WorkflowBundleArchive.ReadAsync(archive, row.ArtifactDigest.Value);
-        Assert.Equal(3, bundle.Manifest.FormatVersion);
+        Assert.Equal(4, bundle.Manifest.FormatVersion);
         Assert.Equal(expected.ToJson(), bundle.Manifest.Contract);
         Assert.Equal(expected.Hash, bundle.Manifest.ContractHash);
         var cache = Path.Combine(Path.GetTempPath(), "workflow-contract-bundle-" + Guid.NewGuid().ToString("N"));
@@ -152,7 +152,7 @@ public sealed class WorkflowContractBundleTests
     private static WorkflowBundleManifest Manifest()
     {
         var contract = WorkflowContract.OfType(typeof(WorkflowContractData));
-        return new(3, "Contract", 1, "hash", WorkflowTypeIdentity.SavedName(typeof(WorkflowContractData)), "Entry", "1.0", 4, "",
+        return new(4, "Contract", 1, "hash", WorkflowTypeIdentity.SavedName(typeof(WorkflowContractData)), "Entry", "1.0", 4, "",
             contract.ToJson(), contract.Hash,
             new("5", "latest", "Release", true, "portable"), new Dictionary<string, string>(),
             new Dictionary<string, ArtifactDigest>

@@ -15,7 +15,8 @@ public partial class InMemoryWorkflowStateRepository
             var now = Now;
             PruneMembers(now);
             foreach (var package in member.InstalledPackages)
-                _installedPackages.TryAdd((package.Id, package.Version, package.Fingerprint), package);
+                if (_installedPackages.TryAdd((package.Id, package.Version, package.Fingerprint), InstalledPackageRules.Snapshot(package)))
+                    _catalogRevision = checked(_catalogRevision + 1);
             _hostPackages[member.Id] = member.InstalledPackages;
             _members[member.Id] = new StoreMember(member,
                 _members.TryGetValue(member.Id, out var prior) ? prior.StartedAtUtc : now, now);
@@ -83,7 +84,7 @@ public partial class InMemoryWorkflowStateRepository
                 .Where(package => id == null || package.Id == id)
                 .OrderBy(package => package.Id, StringComparer.Ordinal).ThenBy(package => package.Version, StringComparer.Ordinal)
                 .ThenBy(package => package.Fingerprint, StringComparer.Ordinal)
-                .Select(package => package with { Hosts = Array.AsReadOnly(
+                .Select(package => InstalledPackageRules.Snapshot(package) with { Hosts = Array.AsReadOnly(
                     hosts[(package.Id, package.Version, package.Fingerprint)].Order().ToArray()) }).ToArray());
         }
     }

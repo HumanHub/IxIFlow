@@ -96,7 +96,7 @@ internal static class CatalogPaging
         {
             if (after.Length > 8192) throw new FormatException();
             var cursor = JsonSerializer.Deserialize<Cursor>(Convert.FromBase64String(after));
-            if (cursor is not { Version: 1 } || cursor.Filter != filter || cursor.Key?.Length != keyCount)
+            if (cursor is not { Version: 1 } || cursor.Filter != filter || cursor.Key == null || cursor.Key.Length != keyCount || cursor.Key.Any(string.IsNullOrEmpty))
                 throw new FormatException();
             return cursor.Key;
         }

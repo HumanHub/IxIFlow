@@ -36,6 +36,8 @@ public interface IArtifactStore
 // DI must not acquire disposal ownership of an externally supplied state repository a second time.
 internal sealed class RepositoryArtifactStore(IWorkflowStateRepository repository) : IArtifactStore
 {
+    internal IWorkflowStateRepository Repository => repository;
+
     public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
         repository.PutAsync(kind, content, cancellationToken);
     public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => repository.OpenAsync(digest, cancellationToken);
