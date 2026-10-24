@@ -126,7 +126,7 @@ public sealed class ScopeInvocationRegistrationTests
         var contract = WorkflowDefinitionValidator.GetContract(RequiringChild());
         // Catalog metadata is sufficient for refusal; no executable DTO or bundle
         // is needed to know that this child requires an enclosing scope.
-        await store.RegisterWorkflowVersionAsync(new("RequiringChild", 1, "structure", contract.ToJson(), contract.Hash, Invocations: []));
+        await store.RegisterWorkflowVersionAsync(new("RequiringChild", 1, "structure", contract.ToJson(), contract.Hash, Descriptor: WorkflowDescriptor.Of(RequiringChild()), Invocations: []));
         var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Yaml), null);
         var result = await new WorkflowPublisher(store, store, Options()).PublishAsync(draft.Id);
         var error = Assert.Single(result.Diagnostics);

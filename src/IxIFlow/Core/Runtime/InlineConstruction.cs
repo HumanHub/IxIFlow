@@ -31,6 +31,7 @@ internal static class InlineConstruction
             catch (System.Reflection.TargetInvocationException error) when (error.InnerException is WorkflowEngineException inner)
             { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inner).Throw(); throw; }
             var builder = Workflow.Create<TData>(identity.Name, identity.Version);
+            builder.DisplayName(identity.DisplayName).Description(identity.Description ?? "").Tags(identity.Tags).Icon(identity.Icon).Category(identity.Category);
             workflow.Build(builder);
             return builder.Build();
         });

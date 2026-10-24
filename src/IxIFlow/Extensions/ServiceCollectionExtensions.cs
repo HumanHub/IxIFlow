@@ -278,6 +278,7 @@ public static class ServiceCollectionExtensions
     {
         var identity = WorkflowAttribute.For(typeof(TWorkflow));
         var builder = Workflow.Create<TWorkflowData>(identity.Name, identity.Version);
+        builder.DisplayName(identity.DisplayName).Description(identity.Description ?? "").Tags(identity.Tags).Icon(identity.Icon).Category(identity.Category);
         workflow.Build(builder);
         return builder.Build();
     }

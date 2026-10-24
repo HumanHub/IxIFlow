@@ -26,7 +26,7 @@ public sealed class CatalogRevisionSchemaTests
                 Assert.Equal(snapshot, await holder.ExecuteScalarAsync<bool>(
                     "SELECT is_read_committed_snapshot_on FROM sys.databases WHERE name = DB_NAME()"));
                 var writer = new SqlWorkflowStateRepository(cs);
-                await writer.RegisterWorkflowVersionAsync(new("BeforeBoundary", 1, "before", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Invocations: []));
+                await writer.RegisterWorkflowVersionAsync(new("BeforeBoundary", 1, "before", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor("BeforeBoundary", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
                 var watermark = await writer.GetCatalogRevisionAsync();
                 var application = "catalog-delta-" + Guid.NewGuid().ToString("N");
                 var reader = new SqlWorkflowStateRepository(new SqlConnectionStringBuilder(cs) { ApplicationName = application }.ConnectionString);
@@ -54,7 +54,7 @@ public sealed class CatalogRevisionSchemaTests
                     Assert.False(reading.IsCompleted);
                     // The provider has selected its rows but has not returned the delta. A rows-first
                     // regression would now read the later counter and permanently skip this commit.
-                    await writer.RegisterWorkflowVersionAsync(new("AfterBoundary", 1, "after", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Invocations: []));
+                    await writer.RegisterWorkflowVersionAsync(new("AfterBoundary", 1, "after", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor("AfterBoundary", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
                 }
                 finally { await transaction.RollbackAsync(); }
                 var delta = await reading.WaitAsync(TimeSpan.FromSeconds(10));
@@ -159,7 +159,7 @@ public sealed class CatalogRevisionSchemaTests
         {
             async () => { await store.GetCatalogRevisionAsync(); },
             async () => { await store.GetWorkflowVersionChangesAsync(0); },
-            () => store.RegisterWorkflowVersionAsync(new("MissingCounter", 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Invocations: []))
+            () => store.RegisterWorkflowVersionAsync(new("MissingCounter", 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor("MissingCounter", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []))
         })
         {
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(action);

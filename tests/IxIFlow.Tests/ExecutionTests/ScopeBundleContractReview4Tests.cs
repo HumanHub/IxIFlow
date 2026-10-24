@@ -76,7 +76,7 @@ public sealed class ScopeBundleContractReview4Tests
         var verified = await WorkflowBundleArchive.ReadAsync(new MemoryStream(bytes), digest);
         var rowContract = target is "row" or "manifest-and-row" ? scopeFree : honest;
         return new(manifest.Name, manifest.Version, manifest.StructureHash, rowContract.ToJson(), rowContract.Hash,
-            Invocations: [], ArtifactDigest: digest, Dependencies: [], ManifestJson: JsonSerializer.Serialize(verified.Manifest));
+            Descriptor: new WorkflowDescriptor(manifest.Name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: [], ArtifactDigest: digest, Dependencies: [], ManifestJson: JsonSerializer.Serialize(verified.Manifest));
     }
 
     private static WorkflowBundle CreateChildBundle()

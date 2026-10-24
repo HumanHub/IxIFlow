@@ -8,6 +8,11 @@ public sealed class WorkflowAttribute(string name) : Attribute
 {
     public string Name { get; } = name;
     public int Version { get; set; } = 1;
+    public string? DisplayName { get; set; }
+    public string? Description { get; set; }
+    public string[] Tags { get; set; } = [];
+    public string? Icon { get; set; }
+    public string? Category { get; set; }
 
     internal static WorkflowAttribute For(Type workflowType)
     {

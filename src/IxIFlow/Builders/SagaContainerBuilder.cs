@@ -32,6 +32,11 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
         _workflowBuilder = new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, workflowName, workflowVersion, demands, declaredInputs, declaredOutputs);
     }
 
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> DisplayName(string? value) => _workflowBuilder.DisplayName(value);
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Description(string value) => _workflowBuilder.Description(value);
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Tags(params string[] value) => _workflowBuilder.Tags(value);
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Icon(string? value) => _workflowBuilder.Icon(value);
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Category(string? value) => _workflowBuilder.Category(value);
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Demand(string key, string? value = null, bool inherit = false) =>
         _workflowBuilder.Demand(key, value, inherit);
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> DemandFrom(string key,

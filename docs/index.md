@@ -16,6 +16,7 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [YAML authoring](yaml-authoring.md) | Every document construct, expressions, strict reading and schema |
 | [Activity SDK](activity-sdk.md) | Activity contracts, .NET metadata, DI and installed catalogs |
 | [Activity and package catalog](activity-catalog.md) | Portable descriptors, verified uploads, indexing and scoped readers |
+| [Workflow catalog](workflow-catalog.md) | Workflow descriptors, presentation refresh and scoped workflow reads |
 | [Execution model](execution-model.md) | Commits, recovery, leases, inboxes, waits, children and parallel data |
 | [Sagas](sagas.md) | Compensation, saved faults and retry scopes |
 | [Reply tokens](reply-tokens.md) | Capability tokens, safe handling and reply authorization |

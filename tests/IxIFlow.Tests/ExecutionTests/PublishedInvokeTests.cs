@@ -250,7 +250,7 @@ public sealed class PublishedInvokeTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var contract = WorkflowContract.OfType(typeof(FirstData));
-        await store.RegisterWorkflowVersionAsync(new("Callee", 1, "hash", contract.ToJson(), contract.Hash, State: state, Invocations: []));
+        await store.RegisterWorkflowVersionAsync(new("Callee", 1, "hash", contract.ToJson(), contract.Hash, Descriptor: new WorkflowDescriptor("Callee", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(FirstData)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(FirstData))), State: state, Invocations: []));
         var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller("1")), null);
         var result = await new WorkflowPublisher(store, store, Options()).PublishAsync(draft.Id);
         Assert.Contains(result.Diagnostics, error => error.Code == "STEP011" && error.Line == 6);

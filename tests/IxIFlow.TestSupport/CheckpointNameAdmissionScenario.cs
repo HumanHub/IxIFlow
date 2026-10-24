@@ -15,7 +15,7 @@ public static class CheckpointNameAdmissionScenario
     {
         var contract = WorkflowContract.OfType(typeof(object));
         foreach (var name in new[] { "D\ufffd", "D\U00010000", "Parent" })
-            await store.RegisterWorkflowVersionAsync(new(name, 1, "hash", contract.ToJson(), contract.Hash, []));
+            await store.RegisterWorkflowVersionAsync(new(name, 1, "hash", contract.ToJson(), contract.Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), []));
 
         foreach (var name in malformed ? new[] { "D\ud800", "D\udc00" } : new[] { "D\ufffd", "D\U00010000", "" })
         {

@@ -25,13 +25,16 @@ public static class WorkflowDefinitionValidator
     public static WorkflowContract GetContract(WorkflowDefinition definition)
     {
         ArgumentNullException.ThrowIfNull(definition);
+        var dataType = RequireDataType(definition);
         return Validated.TryGetValue(definition, out var validation) && validation.IsValueCreated
             ? validation.Value.Contract
-            // Untyped definitions can be registered; existing build and execution rules decide whether they can run.
-            : definition.WorkflowDataType == null ? new WorkflowContract([], [], false).WithRequiredScopes(definition.RequiredScopes)
-            : WorkflowContract.Derive(definition.WorkflowDataType, definition.DeclaredInputs, definition.DeclaredOutputs)
+            : WorkflowContract.Derive(dataType, definition.DeclaredInputs, definition.DeclaredOutputs)
                 .WithRequiredScopes(definition.RequiredScopes);
     }
+
+    internal static Type RequireDataType(WorkflowDefinition definition) =>
+        definition.WorkflowDataType ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+            $"Workflow data type is required for '{definition.Name}' v{definition.Version}");
 
     internal static void CheckRootDataType(WorkflowDefinition definition, object workflowData)
     {
@@ -104,6 +107,7 @@ public static class WorkflowDefinitionValidator
             if (definition.Version < 1)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Workflow '{definition.Name}' requires a positive version");
+            _ = RequireDataType(definition);
             var inlineDemands = ParallelRules.Flatten(definition.Steps, crossInline: false)
                 .SelectMany(step => step.InlineDemands).ToArray();
             if (inlineDemands.Length > 0)

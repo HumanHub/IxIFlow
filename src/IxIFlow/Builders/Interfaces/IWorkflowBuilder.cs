@@ -10,6 +10,11 @@ namespace IxIFlow.Builders.Interfaces;
 /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
 public interface IWorkflowBuilder<TWorkflowData>
 {
+    IWorkflowBuilder<TWorkflowData> DisplayName(string? value);
+    IWorkflowBuilder<TWorkflowData> Description(string value);
+    IWorkflowBuilder<TWorkflowData> Icon(string? value);
+    IWorkflowBuilder<TWorkflowData> Category(string? value);
+    IWorkflowBuilder<TWorkflowData> Tags(params string[] value);
     /// <summary>Raises a business exception constructed from the current context.</summary>
     IWorkflowBuilder<TWorkflowData, object> Throw<TException>(Expression<Func<WorkflowContext<TWorkflowData, object>, TException>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
@@ -119,6 +124,11 @@ public interface IWorkflowBuilder<TWorkflowData>
 public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     where TPreviousStepData : class
 {
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> DisplayName(string? value);
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Description(string value);
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Icon(string? value);
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Category(string? value);
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> Tags(params string[] value);
     /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Assign<TValue>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> target,

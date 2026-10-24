@@ -258,7 +258,7 @@ public sealed class PublicationDraftScenarios
         var recovered = await store.BeginPublicationAsync(draft.Id, Guid.NewGuid(), "after-purge", TimeSpan.FromMinutes(1));
         Assert.Equal(3, recovered.Attempt);
         Assert.Equal(WorkflowPublicationState.Published, (await store.CompletePublicationAsync(recovered.Id, recovered.HostId, new(receipt, [], null))).State);
-        var code = new WorkflowVersion("Code", 1, "hash", row.ContractJson, row.ContractHash, [], PublishedDraft: draft.Id)
+        var code = new WorkflowVersion("Code", 1, "hash", row.ContractJson, row.ContractHash, Descriptor: new WorkflowDescriptor("Code", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), [], PublishedDraft: draft.Id)
             { LifecycleRevision = 999, PublishedBy = "forged" };
         await store.RegisterWorkflowVersionAsync(code);
         var registered = (await store.GetWorkflowVersionAsync(code.Name, 1))!;
@@ -274,7 +274,7 @@ public sealed class PublicationDraftScenarios
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
         var contract = WorkflowContract.OfType(typeof(object));
-        WorkflowVersion Row(string name) => new(name, 1, "hash", contract.ToJson(), contract.Hash, []);
+        WorkflowVersion Row(string name) => new(name, 1, "hash", contract.ToJson(), contract.Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), []);
         await store.RegisterWorkflowVersionAsync(Row("Target"));
         foreach (var name in new[] { "Visible", "Hidden" })
             await store.RegisterWorkflowVersionAsync(Row(name) with
@@ -294,7 +294,7 @@ public sealed class PublicationDraftScenarios
     private static WorkflowVersion Version(WorkflowDraft draft, ArtifactDigest digest)
     {
         var contract = WorkflowContract.OfType(typeof(object));
-        return new(draft.Name, draft.Version, "hash", contract.ToJson(), contract.Hash, [], ArtifactDigest: digest,
+        return new(draft.Name, draft.Version, "hash", contract.ToJson(), contract.Hash, Descriptor: new WorkflowDescriptor(draft.Name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), [], ArtifactDigest: digest,
             PublishedDraft: draft.Id, ManifestJson: "{}");
     }
 

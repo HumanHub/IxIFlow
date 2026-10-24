@@ -728,6 +728,9 @@ public class WorkflowDefinition
     ///     Description of the workflow
     /// </summary>
     public string Description { get; set; } = "";
+    public string? DisplayName { get; set; }
+    public string? Icon { get; set; }
+    public string? Category { get; set; }
 
     /// <summary>
     ///     Workflow data type

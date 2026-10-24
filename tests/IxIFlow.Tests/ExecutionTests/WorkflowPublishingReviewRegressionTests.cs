@@ -143,7 +143,7 @@ public sealed class WorkflowPublishingReviewRegressionTests
             var source = await store.SaveDefinitionAsync(new(name, 1, "workflow", Yaml(name)), null);
             var bytes = Encoding.UTF8.GetBytes(name);
             var digest = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream(bytes));
-            var version = new WorkflowVersion(name, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
+            var version = new WorkflowVersion(name, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: digest,
                 PublishedDraft: source.Id, ManifestJson: "{}", Invocations: []);
             if (scenario == Scenario.MissingBundle) await artifacts.DeleteAsync(digest);
             if (scenario == Scenario.MissingReference)
@@ -151,7 +151,7 @@ public sealed class WorkflowPublishingReviewRegressionTests
             if (scenario is Scenario.DraftChild or Scenario.RetiredChild)
             {
                 var child = name + "Child";
-                await store.RegisterWorkflowVersionAsync(new(child, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, State: scenario == Scenario.DraftChild
+                await store.RegisterWorkflowVersionAsync(new(child, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(child, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), State: scenario == Scenario.DraftChild
                     ? WorkflowVersionState.Draft : WorkflowVersionState.Retired, Invocations: []));
                 version = version with { Dependencies = [new(child, 1)], Invocations = [new(child, 1, "invoke-child", "fixture")] };
             }
@@ -325,6 +325,9 @@ public sealed class WorkflowPublishingReviewRegressionTests
     {
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => inner.ListWorkflowsAsync(query);
+        public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => inner.ListWorkflowVersionsAsync(name, query);
+        public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => inner.GetWorkflowVersionDetailAsync(name, version, scope);
         public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => inner.ListActivitiesAsync(query);
     public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => inner.ListActivityVersionsAsync(key, query);
     public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => inner.GetActivityAsync(key, version, provider, scope);

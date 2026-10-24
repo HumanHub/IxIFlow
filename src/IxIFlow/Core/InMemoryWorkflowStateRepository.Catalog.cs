@@ -225,6 +225,12 @@ public partial class InMemoryWorkflowStateRepository
                 if (_versions.TryGetValue((version.Name, version.Version), out var existing))
                     WorkflowCatalogRules.CheckRegistration(existing, version);
                 WorkflowCatalogRules.CheckInvocations(version, _versions.Values);
+                if (existing != null && existing.ArtifactDigest == null && existing.Descriptor != version.Descriptor)
+                {
+                    var key = (version.Name, version.Version);
+                    _versions[key] = CopyVersion(existing with { Descriptor = version.Descriptor });
+                    _versionRevisions[key] = _catalogRevision = checked(_catalogRevision + 1);
+                }
                 if (existing == null)
                 {
                     if (version.State is WorkflowVersionState.Published or WorkflowVersionState.Deprecated)

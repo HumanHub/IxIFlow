@@ -194,12 +194,16 @@ public sealed class DefinitionValidationTests
                         $"{pair.Value.Name} [{scopes.AuthorId(pair.Value)}, {pair.Key}]", pair.Value.SourceLocation ?? pair.Key)).ToArray();
                 store.RegisterWorkflowVersionAsync(new(definition.Name, definition.Version,
                     scopes.StructureHash, WorkflowDefinitionValidator.GetContract(definition).ToJson(), WorkflowDefinitionValidator.GetContract(definition).Hash,
-                    Dependencies: invocations.Select(invocation => new WorkflowVersionDependency(invocation.Name, invocation.Version)).Distinct().ToArray(),
+                    Descriptor: WorkflowDescriptor.Of(definition), Dependencies: invocations.Select(invocation => new WorkflowVersionDependency(invocation.Name, invocation.Version)).Distinct().ToArray(),
                     Invocations: invocations)).GetAwaiter().GetResult();
             }
             return new WorkflowCatalog(store);
         }
+        public Task<IReadOnlyList<CatalogHost>> GetWorkflowVersionHostsAsync(string name, int version, CatalogScope scope) => _catalog.GetWorkflowVersionHostsAsync(name, version, scope);
         public Task<IReadOnlyList<CatalogHost>> GetPackageHostsAsync(string id, string version, string? build, CatalogScope scope) => _catalog.GetPackageHostsAsync(id, version, build, scope);
+    public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => _catalog.ListWorkflowsAsync(query);
+    public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => _catalog.ListWorkflowVersionsAsync(name, query);
+    public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => _catalog.GetWorkflowVersionDetailAsync(name, version, scope);
     public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => _catalog.ListActivitiesAsync(query);
     public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => _catalog.ListActivityVersionsAsync(key, query);
     public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => _catalog.GetActivityAsync(key, version, provider, scope);

@@ -72,10 +72,17 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             state_changed_by text COLLATE "C" NULL,
             lifecycle_revision BIGINT NOT NULL,
             artifact_digest text COLLATE "C" NULL,
+            display_name text COLLATE "C" NOT NULL,
+            category text COLLATE "C" NULL,
+            tags text COLLATE "C" NOT NULL,
+            search_text text COLLATE "C" NOT NULL,
+            descriptor_json text NOT NULL,
+            contract_hash text COLLATE "C" NOT NULL,
             metadata_json text NOT NULL,
             PRIMARY KEY (name, version)
         );
         CREATE INDEX ix_workflow_versions_revision ON ixiflow_workflow_versions (catalog_revision);
+                CREATE INDEX ix_workflow_versions_category ON ixiflow_workflow_versions (category, name);
         CREATE TABLE ixiflow_packages (
             id text COLLATE "C" NOT NULL,
             version text COLLATE "C" NOT NULL,
@@ -177,16 +184,16 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         Statement.CatalogRevision => "SELECT revision FROM ixiflow_catalog_revision WHERE id=1",
         Statement.CatalogRevisionAdvance => "UPDATE ixiflow_catalog_revision SET revision=revision+1 WHERE id=1",
         Statement.CatalogVersionChanges => """
-            SELECT name AS Name, version AS Version, structure_hash AS StructureHash, artifact_digest AS ArtifactDigest, catalog_revision AS CatalogRevision, metadata_json AS MetadataJson, state AS State, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, state_changed_at_utc AS StateChangedAtUtc, state_changed_by AS StateChangedBy, lifecycle_revision AS LifecycleRevision FROM ixiflow_workflow_versions WHERE catalog_revision>@AfterRevision
+            SELECT display_name AS DisplayName, category AS Category, tags AS Tags, search_text AS SearchText, descriptor_json AS DescriptorJson, contract_hash AS ContractHash, name AS Name, version AS Version, structure_hash AS StructureHash, artifact_digest AS ArtifactDigest, catalog_revision AS CatalogRevision, metadata_json AS MetadataJson, state AS State, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, state_changed_at_utc AS StateChangedAtUtc, state_changed_by AS StateChangedBy, lifecycle_revision AS LifecycleRevision FROM ixiflow_workflow_versions WHERE catalog_revision>@AfterRevision
             """,
         Statement.CatalogVersions => """
-            SELECT name AS Name, version AS Version, structure_hash AS StructureHash, artifact_digest AS ArtifactDigest, catalog_revision AS CatalogRevision, metadata_json AS MetadataJson, state AS State, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, state_changed_at_utc AS StateChangedAtUtc, state_changed_by AS StateChangedBy, lifecycle_revision AS LifecycleRevision FROM ixiflow_workflow_versions
+            SELECT display_name AS DisplayName, category AS Category, tags AS Tags, search_text AS SearchText, descriptor_json AS DescriptorJson, contract_hash AS ContractHash, name AS Name, version AS Version, structure_hash AS StructureHash, artifact_digest AS ArtifactDigest, catalog_revision AS CatalogRevision, metadata_json AS MetadataJson, state AS State, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, state_changed_at_utc AS StateChangedAtUtc, state_changed_by AS StateChangedBy, lifecycle_revision AS LifecycleRevision FROM ixiflow_workflow_versions
             """,
         Statement.CatalogNamedVersions => """
-            SELECT name AS Name, version AS Version, structure_hash AS StructureHash, artifact_digest AS ArtifactDigest, catalog_revision AS CatalogRevision, metadata_json AS MetadataJson, state AS State, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, state_changed_at_utc AS StateChangedAtUtc, state_changed_by AS StateChangedBy, lifecycle_revision AS LifecycleRevision FROM ixiflow_workflow_versions WHERE name=@Name
+            SELECT display_name AS DisplayName, category AS Category, tags AS Tags, search_text AS SearchText, descriptor_json AS DescriptorJson, contract_hash AS ContractHash, name AS Name, version AS Version, structure_hash AS StructureHash, artifact_digest AS ArtifactDigest, catalog_revision AS CatalogRevision, metadata_json AS MetadataJson, state AS State, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, state_changed_at_utc AS StateChangedAtUtc, state_changed_by AS StateChangedBy, lifecycle_revision AS LifecycleRevision FROM ixiflow_workflow_versions WHERE name=@Name
             """,
         Statement.CatalogVersion => """
-            SELECT name AS Name, version AS Version, structure_hash AS StructureHash, artifact_digest AS ArtifactDigest, catalog_revision AS CatalogRevision, metadata_json AS MetadataJson, state AS State, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, state_changed_at_utc AS StateChangedAtUtc, state_changed_by AS StateChangedBy, lifecycle_revision AS LifecycleRevision FROM ixiflow_workflow_versions WHERE name=@Name AND version=@Version
+            SELECT display_name AS DisplayName, category AS Category, tags AS Tags, search_text AS SearchText, descriptor_json AS DescriptorJson, contract_hash AS ContractHash, name AS Name, version AS Version, structure_hash AS StructureHash, artifact_digest AS ArtifactDigest, catalog_revision AS CatalogRevision, metadata_json AS MetadataJson, state AS State, published_draft_generation AS PublishedDraftGeneration, published_draft_revision AS PublishedDraftRevision, published_at_utc AS PublishedAtUtc, published_by AS PublishedBy, state_changed_at_utc AS StateChangedAtUtc, state_changed_by AS StateChangedBy, lifecycle_revision AS LifecycleRevision FROM ixiflow_workflow_versions WHERE name=@Name AND version=@Version
             """,
         Statement.CatalogUnfinishedCallers => """
             SELECT caller."Name" AS Name, caller."Version" AS Version
@@ -199,7 +206,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository
             LIMIT 1
             """,
         Statement.CatalogVersionInsert => """
-            INSERT INTO ixiflow_workflow_versions (name, version, structure_hash, state, artifact_digest, metadata_json, catalog_revision, published_draft_generation, published_draft_revision, published_at_utc, published_by, state_changed_at_utc, state_changed_by, lifecycle_revision) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision, @PublishedDraftGeneration, @PublishedDraftRevision, @PublishedAtUtc, @PublishedBy, @StateChangedAtUtc, @StateChangedBy, @LifecycleRevision)
+            INSERT INTO ixiflow_workflow_versions (name, version, structure_hash, state, artifact_digest, metadata_json, catalog_revision, published_draft_generation, published_draft_revision, published_at_utc, published_by, state_changed_at_utc, state_changed_by, lifecycle_revision, display_name, category, tags, search_text, descriptor_json, contract_hash) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision, @PublishedDraftGeneration, @PublishedDraftRevision, @PublishedAtUtc, @PublishedBy, @StateChangedAtUtc, @StateChangedBy, @LifecycleRevision, @DisplayName, @Category, @Tags, @SearchText, @DescriptorJson, @ContractHash)
             """,
         Statement.CatalogVersionState => """
             UPDATE ixiflow_workflow_versions SET state=@State, metadata_json=@MetadataJson, catalog_revision=@CatalogRevision, lifecycle_revision=@LifecycleRevision, state_changed_at_utc=@StateChangedAtUtc, state_changed_by=@StateChangedBy WHERE name=@Name AND version=@Version AND lifecycle_revision=@ExpectedRevision

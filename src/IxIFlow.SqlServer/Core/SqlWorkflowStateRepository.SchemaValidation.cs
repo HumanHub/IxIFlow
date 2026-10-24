@@ -25,7 +25,7 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT Digest, OwnerKind, OwnerId FROM dbo.IxIFlowWorkflowPayloadRefs WHERE 1=0;
                 SELECT Name, NameOrder, Version, Kind, Source, Revision, Generation, SourceLength, UpdatedAtUtc, UpdatedBy FROM dbo.IxIFlowDefinitions WHERE 1=0;
                 SELECT Id, Revision FROM dbo.IxIFlowCatalogRevision WHERE 1=0;
-                SELECT Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision, PublishedDraftGeneration, PublishedDraftRevision, PublishedAtUtc, PublishedBy, StateChangedAtUtc, StateChangedBy, LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE 1=0;
+                SELECT Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision, PublishedDraftGeneration, PublishedDraftRevision, PublishedAtUtc, PublishedBy, StateChangedAtUtc, StateChangedBy, LifecycleRevision, DisplayName, Category, Tags, SearchText, DescriptorJson, ContractHash FROM dbo.IxIFlowWorkflowVersions WHERE 1=0;
                 SELECT Digest, Kind, Content, CreatedAtUtc FROM dbo.IxIFlowArtifacts WHERE 1=0;
                 SELECT [Id], [Version], [Digest], [MetadataJson], [DependencyGroupsJson], [Origin], [Extraction], [ExtractionDetail], [ClosureJson], [Withdrawn], [WithdrawnAtUtc], [WithdrawnBy], [RegisteredAtUtc], [RegisteredBy], [PublishedDraftGeneration], [PublishedDraftRevision], [PublishedDraftName], [PublishedDraftVersion], [PublishedAtUtc], [PublishedBy], [LifecycleRevision], [CatalogRevision] FROM dbo.IxIFlowPackages WHERE 1=0;
                 SELECT [InstanceId], [WorkflowName], [WorkflowVersion], [BundleDigest], [CreatedAtUtc], [StopKind], [StopCrashCount], [Status], [CorrelationId], [RunnableAtUtc], [EndedAtUtc], [StateJson], [CancellationJson], [CancellationAcknowledged], [Revision], [InboxSequence], [InboxReadThrough], [Incarnation], [ParentInstanceId], [ParentWaitId], [LastHostId], [DemandSetId], [PinnedHost], [PinExpiresAtUtc], [PinInherit] FROM dbo.IxIFlowWorkflowInstances WHERE 1=0;
@@ -101,6 +101,7 @@ public sealed partial class SqlWorkflowStateRepository
                 "ix_publication_finished",
                 "ix_artifacts_created",
                 "ix_workflow_versions_revision",
+                "ix_workflow_versions_category",
             ];
             if (requiredIndexes.Any(name => !indexes.Contains(name)))
                 throw EarlierBuild();
@@ -206,6 +207,7 @@ public sealed partial class SqlWorkflowStateRepository
             ("dbo.IxIFlowPackageActivities", "ix_package_activities_key", false, ["Key", "Version", "PackageId", "PackageVersion"]),
             ("dbo.IxIFlowPackageActivities", "ix_package_activities_category", false, ["Category", "Key"]),
             ("dbo.IxIFlowInstalledActivities", "ix_installed_activities_key", false, ["Key", "Version", "PackageId", "PackageVersion"]),
+            ("dbo.IxIFlowWorkflowVersions", "ix_workflow_versions_category", false, ["Category", "Name"]),
             ("dbo.IxIFlowInstalledActivities", "ix_installed_activities_category", false, ["Category", "Key"]),
             ("dbo.IxIFlowPackagePendingDependencies", "ix_package_pending_reverse", false, ["MissingPackageId", "PackageId", "PackageVersion"]),
         })

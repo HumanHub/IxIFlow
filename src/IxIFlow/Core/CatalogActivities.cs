@@ -18,7 +18,13 @@ public sealed record CatalogHost(Guid Id, string Name, DateTime HeartbeatAtUtc, 
 
 internal static class CatalogActivityRules
 {
-    internal static string Search(string key, string name) => (key + " " + name).ToLowerInvariant() is var value && value.Length > 400 ? value[..400] : value;
+    internal static string Search(string key, string name)
+    {
+        var value = (key + " " + name).ToLowerInvariant();
+        if (value.Length <= 400) return value;
+        var length = char.IsHighSurrogate(value[399]) && char.IsLowSurrogate(value[400]) ? 399 : 400;
+        return value[..length];
+    }
     internal static string? Text(string? text)
     {
         if (text == null) return null;

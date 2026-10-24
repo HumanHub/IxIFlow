@@ -43,7 +43,7 @@ public sealed class CatalogArtifactSecondRoundTests
         var name = "Separate-" + Guid.NewGuid().ToString("N");
         var referenced = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream(Guid.NewGuid().ToByteArray()));
         var orphan = await artifacts.PutAsync(ArtifactKind.Template, new MemoryStream(Guid.NewGuid().ToByteArray()));
-        await catalog.RegisterWorkflowVersionAsync(new(name, 1, "separate", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: referenced, Invocations: []), artifacts);
+        await catalog.RegisterWorkflowVersionAsync(new(name, 1, "separate", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: referenced, Invocations: []), artifacts);
         await using (var connection = connect())
         {
             await connection.OpenAsync();
@@ -86,9 +86,9 @@ public sealed class CatalogArtifactSecondRoundTests
         var name = "OneConnection-" + Guid.NewGuid().ToString("N");
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(Guid.NewGuid().ToByteArray()));
         IArtifactStore artifacts = decorated ? new InspectingArtifacts(store, name) : store;
-        await store.RegisterWorkflowVersionAsync(new(name, 1, "one", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest, Invocations: []), artifacts)
+        await store.RegisterWorkflowVersionAsync(new(name, 1, "one", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: digest, Invocations: []), artifacts)
             .WaitAsync(TimeSpan.FromSeconds(5));
-        await store.RegisterWorkflowVersionAsync(new(name, 2, "two", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, State: WorkflowVersionState.Draft,
+        await store.RegisterWorkflowVersionAsync(new(name, 2, "two", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), State: WorkflowVersionState.Draft,
             ArtifactReferences: [digest], Invocations: []), artifacts).WaitAsync(TimeSpan.FromSeconds(5));
         await store.SetWorkflowVersionStateAsync(name, 2, WorkflowVersionState.Published, new CatalogMutationToken((await store.GetWorkflowVersionAsync(name, 2))!.LifecycleRevision), artifacts)
             .WaitAsync(TimeSpan.FromSeconds(5));
@@ -293,7 +293,11 @@ public sealed class CatalogArtifactSecondRoundTests
         public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version) => inner.GetWorkflowDefinitionAsync(name, version);
         public Task<string?> GetWorkflowStructureHashAsync(string name, int version) => inner.GetWorkflowStructureHashAsync(name, version);
         public Task RetireWorkflowVersionAsync(string name, int version, CatalogMutationToken expected, string? actor = null) => inner.RetireWorkflowVersionAsync(name, version, expected, actor);
+        public Task<IReadOnlyList<CatalogHost>> GetWorkflowVersionHostsAsync(string name, int version, CatalogScope scope) => inner.GetWorkflowVersionHostsAsync(name, version, scope);
         public Task<IReadOnlyList<CatalogHost>> GetPackageHostsAsync(string id, string version, string? build, CatalogScope scope) => inner.GetPackageHostsAsync(id, version, build, scope);
+    public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => inner.ListWorkflowsAsync(query);
+    public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => inner.ListWorkflowVersionsAsync(name, query);
+    public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => inner.GetWorkflowVersionDetailAsync(name, version, scope);
     public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => inner.ListActivitiesAsync(query);
     public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => inner.ListActivityVersionsAsync(key, query);
     public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => inner.GetActivityAsync(key, version, provider, scope);

@@ -6,6 +6,8 @@ workflow:
   displayName: Complete document
   description: Uses every member of the workflow document, including those that need publishing.
   tags: [schema, reference]
+  icon: file-text
+  category: Reference
 imports:
   catalogs: [Orders.Activities@1.0.0]
   workflows: [Shipping@3]

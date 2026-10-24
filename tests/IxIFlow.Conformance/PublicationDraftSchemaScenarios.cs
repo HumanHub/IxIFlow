@@ -83,7 +83,7 @@ public sealed class PublicationDraftSchemaScenarios
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
         var contract = WorkflowContract.OfType(typeof(object));
-        await store.RegisterWorkflowVersionAsync(new("Audit", 1, "hash", contract.ToJson(), contract.Hash, []));
+        await store.RegisterWorkflowVersionAsync(new("Audit", 1, "hash", contract.ToJson(), contract.Hash, Descriptor: new WorkflowDescriptor("Audit", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), []));
         await using var connection = database.NewConnection();
         await connection.ExecuteAsync(profile == StoreProfiles.DistributedSqlServer
             ? "UPDATE dbo.IxIFlowWorkflowVersions SET StateChangedBy='forged' WHERE Name='Audit'"

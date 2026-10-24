@@ -103,7 +103,21 @@
             "string",
             "null"
           ],
-          "description": "The display name stored in workflow metadata."
+          "description": "The display name stored on the workflow definition."
+        },
+        "icon": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The lowercase workflow icon token."
+        },
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The workflow category."
         },
         "description": {
           "type": [

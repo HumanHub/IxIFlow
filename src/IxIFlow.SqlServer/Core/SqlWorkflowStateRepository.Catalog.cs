@@ -82,10 +82,17 @@ public sealed partial class SqlWorkflowStateRepository
             StateChangedBy NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NULL,
             LifecycleRevision BIGINT NOT NULL,
             ArtifactDigest VARCHAR(71) COLLATE Latin1_General_100_BIN2 NULL,
+            DisplayName NVARCHAR(200) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            Category NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NULL,
+            Tags NVARCHAR(400) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            SearchText NVARCHAR(400) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            DescriptorJson NVARCHAR(MAX) NOT NULL,
+            ContractHash VARCHAR(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
             MetadataJson NVARCHAR(MAX) NOT NULL,
             PRIMARY KEY (Name, Version)
         );
         CREATE INDEX ix_workflow_versions_revision ON dbo.IxIFlowWorkflowVersions (CatalogRevision);
+                CREATE INDEX ix_workflow_versions_category ON dbo.IxIFlowWorkflowVersions (Category, Name);
         CREATE TABLE dbo.IxIFlowPackages (
             Id NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
             Version NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
@@ -184,16 +191,16 @@ public sealed partial class SqlWorkflowStateRepository
         Statement.CatalogRevision => "SELECT Revision FROM dbo.IxIFlowCatalogRevision WHERE Id=1",
         Statement.CatalogRevisionAdvance => "UPDATE dbo.IxIFlowCatalogRevision SET Revision=Revision+1 WHERE Id=1",
         Statement.CatalogVersionChanges => """
-            SELECT Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE CatalogRevision>@AfterRevision
+            SELECT DisplayName AS DisplayName, Category AS Category, Tags AS Tags, SearchText AS SearchText, DescriptorJson AS DescriptorJson, ContractHash AS ContractHash, Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE CatalogRevision>@AfterRevision
             """,
         Statement.CatalogVersions => """
-            SELECT Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions
+            SELECT DisplayName AS DisplayName, Category AS Category, Tags AS Tags, SearchText AS SearchText, DescriptorJson AS DescriptorJson, ContractHash AS ContractHash, Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions
             """,
         Statement.CatalogNamedVersions => """
-            SELECT Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE Name=@Name
+            SELECT DisplayName AS DisplayName, Category AS Category, Tags AS Tags, SearchText AS SearchText, DescriptorJson AS DescriptorJson, ContractHash AS ContractHash, Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE Name=@Name
             """,
         Statement.CatalogVersion => """
-            SELECT Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE Name=@Name AND Version=@Version
+            SELECT DisplayName AS DisplayName, Category AS Category, Tags AS Tags, SearchText AS SearchText, DescriptorJson AS DescriptorJson, ContractHash AS ContractHash, Name AS Name, Version AS Version, StructureHash AS StructureHash, ArtifactDigest AS ArtifactDigest, CatalogRevision AS CatalogRevision, MetadataJson AS MetadataJson, State AS State, PublishedDraftGeneration AS PublishedDraftGeneration, PublishedDraftRevision AS PublishedDraftRevision, PublishedAtUtc AS PublishedAtUtc, PublishedBy AS PublishedBy, StateChangedAtUtc AS StateChangedAtUtc, StateChangedBy AS StateChangedBy, LifecycleRevision AS LifecycleRevision FROM dbo.IxIFlowWorkflowVersions WHERE Name=@Name AND Version=@Version
             """,
         Statement.CatalogUnfinishedCallers => """
             SELECT TOP (1) caller.Name, caller.Version
@@ -207,7 +214,7 @@ public sealed partial class SqlWorkflowStateRepository
                     AND instance.Status NOT IN ('Completed','Failed','Cancelled','Terminated','TimedOut'))
             """,
         Statement.CatalogVersionInsert => """
-            INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision, PublishedDraftGeneration, PublishedDraftRevision, PublishedAtUtc, PublishedBy, StateChangedAtUtc, StateChangedBy, LifecycleRevision) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision, @PublishedDraftGeneration, @PublishedDraftRevision, @PublishedAtUtc, @PublishedBy, @StateChangedAtUtc, @StateChangedBy, @LifecycleRevision)
+            INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision, PublishedDraftGeneration, PublishedDraftRevision, PublishedAtUtc, PublishedBy, StateChangedAtUtc, StateChangedBy, LifecycleRevision, DisplayName, Category, Tags, SearchText, DescriptorJson, ContractHash) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision, @PublishedDraftGeneration, @PublishedDraftRevision, @PublishedAtUtc, @PublishedBy, @StateChangedAtUtc, @StateChangedBy, @LifecycleRevision, @DisplayName, @Category, @Tags, @SearchText, @DescriptorJson, @ContractHash)
             """,
         Statement.CatalogVersionState => """
             UPDATE dbo.IxIFlowWorkflowVersions SET State=@State, MetadataJson=@MetadataJson, CatalogRevision=@CatalogRevision, LifecycleRevision=@LifecycleRevision, StateChangedAtUtc=@StateChangedAtUtc, StateChangedBy=@StateChangedBy WHERE Name=@Name AND Version=@Version AND LifecycleRevision=@ExpectedRevision

@@ -134,7 +134,7 @@ package names and versions when activities come from catalog dependencies. The s
 contracts drive document validation and translation; data and event contracts use `Types`,
 and pinned child workflow contracts use `Workflows`. Imports require publishing to
 resolve and pin dependencies; publishing hosts attest completed pins through `ResolvedImports`.
-A workflow display name is retained in `definition.Metadata["DisplayName"]`.
+A workflow display name is retained in `definition.DisplayName`.
 
 A `forEach` infers its item type from `items`; its `as` name becomes a typed item handle.
 `as` defaults to `item`. `steps` defines the body; use a trailing `result` expression or a

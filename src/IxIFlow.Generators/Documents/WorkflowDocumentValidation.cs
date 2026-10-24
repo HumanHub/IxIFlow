@@ -49,6 +49,10 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
         diagnostics.AddRange(DocumentRules.Validate(document).Diagnostics);
         if (!HasMissingMember("workflow", diagnostics) && document.Workflow != null)
         {
+            if (document.Workflow.Icon is { } icon && (icon.Length > 100 || !System.Text.RegularExpressions.Regex.IsMatch(icon, @"\A[a-z][a-z0-9-]*\z")))
+                Invalid("WF007", "Workflow icon must be a lowercase name token", "workflow.icon", diagnostics);
+            if (document.Workflow.Category is { } category && string.IsNullOrWhiteSpace(category))
+                Invalid("WF008", "Workflow category cannot be blank", "workflow.category", diagnostics);
             if (document.Workflow.Version < 1)
                 Invalid("WF004", "Workflow version must be a positive integer", "workflow.version", diagnostics);
 

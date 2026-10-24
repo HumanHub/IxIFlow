@@ -29,7 +29,7 @@ public sealed class CatalogArtifactDatabaseRegressionTests
     private static async Task LockScopeAsync(IWorkflowStateRepository store, Func<DbConnection> connect, bool sqlServer)
     {
         var name = "Locks-" + Guid.NewGuid().ToString("N");
-        await store.RegisterWorkflowVersionAsync(new(name, 1, "locks", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Invocations: []));
+        await store.RegisterWorkflowVersionAsync(new(name, 1, "locks", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
         var ordinary = Instance(name);
         var parent = Instance(name);
         var root = Instance(name);
@@ -107,15 +107,15 @@ public sealed class CatalogArtifactDatabaseRegressionTests
     private static async Task ProjectionAsync(IWorkflowStateRepository store, Func<DbConnection> connect, Provider provider)
     {
         var name = "Projection-" + Guid.NewGuid().ToString("N");
-        await store.RegisterWorkflowVersionAsync(new(name, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Invocations: []));
+        await store.RegisterWorkflowVersionAsync(new(name, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
         // More names than SQL Server allows in one command; all are retired callers.
         var callers = Enumerable.Range(0, 2105).Select(i => new WorkflowVersion(name + "-" + i, 1,
-            "caller", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, State: WorkflowVersionState.Retired, Dependencies: [new(name, 1)], Invocations: [new(name, 1, "invoke-child", "fixture")])).ToArray();
+            "caller", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name + "-" + i, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), State: WorkflowVersionState.Retired, Dependencies: [new(name, 1)], Invocations: [new(name, 1, "invoke-child", "fixture")])).ToArray();
         await using var connection = connect();
         await connection.OpenAsync();
         var insert = provider == Provider.SqlServer
-            ? "INSERT INTO dbo.IxIFlowWorkflowVersions (Name,Version,StructureHash,State,MetadataJson,CatalogRevision,LifecycleRevision) VALUES (@Name,1,'caller','Retired',@Metadata,@Revision,@Revision)"
-            : "INSERT INTO ixiflow_workflow_versions (name,version,structure_hash,state,metadata_json,catalog_revision,lifecycle_revision) VALUES (@Name,1,'caller','Retired',@Metadata,@Revision,@Revision)";
+            ? "INSERT INTO dbo.IxIFlowWorkflowVersions (Name,Version,StructureHash,State,MetadataJson,CatalogRevision,LifecycleRevision,DisplayName,Category,Tags,SearchText,DescriptorJson,ContractHash) VALUES (@Name,1,'caller','Retired',@Metadata,@Revision,@Revision,@DisplayName,@Category,@Tags,@SearchText,@DescriptorJson,@ContractHash)"
+            : "INSERT INTO ixiflow_workflow_versions (name,version,structure_hash,state,metadata_json,catalog_revision,lifecycle_revision,display_name,category,tags,search_text,descriptor_json,contract_hash) VALUES (@Name,1,'caller','Retired',@Metadata,@Revision,@Revision,@DisplayName,@Category,@Tags,@SearchText,@DescriptorJson,@ContractHash)";
         // Bulk fixture setup obeys the same atomic counter/row stamping invariant as registration.
         await using (var transaction = await connection.BeginTransactionAsync())
         {
@@ -124,7 +124,9 @@ public sealed class CatalogArtifactDatabaseRegressionTests
             var idColumn = provider == Provider.SqlServer ? "Id" : "id";
             await connection.ExecuteAsync($"UPDATE {counter} SET {revisionColumn}={revisionColumn}+1 WHERE {idColumn}=1", transaction: transaction);
             var revision = await connection.QuerySingleAsync<long>($"SELECT {revisionColumn} FROM {counter} WHERE {idColumn}=1", transaction: transaction);
-            await connection.ExecuteAsync(insert, callers.Select(caller => new { caller.Name, Metadata = JsonSerializer.Serialize(caller with { LifecycleRevision = revision }), Revision = revision }), transaction);
+            await connection.ExecuteAsync(insert, callers.Select(caller => new { caller.Name, Metadata = JsonSerializer.Serialize(caller with { LifecycleRevision = revision }), Revision = revision,
+                caller.Descriptor.DisplayName, caller.Descriptor.Category, Tags = WorkflowDescriptor.TagProjection(caller.Descriptor),
+                SearchText = CatalogActivityRules.Search(caller.Name, caller.Descriptor.DisplayName), DescriptorJson = caller.Descriptor.ToJson(), caller.ContractHash }), transaction);
             await transaction.CommitAsync();
         }
         var unrelated = Instance(name + "-unrelated");

@@ -7,6 +7,9 @@ namespace IxIFlow.Core.Runtime;
 /// </summary>
 internal sealed class GuardedStateRepository : IWorkflowStateRepository
 {
+    public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => Guard(() => _store.ListWorkflowsAsync(query), "Reading catalog");
+    public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => Guard(() => _store.ListWorkflowVersionsAsync(name, query), "Reading catalog");
+    public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => Guard(() => _store.GetWorkflowVersionDetailAsync(name, version, scope), "Reading catalog");
     public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => Guard(() => _store.ListActivitiesAsync(query), "Reading catalog");
     public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => Guard(() => _store.ListActivityVersionsAsync(key, query), "Reading catalog");
     public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => Guard(() => _store.GetActivityAsync(key, version, provider, scope), "Reading catalog");

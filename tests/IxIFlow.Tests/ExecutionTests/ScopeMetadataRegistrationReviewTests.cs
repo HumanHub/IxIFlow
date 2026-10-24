@@ -129,7 +129,7 @@ public sealed class ScopeMetadataRegistrationReviewTests
     {
         var contract = WorkflowDefinitionValidator.GetContract(definition);
         return new(definition.Name, definition.Version, WorkflowDefinitionValidator.Inspect(definition), contract.ToJson(), contract.Hash,
-            Dependencies: WorkflowDefinitionValidator.GetDependencies(definition), Invocations: WorkflowDefinitionValidator.GetInvocations(definition));
+            Descriptor: WorkflowDescriptor.Of(definition), Dependencies: WorkflowDefinitionValidator.GetDependencies(definition), Invocations: WorkflowDefinitionValidator.GetInvocations(definition));
     }
     private static async Task WithStore(bool sqlite, Func<IWorkflowStateRepository, Task> test)
     {

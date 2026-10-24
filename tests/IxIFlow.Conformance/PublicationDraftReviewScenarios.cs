@@ -256,7 +256,7 @@ public sealed class PublicationDraftReviewScenarios
     private static WorkflowVersion Version(WorkflowDraft draft, ArtifactDigest digest)
     {
         var contract = WorkflowContract.OfType(typeof(object));
-        return new(draft.Name, draft.Version, "hash", contract.ToJson(), contract.Hash, [], ArtifactDigest: digest,
+        return new(draft.Name, draft.Version, "hash", contract.ToJson(), contract.Hash, Descriptor: new WorkflowDescriptor(draft.Name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), [], ArtifactDigest: digest,
             PublishedDraft: draft.Id, ManifestJson: "{}");
     }
 

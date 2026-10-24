@@ -144,6 +144,7 @@ public sealed class AuthoringRegressionTests
         {
             Name = "Hand-built saga",
             Version = 1,
+            WorkflowDataType = typeof(ItemData),
             Steps = [new WorkflowStep
             {
                 StepType = WorkflowStepType.Saga,
@@ -165,7 +166,7 @@ public sealed class AuthoringRegressionTests
         Assert.Contains("not a step of the saga", saga.Message);
         var definition = new WorkflowDefinition
         {
-            Name = "Hand-built fixture", Version = 1,
+            Name = "Hand-built fixture", Version = 1, WorkflowDataType = typeof(ItemData),
             Steps = [new WorkflowStep
             {
                 Id = "incomplete", StepType = WorkflowStepType.WorkflowInvocation,

@@ -20,6 +20,32 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
         new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs).Rethrow(sourcePath, sourceLine);
 
     private readonly List<WorkflowStep> _steps = new();
+    public IWorkflowBuilder<TWorkflowData> DisplayName(string? value)
+    {
+        WorkflowPresentation.For(_steps).DisplayName = value;
+        return this;
+    }
+    public IWorkflowBuilder<TWorkflowData> Description(string value)
+    {
+        WorkflowPresentation.For(_steps).Description = value;
+        return this;
+    }
+    public IWorkflowBuilder<TWorkflowData> Icon(string? value)
+    {
+        WorkflowPresentation.For(_steps).Icon = value;
+        return this;
+    }
+    public IWorkflowBuilder<TWorkflowData> Category(string? value)
+    {
+        WorkflowPresentation.For(_steps).Category = value;
+        return this;
+    }
+    public IWorkflowBuilder<TWorkflowData> Tags(params string[] value)
+    {
+        WorkflowPresentation.For(_steps).Tags = value.ToArray();
+        return this;
+    }
+
     public IWorkflowBuilder<TWorkflowData> RequiresScope<TValue>() where TValue : class
     {
         ScopeDeclarations.For(_steps).Add(typeof(TValue));
@@ -175,6 +201,7 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
             Steps = _steps,
             RequiredScopes = ScopeDeclarations.For(_steps).Distinct().ToArray()
         };
+        WorkflowPresentation.For(_steps).Apply(definition);
         WorkflowDefinitionValidator.Apply(definition);
         return definition;
     }
@@ -283,6 +310,37 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     }
 
     protected readonly List<WorkflowStep> _steps = steps;
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> DisplayName(string? value)
+    {
+        RequireWorkflowScope();
+        WorkflowPresentation.For(_steps).DisplayName = value;
+        return this;
+    }
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Description(string value)
+    {
+        RequireWorkflowScope();
+        WorkflowPresentation.For(_steps).Description = value;
+        return this;
+    }
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Icon(string? value)
+    {
+        RequireWorkflowScope();
+        WorkflowPresentation.For(_steps).Icon = value;
+        return this;
+    }
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Category(string? value)
+    {
+        RequireWorkflowScope();
+        WorkflowPresentation.For(_steps).Category = value;
+        return this;
+    }
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Tags(params string[] value)
+    {
+        RequireWorkflowScope();
+        WorkflowPresentation.For(_steps).Tags = value.ToArray();
+        return this;
+    }
+
     internal List<WorkflowStep> Steps => _steps;
     private readonly List<WorkflowDemand> _demands = demands ?? [];
 
@@ -1075,6 +1133,7 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             Steps = _steps,
             RequiredScopes = ScopeDeclarations.For(_steps).Distinct().ToArray()
         };
+        WorkflowPresentation.For(_steps).Apply(definition);
         WorkflowDefinitionValidator.Apply(definition);
         return definition;
     }

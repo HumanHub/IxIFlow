@@ -170,7 +170,7 @@ public sealed class PublicationDraftRound3Scenarios
     private static WorkflowVersion Version(string name)
     {
         var contract = WorkflowContract.OfType(typeof(object));
-        return new(name, 1, "hash", contract.ToJson(), contract.Hash, []);
+        return new(name, 1, "hash", contract.ToJson(), contract.Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), []);
     }
 
     private static WorkflowInstance Instance(string id) => new()

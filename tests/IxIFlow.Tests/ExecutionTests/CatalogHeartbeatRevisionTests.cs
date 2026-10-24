@@ -94,7 +94,7 @@ public sealed class CatalogHeartbeatRevisionTests
         async Task<WorkflowVersion> Publish(string name)
         {
             var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", "source"), null);
-            return await store.PublishDefinitionAsync(draft.Id, new(name, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
+            return await store.PublishDefinitionAsync(draft.Id, new(name, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: digest,
                 PublishedDraft: draft.Id, ManifestJson: manifest, Invocations: []), store);
         }
         var initial = await Read();
@@ -232,7 +232,7 @@ public sealed class CatalogHeartbeatRevisionTests
                 var beforeDraft = await store.GetCatalogRevisionAsync();
                 var draft = await store.SaveDefinitionAsync(new(prefix, 1, "workflow", "source"), null);
                 Assert.Equal(beforeDraft + 1, await store.GetCatalogRevisionAsync());
-                var row = new WorkflowVersion(prefix, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
+                var row = new WorkflowVersion(prefix, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(prefix, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: digest,
                     PublishedDraft: draft.Id, ManifestJson: manifest, Invocations: []);
                 await store.PublishDefinitionAsync(draft.Id, row, store);
                 var revision = await store.GetCatalogRevisionAsync();
@@ -348,7 +348,7 @@ public sealed class CatalogHeartbeatRevisionTests
             }
             case Scenario.DraftPublication:
             {
-                var row = new WorkflowVersion(prefix, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, State: WorkflowVersionState.Draft,
+                var row = new WorkflowVersion(prefix, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(prefix, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), State: WorkflowVersionState.Draft,
                     ArtifactDigest: digest, ManifestJson: manifest, Invocations: []);
                 await store.RegisterWorkflowVersionAsync(row);
                 Assert.DoesNotContain(Key(row), (await Refresh()).Keys);
@@ -449,7 +449,7 @@ public sealed class CatalogHeartbeatRevisionTests
                 Assert.Equal(0, reads.VersionReads);
             }
             var digest = await inner.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
-            var version = new WorkflowVersion("HeartbeatPublished", 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
+            var version = new WorkflowVersion("HeartbeatPublished", 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor("HeartbeatPublished", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: digest,
                 ManifestJson: CompatibleManifest("HeartbeatPublished"), Invocations: []);
             await inner.RegisterWorkflowVersionAsync(version);
             reads.BeforeRevision = null;
@@ -710,7 +710,7 @@ public sealed class CatalogHeartbeatRevisionTests
         var logger = new HeartbeatLogger();
         using var heartbeat = new WorkflowHeartbeatService(store, observed, settings, TimeProvider.System, logger, new ActivityRegistry([]));
         var digest = await inner.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
-        var held = new WorkflowVersion("HeldPublication", 1, "held-hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: digest,
+        var held = new WorkflowVersion("HeldPublication", 1, "held-hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor("HeldPublication", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: digest,
             ManifestJson: CompatibleManifest("HeldPublication"), Invocations: []);
         var before = await inner.GetCatalogRevisionAsync();
         await heartbeat.StartAsync(CancellationToken.None);
@@ -730,12 +730,14 @@ public sealed class CatalogHeartbeatRevisionTests
                 "SELECT Revision FROM dbo.IxIFlowCatalogRevision WHERE Id=1", transaction: transaction);
             Assert.Equal(before + 1, revision);
             await holder.ExecuteAsync("""
-                INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision, LifecycleRevision) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision, @CatalogRevision)
+                INSERT INTO dbo.IxIFlowWorkflowVersions (Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision, LifecycleRevision, DisplayName, Category, Tags, SearchText, DescriptorJson, ContractHash) VALUES (@Name, @Version, @StructureHash, @State, @ArtifactDigest, @MetadataJson, @CatalogRevision, @CatalogRevision, @DisplayName, @Category, @Tags, @SearchText, @DescriptorJson, @ContractHash)
                 """, new
             {
                 held.Name, held.Version, held.StructureHash, State = held.State.ToString(),
                 ArtifactDigest = held.ArtifactDigest!.Value.Value,
-                MetadataJson = System.Text.Json.JsonSerializer.Serialize(held with { LifecycleRevision = revision }), CatalogRevision = revision
+                MetadataJson = System.Text.Json.JsonSerializer.Serialize(held with { LifecycleRevision = revision }), CatalogRevision = revision,
+                held.Descriptor.DisplayName, held.Descriptor.Category, Tags = WorkflowDescriptor.TagProjection(held.Descriptor),
+                SearchText = CatalogActivityRules.Search(held.Name, held.Descriptor.DisplayName), DescriptorJson = held.Descriptor.ToJson(), held.ContractHash
             }, transaction);
             await UntilAsync(() => Volatile.Read(ref reads.RevisionReads) >= 1);
             if (!snapshot)

@@ -56,9 +56,9 @@ public sealed class CatalogArtifactThirdRoundTests
         var caller = child + "-caller";
         const int oldVersion = 3;
         const int newVersion = 8;
-        await store.RegisterWorkflowVersionAsync(new(child, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Invocations: []));
-        await store.RegisterWorkflowVersionAsync(new(caller, oldVersion, "old", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Dependencies: [new(child, 1)], Invocations: [new(child, 1, "invoke-child", "fixture")]));
-        await store.RegisterWorkflowVersionAsync(new(caller, newVersion, "new", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Invocations: []));
+        await store.RegisterWorkflowVersionAsync(new(child, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(child, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
+        await store.RegisterWorkflowVersionAsync(new(caller, oldVersion, "old", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(caller, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Dependencies: [new(child, 1)], Invocations: [new(child, 1, "invoke-child", "fixture")]));
+        await store.RegisterWorkflowVersionAsync(new(caller, newVersion, "new", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(caller, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
 
         if (scenario is Scenario.PublishedCaller or Scenario.DeprecatedCaller)
         {
@@ -80,9 +80,9 @@ public sealed class CatalogArtifactThirdRoundTests
         // Also reject a false cross product of names and versions: (caller,3), (other,8)
         // must not match either (caller,8) above or (other,3) below.
         var other = child + "-other";
-        await store.RegisterWorkflowVersionAsync(new(other, oldVersion, "other-old", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Invocations: []));
+        await store.RegisterWorkflowVersionAsync(new(other, oldVersion, "other-old", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(other, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
         await store.RegisterWorkflowVersionAsync(new(other, newVersion, "other-new", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash,
-            State: WorkflowVersionState.Retired, Dependencies: [new(child, 1)], Invocations: [new(child, 1, "invoke-child", "fixture")]));
+            Descriptor: new WorkflowDescriptor(other, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), State: WorkflowVersionState.Retired, Dependencies: [new(child, 1)], Invocations: [new(child, 1, "invoke-child", "fixture")]));
         await SeedAsync(other, oldVersion);
         var pairs = new WorkflowVersionReference[] { new(caller, oldVersion), new(other, newVersion) };
         await AssertQueryAsync(false);

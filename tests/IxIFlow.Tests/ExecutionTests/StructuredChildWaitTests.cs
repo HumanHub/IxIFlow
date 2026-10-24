@@ -738,13 +738,17 @@ public sealed class StructuredChildWaitTests
         using var services = Services(repository);
         var registry = services.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(ApprovingChild("FineChild"));
-        // A registered definition the engine cannot start: it has no data type.
-        await registry.RegisterWorkflowAsync(new WorkflowDefinition { Name = "Untyped", Version = 1, Steps = [] });
-        var parent = Workflow.Create<ParentData>("ParentOfUntyped")
+        // Registration succeeds, but Nullable<int> creates no data instance. Child start rejects that
+        // with InvalidDefinition, which faults the parent before the commit starts either child.
+        await registry.RegisterWorkflowAsync(new WorkflowDefinition
+        {
+            Name = "UnconstructibleChild", Version = 1, WorkflowDataType = typeof(int?), Steps = []
+        });
+        var parent = Workflow.Create<ParentData>("ParentOfUnconstructibleChild")
             .Step<NoopActivity>()
             .Parallel(parallel => parallel
                 .Do(first => first.Invoke<ChildData>("FineChild", 1))
-                .Do(second => second.Invoke<ChildData>("Untyped", 1)))
+                .Do(second => second.Invoke<ChildData>("UnconstructibleChild", 1)))
             .Build();
 
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData());

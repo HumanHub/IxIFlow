@@ -132,7 +132,7 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
             if (storedDigest != digest) return Failure("PUB006", "The artifact store returned a different archive digest");
             cancellationToken.ThrowIfCancellationRequested();
             var version = new WorkflowVersion(draft.Name, draft.Version, tested.StructureHash,
-                tested.ContractJson, bundle.Manifest.ContractHash,
+                tested.ContractJson, bundle.Manifest.ContractHash, WorkflowDescriptor.Parse(tested.DescriptorJson),
                 ArtifactDigest: digest, Dependencies: tested.Dependencies, ArtifactReferences: packages.Pins.Select(package => package.Digest).ToArray(), PublishedDraft: draft.Id,
                 ManifestJson: JsonSerializer.Serialize(bundle.Manifest), Invocations: bundle.Manifest.Invocations);
             return new(await catalog.PublishDefinitionAsync(draftId, version, artifacts), diagnostics);

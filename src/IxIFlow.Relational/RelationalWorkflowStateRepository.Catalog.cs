@@ -29,28 +29,23 @@ public abstract partial class RelationalWorkflowStateRepository
         public WorkflowDraftSummary Summary => new(Kind, Name, Version, Generation, Revision, SourceLength, Utc(UpdatedAtUtc), UpdatedBy);
     }
 
-    private sealed class VersionRow
+    private sealed class VersionRow : WorkflowSummaryRow
     {
-        public string Name { get; set; } = "";
-        public int Version { get; set; }
-        public string StructureHash { get; set; } = "";
-        public string? ArtifactDigest { get; set; }
         public long CatalogRevision { get; set; }
         public string MetadataJson { get; set; } = "";
-        public string State { get; set; } = "";
         public Guid? PublishedDraftGeneration { get; set; }
         public long? PublishedDraftRevision { get; set; }
         public DateTime? PublishedAtUtc { get; set; }
         public string? PublishedBy { get; set; }
         public DateTime? StateChangedAtUtc { get; set; }
         public string? StateChangedBy { get; set; }
-        public long LifecycleRevision { get; set; }
         public WorkflowVersion Value
         {
             get
             {
                 var row = JsonSerializer.Deserialize<WorkflowVersion>(MetadataJson)!;
-                if (row.Name != Name || row.Version != Version || row.StructureHash != StructureHash || row.ArtifactDigest?.Value != ArtifactDigest || CatalogRevision != LifecycleRevision ||
+                if (row.Name != Name || row.Version != Version || row.StructureHash != StructureHash || row.ArtifactDigest?.Value != ArtifactDigest ||
+                    row.Descriptor != Summary.Descriptor || row.ContractHash != ContractHash ||
                     row.State.ToString() != State || row.PublishedDraft?.Generation != PublishedDraftGeneration || row.PublishedDraft?.Revision != PublishedDraftRevision ||
                     row.PublishedAtUtc != PublishedAtUtc || row.PublishedBy != PublishedBy || row.StateChangedAtUtc != StateChangedAtUtc || row.StateChangedBy != StateChangedBy || row.LifecycleRevision != LifecycleRevision)
                 {
@@ -66,10 +61,12 @@ public abstract partial class RelationalWorkflowStateRepository
         }
     }
 
-    private object VersionParameters(WorkflowVersion row) => WithTimes(new
+    private object VersionParameters(WorkflowVersion row, long? catalogRevision = null) => WithTimes(new
     {
         row.Name, row.Version, row.StructureHash, State = row.State.ToString(), ArtifactDigest = row.ArtifactDigest?.Value,
-        MetadataJson = JsonSerializer.Serialize(row), CatalogRevision = row.LifecycleRevision, row.LifecycleRevision,
+        MetadataJson = JsonSerializer.Serialize(row), CatalogRevision = catalogRevision ?? row.LifecycleRevision, row.LifecycleRevision,
+        row.ContractHash, row.Descriptor.DisplayName, row.Descriptor.Category, Tags = WorkflowDescriptor.TagProjection(row.Descriptor),
+        SearchText = CatalogActivityRules.Search(row.Name, row.Descriptor.DisplayName), DescriptorJson = row.Descriptor.ToJson(),
         PublishedDraftGeneration = row.PublishedDraft?.Generation, PublishedDraftRevision = row.PublishedDraft?.Revision,
         row.PublishedBy, row.StateChangedBy
     }, ("PublishedAtUtc", row.PublishedAtUtc), ("StateChangedAtUtc", row.StateChangedAtUtc));
@@ -102,8 +99,8 @@ public abstract partial class RelationalWorkflowStateRepository
         public int? PublishedDraftVersion { get; set; }
         public DateTime? PublishedAtUtc { get; set; }
         public string? PublishedBy { get; set; }
-        public long LifecycleRevision { get; set; }
         public long CatalogRevision { get; set; }
+        public long LifecycleRevision { get; set; }
         public WorkflowPackage Value
         {
             get
@@ -290,6 +287,15 @@ public abstract partial class RelationalWorkflowStateRepository
             var versions = await ReadVersionsAsync(connection, transaction);
             var existing = versions.SingleOrDefault(row => row.Name == version.Name && row.Version == version.Version);
             if (existing != null) WorkflowCatalogRules.CheckRegistration(existing, version);
+            if (existing != null && existing.ArtifactDigest == null && existing.Descriptor != version.Descriptor)
+            {
+                var revision = await AdvanceCatalogRevisionAsync(connection, transaction);
+                var saved = existing with { Descriptor = version.Descriptor };
+                var fields = new[] { ("display_name", "DisplayName"), ("category", "Category"), ("tags", "Tags"), ("search_text", "SearchText"),
+                    ("descriptor_json", "DescriptorJson"), ("metadata_json", "MetadataJson"), ("catalog_revision", "CatalogRevision") };
+                await connection.ExecuteAsync("UPDATE " + CatalogTable("workflow_versions") + " SET " + string.Join(", ", fields.Select(field => CatalogColumn(field.Item1) + "=@" + field.Item2)) +
+                    " WHERE " + CatalogColumn("name") + "=@Name AND " + CatalogColumn("version") + "=@Version", VersionParameters(saved, revision), transaction);
+            }
             WorkflowCatalogRules.CheckInvocations(version, versions);
             if (existing == null)
             {

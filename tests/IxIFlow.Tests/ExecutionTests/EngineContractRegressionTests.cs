@@ -850,10 +850,10 @@ public class EngineContractRegressionTests
     public async Task PublishedWorkflowVersion_CannotBeSilentlyReplaced()
     {
         var registry = new WorkflowCatalog();
-        var original = new WorkflowDefinition { Name = "Order", Version = 1, Description = "published" };
+        var original = new WorkflowDefinition { Name = "Order", Version = 1, Description = "published", WorkflowDataType = typeof(RegressionData) };
         await registry.RegisterWorkflowAsync(original);
 
-        var reworded = new WorkflowDefinition { Name = "Order", Version = 1, Description = "reworded" };
+        var reworded = new WorkflowDefinition { Name = "Order", Version = 1, Description = "reworded", WorkflowDataType = typeof(RegressionData) };
         await registry.RegisterWorkflowAsync(reworded);
         Assert.Same(original, await registry.GetWorkflowDefinitionAsync("Order", 1));
         Assert.Equal("published", original.Description);

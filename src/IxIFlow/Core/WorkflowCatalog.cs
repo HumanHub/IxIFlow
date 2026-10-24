@@ -15,9 +15,10 @@ public sealed record WorkflowVersionDependency(string Name, int Version, Workflo
 /// <summary>A child invocation and its authoring position, retained for catalog validation.</summary>
 public sealed record WorkflowVersionInvocation(string Name, int Version, string Step, string SourceLocation);
 
-/// <summary>Immutable version metadata. Only State may change after registration.</summary>
+/// <summary>Version identity and contracts are immutable. Code presentation refreshes at registration.</summary>
 public sealed record WorkflowVersion(string Name, int Version, string StructureHash,
     string ContractJson, string ContractHash,
+    [property: System.Text.Json.Serialization.JsonRequired] WorkflowDescriptor Descriptor,
     [property: System.Text.Json.Serialization.JsonRequired] IReadOnlyList<WorkflowVersionInvocation> Invocations,
     WorkflowVersionState State = WorkflowVersionState.Published, ArtifactDigest? ArtifactDigest = null,
     IReadOnlyList<WorkflowVersionDependency>? Dependencies = null,
@@ -32,7 +33,7 @@ public sealed record WorkflowVersion(string Name, int Version, string StructureH
 
     public bool Equals(WorkflowVersion? other) => ReferenceEquals(this, other) || other != null &&
         Name == other.Name && Version == other.Version && StructureHash == other.StructureHash &&
-        ContractJson == other.ContractJson && ContractHash == other.ContractHash && State == other.State &&
+        ContractJson == other.ContractJson && ContractHash == other.ContractHash && Descriptor == other.Descriptor && State == other.State &&
         ArtifactDigest == other.ArtifactDigest && PublishedDraft == other.PublishedDraft &&
         ManifestJson == other.ManifestJson && SameValues(Invocations, other.Invocations) &&
         SameValues(Dependencies, other.Dependencies) && SameValues(ArtifactReferences, other.ArtifactReferences);
@@ -41,7 +42,7 @@ public sealed record WorkflowVersion(string Name, int Version, string StructureH
     {
         var hash = new HashCode();
         hash.Add(Name); hash.Add(Version); hash.Add(StructureHash);
-        hash.Add(ContractJson); hash.Add(ContractHash); hash.Add(State);
+        hash.Add(ContractJson); hash.Add(ContractHash); hash.Add(Descriptor); hash.Add(State);
         hash.Add(ArtifactDigest); hash.Add(PublishedDraft); hash.Add(ManifestJson);
         AddValues(ref hash, Invocations);
         AddValues(ref hash, Dependencies);
@@ -82,6 +83,9 @@ public interface IWorkflowCatalogStore
     IArtifactStore? CatalogArtifacts { get; set; }
     /// <summary>Lists installed metadata variants and their live host marks, optionally filtered by normalized id.</summary>
     Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null);
+    Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query);
+    Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query);
+    Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope);
     Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query);
     Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query);
     Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope);
@@ -129,6 +133,7 @@ public interface IWorkflowCatalogStore
 /// <summary>Persistent version catalog and the code definitions this host can execute.</summary>
 public interface IWorkflowCatalog : IWorkflowCatalogStore, IWorkflowDefinitionSource
 {
+    Task<IReadOnlyList<CatalogHost>> GetWorkflowVersionHostsAsync(string name, int version, CatalogScope scope);
     Task<IReadOnlyList<CatalogHost>> GetPackageHostsAsync(string id, string version, string? build, CatalogScope scope);
     Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version);
     /// <summary>Monotonically increases after a local catalog mutation or executable registration.</summary>
@@ -183,7 +188,7 @@ public sealed partial class WorkflowCatalog : IWorkflowCatalog, IDisposable
         var dependencies = WorkflowDefinitionValidator.GetDependencies(definition);
         var contract = WorkflowDefinitionValidator.GetContract(definition);
         var registration = new WorkflowVersion(definition.Name, definition.Version, scopes.StructureHash,
-            contract.ToJson(), contract.Hash, Dependencies: dependencies,
+            contract.ToJson(), contract.Hash, WorkflowDescriptor.Of(definition), Dependencies: dependencies,
             Invocations: WorkflowDefinitionValidator.GetInvocations(definition));
         await _registrationLock.WaitAsync();
         try
@@ -192,8 +197,13 @@ public sealed partial class WorkflowCatalog : IWorkflowCatalog, IDisposable
             if (_registrations.TryGetValue(key, out var existing))
             {
                 WorkflowCatalogRules.CheckRegistration(existing, registration);
-                // This executable's inventory was checked atomically on first attachment.
-                // Later callees are checked against incoming edges when they register.
+                // Starts register the same definition repeatedly; only a changed presentation
+                // refreshes the stored row, so an unchanged start never takes the catalog lock.
+                if (existing.Descriptor != registration.Descriptor)
+                {
+                    await _store.RegisterWorkflowVersionAsync(registration, _artifacts);
+                    _registrations[key] = registration;
+                }
             }
             else
             {
@@ -294,6 +304,9 @@ public sealed partial class WorkflowCatalog : IWorkflowCatalog, IDisposable
     }
     public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected) => _store.DeleteDefinitionAsync(expected);
     public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query) => _store.GetDefinitionsAsync(query);
+    public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => _store.ListWorkflowsAsync(query);
+    public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => _store.ListWorkflowVersionsAsync(name, query);
+    public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => _store.GetWorkflowVersionDetailAsync(name, version, scope);
     public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope) => _store.GetRetirementBlockersAsync(name, version, scope);
     public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter) => _store.BeginPublicationAsync(draftId, hostId, actor, staleAfter);
     public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId) => _store.HeartbeatPublicationAsync(id, hostId);
@@ -433,6 +446,7 @@ internal static class WorkflowCatalogRules
     public static void Validate(WorkflowVersion row)
     {
         ValidateName(row.Name);
+        WorkflowDescriptor.Validate(row.Descriptor);
         ArgumentOutOfRangeException.ThrowIfLessThan(row.Version, 1);
         ArgumentException.ThrowIfNullOrWhiteSpace(row.StructureHash);
         try
@@ -473,6 +487,8 @@ internal static class WorkflowCatalogRules
         // step identity remain immutable even when the caller's hash is supplied by metadata.
         if (existing.ArtifactDigest != loaded.ArtifactDigest || existing.PublishedDraft != loaded.PublishedDraft ||
             existing.ManifestJson != loaded.ManifestJson ||
+            existing.Descriptor.DataType != loaded.Descriptor.DataType || existing.Descriptor.DataTypeName != loaded.Descriptor.DataTypeName ||
+            (existing.ArtifactDigest != null && existing.Descriptor != loaded.Descriptor) ||
             existing.ContractJson != loaded.ContractJson || existing.ContractHash != loaded.ContractHash ||
             !SameInvocations(existing.Invocations, loaded.Invocations) ||
             !(existing.Dependencies ?? []).SequenceEqual(loaded.Dependencies ?? []) ||

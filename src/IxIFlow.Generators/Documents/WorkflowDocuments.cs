@@ -41,8 +41,12 @@ public sealed record WorkflowDefinitionDocument : DocumentNode
     public List<string>? Input { get; init; }
     [Description("Output members added to workflow markers; an empty list explicitly declares no convention outputs.")]
     public List<string>? Output { get; init; }
-    [Description("The display name stored in workflow metadata.")]
+    [Description("The display name stored on the workflow definition.")]
     public string? DisplayName { get; init; }
+    [Description("The lowercase workflow icon token.")]
+    public string? Icon { get; init; }
+    [Description("The workflow category.")]
+    public string? Category { get; init; }
     [Description("The description stored on the workflow definition.")]
     public string? Description { get; init; }
     [Description("Tags stored on the workflow definition.")]

@@ -122,7 +122,7 @@ public sealed class WorkflowDocumentContractTests
     public async Task CatalogFixtureExecutesTemplatesAssetsAndBothLoopModes()
     {
         var definition = Workflow_catalog.Build();
-        Assert.Equal("Catalog workflow", definition.Metadata["DisplayName"]);
+        Assert.Equal("Catalog workflow", definition.DisplayName);
         Assert.Equal("Exercises reusable authoring features.", definition.Description);
         Assert.Equal(new[] { "catalog", "schema" }, definition.Tags);
         var result = await GeneratedWorkflowTests.Execute(definition, new FlowData { Value = 4, Values = [1, 2, 3] });

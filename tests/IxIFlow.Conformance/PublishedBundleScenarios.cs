@@ -32,7 +32,7 @@ public sealed class PublishedBundleScenarios
         var store = database.NewRepository();
         var original = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream([1]));
         var different = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream([2]));
-        await store.RegisterWorkflowVersionAsync(new("Pinned", 1, "store-contract", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: original, Invocations: []));
+        await store.RegisterWorkflowVersionAsync(new("Pinned", 1, "store-contract", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor("Pinned", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: original, Invocations: []));
         WorkflowInstance Instance(ArtifactDigest pin) => new()
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Pinned", WorkflowVersion = 1,
@@ -79,7 +79,7 @@ public sealed class PublishedBundleScenarios
         });
         var pinned = await files.PutAsync(ArtifactKind.Bundle, new MemoryStream(archive));
         var orphan = await files.PutAsync(ArtifactKind.Bundle, new MemoryStream([2]));
-        await store.RegisterWorkflowVersionAsync(new("PinRetention", 1, "store-contract", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, ArtifactDigest: pinned, Invocations: []), files);
+        await store.RegisterWorkflowVersionAsync(new("PinRetention", 1, "store-contract", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor("PinRetention", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: pinned, Invocations: []), files);
         await store.SeedAsync(new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "PinRetention", WorkflowVersion = 1,

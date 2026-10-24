@@ -218,7 +218,9 @@ public static partial class WorkflowSourceTranslator
             Line($"var definition = {last}.Build();");
             Line($"definition.Description = {Quote(workflow.Description ?? "")};");
             Line($"definition.Tags = new string[] {{ {string.Join(", ", workflow.Tags.Select(Quote))} }};");
-            if (workflow.DisplayName != null) Line($"definition.Metadata[\"DisplayName\"] = {Quote(workflow.DisplayName)};");
+            if (workflow.Icon != null) Line($"definition.Icon = {Quote(workflow.Icon)};");
+            if (workflow.Category != null) Line($"definition.Category = {Quote(workflow.Category)};");
+            if (workflow.DisplayName != null) Line($"definition.DisplayName = {Quote(workflow.DisplayName)};");
             Line("return definition;");
             Line("    }");
             Line("}");

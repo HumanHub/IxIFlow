@@ -79,7 +79,7 @@ public sealed class GeneratorReviewTests
     {
         var definition = GeneratorRegressionTests.Build((Header + Activity).Replace("  name: Test", "  name: Test\n  displayName: Customer orders"));
         Assert.Equal("Test", definition.Name);
-        Assert.Equal("Customer orders", definition.Metadata["DisplayName"]);
+        Assert.Equal("Customer orders", definition.DisplayName);
     }
 
     [Theory]
