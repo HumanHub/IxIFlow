@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace IxIFlow.Core;
 
@@ -42,7 +43,13 @@ public sealed record InspectionDebugState(long PauseGeneration, long AppliedOrde
 public sealed record InspectionThread(string ContinuationId, string Name, string? ParentContinuationId,
     string? ParentJoinId, int Sequence, string? ForkActivationId, string StepId, string AuthorStepId,
     int StepIndex, string Status, string FrameId, IReadOnlyList<InspectionFrame> Frames)
-{ public IReadOnlyList<string> ScopesInForce { get; init; } = []; }
+{
+    public IReadOnlyList<string> ScopesInForce { get; init; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool CancellationUnwind { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CancellationUnwindCause? UnwindCause { get; init; }
+}
 /// <summary>A saved scope position, including graph phase and visit metadata.</summary>
 public sealed record InspectionFrame(string ActivationId, string Name, string Kind, string ScopeId,
     string? ParentActivationId, int NextStepIndex, int LoopIteration, int? ForEachItemIndex)
@@ -51,6 +58,8 @@ public sealed record InspectionFrame(string ActivationId, string Name, string Ki
     public string? RethrowOwnerId { get; init; }
     /// <summary>The derived graph phase, when this frame belongs to a graph.</summary>
     public string? Phase { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CancellationUnwindCause? UnwindCause { get; init; }
     public long ArmOccurrence { get; init; }
     /// <summary>The entry count of the enclosing graph activation.</summary>
     public long? Visit { get; init; }

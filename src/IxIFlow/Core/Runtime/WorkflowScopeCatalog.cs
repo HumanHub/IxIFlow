@@ -64,6 +64,7 @@ internal sealed class WorkflowScopeCatalog
     public string StateExitScope(WorkflowStep graph, string key) => ScopeId(graph, "state", key + "/exit");
     public string ScopeBodyScope(WorkflowStep step) => ScopeId(step, "scope");
     public string InlineScope(WorkflowStep step) => ScopeId(step, "inline");
+    public string CancellationScope(WorkflowStep step) => ScopeId(step, "cancelled");
     public string SequenceScope(WorkflowStep step) => ScopeId(step, "sequence");
     public string ThenScope(WorkflowStep step) => ScopeId(step, "then");
     public string ElseScope(WorkflowStep step) => ScopeId(step, "else");
@@ -159,7 +160,7 @@ internal sealed class WorkflowScopeCatalog
             if (step.StepType == WorkflowStepType.Activity &&
                 step.StepMetadata.ContainsKey("IsSagaStep"))
                 yield return step;
-            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "case" or "default"))
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "case" or "default" || step.StepType == WorkflowStepType.CancellationScope && scope.Kind == "sequence"))
                 foreach (var nested in SagaActivities(scope.Steps))
                     yield return nested;
         }
@@ -171,7 +172,7 @@ internal sealed class WorkflowScopeCatalog
         // adding an empty branch changes the topology even when it adds no steps.
         var manifest = new
         {
-            Format = 8,
+            Format = 9,
             RequiredScopes = definition.RequiredScopes.Select(WorkflowTypeIdentity.StableName).Order(StringComparer.Ordinal),
             Data = WorkflowTypeIdentity.StableName(definition.WorkflowDataType),
             DataTypes = _steps.Values.Select(step => step.WorkflowDataType).Prepend(definition.WorkflowDataType)

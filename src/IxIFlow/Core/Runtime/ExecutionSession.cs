@@ -55,6 +55,7 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
     {
         if (!NeedsHydration) return;
         await PrepareDataReadAsync(checkpoint, continuation);
+        await Reader.HydrateAsync(continuation.UnwindFailure);
         await Reader.HydrateAsync(continuation.DeferredFailure);
         await Reader.HydrateAsync(checkpoint.UnhandledError);
         if (continuation.RuntimePrevious == null) await Reader.HydrateAsync(continuation.Previous);
@@ -78,7 +79,8 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
         for (var index = 0; index < continuation.Stack.Count; index++)
         {
             var frame = continuation.Stack[index];
-            if (frame.Kind is FrameKind.Inline or FrameKind.SwitchCase or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen)
+            await Reader.HydrateAsync(frame.CancellationState);
+            if (frame.Kind is FrameKind.CancellationHandler or FrameKind.Inline or FrameKind.SwitchCase or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen)
                 await Reader.HydrateAsync(frame.EntryPrevious);
             await Reader.HydrateAsync(frame.Graph?.Pending?.Event);
             // Reply matching does not read the selected fire while its parent is still Joining.

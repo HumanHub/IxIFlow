@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using IxIFlow.Builders.Interfaces;
 using IxIFlow.Core.Runtime;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Core;
 
@@ -30,6 +31,7 @@ public sealed partial class WorkflowHost
         HostSettings? hostSettings = null)
     {
         private readonly IWorkflowStateRepository _store = GuardedStateRepository.Wrap(repository);
+        private readonly WorkflowHost _claimHost = services.GetRequiredService<WorkflowHost>();
         private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
         private readonly ExecutionLeaseSettings _leaseSettings = leaseSettings ?? ExecutionLeaseSettings.Default;
         private readonly ExecutionLimits _limits = limits ?? ExecutionLimits.Default;
@@ -981,11 +983,12 @@ public sealed partial class WorkflowHost
         private async Task<WorkflowExecutionLease?> AcquireAsync(WorkflowInstance instance, ExecutionSignals signals,
             ExecutionClaimKind kind = ExecutionClaimKind.Runnable)
         {
-            var owner = await WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, renewer, await ClaimQueryAsync(),
+            var query = await ClaimQueryAsync();
+            var owner = await _claimHost.ClaimExecutionAsync(() => WorkflowExecutionLease.TryAcquireAsync(_store, instance, _leaseSettings, _watch, renewer, query,
                 _ => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Ownership)),
                 reason => Executor.Deliver(new Cancel(signals.AssignmentId, CancelKind.Workflow, reason)),
                 sequence => Executor.Deliver(new Arrivals(signals.AssignmentId, sequence)), _time, kind, Released,
-                state => Executor.Deliver(new DebugCommands(signals.AssignmentId, state)));
+                state => Executor.Deliver(new DebugCommands(signals.AssignmentId, state))));
             if (owner != null) _control.ExecutionClaimed = true;
             return owner;
         }

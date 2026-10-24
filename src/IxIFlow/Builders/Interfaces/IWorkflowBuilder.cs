@@ -40,6 +40,12 @@ public interface IWorkflowBuilder<TWorkflowData>
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Selects one case body, retaining the incoming previous value.</summary>
+    /// <summary>Runs cleanup if the body is abandoned by cancellation.</summary>
+    IWorkflowBuilder<TWorkflowData, object> CancellationScope(
+        Action<ISequenceBuilder<TWorkflowData, object>> body,
+        Action<ISequenceBuilder<TWorkflowData, object>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     IWorkflowBuilder<TWorkflowData, object> Switch<TValue>(
         Expression<Func<WorkflowContext<TWorkflowData, object>, TValue>> selector,
         Action<SwitchCases<TValue, IWorkflowBuilder<TWorkflowData, object>>> configure,
@@ -143,6 +149,12 @@ public interface IWorkflowBuilder<TWorkflowData, TPreviousStepData>
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Named(string name);
 
     /// <summary>Selects one case body, retaining the incoming previous value.</summary>
+    /// <summary>Runs cleanup if the body is abandoned by cancellation.</summary>
+    IWorkflowBuilder<TWorkflowData, TPreviousStepData> CancellationScope(
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> body,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     IWorkflowBuilder<TWorkflowData, TPreviousStepData> Switch<TValue>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> selector,
         Action<SwitchCases<TValue, IWorkflowBuilder<TWorkflowData, TPreviousStepData>>> configure,

@@ -7,6 +7,7 @@ internal sealed class CoordinationState
     private int _links;
     private TaskCompletionSource _changed = NewSignal();
     internal TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(10);
+    internal TimeSpan SubscriptionTimeout { get; set; } = TimeSpan.FromSeconds(30);
     internal event Action? Wake;
     internal event Action? ClaimPassCompleted;
 

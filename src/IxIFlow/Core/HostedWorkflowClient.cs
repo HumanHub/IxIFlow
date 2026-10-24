@@ -29,6 +29,22 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
 
     private static Task ChangeTask(CoordinationState state) { state.Observe(out var changed); return changed; }
 
+    // Subscription acknowledgement must not hold up the store-read backstop. A live link
+    // can keep delivering heartbeats while its subscription acknowledgement is stalled.
+    // The watcher is already installed; after this bound the reader falls back to the store.
+    private async Task ConfirmSubscriptionAsync(string instanceId, CancellationToken token)
+    {
+        using var subscription = CancellationTokenSource.CreateLinkedTokenSource(token);
+        try
+        {
+            await host.ConfirmSubscriptionAsync(instanceId, subscription.Token)
+                .WaitAsync(coordination?.SubscriptionTimeout ?? AwaitPollInterval, time, token);
+        }
+        catch (TimeoutException) { }
+        finally { subscription.Cancel(); }
+        token.ThrowIfCancellationRequested();
+    }
+
     public Task<WorkflowExecutionResult> RunAsync<TWorkflowData>(WorkflowDefinition definition,
         TWorkflowData workflowData, WorkflowOptions? options = null, CancellationToken cancellationToken = default)
         where TWorkflowData : class
@@ -216,7 +232,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
                    : status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Scheduled)
         {
             using var watch = host.WatchSettled(instanceId, out var settled);
-            await host.ConfirmSubscriptionAsync(instanceId, cancellationToken);
+            await ConfirmSubscriptionAsync(instanceId, cancellationToken);
             receipt = await host.ReadAsync(client => client.ReadEventAsync(instanceId, eventId));
             status = await host.ReadAsync(client => client.ReadStatusAsync(instanceId)) ?? status;
             if (receipt?.Outcome != EventOutcome.Pending && status != WorkflowExecutionStatus.Running)
@@ -355,7 +371,7 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
             // Watch before reading, so work that finishes in between is not missed. Only work on
             // this instance wakes the caller; work elsewhere is seen by the poll.
             using var watch = host.WatchSettled(instanceId, out var settled);
-            await host.ConfirmSubscriptionAsync(instanceId, cancellationToken);
+            await ConfirmSubscriptionAsync(instanceId, cancellationToken);
             // Waiting reads only the status; the workflow data is read once, when the wait is over.
             var status = await host.ReadAsync(client => client.ReadStatusAsync(instanceId))
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,

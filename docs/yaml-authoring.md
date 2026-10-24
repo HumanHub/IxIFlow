@@ -300,3 +300,30 @@ restriction. Privileged inspection exposes the classified, read-only Catch DTO, 
 
 The [fluent example](../samples/IxIFlow.Samples/ThrowAndRethrow.cs) and its
 [YAML definition](../samples/IxIFlow.Samples/Definitions/throw-and-rethrow.workflow.yaml) form the same executable workflow.
+
+## Cancellation cleanup
+
+A `cancellationScope` requires both `steps` and `onCancelled`; either may be an explicit empty list.
+The body and handler are separate request/reply scopes. A handler may wait durably and resumes in
+its saved phase after a host restart.
+
+<!-- snippet: samples/IxIFlow.Samples/Definitions/cancellation-approval.workflow.yaml -->
+```yaml
+workflow: {name: CancellationApproval, dataType: IxIFlow.Samples.CancellationApprovalData}
+definitions:
+  - kind: cancellationScope
+    steps:
+      - {kind: waitFor, key: approval, event: IxIFlow.Samples.CancellationApprovalSignal}
+      - {kind: assign, to: {path: workflow.State}, value: {kind: constant, value: approved}}
+    onCancelled:
+      - kind: activity
+        activity: samples.label
+        input: [{target: Value, from: {kind: constant, value: withdrawn}}]
+        output: [{source: Value, to: {path: workflow.State}}]
+```
+
+The handler runs for unfinished cancelled work, including a business fault travelling to an outer
+Catch or saga error handler. That handler receives the original fault after intervening cleanup.
+Completed work, internally handled faults and fully unhandled faults do not activate the handler.
+Finally, compensation and cancellation handlers run in nesting order. Administrative termination
+runs no workflow cleanup. See the [matching runnable examples](../samples/IxIFlow.Samples/CancellationApproval.cs).

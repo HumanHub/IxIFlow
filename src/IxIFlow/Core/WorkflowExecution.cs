@@ -403,6 +403,11 @@ public class ExecutionPointer
     /// </summary>
     public string Status { get; set; } = string.Empty;
 
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool CancellationUnwind { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public CancellationUnwindCause? UnwindCause { get; set; }
+
     /// <summary>
     ///     Associated frame when the pointer belongs to a nested control-flow scope
     /// </summary>
@@ -666,6 +671,8 @@ public enum TraceEntryType
     InlineEntered,
     InlineExited,
     /// <summary>A switch selected a case, default or no-match path.</summary>
+    CancellationHandlerEntered,
+    CancellationHandlerCompleted,
     SwitchSelected,
     DataAssigned,
     /// <summary>An invocation policy selected retry, ignore or propagation.</summary>
@@ -904,6 +911,9 @@ public class WorkflowStep
     /// </summary>
     public List<WorkflowStep> SequenceSteps { get; set; } = new();
 
+    /// <summary>Cleanup run when the unfinished body is cancelled.</summary>
+    public List<WorkflowStep> CancellationSteps { get; set; } = new();
+
     /// <summary>
     ///     Parallel execution branches
     /// </summary>
@@ -1090,8 +1100,11 @@ public class WorkflowStep
     /// <summary>Child bodies in catalog order, including empty bodies; a key is an ordinal index or an authored key.</summary>
     public IEnumerable<(string Kind, string? Key, List<WorkflowStep> Steps)> ChildScopes()
     {
+        if (StepType == WorkflowStepType.CancellationScope && (SequenceSteps == null || CancellationSteps == null))
+            throw Core.Runtime.WorkflowBuildError.Invalid(this, "CANCEL001: CancellationScope requires a body and a handler");
         if (StepType == WorkflowStepType.InlineWorkflow) yield return ("inline", null, InlineSteps);
         yield return ("sequence", null, SequenceSteps);
+        yield return ("cancelled", null, CancellationSteps);
         yield return ("then", null, ThenSteps);
         yield return ("else", null, ElseSteps);
         yield return ("loop", null, LoopBodySteps);
@@ -1340,7 +1353,10 @@ public enum WorkflowStepType
     Assign,
     Throw,
     Rethrow,
-    Scope
+    Scope,
+    /// <summary>A body with cleanup for unfinished cancelled work.</summary>
+    CancellationScope
+
 }
 
 /// <summary>

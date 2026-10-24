@@ -5,10 +5,14 @@ namespace IxIFlow.Core;
 public sealed record StepTableEntry(string CatalogId, string AuthorId, string Name,
     WorkflowStepType Kind, string ScopePath, string? SourceLocation)
 {
+    public CancellationScopeDescriptor? CancellationScope { get; init; }
     public AssignmentDescriptor? Assignment { get; init; }
     public string? ExceptionType { get; init; }
     public string? RethrowOwnerId { get; init; }
 }
+
+/// <summary>The distinct body and cleanup scopes of a cancellation wrapper.</summary>
+public sealed record CancellationScopeDescriptor(string BodyScopeId, string HandlerScopeId);
 
 /// <summary>A structural destination and its declared value type.</summary>
 public sealed record AssignmentDescriptor(string Target, string ValueType);
@@ -23,6 +27,8 @@ public sealed class StepTable : System.Collections.Generic.IReadOnlyList<StepTab
             pair.Key, catalog.AuthorId(pair.Value), pair.Value.Name, pair.Value.StepType,
             pair.Key[..pair.Key.LastIndexOf('/')], pair.Value.SourceLocation)
             {
+                CancellationScope = pair.Value.StepType == WorkflowStepType.CancellationScope ?
+                    new(catalog.SequenceScope(pair.Value), catalog.CancellationScope(pair.Value)) : null,
                 Assignment = pair.Value.Assignment is { } assignment ?
                     new(assignment.TargetPath!, WorkflowTypeIdentity.StableName(assignment.ValueType)) : null,
                 ExceptionType = pair.Value.StepType == WorkflowStepType.Throw ? WorkflowTypeIdentity.StableName(pair.Value.ExceptionType) : null,

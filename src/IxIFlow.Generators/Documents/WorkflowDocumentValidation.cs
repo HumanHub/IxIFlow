@@ -394,6 +394,14 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                         await ValidateStepsAsync(child.Steps, $"{stepPath}.steps", document, diagnostics, context, cancellationToken, aliases.Append(each.As).ToArray(), faultBindings: faultBindings, expandingTemplates: expandingTemplates, faultExit: FaultBodyExit.Result);
                     break;
 
+                case CancellationScopeStepDocument cancellation:
+                    foreach (var child in cancellation.ChildScopes())
+                        if (child.Steps != null)
+                            await ValidateStepsAsync(child.Steps, stepPath + (child.Kind == "sequence" ? ".steps" : ".onCancelled"),
+                                document, diagnostics, context, cancellationToken, aliases,
+                                child.Kind == "sequence" && scope != WorkflowDocumentScope.SagaHandler ? scope : faultBindings.Count > 0 ? WorkflowDocumentScope.Catch : WorkflowDocumentScope.Workflow,
+                                faultBindings: faultBindings, expandingTemplates: expandingTemplates);
+                    break;
                 case SequenceStepDocument sequenceStep:
                     foreach (var child in sequenceStep.ChildScopes())
                         await ValidateStepsAsync(child.Steps, $"{stepPath}.steps", document, diagnostics, context, cancellationToken, aliases, faultBindings: faultBindings, expandingTemplates: expandingTemplates);
@@ -627,8 +635,8 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
 
     internal static bool Supports(WorkflowDocumentScope scope, WorkflowStepDocument step) => scope switch
     {
-        WorkflowDocumentScope.Saga => step is ActivityStepDocument or ActivityReferenceStepDocument or WaitStepDocument or SwitchStepDocument or AssignStepDocument or ThrowStepDocument or RethrowStepDocument,
-        WorkflowDocumentScope.SagaHandler => step is ActivityStepDocument and not RequestStepDocument or ActivityReferenceStepDocument or WaitForStepDocument or SwitchStepDocument or AssignStepDocument or ThrowStepDocument or RethrowStepDocument,
+        WorkflowDocumentScope.Saga => step is ActivityStepDocument or ActivityReferenceStepDocument or WaitStepDocument or CancellationScopeStepDocument or SwitchStepDocument or AssignStepDocument or ThrowStepDocument or RethrowStepDocument,
+        WorkflowDocumentScope.SagaHandler => step is ActivityStepDocument and not RequestStepDocument or ActivityReferenceStepDocument or WaitForStepDocument or CancellationScopeStepDocument or SwitchStepDocument or AssignStepDocument or ThrowStepDocument or RethrowStepDocument,
         WorkflowDocumentScope.Catch => true,
         _ => true
     };
@@ -769,8 +777,8 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             if (step is ActivityStepDocument activity) yield return activity.Activity;
             if (step is ActivityReferenceStepDocument reference && document.Activities.TryGetValue(reference.Ref, out var template))
                 yield return template.Activity;
-            if (step is SwitchStepDocument outcome)
-                foreach (var child in outcome.ChildScopes())
+            if (step is SwitchStepDocument or CancellationScopeStepDocument)
+                foreach (var child in step.ChildScopes().Where(child => child.Kind != "cancelled"))
                     foreach (var activityType in SagaActivities(child.Steps, document))
                         yield return activityType;
         }

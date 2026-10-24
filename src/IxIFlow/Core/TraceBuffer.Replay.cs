@@ -60,6 +60,7 @@ internal sealed partial class TraceBuffer
         before.Sequence == after.Sequence && before.ForkActivationId == after.ForkActivationId &&
         before.StepId == after.StepId && before.AuthorStepId == after.AuthorStepId &&
         before.StepIndex == after.StepIndex && before.Status == after.Status && before.FrameId == after.FrameId &&
+        before.CancellationUnwind == after.CancellationUnwind && before.UnwindCause == after.UnwindCause &&
         before.Frames.SequenceEqual(after.Frames);
 
 }

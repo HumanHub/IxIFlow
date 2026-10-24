@@ -29,6 +29,11 @@ public interface IFaultSagaActivityBuilder<TData, TFault, TPrevious> where TPrev
         Expression<Func<TEvent, FaultContext<TData, TFault, TPrevious>, bool>>? resumeExpression = null,
         Action<IFaultSuspendSetupBuilder<TData, TFault, TEvent, TPrevious>>? configure = null,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TEvent : class;
+    IFaultSagaActivityBuilder<TData, TFault, TPrevious> CancellationScope(
+        Action<IFaultSagaActivityBuilder<TData, TFault, TPrevious>> body,
+        Action<ICatchWorkflowBuilder<TData, TFault, TPrevious>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     IFaultSagaActivityBuilder<TData, TFault, TPrevious> Switch<TValue>(Expression<Func<FaultContext<TData, TFault, TPrevious>, TValue>> selector,
         Action<SwitchCases<TValue, IFaultSagaActivityBuilder<TData, TFault, TPrevious>>> configure,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);

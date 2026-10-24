@@ -99,3 +99,5 @@ An answer that must not reach the wrong wait goes through `IWorkflowClient.Reply
 Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in `IxIFlow.Core`. `RegisterWorkflow<TWorkflow,TData>()` and `Invoke<TWorkflow,TData>(setup)` read it from the type without constructing the class to discover identity; missing attributes are refused. Typed YAML children need only `workflowType`, with no duplicate name/version field.
 
 [SwitchRouting.cs](IxIFlow.Samples/SwitchRouting.cs) and its [YAML twin](IxIFlow.Samples/Definitions/switch-routing.workflow.yaml) select shipping, hold or manual-review bodies with one typed selector. Both compile to the same structure and routing behavior.
+
+[CancellationApproval.cs](IxIFlow.Samples/CancellationApproval.cs) and its [YAML twin](IxIFlow.Samples/Definitions/cancellation-approval.workflow.yaml) withdraw an unfinished approval during cancellation and leave a completed approval unchanged.

@@ -19,9 +19,9 @@ public sealed class ChildScopeTests
         Assert.Equal(bodies.Count, scopes.Length);
         foreach (var body in bodies)
             Assert.Single(scopes, scope => ReferenceEquals(scope.Steps, body));
-        Assert.Equal(["inline", "sequence", "then", "else", "loop", "foreach", "finally", "timeout", "catch", "scope"],
-            scopes.Take(10).Select(scope => scope.Kind));
-        Assert.All(scopes.Take(10), scope => Assert.Null(scope.Key));
+        Assert.Equal(["inline", "sequence", "cancelled", "then", "else", "loop", "foreach", "finally", "timeout", "catch", "scope"],
+            scopes.Take(11).Select(scope => scope.Kind));
+        Assert.All(scopes.Take(11), scope => Assert.Null(scope.Key));
         Assert.Equal([("branch", "0"), ("branch", "1"),
                 ("node", ""), ("node", "/to/0"), ("node", "/to/1"),
                 ("node", ""), ("node", "/to/0"), ("node", "/to/1"),
@@ -30,7 +30,7 @@ public sealed class ChildScopeTests
                 ("state", ""), ("state", "/exit"), ("state", "/on/0"), ("state", "/on/0/case/0"), ("state", "/on/0/case/1"), ("state", "/on/0/run"),
                 ("state", "/on/1"), ("state", "/on/1/case/0"), ("state", "/on/1/case/1"), ("state", "/on/1/run"), ("state", "/listen"),
                 ("case", "0"), ("case", "1")],
-            scopes.Skip(10).Select(scope => (scope.Kind, scope.Key)));
+            scopes.Skip(11).Select(scope => (scope.Kind, scope.Key)));
         Assert.All(new WorkflowStep().ChildScopes(), scope => Assert.Empty(scope.Steps));
     }
 
@@ -129,6 +129,7 @@ public sealed class ChildScopeTests
 
     [Theory]
     [InlineData(nameof(WorkflowStep.SequenceSteps))]
+    [InlineData(nameof(WorkflowStep.CancellationSteps))]
     [InlineData(nameof(WorkflowStep.ThenSteps))]
     [InlineData(nameof(WorkflowStep.ElseSteps))]
     [InlineData(nameof(WorkflowStep.LoopBodySteps))]
@@ -164,7 +165,7 @@ public sealed class ChildScopeTests
             foreach (var child in scope.Steps)
                 child.Id = scope.Kind + scope.Key;
 
-        Assert.Equal([step.Id, "sequence", "then", "else", "loop", "finally", "catch", "scope",
+        Assert.Equal([step.Id, "sequence", "cancelled", "then", "else", "loop", "finally", "catch", "scope",
                 "node", "node/to/0", "node", "node/to/0",
                 "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/0/run", "state/on/1", "state/on/1/case/0", "state/on/1/run", "state/listen",
                 "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/0/run", "state/on/1", "state/on/1/case/0", "state/on/1/run", "state/listen",

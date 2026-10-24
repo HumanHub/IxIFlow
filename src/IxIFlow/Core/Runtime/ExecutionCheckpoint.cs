@@ -256,6 +256,14 @@ internal sealed class ExecutionCheckpoint
             if (entry.EnclosingScopeIds.Any(id => !ids.Contains(id))) throw new JsonException("Missing enclosing scope frame");
         foreach (var continuation in Continuations)
         {
+            if (continuation.UnwindCause is { } cause && !Enum.IsDefined(cause)) throw new JsonException("Invalid cancellation unwind cause");
+            foreach (var frame in continuation.Stack)
+                if (frame.CancellationState is { } cancellation &&
+                    (!Enum.IsDefined(cancellation.Phase) || string.IsNullOrWhiteSpace(cancellation.ActivationId) ||
+                     cancellation.Cause is { } reason && !Enum.IsDefined(reason) ||
+                     cancellation.Phase == CancellationScopePhase.Handler && (cancellation.Cause == null ||
+                         cancellation.Cause == CancellationUnwindCause.HandledFaultCancellation && cancellation.Failure?.Route == null)))
+                    throw new JsonException("Invalid cancellation scope state");
             if (continuation.Stack.Any(frame => frame.Kind == FrameKind.Scope && !ids.Contains(frame.ActivationId)) ||
                 continuation.PendingScopeCloses?.Any(id => !ids.Contains(id)) == true ||
                 continuation.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled) && continuation.InheritedScopes?.Any(id => !ids.Contains(id)) == true)
@@ -597,7 +605,10 @@ internal sealed class ContinuationState
     public int Sequence { get; set; }
 
     public ContinuationStatus Status { get; set; } = ContinuationStatus.Active;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool CancellationUnwind { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CancellationUnwindCause? UnwindCause { get; set; }
     public List<ScopePosition> Stack { get; set; } = [];
     public SerializedValue? Previous { get; set; }
     public ActivityInvocationState? PendingActivity { get; set; }
@@ -902,7 +913,7 @@ internal sealed class ActivityInputValue
         problem.GetBaseException().Message, problem);
 }
 
-internal enum FrameKind { Body, Item, Node, Edge, State, StateExit, Transition, Case, Run, Listen, Inline, SwitchCase, Scope }
+internal enum FrameKind { Body, Item, Node, Edge, State, StateExit, Transition, Case, Run, Listen, Inline, SwitchCase, Scope, CancellationHandler }
 
 internal sealed class GraphState
 {
@@ -953,6 +964,8 @@ internal sealed class ScopePosition
     public int NextStepIndex { get; set; }
     public int LoopIterationCount { get; set; }
     public Dictionary<int, int> StepRetryCounts { get; set; } = [];
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CancellationScopeState? CancellationState { get; set; }
     public TryScopeState? TryState { get; set; }
     public SagaScopeState? SagaState { get; set; }
     public SerializedValue? EntryPrevious { get; set; }
@@ -1055,6 +1068,8 @@ internal sealed class SagaScopeState
     public PendingFailure? Error { get; set; }
     public List<string> CompensationErrors { get; set; } = [];
     public bool IsCancellationCleanup { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool CancellationRequested { get; set; }
     public SerializedValue? PreviousCompensation { get; set; }
 
     /// <summary>The saga's frames, each recorded once by activation, so a retry can restore a restart point.</summary>

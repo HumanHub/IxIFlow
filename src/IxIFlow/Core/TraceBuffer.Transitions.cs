@@ -17,6 +17,15 @@ internal sealed partial class TraceBuffer
         });
     }
 
+    public void CancellationHandler(TraceEntryType kind, WorkflowStep step, ContinuationState continuation,
+        CancellationScopeState state, string handlerScope)
+    {
+        var now = _time.GetUtcNow().UtcDateTime;
+        if (Accepts(kind, now)) Add(new ExecutionTraceEntry { Timestamp = now, EntryType = kind,
+            Payload = new CancellationHandlerTrace(_scopes!.Id(step), continuation.Id, _scopes.SequenceScope(step),
+                handlerScope, state.ActivationId, state.Cause!.Value) });
+    }
+
     public void Fault(WorkflowStep step, ContinuationState continuation, SerializedException error, bool rethrow,
         WorkflowFaultLocation current)
     {

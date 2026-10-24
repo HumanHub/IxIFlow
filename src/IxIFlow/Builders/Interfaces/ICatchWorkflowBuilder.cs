@@ -107,6 +107,11 @@ public interface ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>
         Action<FaultInvocationSetupBuilder<TWorkflowData, TFault, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TInvokedData : class;
 
+    ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> CancellationScope(
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> body,
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Sequence(
         Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 

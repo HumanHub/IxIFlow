@@ -1,0 +1,11 @@
+workflow: {name: CancellationApproval, dataType: IxIFlow.Samples.CancellationApprovalData}
+definitions:
+  - kind: cancellationScope
+    steps:
+      - {kind: waitFor, key: approval, event: IxIFlow.Samples.CancellationApprovalSignal}
+      - {kind: assign, to: {path: workflow.State}, value: {kind: constant, value: approved}}
+    onCancelled:
+      - kind: activity
+        activity: samples.label
+        input: [{target: Value, from: {kind: constant, value: withdrawn}}]
+        output: [{source: Value, to: {path: workflow.State}}]

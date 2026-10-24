@@ -19,6 +19,12 @@ public class SagaContainerBuilder<TWorkflowData, TPreviousStepData> : ISagaConta
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
         _workflowBuilder.Rethrow(sourcePath, sourceLine);
 
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> CancellationScope(
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> body,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        _workflowBuilder.CancellationScope(body, onCancelled, sourcePath, sourceLine);
+
     private readonly WorkflowBuilder<TWorkflowData, TPreviousStepData> _workflowBuilder;
 
     public SagaContainerBuilder(List<WorkflowStep> steps, string workflowName, int workflowVersion, List<WorkflowDemand>? demands = null, IReadOnlyList<string>? declaredInputs = null, IReadOnlyList<string>? declaredOutputs = null)

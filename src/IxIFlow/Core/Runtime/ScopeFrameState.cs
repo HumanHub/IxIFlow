@@ -47,8 +47,17 @@ internal sealed class PendingFailure
     [JsonRequired] public required SerializedException Error { get => _error; init => _error = value ?? throw new System.Text.Json.JsonException("Missing pending failure error"); }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ScopeFailureBoundary? ScopeBoundary { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FailureHandlerRoute? Route { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PendingFailure? OriginatingFailure { get; set; }
     [JsonIgnore] public string Type => Error.Type;
     [JsonIgnore] public string Message => Error.Message;
+    public PendingFailure DuringCleanup(PendingFailure? original) => new()
+    {
+        Error = Error, ScopeBoundary = ScopeBoundary, Route = Route,
+        OriginatingFailure = OriginatingFailure ?? original
+    };
     public Exception ForPropagation(ExecutionCheckpoint checkpoint) => Error.ForPropagation(checkpoint);
     public void Propagate(ExecutionCheckpoint checkpoint) => Error.Propagate(checkpoint);
     public static PendingFailure Capture(Exception error, WorkflowScopeCatalog scopes,

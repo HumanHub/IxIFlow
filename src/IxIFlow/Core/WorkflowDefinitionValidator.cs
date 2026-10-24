@@ -49,7 +49,7 @@ public static class WorkflowDefinitionValidator
         WorkflowTypeIdentity.SavedName(dataType) == WorkflowTypeIdentity.SavedName(workflowData.GetType());
 
     /// <summary>The persisted execution contract version; other versions require a separate migration.</summary>
-    public const int CheckpointContractVersion = 13;
+    public const int CheckpointContractVersion = 14;
 
     public static IReadOnlyList<WorkflowVersionDependency> GetDependencies(WorkflowDefinition definition)
     {
@@ -187,7 +187,7 @@ public static class WorkflowDefinitionValidator
             {
                 WorkflowStepType.Scope or WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow or WorkflowStepType.Sequence or
                     WorkflowStepType.Assign or WorkflowStepType.Conditional or WorkflowStepType.Switch or WorkflowStepType.Throw or WorkflowStepType.Rethrow or WorkflowStepType.Parallel or WorkflowStepType.Loop or
-                    WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
+                    WorkflowStepType.CancellationScope or WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
                     WorkflowStepType.ForEach or WorkflowStepType.ForEachResult or WorkflowStepType.Flowchart or
                     WorkflowStepType.Enter or WorkflowStepType.Decision or WorkflowStepType.Edge or
                     WorkflowStepType.StateMachine or WorkflowStepType.Arm or WorkflowStepType.Trigger or

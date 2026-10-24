@@ -117,7 +117,7 @@ internal static class TryScopeTransitions
         continuation.Previous = state.EntryPrevious;
         continuation.RuntimePrevious = state.RuntimeEntryPrevious;
 
-        state.Error = new PendingFailure { Error = savedError, ScopeBoundary = failure.ScopeBoundary };
+        state.Error = new PendingFailure { Error = savedError, ScopeBoundary = failure.ScopeBoundary, Route = failure.Route, OriginatingFailure = failure.OriginatingFailure };
         state.CatchIndex = catchIndex;
         state.Phase = catchIndex >= 0 ? TryPhase.Catch : TryPhase.Finally;
         return true;
@@ -201,8 +201,10 @@ internal static class TryScopeTransitions
         while (true)
         {
             RejectUnrestorable(continuation.DeferredFailure?.Error);
+            RejectUnrestorable(continuation.UnwindFailure?.Error);
             foreach (var frame in continuation.Stack)
             {
+                RejectUnrestorable(frame.CancellationState?.Failure?.Error);
                 var tryState = frame.TryState;
                 RejectUnrestorable(tryState?.Error?.Error);
                 var saga = frame.SagaState;
@@ -239,20 +241,12 @@ internal static class TryScopeTransitions
         owner.NextStepIndex++;
     }
 
-    public static void PreserveExistingFinally(ContinuationState continuation)
-    {
-        var outermost = continuation.Stack
-            .Select(frame => frame.TryState)
-            .FirstOrDefault(state => state?.Phase == TryPhase.Finally);
-        if (outermost != null)
-            outermost.IsCancellationCleanup = true;
-    }
-
     public static void ContinueCancellation(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, ContinuationState continuation)
     {
         for (var index = continuation.Stack.Count - 1; index >= 0; index--)
         {
             var owner = continuation.Stack[index];
+            if (CancellationScopeTransitions.BeginCancellation(scopes, checkpoint, continuation, index)) return;
             if (SagaScopeTransitions.BeginCancellation(checkpoint, continuation, index) ||
                 SagaScopeTransitions.CancelRetryHandler(scopes, checkpoint, continuation, index))
                 return;

@@ -498,7 +498,8 @@
             "request",
             "waitFor",
             "result",
-            "invokeWorkflowType"
+            "invokeWorkflowType",
+            "cancellationScope"
           ],
           "description": "The discriminator selecting the concrete document variant."
         }
@@ -877,6 +878,21 @@
           },
           "then": {
             "$ref": "#/definitions/invokeWorkflowTypeStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "cancellationScope"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/cancellationScopeStep"
           }
         }
       ],
@@ -2893,6 +2909,48 @@
       "required": [
         "kind",
         "workflowType"
+      ]
+    },
+    "cancellationScopeStep": {
+      "type": "object",
+      "description": "A body with cleanup for unfinished cancelled work.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "cancellationScope",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "The forward body in execution order."
+        },
+        "onCancelled": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "Cleanup run when this unfinished body is cancelled."
+        }
+      },
+      "required": [
+        "kind",
+        "steps",
+        "onCancelled"
       ]
     },
     "codeAsset": {

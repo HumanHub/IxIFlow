@@ -20,7 +20,7 @@ namespace IxIFlow.Core;
 /// Await <see cref="StopAsync"/> (called by the generic host) or asynchronous disposal before
 /// disposing the stores used by runs, including the repository, catalog, artifact and payload
 /// stores. Container disposal alone does not ensure this order. Both shutdown paths wait for
-/// admitted runs and then their lingering scopes, with a ten-second release bound after
+/// admitted runs, execution claims and then their lingering scopes, with a ten-second release bound after
 /// cancellation and a warning if it expires; resources can remain in use after that timeout.
 /// Synchronous <see cref="Dispose"/> only requests cancellation and does not wait for release.
 /// </remarks>
@@ -37,6 +37,8 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
     // Every admitted item until it finishes, added under the lock that admits it, so a stopping
     // host waits for all of them.
     private readonly HashSet<WorkItem> _admitted = [];
+    // Claims remain admitted through lease disposal, including claims from operations without a slot.
+    private readonly HashSet<TaskCompletionSource> _claims = [];
     // Runs that ended while inline calls were still using their scope; each holds its slot until
     // the last of those calls ends.
     private readonly Dictionary<WorkItem, Task> _lingering = [];
@@ -118,6 +120,60 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
 
     /// <summary>Slots not running anything now; the poll claims at most this many instances.</summary>
     internal int FreeSlots => _slots.CurrentCount;
+
+    // Start the store call under the shutdown lock. A caller can have passed slot admission long
+    // before reaching this boundary, or be an inline call in a draining run.
+    internal Task<WorkflowExecutionLease?> ClaimExecutionAsync(Func<Task<WorkflowExecutionLease?>> claim)
+    {
+        lock (_lock)
+        {
+            if (!_accepting)
+                return Task.FromCanceled<WorkflowExecutionLease?>(new CancellationToken(true));
+            var done = NewSignal();
+            _claims.Add(done);
+            return AcquireAndTrackAsync(claim, done);
+        }
+    }
+
+    private async Task<WorkflowExecutionLease?> AcquireAndTrackAsync(
+        Func<Task<WorkflowExecutionLease?>> claim, TaskCompletionSource done)
+    {
+        var handedOff = false;
+        try
+        {
+            var owner = await claim().ConfigureAwait(false);
+            if (owner == null) return null;
+            lock (_lock)
+            {
+                if (_accepting)
+                {
+                    handedOff = true;
+                    _ = CompleteClaimAsync(owner, done);
+                    return owner;
+                }
+            }
+            // The store cannot cancel a claim already sent. Never hand a late grant to a run:
+            // release it while shutdown is still waiting for this claim.
+            await owner.DisposeAsync().ConfigureAwait(false);
+            throw new OperationCanceledException(new CancellationToken(true));
+        }
+        finally
+        {
+            if (!handedOff) CompleteClaim(done);
+        }
+    }
+
+    private async Task CompleteClaimAsync(WorkflowExecutionLease owner, TaskCompletionSource done)
+    {
+        await owner.ReleaseCompleted.ConfigureAwait(false);
+        CompleteClaim(done);
+    }
+
+    private void CompleteClaim(TaskCompletionSource done)
+    {
+        lock (_lock) _claims.Remove(done);
+        done.TrySetResult();
+    }
 
     /// <summary>
     /// Resumes an instance at <paramref name="dueUtc"/>, the runnable time a run just saved for it.
@@ -580,11 +636,14 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         }
         catch (TimeoutException)
         {
-            int remaining;
+            int remaining, claims;
             lock (_lock)
+            {
                 remaining = _admitted.Union(_lingering.Keys).Count();
-            _logger.LogWarning("Workflow host {HostName} has {RunCount} runs still releasing scopes after {Timeout}",
-                _settings.Name, remaining, ReleaseTimeout);
+                claims = _claims.Count;
+            }
+            _logger.LogWarning("Workflow host {HostName} has {RunCount} runs and {ClaimCount} execution claims still releasing scopes after {Timeout}",
+                _settings.Name, remaining, claims, ReleaseTimeout);
         }
     }
 
@@ -600,7 +659,8 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
                     cancelled.Add(queue.Dequeue());
             // Lingering runs are awaited separately once the admitted runs finish.
             running = _admitted.Select(item => item.Done.Task)
-                .Concat(_debugWakes.Values.Select(done => done.Task)).ToArray();
+                .Concat(_debugWakes.Values.Select(done => done.Task))
+                .Concat(_claims.Select(done => done.Task)).ToArray();
             // Due instances stay runnable in the store for the next host.
             _due.Clear();
             _dueOf.Clear();

@@ -207,8 +207,7 @@ internal sealed class ActivityAttempts(
             clearsCrashCount: false);
 
         var skipCancelledRecovery = isRecovery && continuation.CancellationUnwind &&
-            !TryScopeTransitions.IsInsideFinally(continuation) &&
-            !SagaScopeTransitions.IsInsideCompensation(continuation);
+            !ContinuationTransitions.IsCleanup(continuation);
         // The attempt's span is current while the activity runs, so the activity's own spans nest in it (D-39).
         var activityType = step.ActivityType?.Name ?? step.Name;
         var span = Telemetry.Source.StartActivity($"activity {activityType}");
@@ -652,8 +651,7 @@ internal sealed class ActivityAttempts(
                         ForEachTransitions.ItemsOf(scopes, checkpoint, activity.Continuation));
                 if (activity.Continuation.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled ||
                     activity.Continuation.CancellationUnwind &&
-                    !TryScopeTransitions.IsInsideFinally(activity.Continuation) &&
-                    !SagaScopeTransitions.IsInsideCompensation(activity.Continuation))
+                    !ContinuationTransitions.IsCleanup(activity.Continuation))
                 {
                     MarkActivityEnd(activity, instance, checkpoint, "Returned");
                     activity.Continuation.Status = ContinuationStatus.Cancelling;
@@ -681,8 +679,7 @@ internal sealed class ActivityAttempts(
             !WorkflowEngineException.IsEngineFailure(error) &&
             (activity.Continuation.Status is (ContinuationStatus.Cancelling or ContinuationStatus.Cancelled) ||
              activity.Continuation.CancellationUnwind &&
-             !TryScopeTransitions.IsInsideFinally(activity.Continuation) &&
-             !SagaScopeTransitions.IsInsideCompensation(activity.Continuation)))
+             !ContinuationTransitions.IsCleanup(activity.Continuation)))
         {
             // The parent join has cancelled this branch.
             activity.Continuation.Status = ContinuationStatus.Cancelling;
@@ -696,8 +693,7 @@ internal sealed class ActivityAttempts(
 
     private static bool Unwinding(ContinuationState continuation) =>
         continuation.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled ||
-        continuation.CancellationUnwind && !TryScopeTransitions.IsInsideFinally(continuation) &&
-        !SagaScopeTransitions.IsInsideCompensation(continuation);
+        continuation.CancellationUnwind && !ContinuationTransitions.IsCleanup(continuation);
 
     private void MarkActivityUnresolved(ExecutionCheckpoint checkpoint, RunningActivity activity, string? reason, Exception? error = null)
     {

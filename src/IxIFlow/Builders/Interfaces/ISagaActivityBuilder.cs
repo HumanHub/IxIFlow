@@ -101,6 +101,11 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="propertySelector">Expression that selects the property to branch on</param>
     /// <param name="configure">Configuration for the switch cases</param>
     /// <returns>A saga activity builder for continuing the saga flow</returns>
+    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> CancellationScope(
+        Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> body,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Switch<TProperty>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TProperty>> propertySelector,
         Action<ISagaSwitchBuilder<TWorkflowData, TPreviousStepData, TProperty>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);

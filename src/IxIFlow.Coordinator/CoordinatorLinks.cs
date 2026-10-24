@@ -23,6 +23,9 @@ internal sealed class CoordinatorLinks(CoordinatorClientOptions options, IWorkfl
         CoordinatorBuilderExtensions.RefuseSqlite(store);
         options.ValidateClient();
         state.PollInterval = options.CoordinatedPollInterval;
+        // Allow the subscription watchdog its timeout and next heartbeat tick, then
+        // one more tick for disconnection before the client's independent backstop.
+        state.SubscriptionTimeout = options.LinkTimeout + options.LinkHeartbeatInterval * 2;
         host.AwaitSubscriptionAsync = ConfirmAsync;
         host.ObserveAwaiters(AwaitingChanged);
         host.FreeSlotsChanged += FreeSlotsChanged;

@@ -35,6 +35,8 @@ internal static class ExecutionSnapshotFactory
                 AuthorStepId = next == null ? "" : scopes.AuthorId(next),
                 StepIndex = position.NextStepIndex,
                 Status = continuation.Status.ToString(),
+                CancellationUnwind = continuation.CancellationUnwind,
+                UnwindCause = continuation.UnwindCause,
                 FrameId = position.ActivationId
             });
             for (var index = 0; index < continuation.Stack.Count; index++)
@@ -56,13 +58,14 @@ internal static class ExecutionSnapshotFactory
                     Name = graph?.Name ?? name,
                     LoopIteration = iteration,
                     ForEachItemIndex = frame.ForEachIndex,
-                    Kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase
+                    Kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase or FrameKind.CancellationHandler
                         ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId,
                     StepId = frame.ScopeId,
                     ParentFrameId = parent?.ActivationId,
                     State = new Dictionary<string, string>
                     {
-                        ["Phase"] = graph?.Phase ?? "",
+                        ["UnwindCause"] = parent?.CancellationState?.Cause?.ToString() ?? continuation.UnwindCause?.ToString() ?? "",
+                        ["Phase"] = graph?.Phase ?? parent?.CancellationState?.Phase.ToString() ?? "",
                         ["Visit"] = graph?.Visit.ToString() ?? "",
                         ["ArmOccurrence"] = frame.ArmOccurrence.ToString(),
                         ["Via"] = graph?.Via ?? "",

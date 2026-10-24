@@ -294,3 +294,28 @@ restriction. Privileged inspection exposes the classified, read-only Catch DTO, 
 
 The [fluent example](../samples/IxIFlow.Samples/ThrowAndRethrow.cs) and its
 [YAML definition](../samples/IxIFlow.Samples/Definitions/throw-and-rethrow.workflow.yaml) form the same executable workflow.
+
+## Cancellation cleanup
+
+`CancellationScope(body, onCancelled)` runs its handler when an unfinished body is cancelled.
+A completed body runs no handler. A fault escaping to an outer Catch or saga error handler runs
+intervening cancellation handlers before that handler receives the original fault. A fault handled
+inside the body, or one with no business handler, does not activate cancellation cleanup.
+
+<!-- snippet: samples/IxIFlow.Samples/CancellationApproval.cs -->
+```csharp
+public static WorkflowDefinition Definition() => Workflow.Create<CancellationApprovalData>("CancellationApproval")
+    .CancellationScope(body => body.WaitFor<CancellationApprovalSignal>("approval")
+        .Assign(c => c.WorkflowData.State, c => "approved"),
+        onCancelled => onCancelled.Step<Label>(s => s.Input(a => a.Value).From(c => "withdrawn")
+            .Output(a => a.Value).To(c => c.WorkflowData.State))).Build();
+```
+
+Cleanup follows nesting: an inner Finally or saga compensation finishes before an enclosing
+cancellation handler. Handlers support activities, durable waits, children and structured controls.
+They use cleanup cancellation tokens and can resume after a host restart. An unhandled cleanup
+failure runs remaining outer cleanup and fails the workflow. Administrative termination runs no
+workflow cleanup. External cleanup activities follow the usual recovery and idempotency rules.
+
+The [approval example](../samples/IxIFlow.Samples/CancellationApproval.cs) has a matching
+[YAML definition](../samples/IxIFlow.Samples/Definitions/cancellation-approval.workflow.yaml).

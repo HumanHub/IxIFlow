@@ -14,6 +14,11 @@ public interface IFaultForEachWorkflowBuilder<TWorkflowData, TFault, TPreviousSt
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
     /// <summary>Raises a business exception constructed from the current context.</summary>
+    new IFaultForEachWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> CancellationScope(
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> body,
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     new IFaultForEachWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Throw<TException>(Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TException>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
     /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>

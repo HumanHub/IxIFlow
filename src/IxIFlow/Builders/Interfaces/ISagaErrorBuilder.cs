@@ -19,6 +19,11 @@ public interface ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData>
     /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
     ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
+    ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData> CancellationScope(
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> body,
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     ISagaErrorBuilder<TWorkflowData, TFault, TPreviousStepData> Switch<TValue>(
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> selector,
         Action<SwitchCases<TValue, ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>>> configure,

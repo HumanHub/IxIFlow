@@ -114,6 +114,14 @@ public class WorkflowBuilder<TWorkflowData>(string workflowName, int workflowVer
         new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs)
             .Assign(target, value, sourcePath, sourceLine);
 
+    /// <summary>Runs cleanup if the body is abandoned by cancellation.</summary>
+    public IWorkflowBuilder<TWorkflowData, object> CancellationScope(
+        Action<ISequenceBuilder<TWorkflowData, object>> body,
+        Action<ISequenceBuilder<TWorkflowData, object>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) =>
+        new WorkflowBuilder<TWorkflowData, object>(_steps, workflowName, workflowVersion, _demands, declaredInputs, declaredOutputs)
+            .CancellationScope(body, onCancelled, sourcePath, sourceLine);
+
     /// <summary>Selects one case body with no incoming activity value.</summary>
     public IWorkflowBuilder<TWorkflowData, object> Switch<TValue>(
         Expression<Func<WorkflowContext<TWorkflowData, object>, TValue>> selector,
@@ -604,6 +612,22 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     /// <summary>
     ///     Creates a sequence container
     /// </summary>
+    /// <summary>Runs cleanup if the body is abandoned by cancellation.</summary>
+    public IWorkflowBuilder<TWorkflowData, TPreviousStepData> CancellationScope(
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> body,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        ArgumentNullException.ThrowIfNull(onCancelled);
+        var step = Core.Runtime.ThrowConstruction.Leaf<TWorkflowData, TPreviousStepData>(WorkflowStepType.CancellationScope, sourcePath, sourceLine);
+        step.Order = _steps.Count;
+        body(new SequenceBuilder<TWorkflowData, TPreviousStepData>(step.SequenceSteps));
+        onCancelled(new SequenceBuilder<TWorkflowData, TPreviousStepData>(step.CancellationSteps));
+        _steps.Add(step);
+        return this;
+    }
+
     public IWorkflowBuilder<TWorkflowData, TPreviousStepData> Sequence(
         Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {

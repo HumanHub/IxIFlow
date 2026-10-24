@@ -18,6 +18,8 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
     private ExecutionLeaseRenewer.Registration? _renewalRegistration;
     private readonly IDisposable _cancellationWatch;
     private Action<ExecutionLeaseReleaseResult>? _released;
+    private readonly TaskCompletionSource _releaseCompleted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    internal Task ReleaseCompleted => _releaseCompleted.Task;
 
     private WorkflowExecutionLease(IWorkflowStateRepository repository, string instanceId,
         string token, ExecutionLeaseGrant grant, DateTime requestedAtUtc, ExecutionLeaseSettings settings,
@@ -94,8 +96,18 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
         if (await repository.TryAcquireExecutionLeaseAsync(instance.InstanceId, token,
                 settings.Duration, query, kind) is not { } grant)
             return null;
-        return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, requestedAtUtc, settings,
-            time, watch, renewer, lost, cancellation, arrivals, debug) { _released = released };
+        try
+        {
+            return new WorkflowExecutionLease(repository, instance.InstanceId, token, grant, requestedAtUtc, settings,
+                time, watch, renewer, lost, cancellation, arrivals, debug) { _released = released };
+        }
+        catch
+        {
+            // A grant already belongs to us even if lease setup fails (for example, a disposed
+            // cancellation watch). The caller has no owner to dispose on this path.
+            await ReleaseAsync(repository, instance.InstanceId, token, time, released).ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>Records a cancellation request learned outside the watch, such as from a commit.</summary>
@@ -205,13 +217,32 @@ internal sealed class WorkflowExecutionLease : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        StopRenewing();
-        await _renewal;
-        _stop.Dispose();
         try
         {
-            var result = await _repository.ReleaseExecutionLeaseAsync(_instanceId, _token).WaitAsync(ReleaseTimeout, _time);
-            _released?.Invoke(result);
+            StopRenewing();
+            await _renewal.ConfigureAwait(false);
+        }
+        finally
+        {
+            try
+            {
+                await ReleaseAsync(_repository, _instanceId, _token, _time, _released).ConfigureAwait(false);
+            }
+            finally
+            {
+                _stop.Dispose();
+                _releaseCompleted.TrySetResult();
+            }
+        }
+    }
+
+    private static async Task ReleaseAsync(IWorkflowStateRepository repository, string instanceId,
+        string token, TimeProvider time, Action<ExecutionLeaseReleaseResult>? released)
+    {
+        try
+        {
+            var result = await repository.ReleaseExecutionLeaseAsync(instanceId, token).WaitAsync(ReleaseTimeout, time).ConfigureAwait(false);
+            released?.Invoke(result);
         }
         catch
         {

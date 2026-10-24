@@ -203,7 +203,7 @@ internal sealed class ScopeRuntime(
                     return;
                 }
                 if (!reopen && (needing.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled ||
-                    needing.CancellationUnwind && !TryScopeTransitions.IsInsideFinally(needing) && !SagaScopeTransitions.IsInsideCompensation(needing)))
+                    needing.CancellationUnwind && !CancellationScopeTransitions.IsInsideHandler(needing) && !TryScopeTransitions.IsInsideFinally(needing) && !SagaScopeTransitions.IsInsideCompensation(needing)))
                 {
                     if (captured.Release?.Value is { } cancelledValue)
                     {

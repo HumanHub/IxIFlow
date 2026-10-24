@@ -9,6 +9,7 @@ namespace IxIFlow.Core;
 [JsonDerivedType(typeof(ScopeTrace), "scope")]
 [JsonDerivedType(typeof(ConditionTrace), "condition")]
 [JsonDerivedType(typeof(SwitchTrace), "switch")]
+[JsonDerivedType(typeof(CancellationHandlerTrace), "cancellationHandler")]
 [JsonDerivedType(typeof(DataAssignedTrace), "assigned")]
 [JsonDerivedType(typeof(FaultTrace), "fault")]
 [JsonDerivedType(typeof(JoinTrace), "join")]
@@ -141,3 +142,10 @@ public sealed record ScopeTrace(string StepId, WorkflowStepType StepKind, string
 {
     public string InvocationId { get; init; } = "";
 }
+
+/// <summary>A cancellation handler phase, containing only structural control facts.</summary>
+public sealed record CancellationHandlerTrace(string StepId, string ContinuationId, string BodyScopeId,
+    string HandlerScopeId, string ActivationId, CancellationUnwindCause Cause) : TracePayload;
+
+/// <summary>The reason for unwinding, independent of scheduling and item outcomes.</summary>
+public enum CancellationUnwindCause { Cancelled, HandledFaultCancellation, Faulted }

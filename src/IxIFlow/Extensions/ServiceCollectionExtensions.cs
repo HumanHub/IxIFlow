@@ -36,10 +36,17 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IRunnableNotifier, NullRunnableNotifier>();
         services.TryAddSingleton<CoordinationState>();
         services.AddSingleton<RunnableNotifications>();
-        services.AddSingleton(provider => new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
-            provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
-            provider.GetService<ILogger<WorkflowHost>>(), provider.GetService<ILogger<SensitiveDiagnostics>>(),
-            provider.GetRequiredService<InspectionRedactionPolicy>()));
+        services.AddSingleton(provider =>
+        {
+            // Capture lease services before the host, so provider disposal stops the host and
+            // releases its claims before tearing down the watch and renewal registrations.
+            provider.GetRequiredService<CancellationWatch>();
+            provider.GetRequiredService<ExecutionLeaseRenewer>();
+            return new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
+                provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
+                provider.GetService<ILogger<WorkflowHost>>(), provider.GetService<ILogger<SensitiveDiagnostics>>(),
+                provider.GetRequiredService<InspectionRedactionPolicy>());
+        });
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
         services.AddSingleton<ExecutionLeaseRenewer>();

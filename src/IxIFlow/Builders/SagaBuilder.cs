@@ -246,6 +246,21 @@ public class SagaActivityBuilder<TWorkflowData, TPreviousStepData>(
         return this;
     }
 
+    public ISagaActivityBuilder<TWorkflowData, TPreviousStepData> CancellationScope(
+        Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> body,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        ArgumentNullException.ThrowIfNull(onCancelled);
+        var step = Core.Runtime.ThrowConstruction.Leaf<TWorkflowData, TPreviousStepData>(WorkflowStepType.CancellationScope, sourcePath, sourceLine);
+        step.StepMetadata["IsSagaStep"] = true;
+        body(new SagaActivityBuilder<TWorkflowData, TPreviousStepData>(step.SequenceSteps, _sagaSteps));
+        onCancelled(new SequenceBuilder<TWorkflowData, TPreviousStepData>(step.CancellationSteps));
+        _steps.Add(step);
+        return this;
+    }
+
     public ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Switch<TProperty>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TProperty>> propertySelector,
         Action<ISagaSwitchBuilder<TWorkflowData, TPreviousStepData, TProperty>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)

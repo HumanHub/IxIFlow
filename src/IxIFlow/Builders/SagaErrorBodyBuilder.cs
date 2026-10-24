@@ -13,6 +13,16 @@ public sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepDat
     where TWorkflowData : class
     where TPreviousStepData : class
 {
+    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> CancellationScope(
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> body,
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        new CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>(steps, typeof(Exception))
+            .CancellationScope(body, onCancelled, sourcePath, sourceLine);
+        return this;
+    }
+
     /// <summary>Assigns one serialized workflow-data location, retaining the previous value.</summary>
     public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Assign<TValue>(
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> target,

@@ -575,7 +575,8 @@ public sealed class WorkflowExecutor
                     {
                         runnable.AuthorizedDispatch = null;
                         if (SteppingPolicy.StopAtPick(checkpoint, runnable, scopes.Id(next), Now)) break;
-                        if (position.TryState?.Phase is not (TryPhase.Catch or TryPhase.Finally) &&
+                        if (position.CancellationState?.Phase != CancellationScopePhase.Handler &&
+                            position.TryState?.Phase is not (TryPhase.Catch or TryPhase.Finally) &&
                             (debuggingEnabled || checkpoint.Debug.Evaluation != null) && !checkpoint.CancellationRequested && runnable.PendingActivity == null &&
                             await BreakpointDispatch.HitAsync(checkpoint, runnable, definition, scopes.Id(next), Now, _services,
                                 () => ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now))) break;

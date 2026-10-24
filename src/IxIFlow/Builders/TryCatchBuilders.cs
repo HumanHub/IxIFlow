@@ -419,6 +419,21 @@ public class CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>(
         return new CatchWorkflowBuilder<TWorkflowData, TFault, TInvokedData>(steps, exceptionType);
     }
 
+    public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> CancellationScope(
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> body,
+        Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        ArgumentNullException.ThrowIfNull(onCancelled);
+        var step = Container(WorkflowStepType.CancellationScope, sourcePath, sourceLine);
+        body(new CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>(step.SequenceSteps, exceptionType));
+        onCancelled(new CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>(step.CancellationSteps, exceptionType));
+        steps.Add(step);
+        CaptureFaults(step);
+        return this;
+    }
+
     public ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData> Sequence(
         Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {

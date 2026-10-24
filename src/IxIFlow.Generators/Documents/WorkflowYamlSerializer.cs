@@ -111,6 +111,9 @@ public static class WorkflowYamlSerializer
         foreach (var property in DocumentModel.GetMembers(type))
             if (entries.TryGetValue(DocumentModel.GetName(property), out var child))
             {
+                if (type == typeof(CancellationScopeStepDocument) && child is not YamlSequenceNode &&
+                    property.Name is nameof(CancellationScopeStepDocument.Steps) or nameof(CancellationScopeStepDocument.OnCancelled))
+                    throw new YamlException(child.Start, child.End, "CANCEL001: " + DocumentModel.GetName(property) + " must be a step list");
                 if (type == typeof(AssignStepDocument) && child is YamlScalarNode assignmentScalar && Scalar(assignmentScalar) == null &&
                     property.Name is nameof(AssignStepDocument.To) or nameof(AssignStepDocument.Value))
                     throw new YamlException(child.Start, child.End,

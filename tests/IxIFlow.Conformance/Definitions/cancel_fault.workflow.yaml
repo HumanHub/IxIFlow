@@ -1,0 +1,21 @@
+workflow: {name: CancellationFaultConformance, dataType: IxIFlow.Tests.Conformance.CancellationScopeScenarios+Data}
+code:
+  raise:
+    language: csharp-expression
+    source: 'new IxIFlow.Tests.Conformance.CancellationScopeScenarios.BusinessError("private") { Code = 73, Detail = new string(''x'', 8192) }'
+definitions:
+  - kind: try
+    steps:
+      - kind: cancellationScope
+        steps:
+          - kind: throw
+            exception: IxIFlow.Tests.Conformance.CancellationScopeScenarios+BusinessError
+            value: {kind: function, function: raise}
+        onCancelled:
+          - {kind: waitFor, key: cleanup, event: IxIFlow.Tests.Conformance.CancellationScopeScenarios+Go}
+    catches:
+      - exception: IxIFlow.Tests.Conformance.CancellationScopeScenarios+BusinessError
+        faultType: IxIFlow.Tests.Conformance.CancellationScopeScenarios+CodeFault
+        steps:
+          - {kind: assign, to: {path: workflow.Code}, value: {path: fault.Code}}
+          - {kind: assign, to: {path: workflow.Detail}, value: {path: fault.Detail}}

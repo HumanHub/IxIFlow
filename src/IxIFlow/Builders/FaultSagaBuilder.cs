@@ -31,6 +31,22 @@ public sealed class FaultSagaActivityBuilder<TData, TFault, TPrevious>(List<Work
         return this;
     }
 
+    public IFaultSagaActivityBuilder<TData, TFault, TPrevious> CancellationScope(
+        Action<IFaultSagaActivityBuilder<TData, TFault, TPrevious>> body,
+        Action<ICatchWorkflowBuilder<TData, TFault, TPrevious>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        ArgumentNullException.ThrowIfNull(onCancelled);
+        var step = ThrowConstruction.Leaf<TData, TPrevious>(WorkflowStepType.CancellationScope, sourcePath, sourceLine);
+        step.StepMetadata["IsSagaStep"] = true;
+        body(new FaultSagaActivityBuilder<TData, TFault, TPrevious>(step.SequenceSteps, sagaSteps));
+        onCancelled(new CatchWorkflowBuilder<TData, TFault, TPrevious>(step.CancellationSteps, typeof(Exception)));
+        CatchWorkflowBuilder<TData, TFault, TPrevious>.CaptureFaults(step);
+        steps.Add(step);
+        return this;
+    }
+
     private SagaActivityBuilder<TData, TPrevious> Inner => new(steps, sagaSteps);
     public IFaultSagaActivityBuilder<TData, TFault, TPrevious> WithId(string id,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)

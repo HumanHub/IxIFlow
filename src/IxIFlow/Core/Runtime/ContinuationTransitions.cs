@@ -231,7 +231,8 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     checkpoint.Trace.ItemEnded(continuation, position);
                     // The ForEach runs its next item, or completes, when it is advanced again.
                 }
-                else if (!TryScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation, out propagated) &&
+                else if (!CancellationScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation, out propagated) &&
+                         !TryScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation, out propagated) &&
                          !SagaScopeTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation) &&
                          !GraphTransitions.Exit(scopes, checkpoint, parent, position, currentStep, continuation))
                     parent.NextStepIndex++;
@@ -267,7 +268,13 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 var original = TryScopeTransitions.RethrowError(scopes, checkpoint, continuation, step);
                 checkpoint.Trace.Fault(step, continuation, original.Error, true, SerializedException.Location(scopes, checkpoint, continuation)!);
-                CaptureFailure(scopes, checkpoint, continuation, original, allowStepRetry: false);
+                // Rethrow keeps the fault occurrence, but leaves the Catch which selected
+                // its former route. Select the outer route before deciding cleanup eligibility.
+                CaptureFailure(scopes, checkpoint, continuation, new PendingFailure
+                {
+                    Error = original.Error, ScopeBoundary = original.ScopeBoundary,
+                    OriginatingFailure = original.OriginatingFailure
+                }, allowStepRetry: false);
                 break;
 
             case WorkflowStepType.InlineWorkflow:
@@ -309,6 +316,9 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 GraphTransitions.Edge(scopes, checkpoint, continuation, step);
                 break;
 
+            case WorkflowStepType.CancellationScope:
+                CancellationScopeTransitions.Enter(scopes, checkpoint, step, position, continuation);
+                break;
             case WorkflowStepType.Sequence:
                 checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
                 continuation.Stack.Add(new ScopePosition
@@ -792,6 +802,9 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         // Only an abandoned activation discards its speculative fire.
         if (!IsCleanup(continuation))
             foreach (var frame in continuation.Stack) if (frame.Graph != null) frame.Graph.Fired = null;
+        continuation.UnwindCause ??= cause == ItemEndCause.Failed
+            ? failure?.Route != null ? CancellationUnwindCause.HandledFaultCancellation : CancellationUnwindCause.Faulted
+            : CancellationUnwindCause.Cancelled;
         continuation.ItemUnwindCause ??= cause;
         continuation.UnwindFailure ??= failure;
         var first = !continuation.CancellationUnwind;
@@ -803,22 +816,18 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         continuation.RetryInputs = null;
         if (continuation.PendingActivity == null)
             InvocationRecords.Abandon(checkpoint, continuation, "Cancelled");
+        PreserveExistingCleanup(continuation);
         if (continuation.PendingActivity != null &&
             continuation.Status == ContinuationStatus.WaitingResolution)
         {
             // The branch unwinds once its activity is resolved, so a reply can no longer be taken (D-33),
             // unless the activity belongs to cleanup that may still wait for one.
-            if (!TryScopeTransitions.IsInsideFinally(continuation) &&
-                !SagaScopeTransitions.IsInsideCompensation(continuation))
+            if (!IsCleanup(continuation))
                 checkpoint.RemoveWaits(wait => wait.ContinuationId == continuation.Id && wait.IsReply,
                     WaitCloseReason.Cancelled);
-            // A compensation awaiting resolution finishes, and its saga then cancels instead of retrying.
-            if (SagaScopeTransitions.IsInsideCompensation(continuation))
-                SagaScopeTransitions.PreserveCompensation(continuation);
             return;
         }
-        if (TryScopeTransitions.IsInsideFinally(continuation) ||
-            SagaScopeTransitions.IsInsideCompensation(continuation))
+        if (IsCleanup(continuation))
         {
             if (cancelledInvocationRetry)
             {
@@ -829,8 +838,6 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 position.NextStepIndex++;
                 continuation.SetPrevious(null);
             }
-            TryScopeTransitions.PreserveExistingFinally(continuation);
-            SagaScopeTransitions.PreserveCompensation(continuation);
             return;
         }
         // A branch waiting for its child asks the child to cancel and keeps waiting for it: it unwinds once
@@ -869,6 +876,41 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             : child != null ? ContinuationStatus.Waiting
             : childFinished ? ContinuationStatus.Active
             : ContinuationStatus.Cancelling;
+    }
+
+    // Each abandoned retry body starts a local unwind region. Its outermost cleanup
+    // returns to that retry boundary, while enclosing cleanup retains its own owner.
+    private static void PreserveExistingCleanup(ContinuationState continuation)
+    {
+        var ownsUnwind = true;
+        foreach (var frame in continuation.Stack)
+        {
+            if (frame.CancellationState is { Phase: CancellationScopePhase.Handler } handler)
+            {
+                handler.IsCancellationCleanup = ownsUnwind;
+                ownsUnwind = false;
+            }
+            if (frame.TryState is { Phase: TryPhase.Finally } finallyState)
+            {
+                finallyState.IsCancellationCleanup = ownsUnwind;
+                ownsUnwind = false;
+            }
+            if (frame.SagaState is { } saga && SagaScopeTransitions.RunsRetryHandler(saga))
+            {
+                // Detect the running handler independently of intent: it still owns unresolved
+                // work until settlement and CancelRetryHandler remove its frames.
+                saga.CancellationRequested = true;
+                saga.IsCancellationCleanup = false;
+                // Cleanup inside this abandoned body owns its local unwind back to the
+                // retry boundary. The enclosing cleanup still owns the outer unwind.
+                ownsUnwind = true;
+            }
+            else if (SagaScopeTransitions.IsCompensating(frame.SagaState))
+            {
+                SagaScopeTransitions.PreserveCompensation(frame.SagaState!, ownsUnwind);
+                ownsUnwind = false;
+            }
+        }
     }
 
     // A conditional join decides on the provisional merge of the branches completed so far, in
@@ -1047,8 +1089,19 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                (checkpoint.UnhandledError == null ? !parent.CancellationUnwind || cleanup : cleanup);
     }
 
-    private static bool IsCleanup(ContinuationState continuation) =>
-        TryScopeTransitions.IsInsideFinally(continuation) || SagaScopeTransitions.IsInsideCompensation(continuation);
+    internal static bool IsCleanup(ContinuationState continuation)
+    {
+        var cleanup = false;
+        foreach (var frame in continuation.Stack)
+        {
+            if (frame.SagaState is { CancellationRequested: true } saga && SagaScopeTransitions.RunsRetryHandler(saga))
+                cleanup = false;
+            else if (frame.CancellationState?.Phase == CancellationScopePhase.Handler ||
+                     frame.TryState?.Phase == TryPhase.Finally || SagaScopeTransitions.IsCompensating(frame.SagaState))
+                cleanup = true;
+        }
+        return cleanup;
+    }
 
     private static bool HasOwningActivation(ContinuationState continuation) =>
         continuation.Stack.Count > 0 &&
@@ -1104,6 +1157,7 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         continuation.AuthorizedDispatch = null;
         allowStepRetry &= failure.ScopeBoundary == null;
         checkpoint.Touch(continuation);
+        failure.Route ??= CancellationScopeTransitions.FindRoute(scopes, checkpoint, continuation, failure);
         // A failed attempt's inputs are kept only for a retry of its step.
         var retryInputs = continuation.RetryInputs;
         continuation.RetryInputs = null;
@@ -1122,6 +1176,41 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
         }
         else if (InvocationRecords.Active(checkpoint, continuation) != null)
             InvocationRecords.Close(checkpoint, continuation, "Propagate", Now);
+        var compensationOrigin = continuation.Stack.Select(frame => frame.SagaState)
+            .LastOrDefault(state => state is { Phase: SagaPhase.Compensating, Error.Route.HasCancellationScopes: true });
+        if (compensationOrigin != null && failure.ScopeBoundary == null &&
+            SagaScopeTransitions.SkipFailedCompensation(scopes, checkpoint, continuation, error))
+        {
+            failure = failure.DuringCleanup(compensationOrigin.Error);
+            checkpoint.UnhandledError ??= failure;
+            continuation.UnwindFailure ??= compensationOrigin.Error;
+            continuation.UnwindCause ??= CancellationUnwindCause.HandledFaultCancellation;
+            continuation.CancellationUnwind = true;
+            PreserveExistingCleanup(continuation);
+            return true;
+        }
+        var handlerBoundary = continuation.Stack.FindLastIndex(frame => frame.CancellationState?.Phase == CancellationScopePhase.Handler ||
+            frame.TryState is { Phase: TryPhase.Finally } finallyState &&
+            (continuation.CancellationUnwind || finallyState.Error?.Route?.HasCancellationScopes == true));
+        if (handlerBoundary >= 0)
+        {
+            if (CaptureScopeFailure(scopes, checkpoint, continuation, failure, handlerBoundary)) return true;
+            var original = continuation.Stack[handlerBoundary].CancellationState?.Failure ?? continuation.Stack[handlerBoundary].TryState?.Error;
+            failure = failure.DuringCleanup(original);
+            checkpoint.UnhandledError ??= failure;
+            continuation.UnwindFailure ??= original ?? failure;
+            continuation.UnwindCause ??= original?.Route != null ? CancellationUnwindCause.HandledFaultCancellation : CancellationUnwindCause.Cancelled;
+            continuation.ItemUnwindCause ??= ItemEndCause.Failed;
+            continuation.CancellationUnwind = true;
+            checkpoint.Trace.DropFrames(continuation, handlerBoundary + 1, ItemEndCause.Failed, failure);
+            var failedOwner = continuation.Stack[handlerBoundary];
+            failedOwner.CancellationState = null;
+            failedOwner.TryState = null;
+            failedOwner.NextStepIndex++;
+            TryScopeTransitions.ContinueCancellation(scopes, checkpoint, continuation);
+            CancelAncestorJoins(checkpoint, continuation);
+            return true;
+        }
         if (continuation.CancellationUnwind)
         {
             if (failure.ScopeBoundary == null && SagaScopeTransitions.SkipFailedCompensation(scopes, checkpoint, continuation, error))
@@ -1180,8 +1269,12 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                     branch == continuation ? failure : null);
             continuation = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
             checkpoint.Touch(continuation);
-            if (continuation.CancellationUnwind)
-                return CaptureFailure(scopes, checkpoint, continuation, failure, allowStepRetry: false);
+            if (continuation.CancellationUnwind || CancellationScopeTransitions.IsInsideHandler(continuation))
+            {
+                var captured = CaptureFailure(scopes, checkpoint, continuation, failure, allowStepRetry: false);
+                if (continuation.Stack.Count > 0) continuation.Status = ContinuationStatus.Joining;
+                return captured;
+            }
             if (CaptureScopeFailure(scopes, checkpoint, continuation, failure))
             {
                 checkpoint.UnhandledError = null;
@@ -1213,6 +1306,12 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
             sagaIndex = -1;
         if (retryIndex <= minimumHandlerIndex)
             retryIndex = -1;
+        var cancellationIndex = CancellationScopeTransitions.FaultBoundary(continuation, failure, minimumHandlerIndex);
+        if (cancellationIndex > Math.Max(tryIndex, Math.Max(sagaIndex, retryIndex)))
+        {
+            CancellationScopeTransitions.BeginFault(scopes, checkpoint, continuation, cancellationIndex, failure);
+            return true;
+        }
         if (retryIndex > tryIndex && retryIndex > sagaIndex)
         {
             if (failure.ScopeBoundary?.Contains(continuation, retryIndex) == true) SagaScopeTransitions.CaptureBounded(scopes, checkpoint, continuation, retryIndex, failure);
@@ -1304,6 +1403,11 @@ internal sealed class ContinuationTransitions(IServiceProvider services, TimePro
                 if (frame.TryState is { RuntimeEntryPrevious: not null, EntryPrevious: null })
                 {
                     frame.TryState.EntryPrevious = SerializedValue.From(frame.TryState.RuntimeEntryPrevious);
+                    checkpoint.Touch(continuation);
+                }
+                if (frame.CancellationState is { RuntimeEntryPrevious: not null, EntryPrevious: null })
+                {
+                    frame.CancellationState.EntryPrevious = SerializedValue.From(frame.CancellationState.RuntimeEntryPrevious);
                     checkpoint.Touch(continuation);
                 }
             }

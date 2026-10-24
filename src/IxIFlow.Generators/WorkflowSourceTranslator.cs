@@ -284,6 +284,16 @@ public static partial class WorkflowSourceTranslator
                         if (HasSetup(template) || builderScope != WorkflowDocumentScope.SagaHandler)
                             previousType = Type(template.Activity, template, "activity");
                         break;
+                    case CancellationScopeStepDocument cancellation:
+                        var forward = "body" + _next;
+                        var cleanup = "cancelled" + _next;
+                        Line($"var {next} = {builder}.CancellationScope({forward} => {{");
+                        Steps(cancellation.Steps, forward, id + "/steps", previousType,
+                            builderScope == WorkflowDocumentScope.SagaHandler ? WorkflowDocumentScope.Catch : builderScope);
+                        Line($"}}, {cleanup} => {{");
+                        Steps(cancellation.OnCancelled, cleanup, id + "/onCancelled", previousType);
+                        Line("});");
+                        break;
                     case SequenceStepDocument sequence:
                         Container(builder, next, id, sequence.Steps, previousType);
                         break;

@@ -63,7 +63,8 @@ internal static class SteppingPolicy
             branch.PendingActivity != null) return false;
         var position = branch.Stack[^1];
         // Catch/Finally entry changes phase at the owner; it is not another executable pick.
-        if (position.TryState?.Phase is TryPhase.Catch or TryPhase.Finally) return false;
+        if (position.TryState?.Phase is TryPhase.Catch or TryPhase.Finally ||
+            position.CancellationState?.Phase == CancellationScopePhase.Handler) return false;
         var selected = branch.Id == step.ContinuationId;
         var sameOccurrence = selected && Position(position) == step.Origin;
         var stop = step.Kind switch

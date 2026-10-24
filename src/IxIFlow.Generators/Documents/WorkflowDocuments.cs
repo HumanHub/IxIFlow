@@ -139,6 +139,10 @@ public abstract record WorkflowStepDocument : DocumentNode
                 foreach (var child in GraphChildScopes())
                     yield return (child.Kind, child.Key, child.Steps);
                 break;
+            case CancellationScopeStepDocument cancellation:
+                yield return ("sequence", null, cancellation.Steps);
+                yield return ("cancelled", null, cancellation.OnCancelled);
+                break;
             case SequenceStepDocument sequence:
                 yield return ("sequence", null, sequence.Steps);
                 break;
@@ -704,4 +708,16 @@ public sealed record InvokeWorkflowTypeStepDocument : WorkflowStepDocument
     public List<InputMappingDocument> Input { get; init; } = [];
     [Description("Mappings from child workflow outputs to workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
+}
+
+[Description("A body with cleanup for unfinished cancelled work.")]
+[DocumentKind("cancellationScope")]
+public sealed record CancellationScopeStepDocument : WorkflowStepDocument
+{
+    [Description("The forward body in execution order.")]
+    [DocumentRequired]
+    public List<WorkflowStepDocument> Steps { get; init; } = [];
+    [Description("Cleanup run when this unfinished body is cancelled.")]
+    [DocumentRequired]
+    public List<WorkflowStepDocument> OnCancelled { get; init; } = [];
 }

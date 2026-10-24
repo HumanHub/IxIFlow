@@ -97,7 +97,7 @@ internal static class SagaRules
             if (step.RequestName is { } name &&
                 body.FindIndex(index + 1, candidate => candidate.ReplyToRequest == name) is var wait and >= 0)
                 yield return (body, step, index, body[wait], wait);
-            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "case" or "default"))
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "case" or "default" || step.StepType == WorkflowStepType.CancellationScope && scope.Kind == "sequence"))
             foreach (var nested in Requests(scope.Steps))
                 yield return nested;
         }
@@ -108,7 +108,7 @@ internal static class SagaRules
         foreach (var step in body)
         {
             order.Add(step);
-            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "case" or "default"))
+            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "case" or "default" || step.StepType == WorkflowStepType.CancellationScope && scope.Kind == "sequence"))
                 Flatten(scope.Steps, order);
         }
     }

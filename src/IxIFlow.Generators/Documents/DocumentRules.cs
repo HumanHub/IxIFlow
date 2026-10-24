@@ -32,7 +32,7 @@ public static class DocumentRules
                 if (member.IsDefined(typeof(DocumentRequiredAttribute), true) &&
                     (fromSource && !node.Members.ContainsKey(name) || child is string text && string.IsNullOrWhiteSpace(text) || child == null))
                 {
-                    Invalid(node is AssignStepDocument ? (name == "to" ? "ASSIGN001" : "ASSIGN003") : node is ThrowStepDocument ? (name == "exception" ? "THROW001" : "THROW002") : node is SwitchStepDocument && name == "value" ? "SWITCH001" : node is SwitchCaseDocument && name == "value" ? "SWITCH002" : "MEMBER001", $"Missing '{name}'", memberPath, diagnostics);
+                    Invalid(node is CancellationScopeStepDocument ? "CANCEL001" : node is AssignStepDocument ? (name == "to" ? "ASSIGN001" : "ASSIGN003") : node is ThrowStepDocument ? (name == "exception" ? "THROW001" : "THROW002") : node is SwitchStepDocument && name == "value" ? "SWITCH001" : node is SwitchCaseDocument && name == "value" ? "SWITCH002" : "MEMBER001", (node is CancellationScopeStepDocument ? "CANCEL001: " : "") + $"Missing '{name}'", memberPath, diagnostics);
                     continue;
                 }
                 var values = DocumentModel.GetValues(node.GetType(), member.Name);
