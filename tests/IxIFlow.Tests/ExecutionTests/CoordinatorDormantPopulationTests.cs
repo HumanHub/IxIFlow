@@ -12,6 +12,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public sealed class CoordinatorDormantPopulationTests(ITestOutputHelper output)
 {
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task ClaimAndBacklogCostDoNotGrowWithDormantMembersOfOneSet()
     {
         var store = new InMemoryWorkflowStateRepository();

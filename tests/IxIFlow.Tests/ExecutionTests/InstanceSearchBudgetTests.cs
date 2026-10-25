@@ -12,6 +12,7 @@ public sealed class InstanceSearchBudgetTests
 {
     [DockerSearchFact]
     [Trait("Category", "Docker")]
+    [Trait("Category", "Timing")]
     public async Task PostgreSqlSearchUsesBoundedIndexedPagesAtThreeHundredThousandRows()
     {
         var cs = await PostgreSqlTestServer.CreateDatabaseAsync("SearchBudget");

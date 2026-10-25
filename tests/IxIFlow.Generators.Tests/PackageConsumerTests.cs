@@ -1,7 +1,5 @@
 using System.Diagnostics;
 using System.IO.Compression;
-using System.Runtime.CompilerServices;
-using System.Security;
 using System.Text.Json;
 
 namespace IxIFlow.Generators.Tests;
@@ -12,31 +10,14 @@ public sealed class PackageConsumerTests
     [Trait("Category", "PackageIntegration")]
     public async Task PackedWorkflowsAreDiscoveredAndExecutedOffline()
     {
-        var root = RepositoryRoot();
         var temporary = Path.Combine(Path.GetTempPath(), "IxIFlow.PackageIntegration", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temporary);
         try
         {
-            var feed = Path.Combine(temporary, "feed");
-            var artifacts = Path.Combine(temporary, "artifacts");
-            var config = Path.Combine(temporary, "NuGet.Config");
-            Directory.CreateDirectory(feed);
-            // A restored solution already has every external dependency in these caches. Use them
-            // as feeds, with no network source and an isolated consumer package cache.
-            using var assets = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root,
-                "tests/IxIFlow.Generators.Tests/obj/project.assets.json")));
-            var caches = assets.RootElement.GetProperty("packageFolders").EnumerateObject().Select(folder => folder.Name).ToArray();
-            await File.WriteAllTextAsync(config, "<configuration><packageSources><clear/>" +
-                string.Concat(new[] { feed }.Concat(caches).Select((path, index) =>
-                    $"<add key=\"local{index}\" value=\"{SecurityElement.Escape(path)}\" />")) +
-                "</packageSources></configuration>");
-            var version = "1.0.0-yaml." + Guid.NewGuid().ToString("N");
-            foreach (var project in new[] { "IxIFlow.Abstractions", "IxIFlow" })
-                await Dotnet(root, "pack", Path.Combine(root, "src", project), "--output", feed,
-                    "--artifacts-path", artifacts, "-p:PackageVersion=" + version,
-                    "-p:RestoreConfigFile=" + config, "-p:NuGetAudit=false",
-                    "-p:GeneratePackageOnBuild=false", "-p:UseSharedCompilation=false");
-
+            var packed = await PackageTestFeed.GetAsync();
+            var feed = packed.Feed;
+            var config = packed.Config;
+            var version = packed.Version;
             using (var package = ZipFile.OpenRead(Path.Combine(feed, $"IxIFlow.{version}.nupkg")))
             {
                 Assert.Equal(new[]
@@ -129,9 +110,6 @@ public sealed class PackageConsumerTests
         }
         finally { Directory.Delete(temporary, recursive: true); }
     }
-
-    private static string RepositoryRoot([CallerFilePath] string source = "") =>
-        Path.GetFullPath(Path.Combine(Path.GetDirectoryName(source)!, "../.."));
 
     private static string Workflow(string name, int value) => $$"""
         workflow:

@@ -463,7 +463,7 @@ public sealed class SkipLockedClaimTests
     {
         foreach (var snapshot in new[] { "OFF", "ON" })
         {
-            var cs = await SqlServerTestServer.CreateDatabaseAsync("IxIFlow_SharedClaim");
+            var cs = await SqlServerTestServer.CreateFreshDatabaseAsync("IxIFlow_SharedClaim");
             try
             {
                 await using (var connection = new SqlConnection(cs))
@@ -755,7 +755,7 @@ public sealed class SkipLockedClaimTests
     [Trait("Category", "SqlIntegration")]
     public async Task SqlServerClaimsSkipWithReadCommittedSnapshotEnabled()
     {
-        var connectionString = await SqlServerTestServer.CreateDatabaseAsync("IxIFlow_SkipLockedSnapshot");
+        var connectionString = await SqlServerTestServer.CreateFreshDatabaseAsync("IxIFlow_SkipLockedSnapshot");
         try
         {
             await using (var connection = new SqlConnection(connectionString))
@@ -2028,7 +2028,7 @@ public sealed class SkipLockedClaimTests
     {
         foreach (var snapshot in new[] { false, true })
         {
-            var cs = await SqlServerTestServer.CreateDatabaseAsync("IxIFlow_SkipLockedInsertion");
+            var cs = await SqlServerTestServer.CreateFreshDatabaseAsync("IxIFlow_SkipLockedInsertion");
             try
             {
                 await using (var connection = new SqlConnection(cs))

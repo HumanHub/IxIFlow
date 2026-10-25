@@ -1,7 +1,5 @@
 using System.Diagnostics;
 using System.IO.Compression;
-using System.Security;
-using System.Text.Json;
 
 namespace IxIFlow.Generators.Tests;
 
@@ -11,28 +9,14 @@ public sealed class WorkflowSchemaPackageTests
     [Trait("Category", "PackageIntegration")]
     public async Task PackageShipsTheSchemaAndConsumersResolveItsPath()
     {
-        var root = WorkflowSchemaFiles.RepositoryRoot();
         var temporary = Path.Combine(Path.GetTempPath(), "IxIFlow.SchemaPackage", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temporary);
         try
         {
-            var feed = Path.Combine(temporary, "feed");
-            var artifacts = Path.Combine(temporary, "artifacts");
-            var config = Path.Combine(temporary, "NuGet.Config");
-            Directory.CreateDirectory(feed);
-            using var assets = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root,
-                "tests/IxIFlow.Generators.Tests/obj/project.assets.json")));
-            var caches = assets.RootElement.GetProperty("packageFolders").EnumerateObject().Select(folder => folder.Name);
-            await File.WriteAllTextAsync(config, "<configuration><packageSources><clear/>" +
-                string.Concat(new[] { feed }.Concat(caches).Select((path, index) =>
-                    $"<add key=\"local{index}\" value=\"{SecurityElement.Escape(path)}\" />")) +
-                "</packageSources></configuration>");
-            var version = "1.0.0-schema." + Guid.NewGuid().ToString("N");
-            foreach (var project in new[] { "IxIFlow.Abstractions", "IxIFlow" })
-                await Dotnet(root, "pack", Path.Combine(root, "src", project), "--output", feed,
-                    "--artifacts-path", artifacts, "-p:PackageVersion=" + version,
-                    "-p:RestoreConfigFile=" + config, "-p:NuGetAudit=false",
-                    "-p:GeneratePackageOnBuild=false", "-p:UseSharedCompilation=false");
+            var packed = await PackageTestFeed.GetAsync();
+            var feed = packed.Feed;
+            var config = packed.Config;
+            var version = packed.Version;
             using (var package = ZipFile.OpenRead(Path.Combine(feed, $"IxIFlow.{version}.nupkg")))
             {
                 var schema = Assert.Single(package.Entries, entry => entry.FullName == "schemas/workflow.schema.json");

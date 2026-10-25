@@ -111,6 +111,7 @@ public sealed class CoordinatorTests
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public void FullQueuesDropHintsWithoutBlockingAndTryTheNextCandidate()
     {
         var matcher = new CoordinatorMatcher(new(), new FakeTimeProvider());

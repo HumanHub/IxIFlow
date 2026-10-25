@@ -11,7 +11,7 @@ namespace IxIFlow.Tests.Conformance;
 
 [Trait("Feature", "control-flow")]
 [Trait("Spec", "W-04")]
-public sealed class AssignScenarios
+public sealed partial class AssignScenarios
 {
     public static IEnumerable<object[]> Boundaries => StoreProfiles.ProfileNames.SelectMany(profile =>
         new[] { "sequence", "parallel", "losing", "each", "catch", "switch", "inline", "flowchart", "state" }.SelectMany(shape =>
@@ -19,8 +19,7 @@ public sealed class AssignScenarios
                 (shape == "inline" ? new[] { "fluent" } : new[] { "fluent", "yaml" })
                     .Select(authoring => new object[] { profile, shape, fault, authoring }))));
 
-    [Theory, MemberData(nameof(Boundaries))]
-    public async Task AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(string profile, string shape, string fault, string authoring)
+    private static async Task AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(string profile, string shape, string fault, string authoring)
     {
         var time = profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite ? new FakeTimeProvider() : null;
         await using var store = await StoreProfiles.CreateAsync(profile, time);

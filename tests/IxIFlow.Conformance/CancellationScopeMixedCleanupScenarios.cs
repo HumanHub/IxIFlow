@@ -8,7 +8,7 @@ using static IxIFlow.Tests.Infrastructure.CancellationMixedCleanupScenario;
 namespace IxIFlow.Tests.Conformance;
 
 [Trait("Feature", "scopes"), Trait("Spec", "W-06")]
-public sealed class CancellationScopeMixedCleanupScenarios
+public sealed partial class CancellationScopeMixedCleanupScenarios
 {
     public static IEnumerable<object[]> NestedRetryCases() =>
         from row in Profiles()
@@ -17,8 +17,7 @@ public sealed class CancellationScopeMixedCleanupScenarios
         from failure in new[] { "none", "handled", "unhandled" }
         select new object[] { row.Profile, kind, running, failure, row.Takeover };
 
-    [Theory(Timeout = 120_000), MemberData(nameof(NestedRetryCases))]
-    public async Task NestedRetryCleanupFinishesBeforeAbandonmentAcrossRestartOrTakeover(string profile, string kind, bool running, string failure, bool takeover)
+    private static async Task NestedRetryCleanupFinishesBeforeAbandonmentAcrossRestartOrTakeover(string profile, string kind, bool running, string failure, bool takeover)
     {
         var clock = profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite ? new FakeTimeProvider(DateTimeOffset.UtcNow) : null;
         await using var store = await StoreProfiles.CreateAsync(profile, clock);
@@ -34,8 +33,7 @@ public sealed class CancellationScopeMixedCleanupScenarios
         from work in new[] { "wait", "activity" }
         select new object[] { row.Profile, finallyOutside, work, row.Takeover };
 
-    [Theory(Timeout = 120_000), MemberData(nameof(RetryCases))]
-    public async Task ActiveRetryHandlerCannotEscapeCancellationAcrossRestartOrTakeover(string profile, bool finallyOutside, string work, bool takeover)
+    private static async Task ActiveRetryHandlerCannotEscapeCancellationAcrossRestartOrTakeover(string profile, bool finallyOutside, string work, bool takeover)
     {
         var clock = profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite ? new FakeTimeProvider(DateTimeOffset.UtcNow) : null;
         await using var store = await StoreProfiles.CreateAsync(profile, clock);
@@ -58,8 +56,7 @@ public sealed class CancellationScopeMixedCleanupScenarios
         where !row.Takeover || !lost || boundary != "terminal"
         select new object[] { row.Profile, finallyOutside, failure, boundary, lost, row.Takeover };
 
-    [Theory(Timeout = 120_000), MemberData(nameof(RecoveryCases))]
-    public async Task EveryMixedCleanupCommitRecoversAcrossRestartOrTakeover(string profile, bool finallyOutside, bool failure, string boundary, bool lost, bool takeover)
+    private static async Task EveryMixedCleanupCommitRecoversAcrossRestartOrTakeover(string profile, bool finallyOutside, bool failure, string boundary, bool lost, bool takeover)
     {
         var clock = profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite ? new FakeTimeProvider(DateTimeOffset.UtcNow) : null;
         await using var store = await StoreProfiles.CreateAsync(profile, clock);
@@ -77,8 +74,7 @@ public sealed class CancellationScopeMixedCleanupScenarios
         from unresolved in new[] { false, true }
         select new object[] { row.Profile, finallyOutside, compensation, unresolved, row.Takeover };
 
-    [Theory(Timeout = 120_000), MemberData(nameof(Cases))]
-    public async Task CancellationPreservesMixedCleanupAcrossRestartOrTakeover(string profile, bool finallyOutside,
+    private static async Task CancellationPreservesMixedCleanupAcrossRestartOrTakeover(string profile, bool finallyOutside,
         bool compensation, bool unresolved, bool takeover)
     {
         var clock = profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite ? new FakeTimeProvider(DateTimeOffset.UtcNow) : null;

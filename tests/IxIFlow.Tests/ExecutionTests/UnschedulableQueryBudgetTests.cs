@@ -18,12 +18,15 @@ namespace IxIFlow.Tests.ExecutionTests;
 public sealed class UnschedulableQueryBudgetTests(ITestOutputHelper output) : IClassFixture<SqliteTestDatabase<UnschedulableQueryBudgetTests>>
 {
     [DockerBudgetFact, Trait("Category", "SqlIntegration")]
+    [Trait("Category", "Timing")]
     public Task SqlServerBudgetAndScaling() => Relational(false);
 
     [DockerBudgetFact, Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Category", "Timing")]
     public Task PostgreSqlBudgetAndScaling() => Relational(true);
 
     [Fact, Trait("Category", "SqliteIntegration")]
+    [Trait("Category", "Timing")]
     public async Task SqliteBudgetAndScaling()
     {
         var cs = SqliteTestDatabase<UnschedulableQueryBudgetTests>.ConnectionString;

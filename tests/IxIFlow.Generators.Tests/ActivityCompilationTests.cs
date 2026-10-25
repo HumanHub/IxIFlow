@@ -20,7 +20,8 @@ namespace IxIFlow.Generators.Tests;
 
 [Trait("Feature", "authoring")]
 [Trait("Spec", "F-19")]
-public sealed class ActivityCompilationTests
+// Each nested test class uses its own default xUnit collection. Shared helpers are stateless.
+public sealed partial class ActivityCompilationTests
 {
     private const string Source = """
         # Kept verbatim in both the assembly and symbols.
@@ -184,28 +185,6 @@ public sealed class ActivityCompilationTests
         Assert.Throws<ArgumentOutOfRangeException>(() => new ActivityPackageIdentity("acme.test", 65535));
     }
 
-    [Theory]
-    [InlineData("bool", "true", typeof(bool))]
-    [InlineData("long", "42", typeof(long))]
-    [InlineData("decimal", "12.5", typeof(decimal))]
-    [InlineData("double", "12.5", typeof(double))]
-    [InlineData("DayOfWeek", "Friday", typeof(DayOfWeek))]
-    [InlineData("TimeSpan", "'00:00:05'", typeof(TimeSpan))]
-    public void ScalarDefaultsEmitTypedMetadata(string typeName, string literal, Type expectedType)
-    {
-        var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: " + typeName + ", default: " + literal + "}}\nbody: |\n  await Task.Yield();";
-        var result = ActivityCompilation.Compile(yaml);
-        Assert.True(result.Success, string.Join("\n", result.Diagnostics));
-        var context = new AssemblyLoadContext("activity-default", isCollectible: true);
-        try
-        {
-            var assembly = context.LoadFromStream(new MemoryStream(result.Assembly));
-            var property = assembly.GetType("IxIFlow.Activities.Acme.Defaults")!.GetProperty("Value")!;
-            Assert.IsType(expectedType, property.GetCustomAttribute<DefaultValueAttribute>()!.Value);
-        }
-        finally { context.Unload(); }
-    }
-
     [Fact]
     public void ExplicitPreparedReferencesAreUsedAndBodyCannotDivergeFromSource()
     {
@@ -220,199 +199,7 @@ public sealed class ActivityCompilationTests
         Assert.Throws<WorkflowSourceException>(() => ActivitySourceTranslator.Translate(document with { Body = "throw new Exception();" }, yaml, "source.activity.yaml"));
     }
 
-    [Theory]
-    [InlineData("declarations", "}\n[global::IxIFlow.ActivitySdk.WorkflowActivity(\"acme.extra\")]\npublic sealed class Extra : IAsyncActivity {\npublic Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;", "}")]
-    [InlineData("body", "}\npublic int Escaped { get; set; }\npublic void Other() {", "}")]
-    [InlineData("body", "#region injected\nreturn;\n#endregion", "#region")]
-    [InlineData("declarations", "#region injected\nprivate int Number() => 1;\n#endregion", "#region")]
-    [InlineData("declarations", "#if false\n}\n#endif", "#if")]
-    [InlineData("body", "#if false\n}\n#endif", "#if")]
-    [InlineData("body", "#line 500 \"other.cs\"\nreturn;", "#line")]
-    [InlineData("declarations", "#line 500 \"other.cs\"\nprivate int Number() => 1;", "#line")]
-    [InlineData("declarations", "private void Incomplete() {", "{")]
-    [InlineData("body", "/* swallowed closing brace", "/*")]
-    [InlineData("body", "await Task.Yield();\n/* swallowed closing brace", "/*")]
-    [InlineData("declarations", "private int Number() => 1;\n/* swallowed closing brace", "/*")]
-    public void AuthoredCodeMustStayInsideItsContainer(string member, string code, string anchor)
-    {
-        var yaml = "activity: {key: acme.test, version: 1}\n" +
-            (member == "declarations" ? "body: |\n  return;\n" : "") +
-            member + ": |4-\n    " + code.Replace("\n", "\n    ");
-        var result = ActivityCompilation.Compile(yaml, "contained.activity.yaml");
-        Assert.False(result.Success);
-        Assert.Empty(result.Assembly);
-        var error = Assert.Single(result.Diagnostics);
-        Assert.Equal("IXIYAML001", error.Code);
-        Assert.Equal(WorkflowPublishStage.Validate, error.Stage);
-        Assert.Equal("contained.activity.yaml", error.Path);
-        var lines = yaml.Split('\n');
-        var line = Array.FindIndex(lines, member == "body" ? 2 : 4, text => text.Contains(anchor, StringComparison.Ordinal));
-        Assert.Equal(line + 1, error.Line);
-        Assert.Equal(lines[line].IndexOf(anchor, StringComparison.Ordinal) + 1, error.Column);
-        var document = Dsl.Documents.WorkflowYamlSerializer.ReadActivity(yaml);
-        var exception = Assert.Throws<WorkflowSourceException>(() =>
-            ActivitySourceTranslator.Translate(document, yaml, "contained.activity.yaml"));
-        Assert.Equal(error.Path, exception.Path);
-        Assert.Equal(error.Line, exception.Line);
-        Assert.Equal(error.Column, exception.Column);
-    }
-
-    [Theory]
-    [InlineData("|", 4)]
-    [InlineData("|-", 4)]
-    [InlineData("|+", 4)]
-    [InlineData("|2-", 2)]
-    [InlineData("|4-", 4)]
-    [InlineData("|4+", 4)]
-    public void CodeBlocksEndBeforeTrailingYamlComments(string indicator, int indent)
-    {
-        var padding = new string(' ', indent);
-        var comment = new string(' ', indent - 1) + "#error YAML-only comment\n";
-        var yaml = "activity: {key: acme.test, version: 1}\nbody: " + indicator + "\n" +
-            padding + "return;\n\n" + comment + "declarations: " + indicator + "\n" +
-            padding + "private static int Number() => 1;\n\n" + comment;
-        var result = ActivityCompilation.Compile(yaml, "bounds.activity.yaml");
-        Assert.True(result.Success, string.Join("\n", result.Diagnostics));
-        Assert.Empty(result.Diagnostics);
-        var document = Dsl.Documents.WorkflowYamlSerializer.ReadActivity(yaml);
-        var generated = ActivitySourceTranslator.Translate(document, yaml, "bounds.activity.yaml");
-        Assert.DoesNotContain("YAML-only", generated);
-        var invalid = yaml.Replace("return;", "MissingBody();");
-        var error = Assert.Single(ActivityCompilation.Compile(invalid).Diagnostics, item => item.Code == "CS0103");
-        Assert.Equal(3, error.Line);
-        Assert.Equal(indent + 1, error.Column);
-    }
-
-    [Theory]
-    [InlineData("decimal", "0.1234567890123456789012345678")]
-    [InlineData("decimal", "79228162514264337593543950335")]
-    [InlineData("long", "9223372036854775807")]
-    [InlineData("double", "1.234567890123456789e100")]
-    [InlineData("float", "1.23456789e20")]
-    public void NumericDefaultsKeepExactLiteralAndTypedValueThroughBothReaders(string type, string literal)
-    {
-        var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: " + type +
-            ", default: " + literal + "}}\nbody: |\n  return;\n";
-        var json = "{\"activity\":{\"key\":\"acme.defaults\",\"version\":1},\"input\":{\"Value\":{\"type\":\"" + type +
-            "\",\"default\":" + literal + "}},\"body\":\"return;\\n\"}";
-        foreach (var document in new[] { Dsl.Documents.WorkflowYamlSerializer.ReadActivity(yaml), Dsl.Documents.WorkflowJsonSerializer.ReadActivity(json) })
-        {
-            var writtenJson = Dsl.Documents.WorkflowJsonSerializer.Write(document);
-            using var parsed = System.Text.Json.JsonDocument.Parse(writtenJson);
-            Assert.Equal(literal, parsed.RootElement.GetProperty("input").GetProperty("Value").GetProperty("default").GetRawText());
-            var writtenYaml = Dsl.Documents.WorkflowYamlSerializer.Write(Dsl.Documents.WorkflowJsonSerializer.ReadActivity(writtenJson));
-            Assert.Contains(literal, writtenYaml);
-            var result = ActivityCompilation.Compile(writtenYaml);
-            Assert.True(result.Success, string.Join("\n", result.Diagnostics));
-            var context = new AssemblyLoadContext("exact-default", isCollectible: true);
-            try
-            {
-                var assembly = context.LoadFromStream(new MemoryStream(result.Assembly));
-                var actual = assembly.GetType("IxIFlow.Activities.Acme.Defaults")!.GetProperty("Value")!.GetCustomAttribute<DefaultValueAttribute>()!.Value;
-                object expected = type switch
-                {
-                    "decimal" => decimal.Parse(literal, System.Globalization.CultureInfo.InvariantCulture),
-                    "long" => long.Parse(literal, System.Globalization.CultureInfo.InvariantCulture),
-                    "double" => double.Parse(literal, System.Globalization.CultureInfo.InvariantCulture),
-                    _ => float.Parse(literal, System.Globalization.CultureInfo.InvariantCulture)
-                };
-                Assert.Equal(expected, actual);
-            }
-            finally { context.Unload(); }
-        }
-    }
-
-    [Theory]
-    [InlineData("public", false)]
-    [InlineData("private", false)]
-    [InlineData("public", true)]
-    public void BoundNestedActivitiesAreRefusedAtTheirAttribute(string visibility, bool deeper)
-    {
-        var code = "[global::IxIFlow.ActivitySdk.WorkflowActivity(\"acme.extra\")]\n" + visibility +
-            " sealed class Extra : IAsyncActivity\n{\npublic Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;\n}";
-        if (deeper) code = "public class Helper\n{\n" + code + "\n}";
-        var yaml = "activity: {key: acme.test, version: 1}\nbody: |\n  return;\ndeclarations: |\n  " + code.Replace("\n", "\n  ");
-        var result = ActivityCompilation.Compile(yaml, "one.activity.yaml");
-        Assert.False(result.Success);
-        Assert.Empty(result.Assembly);
-        var error = Assert.Single(result.Diagnostics);
-        Assert.Equal("IXIYAML001", error.Code);
-        Assert.Equal(WorkflowPublishStage.Validate, error.Stage);
-        Assert.Equal("one.activity.yaml", error.Path);
-        var line = Array.FindIndex(yaml.Split('\n'), text => text.Contains("[global::", StringComparison.Ordinal));
-        Assert.Equal(line + 1, error.Line);
-        Assert.Equal(4, error.Column); // Attribute syntax begins after '['.
-    }
-
-    [Fact]
-    public void ValidAuthoredSyntaxAndNestedHelpersCompileToOneDiscoverableActivity()
-    {
-        const string yaml = """"
-            activity: {key: acme.syntax, version: 1}
-            body: |
-              [global::System.ComponentModel.Description("{ local }")]
-              static string Local()
-              {
-                  // } { These braces are comments.
-                  /* { } */
-                  var raw = """{ raw }""";
-                  var verbatim = @"{ verbatim ""quoted"" }";
-                  return raw + verbatim;
-              }
-              _ = new Helper().Echo(Local());
-              _ = new GenericHelper<int>().Echo(42);
-              _ = new PartialHelper().Echo(Local());
-            declarations: |
-              [global::System.ComponentModel.Description("{ helper }")]
-              private sealed class Helper
-              {
-                  public string Echo(string value) => value;
-                  public sealed class Nested { }
-              }
-              private sealed class GenericHelper<T>
-              {
-                  public T Echo(T value) => value;
-              }
-              private sealed partial class PartialHelper { public string Echo(string value) => Finish(value); }
-              private sealed partial class PartialHelper { private static string Finish(string value) => value; }
-            """";
-        var result = ActivityCompilation.Compile(yaml);
-        Assert.True(result.Success, string.Join("\n", result.Diagnostics));
-        Assert.Empty(result.Diagnostics);
-        var context = new AssemblyLoadContext("syntax-control", isCollectible: true);
-        try
-        {
-            var assembly = context.LoadFromStream(new MemoryStream(result.Assembly));
-            Assert.Single(ActivityDescriptor.Scan(assembly, "acme.syntax", "1.0.0"));
-            Assert.NotNull(assembly.GetType("IxIFlow.Activities.Acme.Syntax+Helper+Nested"));
-            Assert.NotNull(assembly.GetType("IxIFlow.Activities.Acme.Syntax+GenericHelper`1"));
-            Assert.NotNull(assembly.GetType("IxIFlow.Activities.Acme.Syntax+PartialHelper"));
-        }
-        finally { context.Unload(); }
-    }
-
-    public static IEnumerable<object[]> IntegralTypes()
-    {
-        foreach (var (type, runtime) in new[] { ("sbyte", typeof(sbyte)), ("byte", typeof(byte)), ("short", typeof(short)),
-                     ("ushort", typeof(ushort)), ("int", typeof(int)), ("uint", typeof(uint)), ("long", typeof(long)), ("ulong", typeof(ulong)) })
-            foreach (var declaredType in NumericTypeSpellings(type, runtime)) yield return [declaredType, runtime];
-    }
-
-    private static IEnumerable<string> NumericTypeSpellings(string alias, Type runtime) =>
-    [
-        alias, alias + "?", "System." + runtime.Name, "global::System." + runtime.Name,
-        runtime.Name, "@" + runtime.Name + "?",
-        "global::System.Nullable<global::System." + runtime.Name + ">",
-        alias + " /* nullable keyword */ ?",
-        "System . Nullable /* spaced */ < " + alias + " >",
-        "Nullable /* unqualified */ < System /* qualified */ . @" + runtime.Name + " >",
-        "global /* alias */ :: @System . @Nullable < global::@System . @" + runtime.Name + " >",
-        "@System /* escaped */ . @" + runtime.Name
-    ];
-
-    [Theory]
-    [MemberData(nameof(IntegralTypes))]
-    public void IntegralDefaultsConvertExactlyWithoutChangingAuthoredNumbers(string type, Type runtime)
+    private static void IntegralDefaultsConvertExactlyWithoutChangingAuthoredNumbers(string type, Type runtime)
     {
         var previous = CultureInfo.CurrentCulture;
         CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
@@ -456,9 +243,7 @@ public sealed class ActivityCompilationTests
         finally { CultureInfo.CurrentCulture = previous; }
     }
 
-    [Theory]
-    [MemberData(nameof(IntegralTypes))]
-    public void FractionalAndOutOfRangeIntegralDefaultsAreRefused(string type, Type runtime)
+    private static void FractionalAndOutOfRangeIntegralDefaultsAreRefused(string type, Type runtime)
     {
         var previous = CultureInfo.CurrentCulture;
         CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
@@ -477,371 +262,35 @@ public sealed class ActivityCompilationTests
         finally { CultureInfo.CurrentCulture = previous; }
     }
 
-    [Theory]
-    [InlineData("double", "1e400")]
-    [InlineData("double", "-1e400")]
-    [InlineData("double?", "1e400")]
-    [InlineData("double?", "-1e400")]
-    [InlineData("float", "1e400")]
-    [InlineData("float", "-1e400")]
-    [InlineData("float?", "1e400")]
-    [InlineData("float?", "-1e400")]
-    [InlineData("float", "3.402824e38")]
-    [InlineData("double", "\"NaN\"")]
-    [InlineData("float", "\"Infinity\"")]
-    [InlineData("double?", "\"-Infinity\"")]
-    public void NonFiniteFloatingDefaultsAreRefusedThroughBothReaders(string type, string literal) => AssertInvalidNumericDefault(type, literal);
+    // Keep the original data catalog; disjoint widths expose the two large theories to xUnit parallelism.
+    public static IEnumerable<object[]> IntegralTypesOfWidth(int bytes) =>
+        IntegralTypes().Where(row => System.Runtime.InteropServices.Marshal.SizeOf((Type)row[1]) == bytes);
 
-    [Theory]
-    [InlineData("double", "1.7976931348623157e308")]
-    [InlineData("double?", "-1.7976931348623157e308")]
-    [InlineData("double", "4.9406564584124654e-324")]
-    [InlineData("double?", "-4.9406564584124654e-324")]
-    [InlineData("float", "3.4028234663852886e38")]
-    [InlineData("float?", "-3.4028234663852886e38")]
-    [InlineData("float", "1.401298464324817e-45")]
-    [InlineData("float?", "-1.401298464324817e-45")]
-    public void FiniteFloatingBoundariesKeepTheirTypedValues(string type, string literal)
+    public static IEnumerable<object[]> IntegralTypes()
     {
-        var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: '" + type + "', default: " + literal + "}}\nbody: |\n  return;\n";
-        var json = WorkflowJsonSerializer.Write(WorkflowYamlSerializer.ReadActivity(yaml));
-        foreach (var document in new[] { WorkflowYamlSerializer.ReadActivity(yaml), WorkflowJsonSerializer.ReadActivity(json) })
-        {
-            var result = ActivityCompilation.Compile(WorkflowYamlSerializer.Write(document));
-            Assert.True(result.Success, string.Join("\n", result.Diagnostics));
-            Assert.Empty(result.Diagnostics);
-            var context = new AssemblyLoadContext("floating-boundary", isCollectible: true);
-            try
-            {
-                var activity = context.LoadFromStream(new MemoryStream(result.Assembly)).GetType("IxIFlow.Activities.Acme.Defaults")!;
-                var actual = activity.GetProperty("Value")!.GetCustomAttribute<DefaultValueAttribute>()!.Value;
-                if (type.StartsWith("double", StringComparison.Ordinal)) Assert.Equal(double.Parse(literal, CultureInfo.InvariantCulture), Assert.IsType<double>(actual));
-                else Assert.Equal(float.Parse(literal, CultureInfo.InvariantCulture), Assert.IsType<float>(actual));
-            }
-            finally { context.Unload(); }
-        }
+        foreach (var (type, runtime) in new[] { ("sbyte", typeof(sbyte)), ("byte", typeof(byte)), ("short", typeof(short)),
+                     ("ushort", typeof(ushort)), ("int", typeof(int)), ("uint", typeof(uint)), ("long", typeof(long)), ("ulong", typeof(ulong)) })
+            foreach (var declaredType in NumericTypeSpellings(type, runtime)) yield return [declaredType, runtime];
     }
 
-    [Theory]
-    [InlineData("sbyte", typeof(sbyte))]
-    [InlineData("byte", typeof(byte))]
-    [InlineData("short", typeof(short))]
-    [InlineData("ushort", typeof(ushort))]
-    [InlineData("int", typeof(int))]
-    [InlineData("uint", typeof(uint))]
-    [InlineData("long", typeof(long))]
-    [InlineData("ulong", typeof(ulong))]
-    public void IntegralConversionStringsKeepWhitespaceRadixAndExactBoundaries(string alias, Type runtime)
-    {
-        var previous = CultureInfo.CurrentCulture;
-        CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
-        try
-        {
-            var minimum = runtime.GetField("MinValue")!.GetValue(null)!;
-            var maximum = runtime.GetField("MaxValue")!.GetValue(null)!;
-            var hundred = Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture);
-            foreach (var type in new[] { alias, "System . Nullable /* conversion string */ < @System . @" + runtime.Name + " >" })
-                AssertCompiledDefaults(type,
-                [
-                    ("\" 100 \"", hundred), ("\"0x64\"", hundred), ("\" 0X64 \"", hundred),
-                    ("\"#64\"", hundred), ("\"&h64\"", hundred),
-                    ("\" " + Convert.ToString(minimum, CultureInfo.InvariantCulture) + " \"", minimum),
-                    ("\" " + Convert.ToString(maximum, CultureInfo.InvariantCulture) + " \"", maximum),
-                    ("1e2", hundred), ("100.0", hundred)
-                ]);
-        }
-        finally { CultureInfo.CurrentCulture = previous; }
-    }
-
-    [Fact]
-    public void SignedHexadecimalStringsKeepTheConvertersTwosComplementValue() => AssertCompiledDefaults("int?",
-        [("\"0xFFFFFFFF\"", -1), ("\"0x80000000\"", int.MinValue), ("\"0x7fffffff\"", int.MaxValue)]);
+    private static IEnumerable<string> NumericTypeSpellings(string alias, Type runtime) =>
+    [
+        alias, alias + "?", "System." + runtime.Name, "global::System." + runtime.Name,
+        runtime.Name, "@" + runtime.Name + "?",
+        "global::System.Nullable<global::System." + runtime.Name + ">",
+        alias + " /* nullable keyword */ ?",
+        "System . Nullable /* spaced */ < " + alias + " >",
+        "Nullable /* unqualified */ < System /* qualified */ . @" + runtime.Name + " >",
+        "global /* alias */ :: @System . @Nullable < global::@System . @" + runtime.Name + " >",
+        "@System /* escaped */ . @" + runtime.Name
+    ];
 
     public static IEnumerable<object[]> DecimalTypes() => NumericTypeSpellings("decimal", typeof(decimal)).Select(type => new object[] { type });
-
-    [Theory]
-    [MemberData(nameof(DecimalTypes))]
-    public void DecimalDefaultsRequireExactCoefficientAndScale(string type)
-    {
-        (string Literal, object Expected)[] controls =
-        [
-            ("79228162514264337593543950335", decimal.MaxValue), ("-79228162514264337593543950335", decimal.MinValue),
-            ("0.0000000000000000000000000001", 0.0000000000000000000000000001m),
-            ("-1e-28", -0.0000000000000000000000000001m),
-            ("7.9228162514264337593543950335", 7.9228162514264337593543950335m),
-            ("1.234567890123456789012345678", 1.234567890123456789012345678m),
-            ("0.10000000000000000000000000000", 0.1m), ("10e-29", 0.0000000000000000000000000001m),
-            ("792281625142643375935439503350e-1", decimal.MaxValue), ("0e-99999999999999999999", 0m)
-        ];
-        AssertCompiledDefaults(type, controls.Concat(controls.Select(item => ("\" " + item.Literal + " \"", item.Expected))).ToArray());
-        foreach (var literal in new[]
-                 {
-                     "79228162514264337593543950335.1", "-79228162514264337593543950335.1",
-                     "79228162514264337593543950336", "-79228162514264337593543950336",
-                     "7.9228162514264337593543950336", "-7.9228162514264337593543950336",
-                     "0.12345678901234567890123456789", "1.23456789012345678901234567891",
-                     "1e-29", "-1e-29", "1e400", "1e-400"
-                 })
-        {
-            AssertInvalidNumericDefault(type, literal);
-            AssertInvalidNumericDefault(type, "\"" + literal + "\"");
-        }
-    }
 
     public static IEnumerable<object[]> FloatingTypes()
     {
         foreach (var (alias, runtime) in new[] { ("float", typeof(float)), ("double", typeof(double)) })
             foreach (var type in NumericTypeSpellings(alias, runtime)) yield return [type, runtime];
-    }
-
-    [Theory]
-    [MemberData(nameof(FloatingTypes))]
-    public void FloatingTypeSyntaxCannotBypassFiniteConversion(string type, Type runtime)
-    {
-        AssertCompiledDefaults(type, [("1e2", Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture))]);
-        foreach (var literal in new[] { "1e400", "-1e400", "\"NaN\"", "\"Infinity\"", "\"-Infinity\"" })
-            AssertInvalidNumericDefault(type, literal);
-        if (runtime == typeof(float)) AssertInvalidNumericDefault(type, "1e39");
-    }
-
-    [Theory]
-    [InlineData("System.Nullable // line comment\n <int>", typeof(int), "100.1")]
-    [InlineData("global::System.Nullable<System.\\u0049nt32>", typeof(int), "2147483648")]
-    [InlineData("global::System.Nullable // line comment\n <@System.@Single>", typeof(float), "1e39")]
-    [InlineData("@System.@Nullable < global::System.\\u0044ecimal >", typeof(decimal), "1e-29")]
-    public void LineCommentsAndUnicodeIdentifierEscapesKeepNumericRules(string type, Type runtime, string invalid)
-    {
-        AssertCompiledDefaults(type, [("1e2", Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture))]);
-        AssertInvalidNumericDefault(type, invalid);
-    }
-
-    [Theory]
-    [InlineData("@Int32", "Ready", false)]
-    [InlineData("@Int32", "100", false)]
-    [InlineData("@Int32?", "Ready", false)]
-    [InlineData("Nullable<@Int32>", "Ready", false)]
-    [InlineData("global::System.Nullable<@Int32>", "Ready", false)]
-    [InlineData("Nullable<int>", "Ready", true)]
-    [InlineData("Nullable<global::System.Int32>", "100.1", true)]
-    [InlineData("Nullable<int>", "1e400", true)]
-    public void NestedNumericNamesKeepTheAuthoredConversionType(string type, string literal, bool customNullable)
-    {
-        var declarations = customNullable ? CustomNullableDeclaration : "public enum Int32 { Ready = 100 }";
-        var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: '" + type + "', default: " + literal +
-            "}}\nbody: |\n  return;\ndeclarations: |\n  " + declarations.Replace("\n", "\n  ") + "\n";
-        foreach (var document in ReadBoth(yaml))
-        {
-            Assert.Empty(ActivityDocumentValidator.Validate(document).Diagnostics);
-            var written = WorkflowYamlSerializer.Write(document);
-            var result = ActivityCompilation.Compile(written);
-            Assert.True(result.Success, string.Join("\n", result.Diagnostics));
-            Assert.Empty(result.Diagnostics);
-            var context = new AssemblyLoadContext("nested-default-types", isCollectible: true);
-            try
-            {
-                using var reflection = context.EnterContextualReflection();
-                var activity = context.LoadFromStream(new MemoryStream(result.Assembly)).GetType("IxIFlow.Activities.Acme.Defaults")!;
-                AssertAuthoredDefault(activity.GetProperty("Value")!, literal, customNullable);
-            }
-            finally { context.Unload(); }
-        }
-    }
-
-    private const string CustomNullableDeclaration = """
-        [global::System.ComponentModel.TypeConverter(typeof(AuthoredConverter))]
-        public sealed class Nullable<T>
-        {
-            public string Text { get; }
-            public Nullable(string text) => Text = text;
-        }
-        public sealed class AuthoredConverter : global::System.ComponentModel.TypeConverter
-        {
-            public override object? ConvertFrom(global::System.ComponentModel.ITypeDescriptorContext? context,
-                global::System.Globalization.CultureInfo? culture, object value) => new Nullable<int>((string)value);
-        }
-        """;
-
-    [Fact]
-    public void ReviewExampleKeepsTheNestedEnumDefault()
-    {
-        const string yaml = """
-            activity: {key: acme.example, version: 1}
-            input:
-              Mode: {type: '@Int32', default: Ready}
-            body: |
-              return;
-            declarations: |
-              public enum Int32 { Ready }
-            """;
-        foreach (var document in ReadBoth(yaml))
-        {
-            Assert.Empty(ActivityDocumentValidator.Validate(document).Diagnostics);
-            var result = ActivityCompilation.Compile(WorkflowYamlSerializer.Write(document));
-            Assert.True(result.Success, string.Join("\n", result.Diagnostics));
-            Assert.Empty(result.Diagnostics);
-            var context = new AssemblyLoadContext("review-enum", isCollectible: true);
-            try
-            {
-                var activity = context.LoadFromStream(new MemoryStream(result.Assembly)).GetType("IxIFlow.Activities.Acme.Example")!;
-                var property = activity.GetProperty("Mode")!;
-                AssertAuthoredDefault(property, "Ready", customNullable: false);
-                Assert.Equal(0, Convert.ToInt32(property.GetCustomAttribute<DefaultValueAttribute>()!.Value, CultureInfo.InvariantCulture));
-            }
-            finally { context.Unload(); }
-        }
-    }
-
-    [Theory]
-    [InlineData("System.Int32", "Ready", "", false)]
-    [InlineData("@System.@Int32", "100", "", false)]
-    [InlineData("System.Nullable<int>", "Ready", "", true)]
-    [InlineData("System.Nullable<int>", "100.1", "", true)]
-    [InlineData("Int32", "Ready", "", false)]
-    [InlineData("@Int32", "100", "", false)]
-    [InlineData("NumericNames.Int32", "Ready", "usings: [ActivityDefaultImports]\n", false)]
-    [InlineData("NumericNames.@Int32", "100", "usings: [ActivityDefaultImports]\n", false)]
-    public void PreparedReferencesAndUsingsParticipateInDefaultTypeBinding(string type, string literal, string usings, bool customNullable)
-    {
-        var directory = Path.Combine(Path.GetTempPath(), "actdoc-bound-defaults-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(directory);
-        try
-        {
-            var referencePath = Path.Combine(directory, "AuthoredDefaultTypes.dll");
-            var referenceSource = "#nullable enable\nnamespace IxIFlow.Activities.Acme.System { public enum Int32 { Ready = 100 }\n" +
-                CustomNullableDeclaration + "\n}\nnamespace IxIFlow.Activities.Acme { public enum Int32 { Ready = 100 } }\n" +
-                "namespace ActivityDefaultImports { public static class NumericNames { public enum Int32 { Ready = 100 } } }";
-            var reference = CSharpCompilation.Create("AuthoredDefaultTypes", [CSharpSyntaxTree.ParseText(referenceSource)],
-                ActivityCompilation.ReferencePaths().Select(path => MetadataReference.CreateFromFile(path)),
-                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-            using (var output = File.Create(referencePath))
-            {
-                var emitted = reference.Emit(output);
-                Assert.True(emitted.Success, string.Join("\n", emitted.Diagnostics));
-                Assert.Empty(emitted.Diagnostics);
-            }
-            var yaml = "activity: {key: acme.defaults, version: 1}\n" + usings +
-                "input:\n  Value: {type: '" + type + "', default: " + literal + "}\n" +
-                "  Framework: {type: 'global::System.Nullable<global::System.Int32>', default: 1e2}\n" +
-                "  Keyword: {type: int, default: 100.0}\nbody: |\n  return;\n";
-            foreach (var document in ReadBoth(yaml))
-            {
-                Assert.Empty(ActivityDocumentValidator.Validate(document).Diagnostics);
-                var options = new ActivityCompilationOptions { PackageReferencePaths = [referencePath] };
-                var result = ActivityCompilation.Compile(WorkflowYamlSerializer.Write(document), options: options);
-                Assert.True(result.Success, string.Join("\n", result.Diagnostics));
-                Assert.Empty(result.Diagnostics);
-                var context = new AssemblyLoadContext("referenced-default-types", isCollectible: true);
-                try
-                {
-                    using var reflection = context.EnterContextualReflection();
-                    context.LoadFromStream(new MemoryStream(File.ReadAllBytes(referencePath)));
-                    var activity = context.LoadFromStream(new MemoryStream(result.Assembly)).GetType("IxIFlow.Activities.Acme.Defaults")!;
-                    AssertAuthoredDefault(activity.GetProperty("Value")!, literal, customNullable);
-                    foreach (var name in new[] { "Framework", "Keyword" })
-                        Assert.Equal(100, Assert.IsType<int>(activity.GetProperty(name)!.GetCustomAttribute<DefaultValueAttribute>()!.Value));
-                }
-                finally { context.Unload(); }
-
-                // Global framework names retain their numeric rules even with a nearer System namespace.
-                document.Input["Framework"] = document.Input["Framework"] with { Default = new DocumentNumber("100.1") };
-                var refused = Assert.Single(ActivityCompilation.Compile(WorkflowYamlSerializer.Write(document), options: options).Diagnostics);
-                Assert.Equal("ACTD010", refused.Code);
-            }
-        }
-        finally
-        {
-            File.Delete(Path.Combine(directory, "AuthoredDefaultTypes.dll"));
-            Directory.Delete(directory);
-        }
-    }
-
-    [Theory]
-    [InlineData("int", true)]
-    [InlineData("int /* keyword */ ?", true)]
-    [InlineData("global::System.Int32", true)]
-    [InlineData("global::System.Nullable<global::System.Int32>", true)]
-    [InlineData("Int32", false)]
-    [InlineData("@Int32", false)]
-    [InlineData("System.Int32", false)]
-    [InlineData("Nullable<int>", false)]
-    [InlineData("System.Nullable<int>", false)]
-    [InlineData("global::System.Nullable<System.Int32>", false)]
-    public void DocumentNumericRulesDeferNamesThatRequireBinding(string type, bool refused)
-    {
-        var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: '" + type +
-            "', default: 100.1}}\nbody: |\n  return;\n";
-        foreach (var document in ReadBoth(yaml))
-        {
-            var diagnostics = ActivityDocumentValidator.Validate(document).Diagnostics;
-            if (refused) Assert.Equal("ACTD010", Assert.Single(diagnostics).Code);
-            else Assert.Empty(diagnostics);
-            // Without shadowing declarations/references all of these names bind to int.
-            var compiled = Assert.Single(ActivityCompilation.Compile(WorkflowYamlSerializer.Write(document)).Diagnostics);
-            Assert.Equal("ACTD010", compiled.Code);
-        }
-    }
-
-    [Theory]
-    [InlineData("Value")]
-    [InlineData("Café")]
-    [InlineData("Δείγμα")]
-    [InlineData("変数")]
-    public void ExactMemberNamesRetainBoundIntegerDefaultsInBothReaders(string name)
-    {
-        foreach (var direction in new[] { "input", "inOut" })
-        {
-            var yaml = "activity: {key: acme.defaults, version: 1}\n" + direction + ":\n  " +
-                System.Text.Json.JsonSerializer.Serialize(name) + ": {type: System.Int32, default: 1e2}\nbody: |\n  return;\n";
-            foreach (var document in ReadBoth(yaml))
-            {
-                Assert.Empty(ActivityDocumentValidator.Validate(document).Diagnostics);
-                var result = ActivityCompilation.Compile(WorkflowYamlSerializer.Write(document));
-                Assert.True(result.Success, string.Join("\n", result.Diagnostics));
-                Assert.Empty(result.Diagnostics);
-                var context = new AssemblyLoadContext("exact-member-name", isCollectible: true);
-                try
-                {
-                    var activity = context.LoadFromStream(new MemoryStream(result.Assembly)).GetType("IxIFlow.Activities.Acme.Defaults")!;
-                    var property = Assert.Single(activity.GetProperties());
-                    Assert.Equal(name, property.Name);
-                    Assert.Equal(typeof(int), property.PropertyType);
-                    var metadata = Assert.Single(property.GetCustomAttributesData(), item => item.AttributeType == typeof(DefaultValueAttribute));
-                    Assert.Equal(typeof(int), metadata.ConstructorArguments[0].Value);
-                    Assert.Equal("100", metadata.ConstructorArguments[1].Value);
-                    Assert.Equal(100, Assert.IsType<int>(property.GetCustomAttribute<DefaultValueAttribute>()!.Value));
-                }
-                finally { context.Unload(); }
-            }
-            foreach (var document in ReadBoth(yaml.Replace("1e2", "100.1")))
-            {
-                var written = WorkflowYamlSerializer.Write(document);
-                var refused = Assert.Single(ActivityCompilation.Compile(written, "defaults.yaml").Diagnostics);
-                Assert.Equal("ACTD010", refused.Code);
-                Assert.Equal(WorkflowPublishStage.Validate, refused.Stage);
-                Assert.Equal("defaults.yaml", refused.Path);
-                var expected = DocumentModel.GetLocation(WorkflowYamlSerializer.ReadActivity(written), direction + "." + name + ".default");
-                Assert.Equal(expected.Line, refused.Line);
-                Assert.Equal(expected.Column, refused.Column);
-            }
-        }
-    }
-
-    [Theory]
-    [InlineData("input", false)]
-    [InlineData("input", true)]
-    [InlineData("output", false)]
-    [InlineData("inOut", false)]
-    [InlineData("inOut", true)]
-    public void MissingBoundMemberIsAnInternalError(string direction, bool hasDefault)
-    {
-        var yaml = "activity: {key: acme.defaults, version: 1}\n" + direction + ":\n  Value: {type: System.Int32" +
-            (hasDefault ? ", default: 1e2" : "") + "}\nbody: |\n  return;\n";
-        var options = new ActivitySourceOptions();
-        typeof(ActivitySourceOptions).GetProperty("MemberTypes", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .SetValue(options, new Dictionary<string, ITypeSymbol>());
-        var exception = Assert.Throws<InvalidOperationException>(() => ActivitySourceTranslator.Translate(
-            WorkflowYamlSerializer.ReadActivity(yaml), yaml, "defaults.yaml", options));
-        Assert.Contains(direction + ".Value", exception.Message);
     }
 
     private static IEnumerable<ActivityDocument> ReadBoth(string yaml)

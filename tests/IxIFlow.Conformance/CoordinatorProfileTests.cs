@@ -6,7 +6,7 @@ public sealed class CoordinatorProfileTests
     [Fact]
     public void EveryDistributedProviderHasZeroOneAndTwoCoordinatorsAndLocalProfilesHaveZero()
     {
-        var profiles = StoreProfiles.ProfileNames.ToArray();
+        var profiles = StoreProfiles.Catalog.ToArray();
         Assert.Equal(8, profiles.Distinct().Count());
         foreach (var provider in new[] { StoreProfiles.DistributedSqlServer, StoreProfiles.DistributedPostgreSql })
             Assert.Equal(new[] { 0, 1, 2 }, profiles.Where(profile => profile.Split('/')[0] == provider)

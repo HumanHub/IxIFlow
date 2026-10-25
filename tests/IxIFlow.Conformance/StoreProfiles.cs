@@ -10,6 +10,8 @@ namespace IxIFlow.Tests.Conformance;
 
 /// <summary>
 /// The test profiles from spec J-02. Each conformance scenario runs in every profile it applies to.
+/// IXIFLOW_PROFILES selects comma-separated canonical names; unset/blank selects everything.
+/// Include "unprofiled" once to run facts and plain-provider rows (sqlserver/postgresql/sqlite).
 /// </summary>
 public static class StoreProfiles
 {
@@ -18,22 +20,46 @@ public static class StoreProfiles
     public const string DistributedSqlServer = "distributed-sqlserver";
     public const string DistributedPostgreSql = "distributed-postgresql";
 
-    /// <summary>Every profile. Use for scenarios that apply to any store.</summary>
+    // Opt in explicitly to facts and rows without one of the eight canonical profiles.
+    public const string Unprofiled = "unprofiled";
+    private static readonly Lazy<HashSet<string>?> Selection = new(ReadSelection);
+    [ThreadStatic] internal static bool DiscoveringCatalog;
+
+    internal static IEnumerable<string> Catalog => new[] { LocalMemory, LocalSqlite }.Concat(DistributedCatalog);
+
+    internal static bool Selected(string profile) => Selection.Value?.Contains(profile) ?? true;
+
+    private static HashSet<string>? ReadSelection()
+    {
+        var value = Environment.GetEnvironmentVariable("IXIFLOW_PROFILES");
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var selected = value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .ToHashSet(StringComparer.Ordinal);
+        var unknown = selected.Except(Catalog.Append(Unprofiled), StringComparer.Ordinal).ToArray();
+        if (selected.Count == 0 || unknown.Length != 0)
+            throw new ArgumentException($"Invalid IXIFLOW_PROFILES: {value}. Expected: {string.Join(",", Catalog.Append(Unprofiled))}");
+        return selected;
+    }
+
+    private static IEnumerable<string> Filter(IEnumerable<string> profiles) =>
+        profiles.Where(profile => DiscoveringCatalog || Selected(profile));
+
+    /// <summary>Every selected profile. Use for scenarios that apply to any store.</summary>
     public static TheoryData<string> All => new(ProfileNames);
 
-    public static IEnumerable<string> ProfileNames => new[] { LocalMemory, LocalSqlite }.Concat(DistributedNames);
+    public static IEnumerable<string> ProfileNames => Filter(Catalog);
 
-    private static IEnumerable<string> DistributedNames =>
+    private static IEnumerable<string> DistributedCatalog =>
         new[] { DistributedSqlServer, DistributedPostgreSql }.SelectMany(provider =>
             Enumerable.Range(0, 3).Select(count => count == 0 ? provider : $"{provider}/coordinators-{count}"));
 
     /// <summary>Profiles that allow several hosts on one store (C-18 excludes SQLite).</summary>
-    public static TheoryData<string> MultipleHosts => new(new[] { LocalMemory }.Concat(DistributedNames));
+    public static TheoryData<string> MultipleHosts => new(Filter(new[] { LocalMemory }.Concat(DistributedCatalog)));
 
     /// <summary>Profiles with several hosts sharing a durable store.</summary>
-    public static TheoryData<string> Distributed => new(DistributedNames);
+    public static TheoryData<string> Distributed => new(Filter(DistributedCatalog));
 
-    public static TheoryData<string> Coordinated => new(DistributedNames.Where(profile => CoordinatorCount(profile) > 0));
+    public static TheoryData<string> Coordinated => new(Filter(DistributedCatalog.Where(profile => CoordinatorCount(profile) > 0)));
 
     internal static int CoordinatorCount(string profile) => profile.Split('/') switch
     {

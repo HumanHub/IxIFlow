@@ -276,6 +276,7 @@ public sealed class TraceReviewTests
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public void SaturatedTransitionsAllocateNothingAfterTheirSingleMarker()
     {
         var definition = Workflow.Create<Data>("AllocationTrace").Step<Noop>().Build();

@@ -17,7 +17,7 @@ public sealed class CatalogRevisionSchemaTests
     {
         foreach (var snapshot in new[] { false, true })
         {
-            var cs = await SqlServerTestServer.CreateDatabaseAsync("CatalogDeltaBoundary");
+            var cs = await SqlServerTestServer.CreateFreshDatabaseAsync("CatalogDeltaBoundary");
             try
             {
                 await using var holder = new SqlConnection(cs);

@@ -28,6 +28,7 @@ public sealed partial class DebugPayloadFixTests
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task I_MemoryDiscoveryAllocatesOnlyABoundedCandidatePage()
     {
         await using var h = new Harness(false);

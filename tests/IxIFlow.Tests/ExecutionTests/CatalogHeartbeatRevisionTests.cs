@@ -40,7 +40,7 @@ public sealed class CatalogHeartbeatRevisionTests
         foreach (var snapshot in new[] { false, true })
         foreach (var scenario in Enum.GetValues<Scenario>())
         {
-            var cs = await SqlServerTestServer.CreateDatabaseAsync("CatalogRevision");
+            var cs = await SqlServerTestServer.CreateFreshDatabaseAsync("CatalogRevision");
             try
             {
                 await using (var connection = new SqlConnection(cs))
@@ -685,7 +685,7 @@ public sealed class CatalogHeartbeatRevisionTests
         foreach (var snapshot in new[] { false, true })
         foreach (var commit in new[] { false, true })
         {
-            var cs = await SqlServerTestServer.CreateDatabaseAsync("CatalogHeldWriter");
+            var cs = await SqlServerTestServer.CreateFreshDatabaseAsync("CatalogHeldWriter");
             try { await VerifyHeldSqlWriterAsync(cs, snapshot, commit); }
             finally { await SqlServerTestServer.DropDatabaseAsync(cs); }
         }

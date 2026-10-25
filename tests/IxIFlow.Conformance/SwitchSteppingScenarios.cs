@@ -9,15 +9,13 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.Conformance;
 
 [Trait("Feature", "control-flow"), Trait("Spec", "W-03")]
-public sealed class SwitchSteppingScenarios
+public sealed partial class SwitchSteppingScenarios
 {
     public static IEnumerable<object[]> Routes => StoreProfiles.ProfileNames.SelectMany(profile =>
         new[] { "case", "default", "no-match", "empty-case", "empty-default", "empty-switch", "default-only" }.SelectMany(route =>
             new[] { DebugStepKind.Into, DebugStepKind.Over, DebugStepKind.Out }.Select(kind => new object[] { profile, route, kind })));
 
-    [Theory]
-    [MemberData(nameof(Routes))]
-    public async Task LiveAndReplayStepsAgreeAcrossEverySwitchRoute(string profile, string route, DebugStepKind kind)
+    private static async Task LiveAndReplayStepsAgreeAcrossEverySwitchRoute(string profile, string route, DebugStepKind kind)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
         var definition = new WorkflowBuilder<SwitchScenarios.Data, object>([], "SwitchReplayRoutes").WaitFor<SwitchScenarios.Go>("start")
@@ -84,9 +82,7 @@ public sealed class SwitchSteppingScenarios
         new[] { "sequence", "node", "state" }.SelectMany(shape => new[] { false, true }.SelectMany(fallback =>
             new[] { DebugStepKind.Into, DebugStepKind.Over, DebugStepKind.Out }.Select(kind => new object[] { profile, shape, fallback, kind }))));
 
-    [Theory]
-    [MemberData(nameof(NestedStarts))]
-    public async Task NestedSwitchStepsPreserveScopeFramesAndOccurrencesAcrossRecovery(string profile, string shape, bool fallback, DebugStepKind kind)
+    private static async Task NestedSwitchStepsPreserveScopeFramesAndOccurrencesAcrossRecovery(string profile, string shape, bool fallback, DebugStepKind kind)
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
         var builder = new WorkflowBuilder<SwitchScenarios.Data, object>([], "NestedSwitchStep").WaitFor<SwitchScenarios.Go>("start");

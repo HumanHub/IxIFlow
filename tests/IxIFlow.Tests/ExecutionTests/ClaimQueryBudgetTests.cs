@@ -22,10 +22,12 @@ public sealed class ClaimQueryBudgetTests(ITestOutputHelper output) : IClassFixt
 
     [DockerBudgetFact]
     [Trait("Category", "SqlIntegration")]
+    [Trait("Category", "Timing")]
     public Task SqlServerPlansAndBudget() => RunAsync(false);
 
     [DockerBudgetFact]
     [Trait("Category", "PostgreSqlIntegration")]
+    [Trait("Category", "Timing")]
     public Task PostgreSqlPlansAndBudget() => RunAsync(true);
 
     // Recovery passes exclude recent refusals and the pass's own candidates (C-11); the same
@@ -33,11 +35,13 @@ public sealed class ClaimQueryBudgetTests(ITestOutputHelper output) : IClassFixt
     [DockerBudgetFact]
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "C-11")]
+    [Trait("Category", "Timing")]
     public Task SqlServerPlansAndBudgetWithAFullExclusionList() => RunAsync(false, excluded: true);
 
     [DockerBudgetFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "C-11")]
+    [Trait("Category", "Timing")]
     public Task PostgreSqlPlansAndBudgetWithAFullExclusionList() => RunAsync(true, excluded: true);
 
     [Fact]

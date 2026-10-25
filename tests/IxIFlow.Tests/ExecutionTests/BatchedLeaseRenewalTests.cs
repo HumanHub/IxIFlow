@@ -19,6 +19,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     private static readonly ClaimQuery Claim = new(Guid.Empty, new Dictionary<string, string>());
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task OneStoreCallRenewsEveryLeaseTheHostHolds()
     {
         var time = new TimerRecordingClock();
@@ -48,6 +49,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     [Theory]
     [InlineData(100)]
     [InlineData(20)]
+    [Trait("Category", "Timing")]
     public async Task ALeaseAcquiredBetweenBatchesIsAttemptedWithinItsInterval(int intervalMilliseconds)
     {
         var time = new TimerRecordingClock();
@@ -73,6 +75,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task OneRefusalOnlyLosesItsLeaseAndTerminationSignalsItsOwnRun()
     {
         var time = new TimerRecordingClock();
@@ -107,6 +110,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task AHungBatchLosesEachLeaseByItsOwnClockAndTerminationFallbackClaimsAtExpiry()
     {
         var time = new TimerRecordingClock();
@@ -149,6 +153,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task AFailingBatchKeepsEachLeasesOriginalExpiryAndRetriesTogether()
     {
         var time = new TimerRecordingClock();
@@ -179,6 +184,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task ANewLeaseIsAttemptedOnTimeWhileAnOlderBatchIsHung()
     {
         var time = new TimerRecordingClock();
@@ -201,6 +207,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task AsyncShutdownJoinsAnOutstandingBatchBeforeTheStoreIsDisposed()
     {
         var time = new TimerRecordingClock();
@@ -228,6 +235,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task ASlowBatchCompletingOneMillisecondAfterTheNextTickRenewsAgainImmediately()
     {
         var time = new TimerRecordingClock();
@@ -255,6 +263,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task TerminationRequestedWithoutAReasonOnlyLosesItsLease()
     {
         var time = new TimerRecordingClock();
@@ -287,6 +296,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task DuplicateInstanceRegistrationsAreSentInSeparatePasses()
     {
         var time = new TimerRecordingClock();
@@ -310,6 +320,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     }
 
     [Fact]
+    [Trait("Category", "Timing")]
     public async Task AFailedBatchLogsOneRedactedWarningForAllItsMembers()
     {
         var time = new TimerRecordingClock();

@@ -12,7 +12,7 @@ namespace IxIFlow.Tests.Conformance;
 
 [Trait("Feature", "control-flow")]
 [Trait("Spec", "W-03")]
-public sealed class SwitchScenarios
+public sealed partial class SwitchScenarios
 {
     public static IEnumerable<object[]> Compositions => StoreProfiles.ProfileNames.SelectMany(profile =>
         new[] { "saga", "parallel", "each", "flowchart", "state" }.SelectMany(shape =>
@@ -71,9 +71,7 @@ public sealed class SwitchScenarios
         Assert.Equal(2, effects.Failures);
     }
 
-    [Theory]
-    [MemberData(nameof(Compositions))]
-    public async Task SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(string profile, string shape, string fault, string authoring)
+    private static async Task SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(string profile, string shape, string fault, string authoring)
     {
         var time = profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite ? new FakeTimeProvider() : null;
         await using var store = await StoreProfiles.CreateAsync(profile, time);
