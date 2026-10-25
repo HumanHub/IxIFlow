@@ -1,10 +1,12 @@
+using IxIFlow.Core;
+
 namespace IxIFlow.Templates;
 
 /// <summary>
 /// Publishes template versions: each variant is validated by the version's engine against its model type,
 /// and only a version whose every variant is valid reaches the store.
 /// </summary>
-public sealed class TemplatePublisher(ITemplateStore store, TemplateEngines engines)
+public sealed class TemplatePublisher(IWorkflowCatalogStore store, IArtifactStore artifacts, TemplateEngines engines)
 {
     /// <summary>
     /// Validates <paramref name="version"/> against <typeparamref name="TModel"/> and stores it. Throws
@@ -20,10 +22,7 @@ public sealed class TemplatePublisher(ITemplateStore store, TemplateEngines engi
     {
         ArgumentNullException.ThrowIfNull(version);
         ArgumentNullException.ThrowIfNull(modelType);
-        if (version.ModelType != TemplateVersion.ModelTypeName(modelType))
-            throw new ArgumentException(
-                $"Template {version.Reference} is written against '{version.ModelType}', not " +
-                $"'{TemplateVersion.ModelTypeName(modelType)}'", nameof(modelType));
+        version = await TemplateModelBinder.BindAsync(version, modelType, store, cancellationToken);
         var engine = engines.Get(version.Engine);
         foreach (var variant in version.Variants)
         {
@@ -32,6 +31,7 @@ public sealed class TemplatePublisher(ITemplateStore store, TemplateEngines engi
             if (diagnostics.Count > 0)
                 throw new TemplateValidationException(source, diagnostics);
         }
-        await store.AddAsync(version, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        await store.RegisterTemplateVersionAsync(version, artifacts);
     }
 }

@@ -83,6 +83,26 @@ public sealed partial class PostgreSqlWorkflowStateRepository
         );
         CREATE INDEX ix_workflow_versions_revision ON ixiflow_workflow_versions (catalog_revision);
                 CREATE INDEX ix_workflow_versions_category ON ixiflow_workflow_versions (category, name);
+        CREATE TABLE ixiflow_template_versions (
+            "key" text COLLATE "C" NOT NULL,
+            "version" int NOT NULL,
+            "engine" text COLLATE "C" NOT NULL,
+            "format" text COLLATE "C" NOT NULL,
+            "model_type" text COLLATE "C" NOT NULL,
+            "model_type_id" text COLLATE "C" NOT NULL,
+            "model_packages_json" text COLLATE "C" NOT NULL,
+            "cultures_json" text COLLATE "C" NOT NULL,
+            "display_name" text COLLATE "C" NULL,
+            "description" text COLLATE "C" NULL,
+            "search_text" text COLLATE "C" NOT NULL,
+            "published_draft_generation" uuid NULL,
+            "published_draft_revision" bigint NULL,
+            "published_at_utc" timestamptz NOT NULL,
+            "published_by" text COLLATE "C" NULL,
+            "metadata_json" text COLLATE "C" NOT NULL,
+            "catalog_revision" bigint NOT NULL,
+            PRIMARY KEY ("key", "version")
+        );
         CREATE TABLE ixiflow_packages (
             id text COLLATE "C" NOT NULL,
             version text COLLATE "C" NOT NULL,

@@ -7,7 +7,7 @@
     <Description>Versioned templates for IxIFlow: the RenderTemplate and SendTemplateMessage activities and the ITemplateEngine contract.</Description>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\IxIFlow.Abstractions\IxIFlow.Abstractions.csproj" />
+    <ProjectReference Include="..\IxIFlow\IxIFlow.csproj" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
   </ItemGroup>
 </Project>

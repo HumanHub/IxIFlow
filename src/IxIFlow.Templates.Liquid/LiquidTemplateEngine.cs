@@ -48,6 +48,8 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
     {
         ArgumentNullException.ThrowIfNull(template);
         ArgumentNullException.ThrowIfNull(modelType);
+        try { TemplateModelTypes.Validate(modelType); }
+        catch (ArgumentException error) { return ValueTask.FromResult<IReadOnlyList<TemplateDiagnostic>>([new(error.Message + "; wrap it in a model type")]); }
         // Fluid 2.40 parses a {% liquid %} block into no statements at all, losing the rest of the template.
         if (LiquidTagPattern().IsMatch(template.Content))
         {
@@ -65,13 +67,14 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
     [GeneratedRegex(@"\{%-?\s*liquid\b")]
     private static partial Regex LiquidTagPattern();
 
-    public async ValueTask<string> RenderAsync<TModel>(TemplateSource template, TModel model, CultureInfo culture,
+    public async ValueTask<string> RenderAsync(TemplateSource template, object model, Type modelType, CultureInfo culture,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(template);
         ArgumentNullException.ThrowIfNull(culture);
-        if (model is null)
-            throw new ArgumentNullException(nameof(model));
+        ArgumentNullException.ThrowIfNull(model);
+        TemplateModelTypes.Validate(modelType);
+        if (!modelType.IsInstanceOfType(model)) throw new ArgumentException("Model does not implement its declared read surface", nameof(model));
         var parsed = Parse(template);
         if (parsed.Template == null)
             throw new TemplateRenderException(template, parsed.Error!.ToString());
@@ -87,7 +90,7 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
         {
             // The model's own members come through the member access strategy, like every other type's, so a model
             // of a derived type shows no more than the type the template was published against.
-            var context = new TemplateContext(model, OptionsFor(typeof(TModel)), allowModelMembers: false)
+            var context = new TemplateContext(model, OptionsFor(modelType), allowModelMembers: false)
             {
                 CultureInfo = culture
             };

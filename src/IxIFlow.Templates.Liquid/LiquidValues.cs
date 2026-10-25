@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Globalization;
 using Fluid.Values;
 
@@ -18,7 +18,8 @@ internal sealed class LiquidValues(IReadOnlyList<Type> reachable)
     /// </summary>
     public static readonly AsyncLocal<CultureInfo?> Culture = new();
 
-    private readonly ConcurrentDictionary<Type, bool> _allowed = new();
+    private sealed record Allowed(bool Value);
+    private readonly ConditionalWeakTable<Type, Allowed> _allowed = new();
 
     public object? Convert(object value) => value switch
     {
@@ -42,7 +43,7 @@ internal sealed class LiquidValues(IReadOnlyList<Type> reachable)
         // A collection or dictionary of values that could be anything is unreadable, as a member declared so is.
         _ when !LiquidModel.HoldsReadable(value.GetType()) => NilValue.Instance,
         _ when !LiquidModel.IsObject(value.GetType()) => null,
-        _ => _allowed.GetOrAdd(value.GetType(), type => reachable.Any(allowed => allowed.IsAssignableFrom(type)))
+        _ => _allowed.GetValue(value.GetType(), type => new(reachable.Any(allowed => allowed.IsAssignableFrom(type)))).Value
             ? new ModelValue(value)
             : NilValue.Instance
     };

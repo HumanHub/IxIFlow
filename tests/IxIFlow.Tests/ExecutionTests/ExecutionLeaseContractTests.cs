@@ -1308,6 +1308,11 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => inner.GetPackageDetailAsync(id, version, scope);
     public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => inner.GetPackageActivitiesAsync(id, version, query);
     public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => inner.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit);
+    public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => inner.RegisterTemplateVersionAsync(version, artifacts, actor);
+    public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version) => inner.GetTemplateVersionAsync(key, version);
+    public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => inner.GetTemplateVersionsAsync(key);
+    public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
+    public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => inner.GetPackageHoldersAsync(id, version, scope);
     public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.RegisterPackageAsync(package, activities, artifacts, actor);
     public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
     public IArtifactStore? CatalogArtifacts { get => inner.CatalogArtifacts; set => inner.CatalogArtifacts = value; }

@@ -83,6 +83,26 @@ public sealed partial class SqliteWorkflowStateRepository
         );
         CREATE INDEX ix_workflow_versions_revision ON ixiflow_workflow_versions (catalog_revision);
                 CREATE INDEX ix_workflow_versions_category ON ixiflow_workflow_versions (category, name);
+        CREATE TABLE ixiflow_template_versions (
+            "key" text COLLATE BINARY NOT NULL,
+            "version" int NOT NULL,
+            "engine" text COLLATE BINARY NOT NULL,
+            "format" text COLLATE BINARY NOT NULL,
+            "model_type" text COLLATE BINARY NOT NULL,
+            "model_type_id" text COLLATE BINARY NOT NULL,
+            "model_packages_json" text COLLATE BINARY NOT NULL,
+            "cultures_json" text COLLATE BINARY NOT NULL,
+            "display_name" text COLLATE BINARY NULL,
+            "description" text COLLATE BINARY NULL,
+            "search_text" text COLLATE BINARY NOT NULL,
+            "published_draft_generation" TEXT NULL,
+            "published_draft_revision" bigint NULL,
+            "published_at_utc" TEXT NOT NULL,
+            "published_by" text COLLATE BINARY NULL,
+            "metadata_json" text COLLATE BINARY NOT NULL,
+            "catalog_revision" bigint NOT NULL,
+            PRIMARY KEY ("key", "version")
+        );
         CREATE TABLE ixiflow_packages (
             id TEXT COLLATE BINARY NOT NULL,
             version TEXT COLLATE BINARY NOT NULL,

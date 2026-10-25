@@ -12,7 +12,11 @@ public sealed record WorkflowDraftSummary(string Kind, string Name, int Version,
     long Revision, int SourceLength, DateTime UpdatedAtUtc, string? UpdatedBy);
 /// <summary>Draft pages sort by kind, Unicode scalar value sequence of name, then version.</summary>
 public sealed record WorkflowDraftQuery(CatalogScope Scope, string? Kind = null,
-    string? NamePrefix = null, string? After = null, int Limit = 100);
+    string? NamePrefix = null, string? After = null, int Limit = 100)
+{
+    public string? Kind { get; init => field = WorkflowCatalogRules.ValidateText(value); } = WorkflowCatalogRules.ValidateText(Kind);
+    public string? NamePrefix { get; init => field = WorkflowCatalogRules.ValidateText(value); } = WorkflowCatalogRules.ValidateText(NamePrefix);
+}
 public sealed record CatalogMutationToken(long Revision);
 public sealed class CatalogPreconditionException(string message) : Exception(message);
 public sealed record RetirementBlockers(IReadOnlyList<WorkflowVersionReference> Callers,
@@ -28,7 +32,11 @@ public sealed record WorkflowPublication(Guid Id, WorkflowDraftId Draft, int Att
     WorkflowPublicationState State, Guid HostId, string? StartedBy, DateTime StartedAtUtc,
     DateTime HeartbeatAtUtc, DateTime? FinishedAtUtc, WorkflowPublicationOutcome? Outcome);
 public sealed record WorkflowPublicationQuery(CatalogScope Scope, string Kind, string Name, int Version,
-    Guid? Generation = null, string? After = null, int Limit = 100);
+    Guid? Generation = null, string? After = null, int Limit = 100)
+{
+    public string Kind { get; init => field = WorkflowCatalogRules.ValidateText(value)!; } = WorkflowCatalogRules.ValidateText(Kind)!;
+    public string Name { get; init => field = WorkflowCatalogRules.ValidateText(value)!; } = WorkflowCatalogRules.ValidateText(Name)!;
+}
 
 internal static class WorkflowPublicationRules
 {
@@ -36,7 +44,7 @@ internal static class WorkflowPublicationRules
     {
         ArgumentNullException.ThrowIfNull(query.Scope);
         if (query.Kind != null) Key(query.Kind, "key", 1);
-        if (query.NamePrefix != null) WorkflowCatalogRules.ValidateUtf16(query.NamePrefix);
+        if (query.NamePrefix != null) WorkflowCatalogRules.ValidateText(query.NamePrefix);
     }
 
     internal static void Key(string kind, string name, int version)
@@ -63,12 +71,14 @@ internal static class WorkflowPublicationRules
     }
     internal static void Actor(string? actor)
     {
+        WorkflowCatalogRules.ValidateText(actor);
         if (actor?.Length > 200) throw new ArgumentException("Actor exceeds 200 characters", nameof(actor));
     }
     internal static void Save(WorkflowDraft definition, WorkflowDraftId? expected, string? actor)
     {
         Key(definition.Kind, definition.Name, definition.Version);
         ArgumentNullException.ThrowIfNull(definition.Source);
+        WorkflowCatalogRules.ValidateText(definition.Source);
         Actor(actor);
         if (expected == null)
         {
@@ -95,7 +105,8 @@ internal static class WorkflowPublicationRules
         State = default, LifecycleRevision = 0, StateChangedAtUtc = null, StateChangedBy = null
     });
 
-    internal static WorkflowPublicationOutcome Outcome(WorkflowDraftId draft, WorkflowPublicationOutcome outcome, WorkflowVersion? stored)
+    internal static WorkflowPublicationOutcome Outcome(WorkflowDraftId draft, WorkflowPublicationOutcome outcome, WorkflowVersion? stored,
+        IxIFlow.Templates.TemplateVersionEntry? template = null)
     {
         ArgumentNullException.ThrowIfNull(outcome);
         ArgumentNullException.ThrowIfNull(outcome.Diagnostics);
@@ -106,6 +117,18 @@ internal static class WorkflowPublicationRules
         if (outcome.FailureClass is { } failure && !Enum.IsDefined(failure)) throw new ArgumentException("Invalid failure class", nameof(outcome));
         if (outcome.Receipt is { } receipt)
         {
+            if (draft.Kind == WorkflowDraftKinds.Template)
+            {
+                IxIFlow.Templates.TemplateVersionEntry? submittedTemplate;
+                try { submittedTemplate = JsonSerializer.Deserialize<IxIFlow.Templates.TemplateVersionEntry>(receipt.ReceiptJson); }
+                catch (Exception error) when (error is JsonException or ArgumentException)
+                { throw new ArgumentException("Invalid template publication receipt", nameof(outcome), error); }
+                if (receipt.Draft != draft || template?.PublishedDraft != draft || submittedTemplate == null ||
+                    JsonSerializer.Serialize(submittedTemplate) != JsonSerializer.Serialize(template) ||
+                    outcome.FailureClass != null || outcome.Diagnostics.Any(item => item.Severity == "Error"))
+                    throw new ArgumentException("Publication receipt must match the audited immutable template entry", nameof(outcome));
+                return outcome with { Receipt = new(draft, JsonSerializer.Serialize(template)) };
+            }
             WorkflowVersion? submitted;
             try { submitted = JsonSerializer.Deserialize<WorkflowVersion>(receipt.ReceiptJson); }
             catch (JsonException error) { throw new ArgumentException("Invalid publication receipt", nameof(outcome), error); }

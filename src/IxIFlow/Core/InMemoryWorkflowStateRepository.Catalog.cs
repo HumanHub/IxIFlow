@@ -18,17 +18,22 @@ public partial class InMemoryWorkflowStateRepository
 
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null)
     {
+        WorkflowCatalogRules.ValidateText(id);
         lock (_claimLock) return Task.FromResult<IReadOnlyList<WorkflowPackage>>(_packages.Values
             .Where(package => id == null || package.Id == id.ToLowerInvariant()).Select(WorkflowPackageRules.Copy).ToArray());
     }
 
     public Task<WorkflowPackage?> GetPackageAsync(string id, string version)
     {
+        WorkflowCatalogRules.ValidateText(id);
+        WorkflowCatalogRules.ValidateText(version);
         lock (_claimLock) return Task.FromResult(_packages.TryGetValue((id.ToLowerInvariant(), version), out var row) ? WorkflowPackageRules.Copy(row) : null);
     }
 
     public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit)
     {
+        WorkflowCatalogRules.ValidateText(id);
+        WorkflowCatalogRules.ValidateText(afterVersion);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         lock (_claimLock) return Task.FromResult<IReadOnlyList<WorkflowPackage>>(_packages.Values
             .Where(row => row.Id == id.ToLowerInvariant() && (afterVersion == null || string.CompareOrdinal(row.Version, afterVersion) > 0))
@@ -56,6 +61,7 @@ public partial class InMemoryWorkflowStateRepository
     private async Task<PackageRegistration> AcceptPackageAsync(WorkflowPackage package, PackageActivities activities,
         IArtifactStore artifacts, string? actor, bool completion)
     {
+        WorkflowPackageRules.Validate(package);
         package = WorkflowPackageRules.Copy(package);
         activities = PackageIndexRules.Snapshot(package, activities);
         await _catalogLock.WaitAsync();
@@ -95,6 +101,7 @@ public partial class InMemoryWorkflowStateRepository
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, 1000);
+        WorkflowCatalogRules.ValidateText(afterIdentity);
         if (!Enum.IsDefined(extraction)) throw new ArgumentException("Invalid extraction state");
         lock (_claimLock) return Task.FromResult<IReadOnlyList<WorkflowPackage>>(_packages.Values
             .Where(row => _packageActivities[(row.Id, row.Version)].Extraction == extraction &&
@@ -104,6 +111,7 @@ public partial class InMemoryWorkflowStateRepository
 
     public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit)
     {
+        WorkflowCatalogRules.ValidateText(afterIdentity);
         missingPackageId = WorkflowPackageRules.NormalizeId(missingPackageId);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, 1000);
@@ -125,7 +133,8 @@ public partial class InMemoryWorkflowStateRepository
         WorkflowPublicationRules.Save(definition, expected, actor);
         lock (_claimLock)
         {
-            if (definition.Kind == WorkflowDraftKinds.Workflow && _versions.ContainsKey((definition.Name, definition.Version)) ||
+            if (definition.Kind == WorkflowDraftKinds.Template && _templates.ContainsKey((definition.Name, definition.Version)) ||
+                definition.Kind == WorkflowDraftKinds.Workflow && _versions.ContainsKey((definition.Name, definition.Version)) ||
                 definition.Kind == WorkflowDraftKinds.Activity && _packages.ContainsKey((definition.Name, definition.Version.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".0.0")))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A published identity cannot be edited");
             var key = (definition.Kind, definition.Name, definition.Version);
@@ -400,7 +409,7 @@ public partial class InMemoryWorkflowStateRepository
                 {
                     references = WorkflowCatalogRules.RetentionReferences(_versions.Values.ToArray(),
                         _instances.Values.Where(instance => instance.BundleDigest != null).Select(instance => instance.BundleDigest!.Value).Distinct().ToArray(),
-                        _packages.Values.ToArray(), prepared);
+                        _packages.Values.ToArray(), prepared, _templates.Values.ToArray());
                     cutoff = Now - retention;
                 }
                 if (references == null) continue;

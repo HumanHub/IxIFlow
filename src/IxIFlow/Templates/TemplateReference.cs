@@ -7,6 +7,7 @@ namespace IxIFlow.Templates;
 /// </summary>
 public sealed record TemplateReference
 {
+    [System.Text.Json.Serialization.JsonConstructor]
     public TemplateReference(string key, int version)
     {
         TemplateVersion.CheckKey(key);

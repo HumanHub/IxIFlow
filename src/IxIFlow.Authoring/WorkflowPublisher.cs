@@ -212,6 +212,17 @@ public sealed class WorkflowPublisher(IWorkflowCatalogStore catalog, IArtifactSt
         foreach (var pair in configured.Workflows) result.Workflows.Add(pair);
         foreach (var pair in configured.WorkflowDataTypes) result.WorkflowDataTypes.Add(pair);
         foreach (var pair in configured.WorkflowIdentities) result.WorkflowIdentities.Add(pair);
+        // Built-in activities belong to the shared profile, so they have no package import.
+        const string sendKey = "ixiflow.templates.send-message";
+        var templatesAssembly = references.Assemblies.SingleOrDefault(assembly => assembly.Identity.Name == "IxIFlow.Templates" &&
+            WorkflowSharedAssemblies.IsShared(new AssemblyName(assembly.Identity.ToString())));
+        if (templatesAssembly?.GetTypeByMetadataName("IxIFlow.Templates.SendTemplateMessage") is { } send)
+        {
+            result.Types[sendKey] = send.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            result.Activities[sendKey] = new(sendKey, "1.0");
+            foreach (var property in Properties(send))
+                result.Members.TryAdd(sendKey + "." + char.ToLowerInvariant(property.Name[0]) + property.Name[1..], property.Name);
+        }
         foreach (var key in WorkflowSourceTranslator.TypeNames(document).Distinct())
         {
             var name = result.Types.TryGetValue(key, out var configuredType) ? configuredType : key;

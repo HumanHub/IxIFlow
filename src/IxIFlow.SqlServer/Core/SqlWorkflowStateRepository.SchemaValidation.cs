@@ -27,6 +27,7 @@ public sealed partial class SqlWorkflowStateRepository
                 SELECT Id, Revision FROM dbo.IxIFlowCatalogRevision WHERE 1=0;
                 SELECT Name, Version, StructureHash, State, ArtifactDigest, MetadataJson, CatalogRevision, PublishedDraftGeneration, PublishedDraftRevision, PublishedAtUtc, PublishedBy, StateChangedAtUtc, StateChangedBy, LifecycleRevision, DisplayName, Category, Tags, SearchText, DescriptorJson, ContractHash FROM dbo.IxIFlowWorkflowVersions WHERE 1=0;
                 SELECT Digest, Kind, Content, CreatedAtUtc FROM dbo.IxIFlowArtifacts WHERE 1=0;
+                SELECT [Key], [Version], [Engine], [Format], [ModelType], [ModelTypeId], [ModelPackagesJson], [CulturesJson], [DisplayName], [Description], [SearchText], [PublishedDraftGeneration], [PublishedDraftRevision], [PublishedAtUtc], [PublishedBy], [MetadataJson], [CatalogRevision] FROM dbo.IxIFlowTemplateVersions WHERE 1=0;
                 SELECT [Id], [Version], [Digest], [MetadataJson], [DependencyGroupsJson], [Origin], [Extraction], [ExtractionDetail], [ClosureJson], [Withdrawn], [WithdrawnAtUtc], [WithdrawnBy], [RegisteredAtUtc], [RegisteredBy], [PublishedDraftGeneration], [PublishedDraftRevision], [PublishedDraftName], [PublishedDraftVersion], [PublishedAtUtc], [PublishedBy], [LifecycleRevision], [CatalogRevision] FROM dbo.IxIFlowPackages WHERE 1=0;
                 SELECT [InstanceId], [WorkflowName], [WorkflowVersion], [BundleDigest], [CreatedAtUtc], [StopKind], [StopCrashCount], [Status], [CorrelationId], [RunnableAtUtc], [EndedAtUtc], [StateJson], [CancellationJson], [CancellationAcknowledged], [Revision], [InboxSequence], [InboxReadThrough], [Incarnation], [ParentInstanceId], [ParentWaitId], [LastHostId], [DemandSetId], [PinnedHost], [PinExpiresAtUtc], [PinInherit] FROM dbo.IxIFlowWorkflowInstances WHERE 1=0;
                 SELECT [InstanceId], [EventId], [Sequence], [EventType], [EventKey], [TargetWaitId], [Subject], [StoredPayloadJson], [PayloadHash], [ReceivedAtUtc], [Outcome], [WaitId], [Rejection], [SettledAtUtc], [NoticeJson] FROM dbo.IxIFlowWorkflowEvents WHERE 1=0;
@@ -198,6 +199,7 @@ public sealed partial class SqlWorkflowStateRepository
     {
         foreach (var (table, name, primary, columns) in new (string, string?, bool, string[])[]
         {
+            ("dbo.IxIFlowTemplateVersions", null, true, ["Key", "Version"]),
             ("dbo.IxIFlowPackages", null, true, ["Id", "Version"]),
             ("dbo.IxIFlowInstalledPackages", null, true, ["Id", "Version", "Fingerprint"]),
             ("dbo.IxIFlowPackageActivities", null, true, ["PackageId", "PackageVersion", "Key"]),

@@ -93,6 +93,26 @@ public sealed partial class SqlWorkflowStateRepository
         );
         CREATE INDEX ix_workflow_versions_revision ON dbo.IxIFlowWorkflowVersions (CatalogRevision);
                 CREATE INDEX ix_workflow_versions_category ON dbo.IxIFlowWorkflowVersions (Category, Name);
+        CREATE TABLE dbo.IxIFlowTemplateVersions (
+            [Key] nvarchar(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Version] int NOT NULL,
+            [Engine] nvarchar(50) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Format] varchar(10) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [ModelType] nvarchar(max) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [ModelTypeId] nvarchar(max) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [ModelPackagesJson] nvarchar(max) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [CulturesJson] nvarchar(max) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [DisplayName] nvarchar(200) COLLATE Latin1_General_100_BIN2 NULL,
+            [Description] nvarchar(max) COLLATE Latin1_General_100_BIN2 NULL,
+            [SearchText] nvarchar(400) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [PublishedDraftGeneration] uniqueidentifier NULL,
+            [PublishedDraftRevision] bigint NULL,
+            [PublishedAtUtc] datetime2 NOT NULL,
+            [PublishedBy] nvarchar(200) COLLATE Latin1_General_100_BIN2 NULL,
+            [MetadataJson] nvarchar(max) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [CatalogRevision] bigint NOT NULL,
+            PRIMARY KEY ([Key], [Version])
+        );
         CREATE TABLE dbo.IxIFlowPackages (
             Id NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,
             Version NVARCHAR(100) COLLATE Latin1_General_100_BIN2 NOT NULL,

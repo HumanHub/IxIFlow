@@ -38,6 +38,15 @@ public static class ActivityDescriptorRules
     public static void Validate(ActivityDescriptor descriptor)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
+        try
+        {
+            foreach (var value in new[] { descriptor.Key, descriptor.Version, descriptor.Name, descriptor.Category,
+                         descriptor.Description, descriptor.Icon, descriptor.Designer, descriptor.PackageId, descriptor.PackageVersion,
+                         descriptor.MetadataTypeName, descriptor.CSharpTypeName })
+                WorkflowCatalogRules.ValidateText(value);
+        }
+        catch (ArgumentException error)
+        { throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "Invalid activity descriptor text", error); }
         if (string.IsNullOrWhiteSpace(descriptor.Key) || descriptor.Key != descriptor.Key.Trim() || descriptor.Key.Length > 100 ||
             string.IsNullOrWhiteSpace(descriptor.Version) || descriptor.Version.Length > 50 ||
             string.IsNullOrWhiteSpace(descriptor.Name) || descriptor.Name.Length > 200 ||

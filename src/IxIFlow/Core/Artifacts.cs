@@ -20,7 +20,7 @@ public readonly record struct ArtifactDigest
         new("sha256:" + Convert.ToHexStringLower(SHA256.HashData(bytes)));
 }
 
-public enum ArtifactKind { Bundle, Package, Template }
+public enum ArtifactKind { Bundle, Package }
 
 public interface IArtifactStore
 {

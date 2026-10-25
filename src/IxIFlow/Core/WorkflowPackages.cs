@@ -24,7 +24,10 @@ public enum WorkflowPackageOrigin { Resolved, Uploaded, Published }
 public enum PackageExtraction { Indexed, Pending, Unloadable }
 public sealed record WorkflowPackageReference(string Id, string Version, ArtifactDigest Digest);
 public sealed record PackageActivities(IReadOnlyList<ActivityDescriptor> Activities, PackageExtraction Extraction,
-    string? Detail, IReadOnlyList<WorkflowPackageReference>? Closure, IReadOnlyList<string> MissingPackageIds);
+    string? Detail, IReadOnlyList<WorkflowPackageReference>? Closure, IReadOnlyList<string> MissingPackageIds)
+{
+    public string? Detail { get; init => field = WorkflowCatalogRules.ValidateText(value); } = WorkflowCatalogRules.ValidateText(Detail);
+}
 public sealed record PackageRegistration(WorkflowPackage Stored, PackageActivities Activities, bool Created);
 
 public sealed record WorkflowPackageDependency(string Id, string VersionRange);
@@ -157,6 +160,9 @@ internal static class WorkflowPackageRules
     internal static WorkflowPackage Copy(WorkflowPackage package) => JsonSerializer.Deserialize<WorkflowPackage>(JsonSerializer.Serialize(package))!;
     internal static void Validate(WorkflowPackage package)
     {
+        WorkflowPublicationRules.Actor(package.RegisteredBy);
+        WorkflowPublicationRules.Actor(package.PublishedBy);
+        WorkflowPublicationRules.Actor(package.WithdrawnBy);
         if (!Enum.IsDefined(package.Origin) || !ValidId(package.Id) || package.Id != package.Id.ToLowerInvariant() ||
             !CanonicalVersion(package.Version) || package.Entries == null || package.Entries.Count == 0 || package.DependencyGroups == null ||
             package.DependencyGroups.Any(group => group == null || string.IsNullOrWhiteSpace(group.Framework) || group.Dependencies == null ||

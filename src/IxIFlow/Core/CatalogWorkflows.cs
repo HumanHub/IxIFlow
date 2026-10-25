@@ -4,7 +4,12 @@ using System.Text.Json;
 namespace IxIFlow.Core;
 
 public sealed record CatalogWorkflowQuery(CatalogScope Scope, string? Text = null, string? Tag = null,
-    string? Category = null, WorkflowVersionState? State = null, string? After = null, int Limit = 100);
+    string? Category = null, WorkflowVersionState? State = null, string? After = null, int Limit = 100)
+{
+    public string? Text { get; init => field = WorkflowCatalogRules.ValidateText(value); } = WorkflowCatalogRules.ValidateText(Text);
+    public string? Tag { get; init => field = WorkflowCatalogRules.ValidateText(value); } = WorkflowCatalogRules.ValidateText(Tag);
+    public string? Category { get; init => field = WorkflowCatalogRules.ValidateText(value); } = WorkflowCatalogRules.ValidateText(Category);
+}
 public sealed record CatalogWorkflow(string Name, string DisplayName, string? Category, IReadOnlyList<string> Tags,
     string? Icon, int? LatestPublishedVersion, int VersionCount);
 public sealed record CatalogWorkflowVersion(string Name, int Version, WorkflowVersionState State, string StructureHash,
@@ -31,7 +36,7 @@ internal static class CatalogWorkflowRules
         if (query.State is { } state && !Enum.IsDefined(state)) throw new ArgumentException("Invalid workflow state");
         if (query.Tag is { } tag && !System.Text.RegularExpressions.Regex.IsMatch(tag, @"\A[\w.-]{1,50}\z"))
             throw new ArgumentException("Invalid workflow tag");
-        if (query.Category is { } category) { WorkflowCatalogRules.ValidateUtf16(category); ArgumentOutOfRangeException.ThrowIfGreaterThan(category.Length, 100); }
+        if (query.Category is { } category) { WorkflowCatalogRules.ValidateText(category); ArgumentOutOfRangeException.ThrowIfGreaterThan(category.Length, 100); }
         return CatalogPaging.Hash(new { query.Scope.Hash, Text = CatalogActivityRules.Text(query.Text), query.Tag, query.Category, query.State });
     }
     internal static int? AfterVersion(string[]? after) => after == null ? null :

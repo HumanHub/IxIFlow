@@ -35,8 +35,9 @@ public sealed record WorkflowDescriptor(string DisplayName, string? Description,
                 throw Invalid("Workflow tags must contain 1 to 50 word, dot or hyphen characters");
         if (!descriptor.Tags.SequenceEqual(descriptor.Tags.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)) || TagProjection(descriptor).Length > 400)
             throw Invalid("Workflow tags must be unique, sorted and fit within 400 characters");
-        foreach (var value in new[] { descriptor.DisplayName, descriptor.Description, descriptor.Icon, descriptor.Category }.OfType<string>())
-            WorkflowCatalogRules.ValidateUtf16(value);
+        foreach (var value in new[] { descriptor.DisplayName, descriptor.Description, descriptor.Icon, descriptor.Category,
+                     descriptor.DataType, descriptor.DataTypeName }.Concat(descriptor.Tags).OfType<string>())
+            WorkflowCatalogRules.ValidateText(value);
         if (!WorkflowTypeIdentity.IsSavedName(descriptor.DataType) || WorkflowTypeIdentity.CSharpName(descriptor.DataType) != descriptor.DataTypeName)
             throw Invalid("Workflow descriptor requires matching saved and C# data type names");
     }

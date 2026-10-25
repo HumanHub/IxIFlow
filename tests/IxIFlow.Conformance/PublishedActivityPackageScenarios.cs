@@ -121,7 +121,8 @@ public sealed class PublishedActivityPackageScenarios
         var fixture = ActivityPackageFixture.Create();
         await publisher.UploadPackageAsync(new MemoryStream(fixture.Activity));
         await publisher.UploadPackageAsync(new MemoryStream(fixture.Dependency));
-        var abandoned = await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.orphan", "1.0.0", new())));
+        var abandoned = await files.PutAsync(ArtifactKind.Package,
+            new MemoryStream(ActivityPackageFixture.Package("fixture.orphan", "1.0.0", new())));
         var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", 1, "workflow", ActivityPackageFixture.Yaml()), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
@@ -129,7 +130,7 @@ public sealed class PublishedActivityPackageScenarios
         var packages = JsonSerializer.Deserialize<WorkflowBundleManifest>(version.ManifestJson!)!.ActivityPackages;
         foreach (var file in Directory.EnumerateFiles(root, "*.artifact")) File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddDays(-100));
         Assert.Equal(1, await store.PurgeArtifactsAsync(files, TimeSpan.FromDays(90), 100));
-        Assert.False(await files.ExistsAsync(abandoned.Digest));
+        Assert.False(await files.ExistsAsync(abandoned));
         foreach (var pin in packages) Assert.True(await files.ExistsAsync(pin.Digest));
         await store.SeedAsync(new WorkflowInstance
         {

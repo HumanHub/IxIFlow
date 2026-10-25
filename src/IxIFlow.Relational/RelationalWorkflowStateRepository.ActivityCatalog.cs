@@ -83,6 +83,8 @@ public abstract partial class RelationalWorkflowStateRepository
     private Task<CatalogPage<CatalogActivity>> ActivityPageAsync(CatalogActivityQuery query, string? activityKey, string? packageVersion)
     {
         ArgumentNullException.ThrowIfNull(query.Scope);
+        WorkflowCatalogRules.ValidateText(activityKey);
+        WorkflowCatalogRules.ValidateText(packageVersion);
         var text = CatalogActivityRules.Text(query.Text);
         var id = query.PackageId == null ? null : WorkflowPackageRules.NormalizeId(query.PackageId);
         if (query.Origin is { } origin && !Enum.IsDefined(origin)) throw new ArgumentException("Invalid activity origin");
@@ -132,6 +134,8 @@ public abstract partial class RelationalWorkflowStateRepository
 
     public async Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope)
     {
+        WorkflowCatalogRules.ValidateText(key);
+        WorkflowCatalogRules.ValidateText(version);
         provider = provider with { PackageId = WorkflowPackageRules.NormalizeId(provider.PackageId) };
         if (!scope.Allows(WorkflowDraftKinds.Activity, key) || !scope.Allows("package", provider.PackageId)) return null;
         var row = await CatalogWriteAsync(async (connection, transaction) =>
@@ -215,6 +219,7 @@ public abstract partial class RelationalWorkflowStateRepository
 
     public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope)
     {
+        WorkflowCatalogRules.ValidateText(version);
         id = WorkflowPackageRules.NormalizeId(id);
         if (!scope.Allows("package", id)) return Task.FromResult<CatalogPackageDetail?>(null);
         return CatalogWriteAsync<CatalogPackageDetail?>(async (connection, transaction) =>

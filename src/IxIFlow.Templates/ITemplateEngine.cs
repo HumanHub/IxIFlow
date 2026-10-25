@@ -22,6 +22,6 @@ public interface ITemplateEngine
     /// Renders <paramref name="template"/> against <paramref name="model"/>, formatting values for
     /// <paramref name="culture"/>. Throws <see cref="TemplateRenderException"/> when the template cannot be rendered.
     /// </summary>
-    ValueTask<string> RenderAsync<TModel>(TemplateSource template, TModel model, CultureInfo culture,
+    ValueTask<string> RenderAsync(TemplateSource template, object model, Type modelType, CultureInfo culture,
         CancellationToken cancellationToken = default);
 }

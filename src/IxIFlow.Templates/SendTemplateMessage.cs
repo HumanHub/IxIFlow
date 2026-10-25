@@ -12,6 +12,7 @@ namespace IxIFlow.Templates;
 /// different for every other step, loop iteration or branch. The sender uses it as its idempotency key, so a send that
 /// a crash interrupted is sent again on recovery and delivered once.
 /// </summary>
+[WorkflowActivity("ixiflow.templates.send-message", Version = "1.0", Name = "Send template message", Category = "Templates", Icon = "send")]
 public sealed class SendTemplateMessage : IRecoverableActivity<TemplateMessageRecovery>
 {
     /// <summary>The channel the application sends through, such as <c>email</c> or <c>sms</c>.</summary>
@@ -31,7 +32,7 @@ public sealed class SendTemplateMessage : IRecoverableActivity<TemplateMessageRe
     public RenderedTemplate Body { get; set; } = null!;
 
     /// <summary>The ID the message was sent with.</summary>
-    [ActivityOutput]
+    [ActivityOutput, Display(Name = "Message ID")]
     public string? MessageId { get; private set; }
 
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)

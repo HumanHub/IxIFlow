@@ -119,6 +119,7 @@ public abstract partial class RelationalWorkflowStateRepository
 
     private Task<PackageRegistration> AcceptPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor, bool completion)
     {
+        WorkflowPackageRules.Validate(package);
         package = WorkflowPackageRules.Copy(package);
         activities = PackageIndexRules.Snapshot(package, activities);
         return CatalogWriteAsync(async (connection, transaction) =>
@@ -184,6 +185,7 @@ public abstract partial class RelationalWorkflowStateRepository
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, 1000);
+        WorkflowCatalogRules.ValidateText(afterIdentity);
         if (!Enum.IsDefined(extraction)) throw new ArgumentException("Invalid extraction state");
         return CatalogConnectionAsync<IReadOnlyList<WorkflowPackage>>(async (connection, transaction) =>
         {
@@ -196,6 +198,7 @@ public abstract partial class RelationalWorkflowStateRepository
 
     public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit)
     {
+        WorkflowCatalogRules.ValidateText(afterIdentity);
         missingPackageId = WorkflowPackageRules.NormalizeId(missingPackageId);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, 1000);

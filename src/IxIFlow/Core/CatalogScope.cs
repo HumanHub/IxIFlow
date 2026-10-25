@@ -34,7 +34,7 @@ public sealed record CatalogScope
             return Array.AsReadOnly(values.Select(value =>
             {
                 ArgumentException.ThrowIfNullOrWhiteSpace(value);
-                WorkflowCatalogRules.ValidateUtf16(value);
+                WorkflowCatalogRules.ValidateText(value);
                 value = value.Trim();
                 ArgumentOutOfRangeException.ThrowIfGreaterThan(value.Length, max);
                 return lower ? value.ToLowerInvariant() : value;
@@ -98,6 +98,7 @@ internal static class CatalogPaging
             var cursor = JsonSerializer.Deserialize<Cursor>(Convert.FromBase64String(after));
             if (cursor is not { Version: 1 } || cursor.Filter != filter || cursor.Key == null || cursor.Key.Length != keyCount || cursor.Key.Any(string.IsNullOrEmpty))
                 throw new FormatException();
+            foreach (var key in cursor.Key) WorkflowCatalogRules.ValidateText(key);
             return cursor.Key;
         }
         catch (Exception error) when (error is FormatException or JsonException)

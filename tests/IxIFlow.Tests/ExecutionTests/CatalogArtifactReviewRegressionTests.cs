@@ -325,12 +325,12 @@ public sealed class CatalogArtifactReviewRegressionTests
             {
                 var references = new List<ArtifactDigest>();
                 for (var i = 0; i < 128; i++)
-                    references.Add(await store.PutAsync(ArtifactKind.Template, new MemoryStream(BitConverter.GetBytes(i))));
+                    references.Add(await store.PutAsync(ArtifactKind.Package, new MemoryStream(BitConverter.GetBytes(i))));
                 await store.RegisterWorkflowVersionAsync(new(name, 1, "referenced", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactReferences: references, Invocations: []));
                 await age();
                 var orphans = new List<ArtifactDigest>();
                 for (var i = 128; i < 133; i++)
-                    orphans.Add(await store.PutAsync(ArtifactKind.Template, new MemoryStream(BitConverter.GetBytes(i))));
+                    orphans.Add(await store.PutAsync(ArtifactKind.Package, new MemoryStream(BitConverter.GetBytes(i))));
                 await age();
                 Assert.Equal(2, await store.PurgeArtifactsAsync(store, TimeSpan.FromDays(90), 2));
                 Assert.Equal(2, await store.PurgeArtifactsAsync(store, TimeSpan.FromDays(90), 2));
@@ -547,6 +547,11 @@ public sealed class CatalogArtifactReviewRegressionTests
     public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => inner.GetPackageDetailAsync(id, version, scope);
     public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => inner.GetPackageActivitiesAsync(id, version, query);
     public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => inner.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit);
+    public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => inner.RegisterTemplateVersionAsync(version, artifacts, actor);
+    public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version) => inner.GetTemplateVersionAsync(key, version);
+    public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => inner.GetTemplateVersionsAsync(key);
+    public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
+    public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => inner.GetPackageHoldersAsync(id, version, scope);
     public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.RegisterPackageAsync(package, activities, artifacts, actor);
     public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
     public IArtifactStore? CatalogArtifacts { get => inner.CatalogArtifacts; set => inner.CatalogArtifacts = value; }

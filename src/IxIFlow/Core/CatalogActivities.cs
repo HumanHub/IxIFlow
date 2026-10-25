@@ -2,12 +2,25 @@ namespace IxIFlow.Core;
 
 public enum ActivityOrigin { Resolved, Uploaded, Published, Local }
 public sealed record ActivityProvider(string PackageId, string PackageVersion, ActivityOrigin Origin, string Build);
-public sealed record ActivityProviderSelector(string PackageId, string PackageVersion, string Build);
+public sealed record ActivityProviderSelector(string PackageId, string PackageVersion, string Build)
+{
+    public string PackageId { get; init => field = WorkflowCatalogRules.ValidateText(value)!; } = WorkflowCatalogRules.ValidateText(PackageId)!;
+    public string PackageVersion { get; init => field = WorkflowCatalogRules.ValidateText(value)!; } = WorkflowCatalogRules.ValidateText(PackageVersion)!;
+    public string Build { get; init => field = WorkflowCatalogRules.ValidateText(value)!; } = WorkflowCatalogRules.ValidateText(Build)!;
+}
 public sealed record CatalogActivityQuery(CatalogScope Scope, string? Text = null, string? Category = null,
     string? PackageId = null, ActivityOrigin? Origin = null, bool? Withdrawn = null,
-    bool? ArtifactPresent = null, string? After = null, int Limit = 100);
+    bool? ArtifactPresent = null, string? After = null, int Limit = 100)
+{
+    public string? Text { get; init => field = WorkflowCatalogRules.ValidateText(value); } = WorkflowCatalogRules.ValidateText(Text);
+    public string? Category { get; init => field = WorkflowCatalogRules.ValidateText(value); } = WorkflowCatalogRules.ValidateText(Category);
+    public string? PackageId { get; init => field = WorkflowCatalogRules.ValidateText(value); } = WorkflowCatalogRules.ValidateText(PackageId);
+}
 public sealed record CatalogPackageQuery(CatalogScope Scope, string? Text = null, WorkflowPackageOrigin? Origin = null,
-    bool? Withdrawn = null, bool? ArtifactPresent = null, string? After = null, int Limit = 100);
+    bool? Withdrawn = null, bool? ArtifactPresent = null, string? After = null, int Limit = 100)
+{
+    public string? Text { get; init => field = WorkflowCatalogRules.ValidateText(value); } = WorkflowCatalogRules.ValidateText(Text);
+}
 public sealed record CatalogActivity(ActivityDescriptor Descriptor, ActivityProvider Provider, bool Withdrawn, bool ArtifactPresent);
 public sealed record CatalogActivityDetail(CatalogActivity Activity, IReadOnlyList<CatalogHost> Hosts);
 public sealed record CatalogPackage(string Id, string Version, ArtifactDigest Digest, WorkflowPackageOrigin Origin,
@@ -20,6 +33,8 @@ internal static class CatalogActivityRules
 {
     internal static string Search(string key, string name)
     {
+        WorkflowCatalogRules.ValidateText(key);
+        WorkflowCatalogRules.ValidateText(name);
         var value = (key + " " + name).ToLowerInvariant();
         if (value.Length <= 400) return value;
         var length = char.IsHighSurrogate(value[399]) && char.IsLowSurrogate(value[400]) ? 399 : 400;
@@ -28,7 +43,7 @@ internal static class CatalogActivityRules
     internal static string? Text(string? text)
     {
         if (text == null) return null;
-        WorkflowCatalogRules.ValidateUtf16(text);
+        WorkflowCatalogRules.ValidateText(text);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(text.Length, 400);
         return text.Trim().ToLowerInvariant();
     }

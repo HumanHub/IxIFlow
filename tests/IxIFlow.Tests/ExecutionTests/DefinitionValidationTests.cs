@@ -212,6 +212,11 @@ public sealed class DefinitionValidationTests
     public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => _catalog.GetPackageDetailAsync(id, version, scope);
     public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => _catalog.GetPackageActivitiesAsync(id, version, query);
     public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => _catalog.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit);
+    public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => _catalog.RegisterTemplateVersionAsync(version, artifacts, actor);
+    public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version) => _catalog.GetTemplateVersionAsync(key, version);
+    public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => _catalog.GetTemplateVersionsAsync(key);
+    public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => _catalog.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
+    public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => _catalog.GetPackageHoldersAsync(id, version, scope);
     public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _catalog.RegisterPackageAsync(package, activities, artifacts, actor);
     public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _catalog.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
     public IArtifactStore? CatalogArtifacts { get => _catalog.CatalogArtifacts; set => _catalog.CatalogArtifacts = value; }

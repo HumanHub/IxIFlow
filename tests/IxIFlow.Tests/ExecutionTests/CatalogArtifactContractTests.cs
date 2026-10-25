@@ -308,7 +308,7 @@ public sealed class CatalogArtifactContractTests
                 await catalog.RegisterWorkflowAsync(Definition("Persistent catalog", 9));
                 await catalog.SetWorkflowVersionStateAsync("Persistent catalog", 9, WorkflowVersionState.Deprecated, new CatalogMutationToken((await catalog.GetWorkflowVersionAsync("Persistent catalog", 9))!.LifecycleRevision));
                 draft = await catalog.SaveDefinitionAsync(new("Draft", 2, "workflow", "yaml"), null);
-                digest = await first.PutAsync(ArtifactKind.Template, new MemoryStream([42]));
+                digest = await first.PutAsync(ArtifactKind.Package, new MemoryStream([42]));
             }
             await using var second = new SqliteWorkflowStateRepository(cs);
             var reopened = new WorkflowCatalog(second);
@@ -366,7 +366,7 @@ public sealed class CatalogArtifactContractTests
         Assert.False(await artifacts.ExistsAsync(digest));
         Assert.Null(await artifacts.OpenAsync(digest));
         var keep = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream([1, 2, 3]));
-        var indirect = await artifacts.PutAsync(ArtifactKind.Template, new MemoryStream([4, 5, 6]));
+        var indirect = await artifacts.PutAsync(ArtifactKind.Package, new MemoryStream([4, 5, 6]));
         var orphan = await artifacts.PutAsync(ArtifactKind.Package, new MemoryStream([7, 8, 9]));
         await store.RegisterWorkflowVersionAsync(new(name, 1, "artifacts", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: keep, ArtifactReferences: [indirect], Invocations: []), artifacts);
         await store.SetWorkflowVersionStateAsync(name, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(name, 1))!.LifecycleRevision));

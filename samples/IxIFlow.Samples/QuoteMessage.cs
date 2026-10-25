@@ -1,5 +1,6 @@
 using IxIFlow.Builders;
 using IxIFlow.Core;
+using IxIFlow.Extensions;
 using IxIFlow.Templates;
 using IxIFlow.Templates.Liquid;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,15 +19,21 @@ public static class QuoteMessage
 {
     public static void Configure(IServiceCollection services, ITemplateMessageSender sender)
     {
-        services.AddIxIFlowTemplates().AddLiquid();
+        // snippet: template-setup
+        services.AddIxIFlow().AddIxIFlowTemplates().AddLiquid();
+        // end-snippet: template-setup
         services.AddSingleton(sender);
     }
 
-    public static Task PublishAsync(IServiceProvider services) =>
-        services.GetRequiredService<TemplatePublisher>().PublishAsync<QuoteData>(
+    public static async Task PublishAsync(IServiceProvider services)
+    {
+        // snippet: template-publish
+        await services.GetRequiredService<TemplatePublisher>().PublishAsync<QuoteData>(
             TemplateVersion.Create<QuoteData>("quote", 1, "liquid", TemplateFormat.Text,
                 new TemplateVariant("", "Quote for {{ Customer }}"),
                 new TemplateVariant("fr", "Devis pour {{ Customer }}")));
+        // end-snippet: template-publish
+    }
 
     public static WorkflowDefinition Definition() =>
         Workflow.Create<MessageData>("QuoteMessage")

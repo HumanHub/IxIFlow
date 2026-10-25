@@ -139,7 +139,8 @@ public abstract partial class RelationalWorkflowStateRepository
                 return prior;
             var stored = (await connection.QuerySingleOrDefaultAsync<VersionRow>(RequiredSql(Statement.CatalogVersion), draftId, transaction))?.Value;
             var draft = await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition), draftId, transaction);
-            var canStart = draft?.Value.Id == draftId || stored?.PublishedDraft == draftId;
+            var canStart = draft?.Value.Id == draftId || stored?.PublishedDraft == draftId ||
+                draftId.Kind == WorkflowDraftKinds.Template && (await ReadTemplateAsync(connection, transaction, draftId.Name, draftId.Version))?.PublishedDraft == draftId;
             if (!canStart && prior?.State is not (WorkflowPublicationState.Running or WorkflowPublicationState.Abandoned))
                 throw new CatalogPreconditionException("The definition identity changed");
             if (!canStart && prior?.State == WorkflowPublicationState.Abandoned) return prior;
@@ -183,7 +184,8 @@ public abstract partial class RelationalWorkflowStateRepository
         var row = await OwnedPublicationAsync(connection, transaction, id, hostId)
             ?? throw new CatalogPreconditionException("The publication attempt is no longer owned by this host");
         var stored = (await connection.QuerySingleOrDefaultAsync<VersionRow>(RequiredSql(Statement.CatalogVersion), row.Draft, transaction))?.Value;
-        outcome = WorkflowPublicationRules.Outcome(row.Draft, outcome, stored);
+        outcome = WorkflowPublicationRules.Outcome(row.Draft, outcome, stored,
+            row.Draft.Kind == WorkflowDraftKinds.Template ? await ReadTemplateAsync(connection, transaction, row.Draft.Name, row.Draft.Version) : null);
         var revision = await AdvanceCatalogRevisionAsync(connection, transaction);
         var saved = row with { State = outcome.Receipt == null ? WorkflowPublicationState.Failed : WorkflowPublicationState.Published,
             FinishedAtUtc = await OutboxNowAsync(connection, transaction), Outcome = outcome };

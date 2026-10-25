@@ -45,6 +45,9 @@ internal static class MemberRegistry
         if (!Enum.IsDefined(member.Kind)) throw new ArgumentOutOfRangeException(nameof(member.Kind));
         ArgumentException.ThrowIfNullOrWhiteSpace(member.Name);
         ArgumentException.ThrowIfNullOrWhiteSpace(member.EngineVersion);
+        WorkflowCatalogRules.ValidateText(member.Name);
+        WorkflowCatalogRules.ValidateText(member.EngineVersion);
+        WorkflowCatalogRules.ValidateText(member.Endpoint);
         if (member.Name.Length > 200 || member.EngineVersion.Length > 100 || member.Endpoint?.Length > 2048)
             throw new ArgumentException("Member names, engine versions and endpoints are limited to 200, 100 and 2048 characters");
         if (member.Slots < 0 || member.Kind == MemberKind.Host && member.Slots == 0)

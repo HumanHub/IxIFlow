@@ -39,7 +39,7 @@ These are the package projects in `src/`. All runtime packages target .NET 10.
 | `IxIFlow.Coordinator` | Stateless matching, host discovery and authenticated coordinator links |
 | `IxIFlow.AspNetCore` | Authorized incoming HTTP triggers, CloudEvents and management endpoints |
 | `IxIFlow.Webhooks` | Outgoing signed webhook delivery of outbox events |
-| `IxIFlow.Templates` | Versioned template store, publisher, renderer and message activities |
+| `IxIFlow.Templates` | [Durable template publishing, rendering and message activities](src/IxIFlow.Templates/README.md) using the selected workflow store |
 | `IxIFlow.Templates.Liquid` | Liquid engine using Fluid |
 
 `IxIFlow.Generators`, `IxIFlow.Analyzers` and `IxIFlow.Analyzers.CodeFixes` are build-time projects targeting `netstandard2.0`, bundled in `IxIFlow`; they are not separate packable projects.

@@ -42,7 +42,7 @@ public sealed class CatalogArtifactSecondRoundTests
     {
         var name = "Separate-" + Guid.NewGuid().ToString("N");
         var referenced = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream(Guid.NewGuid().ToByteArray()));
-        var orphan = await artifacts.PutAsync(ArtifactKind.Template, new MemoryStream(Guid.NewGuid().ToByteArray()));
+        var orphan = await artifacts.PutAsync(ArtifactKind.Package, new MemoryStream(Guid.NewGuid().ToByteArray()));
         await catalog.RegisterWorkflowVersionAsync(new(name, 1, "separate", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: referenced, Invocations: []), artifacts);
         await using (var connection = connect())
         {
@@ -127,7 +127,7 @@ public sealed class CatalogArtifactSecondRoundTests
             var draft = await inner.GetDefinitionAsync("workflow", name, 99);
             var saved = await inner.SaveDefinitionAsync(new(name, 99, "workflow", "probe"), draft?.Id);
             Assert.Equal(saved, await inner.GetDefinitionAsync("workflow", name, 99));
-            var scratch = await inner.PutAsync(ArtifactKind.Template, new MemoryStream(Guid.NewGuid().ToByteArray()), cancellationToken);
+            var scratch = await inner.PutAsync(ArtifactKind.Package, new MemoryStream(Guid.NewGuid().ToByteArray()), cancellationToken);
             await inner.DeleteAsync(scratch, cancellationToken);
             Assert.False(await inner.ExistsAsync(scratch, cancellationToken));
             Assert.Equal(0, await inner.PurgeUnreferencedAsync(new HashSet<ArtifactDigest>(), DateTime.UnixEpoch, 1, cancellationToken));
@@ -149,7 +149,7 @@ public sealed class CatalogArtifactSecondRoundTests
             IArtifactStore store = fileSystem ? new FileSystemArtifactStore(folder) : new InMemoryWorkflowStateRepository();
             var digests = new List<ArtifactDigest>();
             for (var i = 0; i < 256; i++)
-                digests.Add(await store.PutAsync(ArtifactKind.Template, new MemoryStream(BitConverter.GetBytes(i))));
+                digests.Add(await store.PutAsync(ArtifactKind.Package, new MemoryStream(BitConverter.GetBytes(i))));
             // All entries are old relative to this cutoff; filesystem timestamps need no sleeps.
             var cutoff = DateTime.UtcNow.AddDays(1);
             var bounded = new ProbedReferences([], count => Assert.Equal(1, count));
@@ -178,7 +178,7 @@ public sealed class CatalogArtifactSecondRoundTests
             IArtifactStore store = fileSystem ? new FileSystemArtifactStore(folder) : new InMemoryWorkflowStateRepository();
             var references = new HashSet<ArtifactDigest>();
             for (var i = 0; i < 256; i++)
-                references.Add(await store.PutAsync(ArtifactKind.Template, new MemoryStream(BitConverter.GetBytes(i))));
+                references.Add(await store.PutAsync(ArtifactKind.Package, new MemoryStream(BitConverter.GetBytes(i))));
             using var cancellation = new CancellationTokenSource();
             var probed = new ProbedReferences(references, _ => cancellation.Cancel());
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -306,6 +306,11 @@ public sealed class CatalogArtifactSecondRoundTests
     public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => inner.GetPackageDetailAsync(id, version, scope);
     public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => inner.GetPackageActivitiesAsync(id, version, query);
     public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => inner.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit);
+    public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => inner.RegisterTemplateVersionAsync(version, artifacts, actor);
+    public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version) => inner.GetTemplateVersionAsync(key, version);
+    public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => inner.GetTemplateVersionsAsync(key);
+    public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
+    public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => inner.GetPackageHoldersAsync(id, version, scope);
     public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.RegisterPackageAsync(package, activities, artifacts, actor);
     public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
     public IArtifactStore? CatalogArtifacts { get => inner.CatalogArtifacts; set => inner.CatalogArtifacts = value; }

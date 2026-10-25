@@ -1,4 +1,6 @@
 using System.Globalization;
+using IxIFlow.Core;
+using IxIFlow.Core.Runtime;
 
 namespace IxIFlow.Templates;
 
@@ -7,7 +9,7 @@ namespace IxIFlow.Templates;
 /// its parent cultures and then to the base variant, and renders it through the version's engine. Values are
 /// formatted for the culture asked for, even when a parent's variant or the base variant is the one rendered.
 /// </summary>
-public sealed class TemplateRenderer(ITemplateStore store, TemplateEngines engines)
+public sealed class TemplateRenderer(IWorkflowCatalogStore store, TemplateEngines engines)
 {
     /// <param name="template">The version to render.</param>
     /// <param name="model">The model, of the type the version was written against.</param>
@@ -20,10 +22,11 @@ public sealed class TemplateRenderer(ITemplateStore store, TemplateEngines engin
         ArgumentNullException.ThrowIfNull(template);
         if (model is null)
             throw new ArgumentNullException(nameof(model), $"Template {template} needs a model to render");
-        var version = await store.FindAsync(template, cancellationToken)
+        cancellationToken.ThrowIfCancellationRequested();
+        var version = (await store.GetTemplateVersionAsync(template.Key, template.Version))?.Version
                       ?? throw new TemplateNotFoundException($"Template {template} is not published");
         var modelType = TemplateVersion.ModelTypeName(typeof(TModel));
-        if (version.ModelType != modelType)
+        if (version.ModelType != modelType || version.ModelTypeId != WorkflowTypeIdentity.SavedName(typeof(TModel)))
             throw new TemplateNotFoundException(
                 $"Template {template} is written against '{version.ModelType}', and the step renders it with " +
                 $"'{modelType}'");
@@ -32,7 +35,7 @@ public sealed class TemplateRenderer(ITemplateStore store, TemplateEngines engin
             : TemplateVariant.CultureNamed(culture);
         var variant = version.Resolve(formatting);
         var source = TemplateSource.Of(version, variant);
-        var content = await engines.Get(version.Engine).RenderAsync(source, model, formatting, cancellationToken);
+        var content = await engines.Get(version.Engine).RenderAsync(source, model, typeof(TModel), formatting, cancellationToken);
         return new RenderedTemplate(version.Key, version.Version, variant.Culture, version.Format, content);
     }
 }

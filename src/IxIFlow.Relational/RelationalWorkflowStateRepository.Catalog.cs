@@ -121,18 +121,27 @@ public abstract partial class RelationalWorkflowStateRepository
         }
     }
 
-    public async Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) =>
-        await CatalogConnectionAsync<IReadOnlyList<WorkflowPackage>>(async (connection, transaction) =>
+    public async Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null)
+    {
+        WorkflowCatalogRules.ValidateText(id);
+        return await CatalogConnectionAsync<IReadOnlyList<WorkflowPackage>>(async (connection, transaction) =>
             (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackages), new { Id = id?.ToLowerInvariant() }, transaction))
                 .Select(row => row.Value).ToArray());
+    }
 
-    public async Task<WorkflowPackage?> GetPackageAsync(string id, string version) =>
-        await CatalogConnectionAsync(async (connection, transaction) =>
+    public async Task<WorkflowPackage?> GetPackageAsync(string id, string version)
+    {
+        WorkflowCatalogRules.ValidateText(id);
+        WorkflowCatalogRules.ValidateText(version);
+        return await CatalogConnectionAsync(async (connection, transaction) =>
             (await connection.QuerySingleOrDefaultAsync<PackageRow>(RequiredSql(Statement.CatalogPackage),
                 new { Id = id.ToLowerInvariant(), Version = version }, transaction))?.Value);
+    }
 
     public async Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit)
     {
+        WorkflowCatalogRules.ValidateText(id);
+        WorkflowCatalogRules.ValidateText(afterVersion);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(limit);
         return await CatalogConnectionAsync<IReadOnlyList<WorkflowPackage>>(async (connection, transaction) =>
             (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackagePage),
@@ -202,6 +211,8 @@ public abstract partial class RelationalWorkflowStateRepository
         WorkflowPublicationRules.Save(definition, expected, actor);
         return CatalogWriteAsync(async (connection, transaction) =>
         {
+            if (definition.Kind == WorkflowDraftKinds.Template && await ReadTemplateAsync(connection, transaction, definition.Name, definition.Version) != null)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A published identity cannot be edited");
             if (definition.Kind == WorkflowDraftKinds.Workflow && await connection.QuerySingleOrDefaultAsync<VersionRow>(RequiredSql(Statement.CatalogVersion),
                 new { definition.Name, definition.Version }, transaction) != null)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A published identity cannot be edited");
@@ -487,7 +498,8 @@ public abstract partial class RelationalWorkflowStateRepository
             {
                 var references = WorkflowCatalogRules.RetentionReferences(await ReadVersionsAsync(connection, transaction),
                     (await connection.QueryAsync<string>(RequiredSql(Statement.CatalogInstanceDigests), transaction: transaction)).Select(value => new ArtifactDigest(value)).ToArray(),
-                    (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackages), new { Id = (string?)null }, transaction)).Select(row => row.Value).ToArray(), prepared);
+                    (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackages), new { Id = (string?)null }, transaction)).Select(row => row.Value).ToArray(), prepared,
+                    await ReadTemplatesAsync(connection, transaction));
                 if (references == null) return null;
                 var cutoff = await OutboxNowAsync(connection, transaction) - retention;
                 return await artifacts.PurgeUnreferencedAsync(references, cutoff, batchSize, cancellationToken);

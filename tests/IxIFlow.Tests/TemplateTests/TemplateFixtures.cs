@@ -17,10 +17,10 @@ public static class TemplateFixtures
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddIxIFlow();
+        var builder = services.AddIxIFlow();
         if (store != null)
             services.Replace(ServiceDescriptor.Singleton(store));
-        var templates = services.AddIxIFlowTemplates();
+        var templates = builder.AddIxIFlowTemplates();
         if (engine != null)
             services.AddSingleton(engine);
         else
@@ -114,11 +114,11 @@ public static class TemplateFixtures
             CancellationToken cancellationToken = default) =>
             _inner.ValidateAsync(template, modelType, cancellationToken);
 
-        public ValueTask<string> RenderAsync<TModel>(TemplateSource template, TModel model, CultureInfo culture,
+        public ValueTask<string> RenderAsync(TemplateSource template, object model, Type modelType, CultureInfo culture,
             CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref _renders);
-            return _inner.RenderAsync(template, model, culture, cancellationToken);
+            return _inner.RenderAsync(template, model, modelType, culture, cancellationToken);
         }
     }
 

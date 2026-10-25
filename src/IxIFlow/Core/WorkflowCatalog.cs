@@ -93,6 +93,11 @@ public interface IWorkflowCatalogStore
     Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query);
     Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope);
     Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query);
+    Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null);
+    Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version);
+    Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null);
+    Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null);
+    Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope);
     Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null);
     Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null);
     Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit);
@@ -272,6 +277,11 @@ public sealed partial class WorkflowCatalog : IWorkflowCatalog, IDisposable
     public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => _store.GetPackageDetailAsync(id, version, scope);
     public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => _store.GetPackageActivitiesAsync(id, version, query);
     public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => _store.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit);
+    public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => _store.RegisterTemplateVersionAsync(version, artifacts, actor);
+    public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version) => _store.GetTemplateVersionAsync(key, version);
+    public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => _store.GetTemplateVersionsAsync(key);
+    public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => _store.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
+    public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => _store.GetPackageHoldersAsync(id, version, scope);
     public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _store.RegisterPackageAsync(package, activities, artifacts, actor);
     public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _store.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
     public IArtifactStore? CatalogArtifacts { get => _store.CatalogArtifacts; set => _store.CatalogArtifacts = value; }
@@ -419,20 +429,25 @@ internal static class WorkflowCatalogRules
     public static void ValidateNameWhitespace(string name)
     {
         ArgumentNullException.ThrowIfNull(name);
-        ValidateUtf16(name);
+        ValidateText(name);
         if (name.Length != name.Trim().Length)
             throw new ArgumentException("A workflow name cannot have leading or trailing whitespace", nameof(name));
     }
 
-    internal static void ValidateUtf16(string value)
+    // Variant content is JSON-escaped; every raw projection and query uses the default rule.
+    internal static string? ValidateText(string? value, bool allowNul = false)
     {
+        if (value == null) return null;
         for (var i = 0; i < value.Length; i++)
         {
+            if (value[i] == '\0' && !allowNul)
+                throw new ArgumentException("Catalog text cannot contain U+0000", nameof(value));
             if (!char.IsSurrogate(value[i])) continue;
             if (!char.IsHighSurrogate(value[i]) || i + 1 == value.Length || !char.IsLowSurrogate(value[i + 1]))
-                throw new ArgumentException("Catalog names and prefixes must contain well-formed UTF-16", nameof(value));
+                throw new ArgumentException("Catalog text must contain well-formed UTF-16", nameof(value));
             i++;
         }
+        return value;
     }
 
     public static async Task CheckArtifactsAsync(WorkflowVersion row, IArtifactStore artifacts)
@@ -449,6 +464,10 @@ internal static class WorkflowCatalogRules
         WorkflowDescriptor.Validate(row.Descriptor);
         ArgumentOutOfRangeException.ThrowIfLessThan(row.Version, 1);
         ArgumentException.ThrowIfNullOrWhiteSpace(row.StructureHash);
+        ValidateText(row.StructureHash);
+        WorkflowPublicationRules.Actor(row.PublishedBy);
+        WorkflowPublicationRules.Actor(row.StateChangedBy);
+        ValidateText(row.ManifestJson);
         try
         {
             var contract = WorkflowContract.Parse(row.ContractJson);
@@ -576,9 +595,12 @@ internal static class WorkflowCatalogRules
     // asks the caller to retry preparation outside the lock; no artifact I/O happens here.
     internal static IReadOnlySet<ArtifactDigest>? RetentionReferences(IReadOnlyList<WorkflowVersion> versions,
         IReadOnlyList<ArtifactDigest> instancePins, IReadOnlyList<WorkflowPackage> packages,
-        IReadOnlyDictionary<ArtifactDigest, OrphanPin> prepared)
+        IReadOnlyDictionary<ArtifactDigest, OrphanPin> prepared, IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry> templates)
     {
         var references = ArtifactReferences(versions).Concat(instancePins).ToHashSet();
+        references.UnionWith(templates.SelectMany(row => row.Version.ModelPackages).Select(row => row.Digest));
+        references.UnionWith(packages.Where(row => row.Origin is WorkflowPackageOrigin.Uploaded or WorkflowPackageOrigin.Published)
+            .SelectMany(row => (row.Closure ?? []).Select(pin => pin.Digest).Append(row.Digest)));
         var catalogPins = versions.Where(row => row.ArtifactDigest != null).Select(row => row.ArtifactDigest!.Value).ToHashSet();
         foreach (var digest in instancePins.Distinct().Where(pin => !catalogPins.Contains(pin)))
         {

@@ -30,7 +30,7 @@ public sealed class TemplateEngineTests
         order.Labels["gift"] = "wrapped";
 
         Assert.Empty(await engine.ValidateAsync(template, typeof(Order)));
-        var text = await engine.RenderAsync(template, order, German);
+        var text = await engine.RenderAsync(template, order, typeof(Order), German);
 
         Assert.Equal("ANA: 2 lines, first pen, total 2,5 [1 pen x2] [2 ink x1] wrapped", text);
     }
@@ -42,9 +42,9 @@ public sealed class TemplateEngineTests
         var order = SampleOrder();
         order.Customer.Name = "<script>x</script>";
 
-        var html = await engine.RenderAsync(Source("<b>{{ Customer.Name }}</b>", TemplateFormat.Html), order,
+        var html = await engine.RenderAsync(Source("<b>{{ Customer.Name }}</b>", TemplateFormat.Html), order, typeof(Order),
             CultureInfo.InvariantCulture);
-        var text = await engine.RenderAsync(Source("{{ Customer.Name }}"), order, CultureInfo.InvariantCulture);
+        var text = await engine.RenderAsync(Source("{{ Customer.Name }}"), order, typeof(Order), CultureInfo.InvariantCulture);
 
         Assert.Equal("<b>&lt;script&gt;x&lt;/script&gt;</b>", html);
         Assert.Equal("<script>x</script>", text);
@@ -91,24 +91,24 @@ public sealed class TemplateEngineTests
             "[{{ Extra.Password }}][{{ Extra }}][{% for pair in Extra %}{{ pair[0] }}={{ pair[1] }}{% endfor %}]");
         Assert.Contains(await engine.ValidateAsync(throughObject, typeof(Order)),
             diagnostic => diagnostic.Message.Contains("'Extra' of the model cannot be read"));
-        Assert.Equal("[][][]", await engine.RenderAsync<Order>(throughObject, order, CultureInfo.InvariantCulture));
+        Assert.Equal("[][][]", await engine.RenderAsync(throughObject, order, typeof(Order), CultureInfo.InvariantCulture));
         order.Extra = new Dictionary<string, string> { ["Password"] = "pw" };
-        Assert.Equal("[][][]", await engine.RenderAsync<Order>(throughObject, order, CultureInfo.InvariantCulture));
+        Assert.Equal("[][][]", await engine.RenderAsync(throughObject, order, typeof(Order), CultureInfo.InvariantCulture));
         // Filters that unwrap a value get an object's empty text, not the object.
-        Assert.Equal("[]", await engine.RenderAsync<Order>(Source("[{{ '{0}' | format_string: Customer }}]"), order,
+        Assert.Equal("[]", await engine.RenderAsync(Source("[{{ '{0}' | format_string: Customer }}]"), order, typeof(Order),
             CultureInfo.InvariantCulture));
         // Arithmetic on an object gets zero, as on anything that is not a number.
-        Assert.Equal("1", await engine.RenderAsync<Order>(Source("{{ Customer | plus: 1 }}"), order,
+        Assert.Equal("1", await engine.RenderAsync(Source("{{ Customer | plus: 1 }}"), order, typeof(Order),
             CultureInfo.InvariantCulture));
         // A model of a derived type shows only the members of the type the template was written against, and an
         // object writes no text of its own, so its ToString shows nothing either.
-        Assert.Equal("[A-1][][]", await engine.RenderAsync<Order>(
-            Source("[{{ Number }}][{{ Secret }}][{{ Customer }}]"), order, CultureInfo.InvariantCulture));
+        Assert.Equal("[A-1][][]", await engine.RenderAsync(
+            Source("[{{ Number }}][{{ Secret }}][{{ Customer }}]"), order, typeof(Order), CultureInfo.InvariantCulture));
         // json would serialize the object behind a value, every member of its runtime type included.
         Assert.Contains(await engine.ValidateAsync(Source("{{ Extra | json }}"), typeof(Order)),
             diagnostic => diagnostic.Message.Contains("no filter named 'json'"));
         await Assert.ThrowsAsync<TemplateRenderException>(() =>
-            engine.RenderAsync<Order>(Source("{{ Customer | json }}"), order, CultureInfo.InvariantCulture).AsTask());
+            engine.RenderAsync(Source("{{ Customer | json }}"), order, typeof(Order), CultureInfo.InvariantCulture).AsTask());
     }
 
     [Fact]
@@ -122,7 +122,7 @@ public sealed class TemplateEngineTests
         order.Customer.Name = null!;
 
         Assert.Empty(await engine.ValidateAsync(template, typeof(Order)));
-        Assert.Equal("[][anon][][]", await engine.RenderAsync(template, order, CultureInfo.InvariantCulture));
+        Assert.Equal("[][anon][][]", await engine.RenderAsync(template, order, typeof(Order), CultureInfo.InvariantCulture));
     }
 
     [Fact]
@@ -148,11 +148,11 @@ public sealed class TemplateEngineTests
         // A DateTime is not shifted by the host's time zone, a TimeSpan is a duration, not a date, and a DateOnly is
         // a date in every culture, not text read back by the culture's day and month order.
         const string expected = "2026-01-01 12:00|09:30|08:15 +0200|01:30:00|04.03.|04.03.2026|09:30:00";
-        Assert.Equal(expected, await engine.RenderAsync(template, schedule, CultureInfo.InvariantCulture));
-        Assert.Equal(expected, await engine.RenderAsync(template, schedule, German));
+        Assert.Equal(expected, await engine.RenderAsync(template, schedule, typeof(Schedule), CultureInfo.InvariantCulture));
+        Assert.Equal(expected, await engine.RenderAsync(template, schedule, typeof(Schedule), German));
         // A local time comes back from a checkpoint as another host's local time, so it is refused.
         var local = await Assert.ThrowsAsync<TemplateRenderException>(() =>
-            engine.RenderAsync(Source("{{ Local }}"), schedule, CultureInfo.InvariantCulture).AsTask());
+            engine.RenderAsync(Source("{{ Local }}"), schedule, typeof(Schedule), CultureInfo.InvariantCulture).AsTask());
         Assert.Contains("kind Local", local.Message);
     }
 
@@ -170,7 +170,7 @@ public sealed class TemplateEngineTests
             var order = SampleOrder();
             order.Number = text;
             var error = await Assert.ThrowsAsync<TemplateRenderException>(() =>
-                engine.RenderAsync(Source("{{ Number | format_date: 'yyyy' }}"), order, CultureInfo.InvariantCulture)
+                engine.RenderAsync(Source("{{ Number | format_date: 'yyyy' }}"), order, typeof(Order), CultureInfo.InvariantCulture)
                     .AsTask());
             Assert.Contains("has no clock", error.Message);
         }
@@ -190,8 +190,8 @@ public sealed class TemplateEngineTests
             diagnostic => diagnostic.Message.Contains("'Price' has no member 'Amount'"));
         // It is formatted for the culture asked for, like a number.
         var priced = new Priced { Price = new Money(12.5m, "EUR") };
-        Assert.Equal("12.50 EUR", await engine.RenderAsync(Source("{{ Price }}"), priced, CultureInfo.InvariantCulture));
-        Assert.Equal("12,50 EUR", await engine.RenderAsync(Source("{{ Price }}"), priced, German));
+        Assert.Equal("12.50 EUR", await engine.RenderAsync(Source("{{ Price }}"), priced, typeof(Priced), CultureInfo.InvariantCulture));
+        Assert.Equal("12,50 EUR", await engine.RenderAsync(Source("{{ Price }}"), priced, typeof(Priced), German));
         // Fluid reads by key only a dictionary it can index; a read-only one is a list of pairs to it.
         Assert.Contains(await engine.ValidateAsync(Source("{{ Map.ana.Name }}"), typeof(Priced)),
             diagnostic => diagnostic.Message.Contains("'Map' has no member 'ana'"));
@@ -223,7 +223,7 @@ public sealed class TemplateEngineTests
             diagnostic => diagnostic.Message.Contains("'Value' of pair cannot be read"));
         // A read-only dictionary is a list of pairs, as declared, even when it holds a dictionary, and a pair whose
         // value could be anything shows nothing of it: the one pair in Bag writes only the template's own '='.
-        Assert.Equal("[=][ana:Ana][2]", await engine.RenderAsync(template, directory, CultureInfo.InvariantCulture));
+        Assert.Equal("[=][ana:Ana][2]", await engine.RenderAsync(template, directory, typeof(Directory), CultureInfo.InvariantCulture));
     }
 
     [Fact]
@@ -244,8 +244,8 @@ public sealed class TemplateEngineTests
         CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("sv-SE");
         try
         {
-            Assert.Equal("äz|3|zä", await engine.RenderAsync(template, order, German));
-            Assert.Equal("zä|3|zä", await engine.RenderAsync(template, order, CultureInfo.GetCultureInfo("sv-SE")));
+            Assert.Equal("äz|3|zä", await engine.RenderAsync(template, order, typeof(Order), German));
+            Assert.Equal("zä|3|zä", await engine.RenderAsync(template, order, typeof(Order), CultureInfo.GetCultureInfo("sv-SE")));
         }
         finally
         {
@@ -259,8 +259,8 @@ public sealed class TemplateEngineTests
         var liquid = new LiquidTemplateEngine();
 
         // The same key and version with other content is other text, whatever the engine has already seen.
-        Assert.Equal("one", await liquid.RenderAsync(Source("one"), SampleOrder(), CultureInfo.InvariantCulture));
-        Assert.Equal("two", await liquid.RenderAsync(Source("two"), SampleOrder(), CultureInfo.InvariantCulture));
+        Assert.Equal("one", await liquid.RenderAsync(Source("one"), SampleOrder(), typeof(Order), CultureInfo.InvariantCulture));
+        Assert.Equal("two", await liquid.RenderAsync(Source("two"), SampleOrder(), typeof(Order), CultureInfo.InvariantCulture));
     }
 
     [Fact]

@@ -29,6 +29,8 @@ public partial class InMemoryWorkflowStateRepository
 
     private async Task<CatalogPage<CatalogActivity>> ActivityPageAsync(CatalogActivityQuery query, string? activityKey, string? packageVersion)
     {
+        WorkflowCatalogRules.ValidateText(activityKey);
+        WorkflowCatalogRules.ValidateText(packageVersion);
         var text = CatalogActivityRules.Text(query.Text);
         var id = query.PackageId == null ? null : WorkflowPackageRules.NormalizeId(query.PackageId);
         if (query.Origin is { } origin && !Enum.IsDefined(origin)) throw new ArgumentException("Invalid activity origin");
@@ -55,6 +57,8 @@ public partial class InMemoryWorkflowStateRepository
 
     public async Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope)
     {
+        WorkflowCatalogRules.ValidateText(key);
+        WorkflowCatalogRules.ValidateText(version);
         provider = provider with { PackageId = WorkflowPackageRules.NormalizeId(provider.PackageId) };
         if (!scope.Allows(WorkflowDraftKinds.Activity, key) || !scope.Allows("package", provider.PackageId)) return null;
         var row = ActivitySnapshot(scope).Activities.SingleOrDefault(item => item.Descriptor.Key == key && item.Descriptor.Version == version &&
@@ -104,6 +108,7 @@ public partial class InMemoryWorkflowStateRepository
 
     public async Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope)
     {
+        WorkflowCatalogRules.ValidateText(version);
         id = WorkflowPackageRules.NormalizeId(id);
         if (!scope.Allows("package", id)) return null;
         WorkflowPackage? package;
@@ -125,6 +130,9 @@ internal static class CatalogLocalHosts
     internal static async Task<IReadOnlyList<CatalogHost>> ReadAsync(IWorkflowCatalogStore catalog, IWorkflowStateRepository registry,
         string id, string version, string? build, CatalogScope scope)
     {
+        WorkflowCatalogRules.ValidateText(id);
+        WorkflowCatalogRules.ValidateText(version);
+        WorkflowCatalogRules.ValidateText(build);
         if (!scope.Allows("package", id)) return [];
         var packages = await catalog.GetInstalledPackagesAsync(id);
         var hosts = packages.Where(item => item.Version == version && (build == null || item.Fingerprint == build) &&
