@@ -238,7 +238,10 @@ public interface IWorkflowStateRepository : IWorkflowCatalogStore, IArtifactStor
     Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
         IReadOnlyList<ExecutionLeaseRenewal> leases);
 
-    /// <summary>Releases a lease only when the caller still owns it.</summary>
+    /// <summary>
+    /// Releases a lease only when the caller still owns it, reporting claimability and arrivals
+    /// beyond the last committed inbox read atomically with the release.
+    /// </summary>
     Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token);
 
     /// <summary>
@@ -556,7 +559,10 @@ public partial class InMemoryWorkflowStateRepository : IWorkflowStateRepository
                 return Task.FromResult(new ExecutionLeaseReleaseResult(false));
             _leases[instanceId] = lease with { ExpiresAtUtc = DateTime.MinValue };
             var notice = Notice(instanceId, now);
-            return Task.FromResult(new ExecutionLeaseReleaseResult(true, notice?.Claimable == true ? notice : null));
+            return Task.FromResult(new ExecutionLeaseReleaseResult(true, notice?.Claimable == true ? notice : null)
+            {
+                UnreadEvents = _inboxSequence.GetValueOrDefault(instanceId) > _inboxReadThrough.GetValueOrDefault(instanceId)
+            });
         }
     }
 

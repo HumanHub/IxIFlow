@@ -241,6 +241,17 @@ internal sealed class HostedWorkflowClient(WorkflowHost host, TimeProvider time,
                 break;
             }
             await WaitForChangeAsync(settled, cancellationToken);
+            if (receipt?.Outcome == EventOutcome.Pending &&
+                status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Scheduled or WorkflowExecutionStatus.Suspended)
+            {
+                // A refused claim can mean transient store contention, not an owner that will
+                // decide this event. Retry through the queue and lease arbitration; TakeEvent
+                // rechecks the receipt so a late retry cannot claim unrelated work.
+                result = await host.RunAsync(instanceId,
+                    (client, _, token) => client.TakeEventAsync(instanceId, eventId, token), cancellationToken);
+                receipt = result.Event;
+                status = result.Status;
+            }
         }
         result.Event = receipt;
         return result;

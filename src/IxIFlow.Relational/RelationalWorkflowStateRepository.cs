@@ -510,7 +510,7 @@ public abstract partial class RelationalWorkflowStateRepository :
             await using var connection = await OpenConnectionAsync(ownership: true);
             await using var transaction = (await BeginTransactionAsync(connection, Operation.LeaseRelease))!;
             await ExecuteOptionalAsync(connection, transaction, Statement.LockIdentity, new { InstanceId = instanceId });
-            var (_, now) = await LockAsync<InboxRow>(connection, transaction, Statement.LockInbox, instanceId);
+            var (instance, now) = await LockAsync<InboxRow>(connection, transaction, Statement.LockInbox, instanceId);
             var parameters = WithLocalTime(new { InstanceId = instanceId, Token = token });
             bool released;
             if (ReleaseReturnsDue)
@@ -524,7 +524,10 @@ public abstract partial class RelationalWorkflowStateRepository :
                 released = await connection.ExecuteAsync(RequiredSql(Statement.ReleaseLease), parameters, transaction) == 1;
             var notice = released ? await NoticeAsync(connection, transaction, instanceId, now) : null;
             await CompleteAsync(transaction);
-            return new ExecutionLeaseReleaseResult(released, notice?.Claimable == true ? notice : null);
+            return new ExecutionLeaseReleaseResult(released, notice?.Claimable == true ? notice : null)
+            {
+                UnreadEvents = released && instance != null && instance.InboxSequence > instance.InboxReadThrough
+            };
         });
     }
 
@@ -1328,6 +1331,7 @@ public abstract partial class RelationalWorkflowStateRepository :
         public long Revision { get; set; }
         public string Status { get; set; } = "";
         public long InboxSequence { get; set; }
+        public long InboxReadThrough { get; set; }
     }
 
     private sealed class EventHashRow

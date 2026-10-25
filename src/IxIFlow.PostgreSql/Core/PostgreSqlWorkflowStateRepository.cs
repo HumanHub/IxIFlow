@@ -515,6 +515,7 @@ public sealed partial class PostgreSqlWorkflowStateRepository : RelationalWorkfl
         // waits for a lock would otherwise carry a time from before it was granted (D-35).
         Statement.LockInbox or Statement.DeleteParentInbox => """
             SELECT status AS Status, inbox_sequence AS InboxSequence, revision AS Revision,
+                inbox_read_through AS InboxReadThrough,
                 COALESCE((state_json::jsonb ->> 'TracingEnabled')::boolean, true) AS TracingEnabled,
                 COALESCE(jsonb_typeof(state_json::jsonb -> 'ExecutionStateJson' -> 'OperatorStop') = 'object', false) AS Stopped
             FROM ixiflow_workflow_instances

@@ -433,6 +433,7 @@ public sealed partial class SqliteWorkflowStateRepository : RelationalWorkflowSt
                 """,
         Statement.LockInbox or Statement.ParentInbox or Statement.DeleteParentInbox => """
             SELECT status AS Status, inbox_sequence AS InboxSequence, revision AS Revision,
+                inbox_read_through AS InboxReadThrough,
                 COALESCE(json_extract(state_json, '$.TracingEnabled'), 1) AS TracingEnabled,
                 COALESCE(json_type(state_json, '$.ExecutionStateJson.OperatorStop') = 'object', 0) AS Stopped
             FROM ixiflow_workflow_instances

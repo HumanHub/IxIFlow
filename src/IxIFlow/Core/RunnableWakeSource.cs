@@ -51,4 +51,7 @@ public sealed record ExecutionLeaseReleaseResult(bool Released, RunnableNotice? 
 {
     /// <summary>Whether this release made the instance claimable.</summary>
     public bool Claimable => Notice?.Claimable == true;
+
+    /// <summary>Whether a successful release left arrivals beyond the last committed inbox read.</summary>
+    public bool UnreadEvents { get; init; }
 }

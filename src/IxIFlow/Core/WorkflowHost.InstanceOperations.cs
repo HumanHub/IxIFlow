@@ -55,7 +55,15 @@ public sealed partial class WorkflowHost
             () => new WorkflowExecutor(services, new ExecutionHost(this), activityExecutor));
         private readonly RunnableNotifications? _notifications = services.GetService(typeof(RunnableNotifications)) as RunnableNotifications;
 
-        private void Released(ExecutionLeaseReleaseResult result) => _notifications?.Publish(result.Notice);
+        private void Released(ExecutionLeaseReleaseResult result)
+        {
+            _notifications?.Publish(result.Notice);
+            // An arrival can make an owned instance due after its last inbox read. A run that
+            // exits without another checkpoint (for example after a stale recovery claim) has
+            // no saved wake to schedule. The release's atomic notice closes that handoff.
+            if (result.UnreadEvents && result.Notice is { Claimable: true } notice)
+                _claimHost.WakeNow(notice.InstanceId);
+        }
 
         private readonly string? _defaultActor = (services.GetService(typeof(ClientActor)) as ClientActor)?.Name;
 
