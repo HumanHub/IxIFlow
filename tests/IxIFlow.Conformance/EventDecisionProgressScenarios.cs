@@ -12,7 +12,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace IxIFlow.Tests.Conformance;
 
-[Trait("Feature", "waits"), Trait("Spec", "D-32")]
+[Trait("Feature", "waits"), Trait("Spec", "D-02")]
 public sealed class EventDecisionProgressScenarios
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(15);
