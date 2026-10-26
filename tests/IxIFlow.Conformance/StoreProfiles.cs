@@ -69,15 +69,15 @@ public static class StoreProfiles
         _ => throw new ArgumentOutOfRangeException(nameof(profile), profile, "Unknown test profile")
     };
 
-    internal static async Task<ProfileStore> CreateAsync(string profile, TimeProvider? time = null)
+    internal static async Task<ProfileStore> CreateAsync(string profile, TimeProvider? time = null, bool emptySchema = false)
     {
         var count = CoordinatorCount(profile);
         var store = profile.Split('/')[0] switch
         {
             LocalMemory => ProfileStore.Memory(time),
             LocalSqlite => ProfileStore.Sqlite(time),
-            DistributedSqlServer => await ProfileStore.SqlServerAsync(),
-            DistributedPostgreSql => await ProfileStore.PostgreSqlAsync(),
+            DistributedSqlServer => await ProfileStore.SqlServerAsync(emptySchema),
+            DistributedPostgreSql => await ProfileStore.PostgreSqlAsync(emptySchema),
             _ => throw new ArgumentOutOfRangeException(nameof(profile))
         };
         try
@@ -136,17 +136,17 @@ internal sealed partial class ProfileStore : IAsyncDisposable
             () => SqliteTestFiles.DeleteAsync(folder), () => new SqliteConnection(connectionString));
     }
 
-    public static async Task<ProfileStore> SqlServerAsync()
+    public static async Task<ProfileStore> SqlServerAsync(bool emptySchema = false)
     {
-        var connectionString = await SqlServerTestServer.CreateDatabaseAsync("IxIFlowConformance");
+        var connectionString = await SqlServerTestServer.CreateDatabaseAsync("IxIFlowConformance", emptySchema);
         return new ProfileStore(StoreProfiles.DistributedSqlServer,
             _ => new SqlWorkflowStateRepository(connectionString),
             () => SqlServerTestServer.DropDatabaseAsync(connectionString), () => new SqlConnection(connectionString));
     }
 
-    public static async Task<ProfileStore> PostgreSqlAsync()
+    public static async Task<ProfileStore> PostgreSqlAsync(bool emptySchema = false)
     {
-        var connectionString = await PostgreSqlTestServer.CreateDatabaseAsync("ixiflow_conformance");
+        var connectionString = await PostgreSqlTestServer.CreateDatabaseAsync("ixiflow_conformance", emptySchema);
         return new ProfileStore(StoreProfiles.DistributedPostgreSql,
             _ => new PostgreSqlWorkflowStateRepository(connectionString),
             () => PostgreSqlTestServer.DropDatabaseAsync(connectionString), () => new NpgsqlConnection(connectionString));

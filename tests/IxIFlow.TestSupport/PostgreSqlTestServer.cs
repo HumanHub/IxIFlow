@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using IxIFlow.Core;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -15,7 +16,9 @@ public static class PostgreSqlTestServer
     private const int AdminTimeoutSeconds = 120;
     private static readonly Lazy<Task<string>> Server = new(StartAsync);
     private static readonly SemaphoreSlim CreateGate = new(1, 1);
-    private static readonly ConcurrentStack<string> Available = new();
+    private static readonly ConcurrentStack<(string ConnectionString, bool HasSchema)> Available = new();
+    private static readonly Lazy<Task<DatabaseSchemaFingerprint>> Reference = new(CaptureReferenceAsync);
+    private static string _emptySchema = "";
     private sealed record Database(bool Reusable, string PublicSchemaSql);
     private static readonly ConcurrentDictionary<string, Database> Owned = new();
     // Lease connection string -> pooled database connection string.
@@ -38,11 +41,21 @@ public static class PostgreSqlTestServer
         };
     }
 
-    /// <summary>Leases an empty database, creating one only when no reset database is available.</summary>
-    public static async Task<string> CreateDatabaseAsync(string prefix)
+    /// <summary>Leases a pristine store. Set emptySchema for tests that must exercise schema creation.</summary>
+    public static async Task<string> CreateDatabaseAsync(string prefix, bool emptySchema = false)
     {
-        if (!Available.TryPop(out var connectionString))
-            connectionString = await CreateOwnedDatabaseAsync(prefix, reusable: true);
+        var reference = await Reference.Value;
+        if (!Available.TryPop(out var database))
+            database = (await CreateOwnedDatabaseAsync(prefix, reusable: true), false);
+        var connectionString = database.ConnectionString;
+        if (emptySchema && database.HasSchema) await ResetDatabaseAsync(connectionString, Owned[connectionString].PublicSchemaSql, keepSchema: false);
+        if (!emptySchema && !database.HasSchema)
+        {
+            await InitializeStoreAsync(connectionString);
+            await using var check = new NpgsqlConnection(ResetConnectionString(connectionString));
+            await check.OpenAsync();
+            if (!await reference.MatchesFreshAsync(check)) throw new InvalidOperationException("Initialized PostgreSQL database differs from the fresh store fingerprint; not leased.");
+        }
         // The store derives more pools from this string (ownership, wake-ups) by extending its application name.
         // A name unique to the lease keeps every pool to one lease, so connections the reset terminates are
         // never handed to the next test.
@@ -120,8 +133,8 @@ public static class PostgreSqlTestServer
         }
         try
         {
-            await ResetDatabaseAsync(connectionString, database.PublicSchemaSql);
-            Available.Push(connectionString);
+            var hasSchema = await ResetDatabaseAsync(connectionString, database.PublicSchemaSql);
+            Available.Push((connectionString, hasSchema));
         }
         catch (Exception error) when (error is NpgsqlException or InvalidOperationException)
         {
@@ -131,8 +144,11 @@ public static class PostgreSqlTestServer
         }
     }
 
-    private static async Task ResetDatabaseAsync(string connectionString, string publicSchemaSql)
+    private static async Task<bool> ResetDatabaseAsync(string connectionString, string publicSchemaSql, bool keepSchema = true)
     {
+        var reference = keepSchema && Environment.GetEnvironmentVariable("IXIFLOW_TEST_KEEP_SCHEMA") != "0"
+            ? await Reference.Value : null;
+        var hasSchema = false;
         ClearDatabasePool(connectionString);
         var name = Quote(new NpgsqlConnectionStringBuilder(connectionString).Database!);
         await using var admin = new NpgsqlConnection(AdminConnectionString(connectionString));
@@ -157,8 +173,9 @@ public static class PostgreSqlTestServer
                     END LOOP;
                 END $$;
                 """);
-            await ExecuteAsync(connection, """
-                BEGIN;
+            await ExecuteAsync(connection, "BEGIN;");
+            hasSchema = reference != null && await reference.TryWipeAsync(connection);
+            if (!hasSchema) await ExecuteAsync(connection, """
                 DO $$
                 DECLARE schema_name text;
                 BEGIN
@@ -183,10 +200,35 @@ public static class PostgreSqlTestServer
                         RAISE EXCEPTION 'PostgreSQL test database reset left user objects or schemas';
                     END IF;
                 END $$;
-                COMMIT;
                 """);
+            if (!hasSchema && _emptySchema != await DatabaseSchemaFingerprint.ReadSchemaAsync(connection, sqlServer: false))
+                throw new InvalidOperationException("Full PostgreSQL reset differs from the fresh empty catalog; database retired.");
+            await ExecuteAsync(connection, "COMMIT;");
         }
         await ExecuteAsync(admin, $"ALTER DATABASE {name} ALLOW_CONNECTIONS true");
+        return hasSchema;
+    }
+
+    private static async Task InitializeStoreAsync(string connectionString)
+    {
+        var store = new PostgreSqlWorkflowStateRepository(connectionString);
+        await store.GetCatalogRevisionAsync();
+    }
+
+    private static async Task<DatabaseSchemaFingerprint> CaptureReferenceAsync()
+    {
+        var database = await CreateOwnedDatabaseAsync("ixiflow_reference", reusable: false);
+        try
+        {
+            await using var connection = new NpgsqlConnection(ResetConnectionString(database));
+            await connection.OpenAsync();
+            _emptySchema = await DatabaseSchemaFingerprint.ReadSchemaAsync(connection, sqlServer: false);
+            await InitializeStoreAsync(database);
+            var reference = await DatabaseSchemaFingerprint.CaptureAsync(connection, sqlServer: false);
+            Console.WriteLine($"PostgreSQL fresh-store fingerprint: schema={reference.Schema}, rows={reference.Data}");
+            return reference;
+        }
+        finally { await DestroyDatabaseAsync(database); }
     }
 
     private static async Task DestroyDatabaseAsync(string connectionString)
@@ -251,5 +293,5 @@ public static class PostgreSqlTestDatabase<TTests>
     public static string ConnectionString => Database.Value;
 
     private static Task<string> CreateAsync() =>
-        PostgreSqlTestServer.CreateDatabaseAsync("ixiflow_" + typeof(TTests).Name);
+        PostgreSqlTestServer.CreateDatabaseAsync("ixiflow_" + typeof(TTests).Name, emptySchema: true);
 }

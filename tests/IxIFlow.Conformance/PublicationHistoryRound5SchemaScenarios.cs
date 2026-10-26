@@ -21,7 +21,7 @@ public sealed class PublicationHistoryRound5SchemaScenarios
     [InlineData("disabled")]
     public async Task PublicationSchemaRequiresThePersistedCanonicalIdAndMatchingHistoryIndex(string fault)
     {
-        await using var database = await StoreProfiles.CreateAsync(StoreProfiles.DistributedSqlServer);
+        await using var database = await StoreProfiles.CreateAsync(StoreProfiles.DistributedSqlServer, emptySchema: true);
         await database.NewRepository().GetCatalogRevisionAsync();
         // Positive control: run the reopening probe against the intact schema first.
         await database.NewRepository().GetCatalogRevisionAsync();

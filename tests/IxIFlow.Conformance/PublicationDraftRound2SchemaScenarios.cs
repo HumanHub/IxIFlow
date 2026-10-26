@@ -17,7 +17,7 @@ public sealed class PublicationDraftRound2SchemaScenarios
     [MemberData(nameof(UniqueIndexes))]
     public async Task PublicationSchemaRejectsSameNameUniqueRetentionAndHistoryIndexes(string profile, string index)
     {
-        await using var database = await StoreProfiles.CreateAsync(profile);
+        await using var database = await StoreProfiles.CreateAsync(profile, emptySchema: true);
         await InitializeAndReopenAsync(database);
         await using var connection = database.NewConnection();
         var sqlServer = profile == StoreProfiles.DistributedSqlServer;
@@ -47,7 +47,7 @@ public sealed class PublicationDraftRound2SchemaScenarios
     [MemberData(nameof(WrongCollations))]
     public async Task PublicationSchemaRejectsNonCodePointTextKeyCollations(string profile, string table, string index, string column)
     {
-        await using var database = await StoreProfiles.CreateAsync(profile);
+        await using var database = await StoreProfiles.CreateAsync(profile, emptySchema: true);
         await InitializeAndReopenAsync(database);
         await using var connection = database.NewConnection();
         if (index == "primary")
@@ -78,7 +78,7 @@ public sealed class PublicationDraftRound2SchemaScenarios
     [MemberData(nameof(InvalidDraftPageIndexes))]
     public async Task PublicationDraftSchemaRejectsIncorrectPagingIndexAndOrderingKey(string profile, string fault)
     {
-        await using var database = await StoreProfiles.CreateAsync(profile);
+        await using var database = await StoreProfiles.CreateAsync(profile, emptySchema: true);
         await InitializeAndReopenAsync(database);
         await using var connection = database.NewConnection();
         const string table = "dbo.IxIFlowDefinitions";

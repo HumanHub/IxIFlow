@@ -132,7 +132,7 @@ public sealed class CatalogRevisionSchemaTests
     [SqlServerFact, Trait("Category", "SqlIntegration")]
     public async Task SqlServerRequiresCounterRow()
     {
-        var cs = await SqlServerTestServer.CreateDatabaseAsync("CatalogRevisionRow");
+        var cs = await SqlServerTestServer.CreateDatabaseAsync("CatalogRevisionRow", emptySchema: true);
         try { await VerifyMissingCounterRowAsync(new SqlWorkflowStateRepository(cs), () => new SqlConnection(cs), true); }
         finally { await SqlServerTestServer.DropDatabaseAsync(cs); }
     }
@@ -140,7 +140,7 @@ public sealed class CatalogRevisionSchemaTests
     [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
     public async Task PostgreSqlRequiresCounterRow()
     {
-        var cs = await PostgreSqlTestServer.CreateDatabaseAsync("catalog_revision_row");
+        var cs = await PostgreSqlTestServer.CreateDatabaseAsync("catalog_revision_row", emptySchema: true);
         try { await VerifyMissingCounterRowAsync(new PostgreSqlWorkflowStateRepository(cs), () => new NpgsqlConnection(cs), false); }
         finally { await PostgreSqlTestServer.DropDatabaseAsync(cs); }
     }
@@ -174,7 +174,7 @@ public sealed class CatalogRevisionSchemaTests
     {
         foreach (var missing in new[] { "counter", "stamp", "index" })
         {
-            var cs = await SqlServerTestServer.CreateDatabaseAsync("CatalogRevisionSchema");
+            var cs = await SqlServerTestServer.CreateDatabaseAsync("CatalogRevisionSchema", emptySchema: true);
             try { await VerifyAsync(() => new SqlWorkflowStateRepository(cs), () => new SqlConnection(cs), true, missing); }
             finally { await SqlServerTestServer.DropDatabaseAsync(cs); }
         }
@@ -185,7 +185,7 @@ public sealed class CatalogRevisionSchemaTests
     {
         foreach (var missing in new[] { "counter", "stamp", "index" })
         {
-            var cs = await PostgreSqlTestServer.CreateDatabaseAsync("catalog_revision_schema");
+            var cs = await PostgreSqlTestServer.CreateDatabaseAsync("catalog_revision_schema", emptySchema: true);
             try { await VerifyAsync(() => new PostgreSqlWorkflowStateRepository(cs), () => new NpgsqlConnection(cs), false, missing); }
             finally { await PostgreSqlTestServer.DropDatabaseAsync(cs); }
         }

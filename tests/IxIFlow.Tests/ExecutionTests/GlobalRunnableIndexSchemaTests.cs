@@ -22,7 +22,7 @@ public sealed class GlobalRunnableIndexSchemaTests : IClassFixture<SqliteTestDat
     [Fact, Trait("Category", "PostgreSqlIntegration")]
     public async Task PostgreSqlCreatesNoGlobalOrderingIndex()
     {
-        var cs = await PostgreSqlTestServer.CreateDatabaseAsync("global_index_schema");
+        var cs = await PostgreSqlTestServer.CreateDatabaseAsync("global_index_schema", emptySchema: true);
         try
         {
             await using var connection = new NpgsqlConnection(cs);
@@ -34,7 +34,7 @@ public sealed class GlobalRunnableIndexSchemaTests : IClassFixture<SqliteTestDat
     [Fact, Trait("Category", "SqlIntegration")]
     public async Task SqlServerCreatesNoGlobalOrderingIndex()
     {
-        var cs = await SqlServerTestServer.CreateDatabaseAsync("GlobalIndexSchema");
+        var cs = await SqlServerTestServer.CreateDatabaseAsync("GlobalIndexSchema", emptySchema: true);
         try
         {
             await using var connection = new SqlConnection(cs);

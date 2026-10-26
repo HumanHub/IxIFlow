@@ -25,7 +25,7 @@ public sealed class PublicationDraftSchemaScenarios
     [MemberData(nameof(MissingParts))]
     public async Task PublicationDraftSchemaRejectsMissingColumnsKeysAndWrongUniqueShape(string profile, string part)
     {
-        await using var database = await StoreProfiles.CreateAsync(profile);
+        await using var database = await StoreProfiles.CreateAsync(profile, emptySchema: true);
         var store = database.NewRepository();
         await store.GetCatalogRevisionAsync();
         if (store is IAsyncDisposable disposable) await disposable.DisposeAsync();
@@ -80,7 +80,7 @@ public sealed class PublicationDraftSchemaScenarios
     [InlineData(StoreProfiles.DistributedPostgreSql)]
     public async Task PublicationWorkflowAuditProjectionMustAgreeWithMetadata(string profile)
     {
-        await using var database = await StoreProfiles.CreateAsync(profile);
+        await using var database = await StoreProfiles.CreateAsync(profile, emptySchema: true);
         var store = database.NewRepository();
         var contract = WorkflowContract.OfType(typeof(object));
         await store.RegisterWorkflowVersionAsync(new("Audit", 1, "hash", contract.ToJson(), contract.Hash, Descriptor: new WorkflowDescriptor("Audit", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), []));

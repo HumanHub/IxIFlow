@@ -33,7 +33,7 @@ public sealed class PackageCatalogSchemaScenarios
     [MemberData(nameof(RequiredParts))]
     public async Task PackageAndActivitySchemasRequireEveryProjectionColumn(string profile, string logicalTable, string logicalColumn)
     {
-        await using var database = await StoreProfiles.CreateAsync(profile);
+        await using var database = await StoreProfiles.CreateAsync(profile, emptySchema: true);
         var store = database.NewRepository();
         await store.GetCatalogRevisionAsync();
         if (store is IAsyncDisposable disposable) await disposable.DisposeAsync();

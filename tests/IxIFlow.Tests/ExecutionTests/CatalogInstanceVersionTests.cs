@@ -40,8 +40,8 @@ public sealed class CatalogInstanceVersionTests
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.CatalogVersion", Guid.NewGuid().ToString("N"));
         var cs = profile switch
         {
-            "sqlserver" => await SqlServerTestServer.CreateDatabaseAsync("IxIFlowCatalogVersion"),
-            "postgresql" => await PostgreSqlTestServer.CreateDatabaseAsync("ixiflow_catalog_version"),
+            "sqlserver" => await SqlServerTestServer.CreateDatabaseAsync("IxIFlowCatalogVersion", emptySchema: scenario == Scenario.MissingColumn),
+            "postgresql" => await PostgreSqlTestServer.CreateDatabaseAsync("ixiflow_catalog_version", emptySchema: scenario == Scenario.MissingColumn),
             _ => SqliteConnectionString(folder)
         };
         try

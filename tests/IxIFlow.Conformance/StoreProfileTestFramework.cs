@@ -8,6 +8,7 @@ namespace IxIFlow.Tests.Conformance;
 /// <summary>Apply profile selection to generated data, InlineData and profile-less tests alike.</summary>
 public sealed class StoreProfileTestFramework(IMessageSink diagnostics) : XunitTestFramework(diagnostics)
 {
+    private static readonly ConformanceShard? Shard = ConformanceShard.Parse(Environment.GetEnvironmentVariable("IXIFLOW_SHARD"));
     protected override ITestFrameworkDiscoverer CreateDiscoverer(IAssemblyInfo assemblyInfo) =>
         new ProfileDiscoverer(assemblyInfo, SourceInformationProvider, DiagnosticMessageSink);
 
@@ -36,7 +37,8 @@ public sealed class StoreProfileTestFramework(IMessageSink diagnostics) : XunitT
             {
                 var profile = testCase.TestMethodArguments?.OfType<string>()
                     .FirstOrDefault(argument => StoreProfiles.Catalog.Contains(argument, StringComparer.Ordinal));
-                if (!StoreProfiles.Selected(profile ?? StoreProfiles.Unprofiled)) return true;
+                if (!StoreProfiles.Selected(profile ?? StoreProfiles.Unprofiled)
+                    || Shard?.Includes(testCase.TestMethod.TestClass.Class.Name) == false) return true;
             }
             return inner.QueueMessage(message);
         }

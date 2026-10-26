@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using IxIFlow.Core;
 using Microsoft.Data.SqlClient;
 using Testcontainers.MsSql;
 
@@ -14,9 +15,12 @@ public static class SqlServerTestServer
     private const string ExternalServerVariable = "IXIFLOW_TEST_SQL_CONNECTION_STRING";
     private static readonly Lazy<Task<string>> Server = new(StartAsync);
     private static readonly SemaphoreSlim CreateGate = new(1, 1);
-    private static readonly ConcurrentStack<string> Available = new();
+    private static readonly ConcurrentStack<(string ConnectionString, bool HasSchema)> Available = new();
+    private static readonly Lazy<Task<DatabaseSchemaFingerprint>> Reference = new(CaptureReferenceAsync);
+    private static string _emptySchema = "";
     private static readonly ConcurrentDictionary<string, bool> Owned = new();
-    private static readonly ConcurrentDictionary<string, byte> Leased = new();
+    private static readonly ConcurrentDictionary<string, string> Leased = new();
+    private static long _leases;
 
     static SqlServerTestServer()
     {
@@ -35,21 +39,32 @@ public static class SqlServerTestServer
         };
     }
 
-    /// <summary>Leases an empty database, creating one only when no reset database is available.</summary>
-    public static async Task<string> CreateDatabaseAsync(string prefix)
+    /// <summary>Leases a pristine store. Set emptySchema for tests that must exercise schema creation.</summary>
+    public static async Task<string> CreateDatabaseAsync(string prefix, bool emptySchema = false)
     {
-        if (!Available.TryPop(out var connectionString))
-            connectionString = await CreateOwnedDatabaseAsync(prefix, reusable: true);
-        if (!Leased.TryAdd(connectionString, 0))
+        var reference = await Reference.Value;
+        if (!Available.TryPop(out var database))
+            database = (await CreateOwnedDatabaseAsync(prefix, reusable: true), false);
+        if (emptySchema && database.HasSchema) await ResetDatabaseAsync(database.ConnectionString, keepSchema: false);
+        if (!emptySchema && !database.HasSchema)
+        {
+            await InitializeStoreAsync(database.ConnectionString);
+            await using var check = new SqlConnection(new SqlConnectionStringBuilder(database.ConnectionString) { Pooling = false }.ConnectionString);
+            await check.OpenAsync();
+            if (!await reference.MatchesFreshAsync(check)) throw new InvalidOperationException("Initialized SQL database differs from the fresh store fingerprint; not leased.");
+        }
+        var lease = new SqlConnectionStringBuilder(database.ConnectionString)
+        { ApplicationName = $"IxIFlow test lease {Interlocked.Increment(ref _leases)}" }.ConnectionString;
+        if (!Leased.TryAdd(lease, database.ConnectionString))
             throw new InvalidOperationException("A SQL test database was leased twice.");
-        return connectionString;
+        return lease;
     }
 
     /// <summary>Creates a new database for tests that change database-level options; never reused.</summary>
     public static async Task<string> CreateFreshDatabaseAsync(string prefix)
     {
         var connectionString = await CreateOwnedDatabaseAsync(prefix, reusable: false);
-        Leased.TryAdd(connectionString, 0);
+        Leased.TryAdd(connectionString, connectionString);
         return connectionString;
     }
 
@@ -95,10 +110,11 @@ public static class SqlServerTestServer
     }
 
     /// <summary>Resets and returns a lease, or physically drops a fresh database.</summary>
-    public static async Task DropDatabaseAsync(string connectionString)
+    public static async Task DropDatabaseAsync(string lease)
     {
-        if (!Owned.TryGetValue(connectionString, out var reusable) || !Leased.TryRemove(connectionString, out _))
+        if (!Leased.TryRemove(lease, out var connectionString) || !Owned.TryGetValue(connectionString, out var reusable))
             throw new InvalidOperationException("The SQL test database is not an outstanding lease.");
+        ClearDatabasePool(lease);
         if (!reusable)
         {
             await DestroyDatabaseAsync(connectionString);
@@ -107,8 +123,8 @@ public static class SqlServerTestServer
 
         try
         {
-            await ResetDatabaseAsync(connectionString);
-            Available.Push(connectionString);
+            var hasSchema = await ResetDatabaseAsync(connectionString);
+            Available.Push((connectionString, hasSchema));
         }
         catch (Exception error) when (error is SqlException or InvalidOperationException)
         {
@@ -118,11 +134,24 @@ public static class SqlServerTestServer
         }
     }
 
-    private static async Task ResetDatabaseAsync(string connectionString)
+    private static async Task<bool> ResetDatabaseAsync(string connectionString, bool keepSchema = true)
     {
+        var reference = keepSchema && Environment.GetEnvironmentVariable("IXIFLOW_TEST_KEEP_SCHEMA") != "0"
+            ? await Reference.Value : null;
         ClearDatabasePool(connectionString);
         await using var connection = new SqlConnection(AdminConnectionString(connectionString));
         await connection.OpenAsync();
+        await DatabaseSchemaFingerprint.ExecuteAsync(connection, $"""
+            USE {Quote(new SqlConnectionStringBuilder(connectionString).InitialCatalog)};
+            ALTER DATABASE CURRENT SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+            SET XACT_ABORT ON;
+            BEGIN TRANSACTION;
+            """);
+        if (reference != null && await reference.TryWipeAsync(connection))
+        {
+            await DatabaseSchemaFingerprint.ExecuteAsync(connection, "COMMIT; ALTER DATABASE CURRENT SET MULTI_USER;");
+            return true;
+        }
         await using var command = connection.CreateCommand();
         command.CommandTimeout = 60;
         // Enter while the database is still MULTI_USER, then keep this session in the database
@@ -133,10 +162,6 @@ public static class SqlServerTestServer
         // checks and DML triggers. Remove FKs first, then tables, sequences and table/alias types.
         // Current engine SQL creates no views or routines; unknown objects fail the empty check.
         command.CommandText = $"""
-            USE {Quote(new SqlConnectionStringBuilder(connectionString).InitialCatalog)};
-            ALTER DATABASE CURRENT SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-            SET XACT_ABORT ON;
-            BEGIN TRANSACTION;
             DECLARE @sql nvarchar(max) = N'';
             SELECT @sql = @sql + N'ALTER TABLE ' + QUOTENAME(OBJECT_SCHEMA_NAME(parent_object_id)) + N'.'
                 + QUOTENAME(OBJECT_NAME(parent_object_id)) + N' DROP CONSTRAINT ' + QUOTENAME(name) + N';'
@@ -158,10 +183,34 @@ public static class SqlServerTestServer
                 OR EXISTS (SELECT 1 FROM sys.types WHERE is_user_defined = 1)
                 OR EXISTS (SELECT 1 FROM sys.schemas WHERE schema_id BETWEEN 5 AND 16383)
                 THROW 51000, 'SQL test database reset left user objects or schemas', 1;
-            COMMIT;
-            ALTER DATABASE CURRENT SET MULTI_USER;
             """;
         await command.ExecuteNonQueryAsync();
+        if (_emptySchema != await DatabaseSchemaFingerprint.ReadSchemaAsync(connection, sqlServer: true))
+            throw new InvalidOperationException("Full SQL reset differs from the fresh empty catalog; database retired.");
+        await DatabaseSchemaFingerprint.ExecuteAsync(connection, "COMMIT; ALTER DATABASE CURRENT SET MULTI_USER;");
+        return false;
+    }
+
+    private static async Task InitializeStoreAsync(string connectionString)
+    {
+        var store = new SqlWorkflowStateRepository(connectionString);
+        await store.GetCatalogRevisionAsync();
+    }
+
+    private static async Task<DatabaseSchemaFingerprint> CaptureReferenceAsync()
+    {
+        var database = await CreateOwnedDatabaseAsync("IxIFlowReference", reusable: false);
+        try
+        {
+            await using var connection = new SqlConnection(new SqlConnectionStringBuilder(database) { Pooling = false }.ConnectionString);
+            await connection.OpenAsync();
+            _emptySchema = await DatabaseSchemaFingerprint.ReadSchemaAsync(connection, sqlServer: true);
+            await InitializeStoreAsync(database);
+            var reference = await DatabaseSchemaFingerprint.CaptureAsync(connection, sqlServer: true);
+            Console.WriteLine($"SQL Server fresh-store fingerprint: schema={reference.Schema}, rows={reference.Data}");
+            return reference;
+        }
+        finally { await DestroyDatabaseAsync(database); }
     }
 
     private static async Task DestroyDatabaseAsync(string connectionString)
@@ -219,5 +268,5 @@ public static class SqlTestDatabase<TTests>
     public static string ConnectionString => Database.Value;
 
     private static Task<string> CreateAsync() =>
-        SqlServerTestServer.CreateDatabaseAsync("IxIFlow_" + typeof(TTests).Name);
+        SqlServerTestServer.CreateDatabaseAsync("IxIFlow_" + typeof(TTests).Name, emptySchema: true);
 }

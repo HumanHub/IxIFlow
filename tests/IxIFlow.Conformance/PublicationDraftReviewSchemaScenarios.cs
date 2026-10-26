@@ -36,7 +36,7 @@ public sealed class PublicationDraftReviewSchemaScenarios
     [MemberData(nameof(InvalidIndexes))]
     public async Task PublicationSchemaRejectsIncorrectHistoryAndRetentionIndexes(string profile, string index, string fault)
     {
-        await using var database = await StoreProfiles.CreateAsync(profile);
+        await using var database = await StoreProfiles.CreateAsync(profile, emptySchema: true);
         var store = database.NewRepository();
         await store.GetCatalogRevisionAsync();
         if (store is IAsyncDisposable disposable) await disposable.DisposeAsync();

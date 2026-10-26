@@ -64,8 +64,8 @@ public sealed class IncomingWebhookStoreScenarios
 
     private static async Task<Database> CreateAsync(string profile)
     {
-        if (profile == "sqlserver") return new(profile, await SqlServerTestServer.CreateDatabaseAsync("IxIFlowIngressFix"));
-        if (profile == "postgresql") return new(profile, await PostgreSqlTestServer.CreateDatabaseAsync("ixiflow_ingress_fix"));
+        if (profile == "sqlserver") return new(profile, await SqlServerTestServer.CreateDatabaseAsync("IxIFlowIngressFix", emptySchema: true));
+        if (profile == "postgresql") return new(profile, await PostgreSqlTestServer.CreateDatabaseAsync("ixiflow_ingress_fix", emptySchema: true));
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.IngressFix", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         return new(profile, $"Data Source={Path.Combine(folder, "state.db")}", folder);

@@ -22,7 +22,7 @@ public sealed class WorkflowDescriptorSchemaScenarios
     [Theory, MemberData(nameof(RequiredParts))]
     public async Task EveryWorkflowProjectionAndIndexShapeIsRequiredOnReopen(string profile, string part)
     {
-        await using var database = await StoreProfiles.CreateAsync(profile);
+        await using var database = await StoreProfiles.CreateAsync(profile, emptySchema: true);
         var store = database.NewRepository();
         await store.GetCatalogRevisionAsync();
         if (store is IAsyncDisposable disposable) await disposable.DisposeAsync();
