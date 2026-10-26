@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Globalization;
 using Fluid.Values;
+using IxIFlow.Core;
 
 namespace IxIFlow.Templates.Liquid;
 
@@ -25,7 +26,7 @@ internal sealed class LiquidValues(IReadOnlyList<Type> reachable)
     {
         // A local time is saved in a checkpoint with the host's offset and read back on another host as that host's
         // local time, so the same step would render another time there.
-        DateTime { Kind: DateTimeKind.Local } => throw new InvalidOperationException(
+        DateTime { Kind: DateTimeKind.Local } => throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
             "A DateTime of kind Local depends on the host's time zone; give the model UTC times or DateTimeOffsets"),
         // Fluid shifts a DateTime that is not UTC by the host's offset; its clock time is what the model says.
         DateTime dateTime => new DateTimeValue(new DateTimeOffset(dateTime.Ticks, TimeSpan.Zero)),

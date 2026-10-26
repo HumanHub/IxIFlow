@@ -14,6 +14,7 @@ public static class WorkflowJsonSerializer
 
     public static WorkflowDocument Read(string json) => ReadDocument<WorkflowDocument>(json);
     public static ActivityDocument ReadActivity(string json) => ReadDocument<ActivityDocument>(json);
+    public static TemplateDocument ReadTemplate(string json) => ReadDocument<TemplateDocument>(json);
 
     private static T ReadDocument<T>(string json) where T : DocumentNode
     {

@@ -23,6 +23,32 @@ public static class WorkflowYamlSerializer
 
     public static WorkflowDocument Read(string yaml) => (WorkflowDocument)ReadValue(typeof(WorkflowDocument), ReadRoot(yaml))!;
     public static ActivityDocument ReadActivity(string yaml) => (ActivityDocument)ReadValue(typeof(ActivityDocument), ReadRoot(yaml))!;
+    public static TemplateDocument ReadTemplate(string yaml)
+    {
+        var root = ReadRoot(yaml);
+        var document = (TemplateDocument)ReadValue(typeof(TemplateDocument), root)!;
+        var sourceLines = yaml.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        var positions = new Dictionary<string, IReadOnlyList<DocumentLocation>>(StringComparer.Ordinal);
+        void Record(YamlNode node, string path)
+        {
+            if (node is YamlScalarNode { Style: ScalarStyle.Literal } scalar)
+            {
+                var content = scalar.Value ?? "";
+                var count = content.Split('\n').Length - (content.EndsWith("\n", StringComparison.Ordinal) ? 1 : 0);
+                var start = (int)scalar.Start.Line;
+                var text = sourceLines.Skip(start).Take(count).ToArray();
+                var decoded = content.Split('\n');
+                var indent = Enumerable.Range(0, text.Length).Where(index => decoded[index].Length > 0 && text[index].EndsWith(decoded[index], StringComparison.Ordinal))
+                    .Select(index => text[index].Length - decoded[index].Length).DefaultIfEmpty(0).First();
+                positions[path] = Enumerable.Range(0, text.Length).Select(index => new DocumentLocation(start + index + 1, indent + 1)).ToArray();
+            }
+            if (node is YamlMappingNode mapping)
+                foreach (var pair in Entries(mapping, ordinal: true)) Record(pair.Value, path.Length == 0 ? pair.Key : path + "." + pair.Key);
+        }
+        Record(root, "");
+        document.TextLines = positions;
+        return document;
+    }
 
     private static YamlMappingNode ReadRoot(string yaml)
     {
@@ -81,7 +107,7 @@ public static class WorkflowYamlSerializer
             return list;
         }
         if (node is not YamlMappingNode mapping) throw Invalid(type, node);
-        var entries = Entries(mapping, type == typeof(Dictionary<string, ActivityMemberDocument>));
+        var entries = Entries(mapping, type == typeof(Dictionary<string, ActivityMemberDocument>) || type == typeof(Dictionary<string, string>));
         if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Dictionary<,>))
         {
             var dictionary = (IDictionary)Activator.CreateInstance(type)!;

@@ -10,7 +10,7 @@ internal static class PackageDescriptorAgreement
     {
         if (type.TypeKind == TypeKind.Dynamic) return "global::System.Object";
         if (type is IArrayTypeSymbol array) return SourceName(array.ElementType) + "[" + new string(',', array.Rank - 1) + "]";
-        if (type is not INamedTypeSymbol named) throw new InvalidOperationException("A portable source type must be closed");
+        if (type is not INamedTypeSymbol named) throw new WorkflowPublishException("PUB014", "A portable source type must be closed", new(1, 1));
         named = named.TupleUnderlyingType ?? named;
         var chain = new Stack<INamedTypeSymbol>();
         for (var current = named; current != null; current = current.ContainingType) chain.Push(current);

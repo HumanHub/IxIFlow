@@ -11,4 +11,7 @@ public abstract record DocumentNode
     /// omitted-member checks throughout the document; code-built documents use their values.</summary>
     public IReadOnlyDictionary<string, DocumentLocation> Members { get; set; } =
         new Dictionary<string, DocumentLocation>();
+    /// <summary>Content-line positions for literal YAML scalars, keyed by member path.</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<DocumentLocation>> TextLines { get; set; } =
+        new Dictionary<string, IReadOnlyList<DocumentLocation>>();
 }

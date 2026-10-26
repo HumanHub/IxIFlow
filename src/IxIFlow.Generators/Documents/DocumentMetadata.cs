@@ -53,7 +53,7 @@ public static class DocumentModel
         return
         [
             .. discriminator is { } kind ? [kind] : Array.Empty<DocumentKey>(),
-            .. type == typeof(WorkflowDocument) || type == typeof(ActivityDocument) ? [new DocumentKey(SchemaKey, null, false)] : Array.Empty<DocumentKey>(),
+            .. type == typeof(WorkflowDocument) || type == typeof(ActivityDocument) || type == typeof(TemplateDocument) ? [new DocumentKey(SchemaKey, null, false)] : Array.Empty<DocumentKey>(),
             .. members.Where(member => member != discriminator?.Member).Select(member => new DocumentKey(GetName(member), member, false))
         ];
     });
@@ -118,6 +118,17 @@ public static class DocumentModel
             if (current is DocumentNode child) location = child.Location;
         }
         return location;
+    }
+
+    /// <summary>Maps a diagnostic in literal text; folded/quoted text uses the scalar start.</summary>
+    public static DocumentLocation GetTextLocation(DocumentNode document, string path, int? line, int? column)
+    {
+        if (line is > 0 && document.TextLines.TryGetValue(path, out var lines) && line <= lines.Count)
+        {
+            var start = lines[line.Value - 1];
+            return new(start.Line, start.Column + Math.Max(0, (column ?? 1) - 1));
+        }
+        return GetLocation(document, path);
     }
 
 }

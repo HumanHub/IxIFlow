@@ -52,15 +52,15 @@ public sealed class PublishedInvokePackagePrivateTests
             """), null);
         var child = await publisher.PublishAsync(childDraft.Id);
         Assert.True(child.Success, string.Join("; ", child.Diagnostics));
-        await using var stream = await store.OpenAsync(child.Version!.ArtifactDigest!.Value);
-        var bundle = await WorkflowBundleArchive.ReadAsync(stream!, child.Version.ArtifactDigest.Value);
+        await using var stream = await store.OpenAsync(child.Workflow!.ArtifactDigest!.Value);
+        var bundle = await WorkflowBundleArchive.ReadAsync(stream!, child.Workflow.ArtifactDigest.Value);
         var selected = typeof(FirstData).Assembly.GetName();
         var entries = bundle.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray());
         var privatePath = "private/" + selected.Name + ".dll";
         Assert.True(entries.ContainsKey(privatePath));
         // Both saved contract roots are package-owned; the private type is nested inside Payload.
-        Assert.All(WorkflowContract.Parse(child.Version.ContractJson).Inputs.Concat(
-            WorkflowContract.Parse(child.Version.ContractJson).Outputs), member =>
+        Assert.All(WorkflowContract.Parse(child.Workflow.ContractJson).Inputs.Concat(
+            WorkflowContract.Parse(child.Workflow.ContractJson).Outputs), member =>
             Assert.Contains("Invoke.PackagePayload", member.Type));
         if (scenario != "matching")
             entries[privatePath] = Compile(selected.Name!, $$"""
@@ -75,7 +75,7 @@ public sealed class PublishedInvokePackagePrivateTests
         var archive = WorkflowBundleArchive.Create(bundle.Manifest with { Name = "Callee" }, entries);
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(archive));
         var saved = await WorkflowBundleArchive.ReadAsync(new MemoryStream(archive), digest);
-        await store.RegisterWorkflowVersionAsync(child.Version with
+        await store.RegisterWorkflowVersionAsync(child.Workflow with
         {
             Name = "Callee", ArtifactDigest = digest, PublishedDraft = null,
             ManifestJson = JsonSerializer.Serialize(saved.Manifest)
@@ -99,7 +99,7 @@ public sealed class PublishedInvokePackagePrivateTests
         Assert.Equal(4, error.Line);
         Assert.Contains(selected.Name!, error.Message);
         Assert.Contains(scenario == "identity" ? "conflicting identity" : "conflicting contents", error.Message);
-        Assert.Null(result.Version);
+        Assert.Null(result.Workflow);
         Assert.Null(await store.GetWorkflowVersionAsync("Caller", 1));
         Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
     }

@@ -110,7 +110,8 @@ public sealed class ActivityPackageReviewFixTests
         await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.ref-only", "1.0.0",
             new() { ["ref/net10.0/System.Payments.dll"] = implementation })));
         var imports = new List<string> { "fixture.ref-only@1.0.0" };
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowPackageResolver(store, store, new()).ResolveAsync(imports, PackageAcquisition.Persist, [], default));
+        var error = await Assert.ThrowsAsync<WorkflowPublishException>(() => new WorkflowPackageResolver(store, store, new()).ResolveAsync(imports, PackageAcquisition.Persist, [], default));
+        Assert.Equal("PUB003", error.Code);
         Assert.Contains("runtime implementation", error.Message);
     }
 
@@ -120,10 +121,10 @@ public sealed class ActivityPackageReviewFixTests
         var store = new InMemoryWorkflowStateRepository();
         var publisher = new WorkflowPublisher(store, store);
         var first = await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.case", "1.0.0-Beta", new())));
-        Assert.Equal("1.0.0-beta", first.Version);
+        Assert.Equal("1.0.0-beta", first.Stored.Version);
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.case", "1.0.0-beta", new()))));
         Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
-        Assert.Equal(first.Digest, Assert.Single(await store.GetPackagesAsync()).Digest);
+        Assert.Equal(first.Stored.Digest, Assert.Single(await store.GetPackagesAsync()).Digest);
     }
 
     [Fact]
@@ -136,7 +137,7 @@ public sealed class ActivityPackageReviewFixTests
         var second = ActivityPackageFixture.Package("fixture.ghost", "2.0.0", new());
         await publisher.UploadPackageAsync(new MemoryStream(first));
         var ghost = await publisher.UploadPackageAsync(new MemoryStream(second));
-        await store.DeleteAsync(ghost.Digest);
+        await store.DeleteAsync(ghost.Stored.Digest);
         using (var selected = await new WorkflowPackageResolver(store, store, new()).ResolveAsync(new List<string> { "fixture.ghost" }, PackageAcquisition.Persist, [], default))
             Assert.Equal("1.0.0", Assert.Single(selected.Pins).Version);
         await File.WriteAllBytesAsync(Path.Combine(root, "fixture.ghost.2.0.0.nupkg"), second);
@@ -144,12 +145,13 @@ public sealed class ActivityPackageReviewFixTests
         await File.WriteAllTextAsync(config, $"<configuration><packageSources><clear/><add key=\"fixture\" value=\"{root}\"/></packageSources></configuration>");
         using var restored = await new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = config })
             .ResolveAsync(new List<string> { "fixture.ghost@2.0.0" }, PackageAcquisition.Persist, [], default);
-        Assert.Equal(ghost.Digest, Assert.Single(restored.Pins).Digest);
-        Assert.True(await store.ExistsAsync(ghost.Digest));
-        await store.DeleteAsync(ghost.Digest);
+        Assert.Equal(ghost.Stored.Digest, Assert.Single(restored.Pins).Digest);
+        Assert.True(await store.ExistsAsync(ghost.Stored.Digest));
+        await store.DeleteAsync(ghost.Stored.Digest);
         await File.WriteAllBytesAsync(Path.Combine(root, "fixture.ghost.2.0.0.nupkg"), ActivityPackageFixture.Package("fixture.ghost", "2.0.0", new() { ["changed.txt"] = [1] }));
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = config })
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = config })
             .ResolveAsync(new List<string> { "fixture.ghost@2.0.0" }, PackageAcquisition.Persist, [], default));
+        Assert.Equal(WorkflowErrorKind.ArtifactMismatch, error.Kind);
         Assert.Contains("immutable recorded digest", error.Message);
     }
 
@@ -189,7 +191,7 @@ public sealed class ActivityPackageReviewFixTests
         var upload = await Assert.ThrowsAsync<WorkflowEngineException>(() => new WorkflowPublisher(store, store, new() { PackageReadLimits = limits }).UploadPackageAsync(new MemoryStream(bytes)));
         Assert.Equal(WorkflowErrorKind.ResourceExhausted, upload.Kind);
         var pin = await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(bytes));
-        var packagePin = new WorkflowPackagePin(pin.Id, pin.Version, pin.Digest, pin.Entries, [], new Dictionary<string, WorkflowPackageAssets> { [""] = new([], []) }, false);
+        var packagePin = new WorkflowPackagePin(pin.Stored.Id, pin.Stored.Version, pin.Stored.Digest, pin.Stored.Entries, [], new Dictionary<string, WorkflowPackageAssets> { [""] = new([], []) }, false);
         var host = await Assert.ThrowsAsync<WorkflowEngineException>(() => new BundleCache(store, Folder(), limits, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5)).ReadPackageAsync(packagePin, default));
         Assert.Equal(WorkflowErrorKind.ResourceExhausted, host.Kind);
     }
@@ -203,7 +205,8 @@ public sealed class ActivityPackageReviewFixTests
             await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package(id, "1.0.0", new() { ["runtimes/win/native/" + file] = [1] })));
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.duplicates", "1.0.0", new(),
             "<dependency id=\"fixture.native-one\" version=\"[1.0.0]\"/><dependency id=\"fixture.native-two\" version=\"[1.0.0]\"/>")));
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowPackageResolver(store, store, new()).ResolveAsync(new List<string> { "fixture.duplicates@1.0.0" }, PackageAcquisition.Persist, [], default));
+        var error = await Assert.ThrowsAsync<WorkflowPublishException>(() => new WorkflowPackageResolver(store, store, new()).ResolveAsync(new List<string> { "fixture.duplicates@1.0.0" }, PackageAcquisition.Persist, [], default));
+        Assert.Equal("PUB003", error.Code);
         Assert.Contains("Duplicate native", error.Message);
     }
 
@@ -276,7 +279,8 @@ public sealed class ActivityPackageReviewFixTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var config = Path.Combine(Folder(), "missing.config");
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = config }).ResolveAsync(new List<string> { "fixture.absent@1.0.0" }, PackageAcquisition.Persist, [], default));
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = config }).ResolveAsync(new List<string> { "fixture.absent@1.0.0" }, PackageAcquisition.Persist, [], default));
+        Assert.Equal(WorkflowErrorKind.Infrastructure, error.Kind);
         Assert.Contains("NuGet.Config", error.Message);
         var invalid = await Assert.ThrowsAsync<WorkflowEngineException>(() => new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream([1, 2, 3])));
         Assert.Equal(WorkflowErrorKind.InvalidRequest, invalid.Kind);

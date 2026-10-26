@@ -64,7 +64,7 @@ public sealed class WorkflowPublishingConfiguredReferenceTests
                         var draft = await store.SaveDefinitionAsync(new("Configured", 1, "workflow", yaml), null);
                         var valid = await new WorkflowPublisher(store, store, new() { SourceOptions = source }).PublishAsync(draft.Id);
                         if (!valid.Success) throw new Exception(string.Join("; ", valid.Diagnostics));
-                        if (valid.Version!.ManifestJson!.Contains("DynamicPlugin")) return 11;
+                        if (valid.Workflow!.ManifestJson!.Contains("DynamicPlugin")) return 11;
                         if (AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "DynamicPlugin")) return 12;
 
                         const string pluginType = "global::DynamicPlugin.Data";
@@ -83,7 +83,7 @@ public sealed class WorkflowPublishingConfiguredReferenceTests
                         var warm = await publisher.PublishAsync(rejected.Id);
                         if (cold.Success || warm.Success || !cold.Diagnostics.SequenceEqual(warm.Diagnostics)) return 14;
                         var error = cold.Diagnostics.Single();
-                        if (error.Code != "PUB007" || error.Stage != WorkflowPublishStage.Validate ||
+                        if (error.Code != "PUB003" || error.Stage != WorkflowPublishStage.Validate ||
                             !error.Message.Contains(pluginType) || !error.Message.Contains("host reference profile"))
                             throw new Exception(error.ToString());
                         if (await rejectedStore.GetDefinitionAsync("workflow", "Configured", 1) != rejected ||

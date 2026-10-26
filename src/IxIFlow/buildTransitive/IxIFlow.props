@@ -2,6 +2,7 @@
   <PropertyGroup>
     <IxIFlowActivitySchema>$([MSBuild]::NormalizePath('$(MSBuildThisFileDirectory)../schemas/activity.schema.json'))</IxIFlowActivitySchema>
     <IxIFlowWorkflowSchema>$([MSBuild]::NormalizePath('$(MSBuildThisFileDirectory)../schemas/workflow.schema.json'))</IxIFlowWorkflowSchema>
+    <IxIFlowTemplateSchema>$([MSBuild]::NormalizePath('$(MSBuildThisFileDirectory)../schemas/template.schema.json'))</IxIFlowTemplateSchema>
     <IxIFlowWorkflowPropsImported>true</IxIFlowWorkflowPropsImported>
     <IxIFlowIncludeWorkflowFiles Condition="'$(IxIFlowIncludeWorkflowFiles)' == ''">true</IxIFlowIncludeWorkflowFiles>
   </PropertyGroup>

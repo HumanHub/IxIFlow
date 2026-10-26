@@ -115,7 +115,7 @@ public sealed class PublishedInvokeRidPackageTests
             $"workflow: {{name: {name}, dataType: RidInvoke.Data}}\n{imports}\n{definitions}"), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-        return result.Version!;
+        return result.Workflow!;
     }
 
     private static async Task UploadClosure(WorkflowPublisher publisher, string root, string windows, string linux,

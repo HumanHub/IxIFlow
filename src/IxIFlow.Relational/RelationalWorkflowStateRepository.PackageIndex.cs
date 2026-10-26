@@ -104,7 +104,7 @@ public abstract partial class RelationalWorkflowStateRepository
     public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null)
     {
         PackageIndexRules.Registration(package, actor);
-        return AcceptPackageAsync(package, activities, artifacts, actor, false);
+        return AcceptPackageAsync(package, activities, artifacts, actor, false, null);
     }
 
     public async Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest,
@@ -114,23 +114,81 @@ public abstract partial class RelationalWorkflowStateRepository
         var package = await GetPackageAsync(id, version);
         if (package == null || package.Digest != expectedDigest)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package extraction identity changed");
-        return await AcceptPackageAsync(package, activities, artifacts, actor, true);
+        return await AcceptPackageAsync(package, activities, artifacts, actor, true, null);
     }
 
-    private Task<PackageRegistration> AcceptPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor, bool completion)
+    public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package,
+        PackageActivities activities, IArtifactStore artifacts, string? actor = null)
+    {
+        PackageIndexRules.Publication(draftId, package, actor);
+        return AcceptPackageAsync(package, activities, artifacts, actor, false, draftId);
+    }
+
+    private Task<PackageRow?> ReadPackageRowAsync(DbConnection connection, DbTransaction? transaction, string id, string version) =>
+        connection.QuerySingleOrDefaultAsync<PackageRow>(RequiredSql(Statement.CatalogPackage), new { Id = id, Version = version }, transaction);
+
+    public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn,
+        CatalogMutationToken expected, string? actor = null)
+    {
+        WorkflowCatalogRules.ValidateText(id);
+        WorkflowCatalogRules.ValidateText(version);
+        id = WorkflowPackageRules.NormalizeId(id);
+        version = WorkflowPackageRules.NormalizeVersion(version);
+        WorkflowPublicationRules.Actor(actor);
+        ArgumentNullException.ThrowIfNull(expected);
+        return CatalogWriteAsync(async (connection, transaction) =>
+        {
+            var prior = await ReadPackageRowAsync(connection, transaction, id, version)
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Package version not found");
+            var row = prior.Value;
+            PackageIndexRules.Token(row, expected);
+            PackageIndexRules.Withdrawal(withdrawn);
+            if (row.Withdrawn) return row;
+            var activities = await ReadPackageActivitiesAsync(connection, transaction, prior);
+            var revision = await AdvanceCatalogRevisionAsync(connection, transaction);
+            var saved = row with { Withdrawn = true, WithdrawnAtUtc = await OutboxNowAsync(connection, transaction), WithdrawnBy = actor, LifecycleRevision = revision };
+            var parameters = new DynamicParameters(PackageParameters(saved, activities, revision));
+            parameters.Add("ExpectedRevision", expected.Revision);
+            var columns = PackageColumns.Where(item => item.Property is not ("Id" or "Version" or "Digest"));
+            var affected = await connection.ExecuteAsync("UPDATE " + CatalogTable("packages") + " SET " + string.Join(", ", columns.Select(item => CatalogColumn(item.Column) + "=@" + item.Property)) +
+                " WHERE " + CatalogColumn("id") + "=@Id AND " + CatalogColumn("version") + "=@Version AND " + CatalogColumn("lifecycle_revision") + "=@ExpectedRevision", parameters, transaction);
+            if (affected != 1) throw new CatalogPreconditionException("The package lifecycle revision changed");
+            await connection.ExecuteAsync("UPDATE " + CatalogTable("package_activities") + " SET " + CatalogColumn("catalog_revision") + "=@Revision WHERE " +
+                CatalogColumn("package_id") + "=@Id AND " + CatalogColumn("package_version") + "=@Version", new { Id = id, Version = version, Revision = revision }, transaction);
+            return saved;
+        }, protectsStarts: false);
+    }
+
+    private async Task<PackageRegistration> AcceptPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor, bool completion, WorkflowDraftId? draft)
     {
         WorkflowPackageRules.Validate(package);
         package = WorkflowPackageRules.Copy(package);
         activities = PackageIndexRules.Snapshot(package, activities);
-        return CatalogWriteAsync(async (connection, transaction) =>
+        // Preparation is outside the write transaction so draft edits and a competing
+        // publisher can win while artifact I/O is awaited. Only the final snapshot decides.
+        if (draft != null && (await GetPackageAsync(package.Id, package.Version)) == null &&
+            (await GetDefinitionAsync(draft.Kind, draft.Name, draft.Version))?.Id == draft)
+        {
+            try { await PackageIndexRules.CheckArtifactsAsync(package, activities, artifacts); }
+            catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.ArtifactUnavailable) { }
+        }
+        return await CatalogWriteAsync(async (connection, transaction) =>
         {
             var prior = await connection.QuerySingleOrDefaultAsync<PackageRow>(RequiredSql(Statement.CatalogPackage), new { package.Id, package.Version }, transaction);
             var existing = prior?.Value;
+            if (draft != null)
+            {
+                var current = (await connection.QuerySingleOrDefaultAsync<DraftRow>(RequiredSql(Statement.CatalogDefinition), draft, transaction))?.Value;
+                if (PackageIndexRules.PublicationWinner(draft, existing, current))
+                    return new PackageRegistration(existing!, await ReadPackageActivitiesAsync(connection, transaction, prior!), false);
+                PackageIndexRules.PublicationActivities(draft, activities);
+            }
             if (completion && existing == null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package disappeared");
             WorkflowPackageRules.CheckRegistration(existing, package);
             await PackageIndexRules.CheckArtifactsAsync(package, activities, artifacts);
-            if (existing?.Withdrawn == true) throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package is withdrawn");
-            foreach (var reference in activities.Closure ?? [])
+            var restoring = PackageIndexRules.Restoring(existing, package, completion);
+            if (existing?.Withdrawn == true && !restoring) throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package is withdrawn");
+            foreach (var reference in restoring ? Array.Empty<WorkflowPackageReference>() : activities.Closure ?? [])
             {
                 var dependency = (await connection.QuerySingleOrDefaultAsync<PackageRow>(RequiredSql(Statement.CatalogPackage), reference, transaction))?.Value;
                 if (dependency != null && (dependency.Digest != reference.Digest || dependency.Withdrawn))
@@ -138,10 +196,12 @@ public abstract partial class RelationalWorkflowStateRepository
             }
             var oldActivities = prior == null ? null : await ReadPackageActivitiesAsync(connection, transaction, prior);
             var merged = oldActivities == null ? activities : PackageIndexRules.Merge(oldActivities, activities);
-            if (existing != null && existing.Origin >= package.Origin && PackageIndexRules.Equal(oldActivities!, merged))
+            if (existing != null && !restoring && existing.Origin >= package.Origin && PackageIndexRules.Equal(oldActivities!, merged))
                 return new PackageRegistration(existing, oldActivities!, false);
             var revision = await AdvanceCatalogRevisionAsync(connection, transaction);
             var saved = PackageIndexRules.Stamp(package, existing, merged, await OutboxNowAsync(connection, transaction), actor, revision);
+            if (draft != null) saved = saved with { PublishedDraft = draft, PublishedAtUtc = saved.RegisteredAtUtc, PublishedBy = actor };
+            if (restoring) saved = saved with { Withdrawn = false, WithdrawnAtUtc = null, WithdrawnBy = null };
             var parameters = PackageParameters(saved, merged, revision);
             if (existing == null)
                 await connection.ExecuteAsync(RequiredSql(Statement.CatalogPackageInsert), parameters, transaction);
@@ -157,6 +217,8 @@ public abstract partial class RelationalWorkflowStateRepository
             foreach (var missing in merged.MissingPackageIds)
                 await connection.ExecuteAsync("INSERT INTO " + CatalogTable("package_pending_dependencies") + " (" + string.Join(", ", new[] { "package_id", "package_version", "missing_package_id" }.Select(CatalogColumn)) +
                     ") VALUES (@Id,@Version,@Missing)", new { package.Id, package.Version, Missing = missing }, transaction);
+            if (draft != null && await connection.ExecuteAsync(RequiredSql(Statement.CatalogDefinitionDelete), draft, transaction) != 1)
+                throw new CatalogPreconditionException("The definition identity changed");
             return new PackageRegistration(saved, merged, existing == null);
         }, protectsStarts: false);
     }

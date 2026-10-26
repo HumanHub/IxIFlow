@@ -5,6 +5,7 @@ namespace IxIFlow.Generators;
 /// <summary>Names resolved by the authoring host before translation.</summary>
 public sealed class WorkflowSourceOptions
 {
+    public IDictionary<string, TemplateDocumentContract> Templates { get; } = new Dictionary<string, TemplateDocumentContract>(StringComparer.Ordinal);
     public string Namespace { get; set; } = "IxIFlow.Generated";
     public string? ClassName { get; set; }
     /// <summary>Require every referenced type to have a host-resolved contract.

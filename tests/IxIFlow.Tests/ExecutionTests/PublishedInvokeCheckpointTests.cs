@@ -27,7 +27,7 @@ public sealed class PublishedInvokeCheckpointTests
             "workflow: {name: Callee, version: 1, dataType: Data}\ndefinitions: []"), null);
         var published = await new WorkflowPublisher(source, source, options).PublishAsync(calleeDraft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
-        var original = published.Version!;
+        var original = published.Workflow!;
         await using var stream = (await source.OpenAsync(original.ArtifactDigest!.Value))!;
         var bundle = await WorkflowBundleArchive.ReadAsync(stream, original.ArtifactDigest.Value);
         var manifest = bundle.Manifest with
@@ -50,7 +50,7 @@ public sealed class PublishedInvokeCheckpointTests
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
 
         Assert.False(result.Success);
-        Assert.Null(result.Version);
+        Assert.Null(result.Workflow);
         var error = Assert.Single(result.Diagnostics);
         Assert.Equal("PUB009", error.Code);
         Assert.Equal(WorkflowPublishStage.Validate, error.Stage);

@@ -103,14 +103,14 @@ public sealed class ScopeInvocationRegistrationTests
         var draft = await source.SaveDefinitionAsync(new("Caller", 1, "workflow", Yaml), null);
         var published = await new WorkflowPublisher(original, source, Options()).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
-        Assert.Contains("invoke-child", Assert.Single(published.Version!.Invocations!).Step);
+        Assert.Contains("invoke-child", Assert.Single(published.Workflow!.Invocations!).Step);
         using var callers = new WorkflowCatalog(store);
         using var callees = new WorkflowCatalog(store);
-        if (callerFirst) await callers.RegisterWorkflowVersionAsync(published.Version, source);
+        if (callerFirst) await callers.RegisterWorkflowVersionAsync(published.Workflow, source);
         else await callees.RegisterWorkflowAsync(RequiringChild());
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => callerFirst
             ? callees.RegisterWorkflowAsync(RequiringChild())
-            : callers.RegisterWorkflowVersionAsync(published.Version, source));
+            : callers.RegisterWorkflowVersionAsync(published.Workflow, source));
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.Contains("workflow.yaml:", error.Message);
         Assert.Contains("Caller", error.Message);

@@ -8,21 +8,30 @@ namespace IxIFlow.Authoring;
 internal sealed record WorkflowBuildResult(string Name = "", int Version = 0, string StructureHash = "",
     string DataType = "", string EntryType = "", string CombinerSignature = "",
     WorkflowVersionDependency[]? Dependencies = null, string? Error = null, int Line = 1, int Column = 1, string ContractJson = "",
-    WorkflowVersionInvocation[]? Invocations = null, string DescriptorJson = "");
+    WorkflowVersionInvocation[]? Invocations = null, string DescriptorJson = "",
+    string ErrorCode = "PUB004", WorkflowPublishDiagnosticClass ErrorClass = WorkflowPublishDiagnosticClass.Authoring);
 
 internal static class WorkflowBuild
 {
     public static async Task<WorkflowBuildResult> RunAsync(WorkflowCompilationResult compilation, IReadOnlyDictionary<string, byte[]> dependencies, TimeSpan timeout,
-        ILogger logger, CancellationToken cancellationToken, IReadOnlyList<PackageScopeClaim>? activityClaims = null)
+        ILogger logger, CancellationToken cancellationToken, IReadOnlyList<PackageScopeClaim>? activityClaims = null,
+        IReadOnlyDictionary<string, byte[]>? symbols = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var completion = new TaskCompletionSource<WorkflowBuildResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var profile = WorkflowSharedAssemblies.Current;
         // A noncooperative Build must neither occupy the pool nor keep the process alive at shutdown.
         var thread = new Thread(() =>
         {
-            try { completion.TrySetResult(Inspect(compilation, dependencies, activityClaims)); }
+            try { using var scope = WorkflowSharedAssemblies.Enter(profile); completion.TrySetResult(Inspect(compilation, dependencies, activityClaims, logger, symbols)); }
             // Includes failures while extracting/formatting the original build diagnostic.
-            catch (Exception) { completion.TrySetResult(new(Error: "Build() failed while inspecting its result")); }
+            catch (Exception error)
+            {
+                try { logger.LogError(error, "Build() failed while inspecting its result"); } catch (Exception) { }
+                var diagnostic = WorkflowPublishFailures.Classify(error, WorkflowPublishStage.Test);
+                completion.TrySetResult(new(Error: diagnostic.Message, ErrorCode: diagnostic.Code, ErrorClass: diagnostic.Class,
+                    Line: diagnostic.Line, Column: diagnostic.Column));
+            }
         })
         { IsBackground = true, Name = "IxIFlow publish Build" };
         using (ExecutionContextFlow.SuppressIfNeeded())
@@ -37,7 +46,7 @@ internal static class WorkflowBuild
         {
             logger.LogWarning("Build() exceeded the publish timeout of {Timeout}; thread {ThreadId} and its scratch load context are abandoned until the process restarts",
                 timeout, thread.ManagedThreadId);
-            return new(Error: $"Build() exceeded the publish timeout of {timeout}");
+            return new(Error: "Build() exceeded the configured timeout", ErrorCode: "PUB043", ErrorClass: WorkflowPublishDiagnosticClass.Unavailable);
         }
         catch (OperationCanceledException) when (!completion.Task.IsCompleted)
         {
@@ -47,7 +56,8 @@ internal static class WorkflowBuild
         }
     }
 
-    private static WorkflowBuildResult Inspect(WorkflowCompilationResult compilation, IReadOnlyDictionary<string, byte[]> dependencies, IReadOnlyList<PackageScopeClaim>? activityClaims)
+    private static WorkflowBuildResult Inspect(WorkflowCompilationResult compilation, IReadOnlyDictionary<string, byte[]> dependencies, IReadOnlyList<PackageScopeClaim>? activityClaims, ILogger logger,
+        IReadOnlyDictionary<string, byte[]>? symbols)
     {
         try
         {
@@ -65,12 +75,28 @@ internal static class WorkflowBuild
                     WorkflowDefinitionValidator.GetCombinerSignature(definition), WorkflowDefinitionValidator.GetDependencies(definition).ToArray(),
                     ContractJson: WorkflowDefinitionValidator.GetContract(definition).ToJson(),
                     Invocations: WorkflowDefinitionValidator.GetInvocations(definition).ToArray(), DescriptorJson: WorkflowDescriptor.Of(definition).ToJson());
-            }, context => ScopePackageContracts.ValidateRuntime(context, activityClaims ?? []));
+            }, context => ScopePackageContracts.ValidateRuntime(context, activityClaims ?? []), symbols);
         }
         catch (Exception error)
         {
+            if (error is WorkflowPublishException curated)
+            {
+                var diagnostic = WorkflowPublishFailures.Classify(curated, WorkflowPublishStage.Test);
+                return new(Error: diagnostic.Message, ErrorCode: diagnostic.Code, ErrorClass: diagnostic.Class,
+                    Line: diagnostic.Line, Column: diagnostic.Column);
+            }
             var location = Regex.Match(error.Message, @"workflow\.yaml:(\d+)");
             var frame = new StackTrace(error, true).GetFrames().FirstOrDefault(frame => frame.GetFileName() == "workflow.yaml");
+            // A dependency the author's closure lacks is the author's error; keep the assembly name.
+            if (PublishDependencyNotFoundException.Find(error) is { } refusal)
+                return new(Error: refusal.Message, ErrorCode: "PUB003", ErrorClass: WorkflowPublishDiagnosticClass.Authoring,
+                    Line: Math.Max(1, frame?.GetFileLineNumber() ?? 1), Column: Math.Max(1, frame?.GetFileColumnNumber() ?? 1));
+            if (error is not WorkflowEngineException { Kind: WorkflowErrorKind.InvalidDefinition or WorkflowErrorKind.InvalidRequest })
+            {
+                try { logger.LogError(error, "Workflow build inspection failed"); } catch (Exception) { }
+                var diagnostic = WorkflowPublishFailures.Classify(error, WorkflowPublishStage.Test);
+                return new(Error: diagnostic.Message, ErrorCode: diagnostic.Code, ErrorClass: diagnostic.Class);
+            }
             return new(Error: error.Message, Line: location.Success && int.TryParse(location.Groups[1].ValueSpan, out var line) && line > 0
                     ? line : Math.Max(1, frame?.GetFileLineNumber() ?? 1),
                 Column: Math.Max(1, frame?.GetFileColumnNumber() ?? 1));

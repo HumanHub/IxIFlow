@@ -13,6 +13,23 @@ namespace IxIFlow.Samples;
 /// <summary>Small application examples used by the public documentation.</summary>
 public static class DocumentationExamples
 {
+    public static async Task<WorkflowPublishResult> PublishWorkflowAsync(IWorkflowCatalogStore catalog,
+        WorkflowPublisher publisher, string yaml, CancellationToken cancellationToken)
+    {
+        // snippet: workflow-publication
+        var draft = await catalog.SaveDefinitionAsync(
+            new WorkflowDraft("Example", 1, WorkflowDraftKinds.Workflow, yaml), expected: null, actor: "author");
+        var report = await publisher.ValidateAsync(draft, cancellationToken);
+        var result = await publisher.PublishAsync(draft.Id, actor: "publisher", cancellationToken: cancellationToken);
+        if (result.Success)
+        {
+            WorkflowVersion workflow = result.Workflow!;
+            WorkflowPublicationReceipt receipt = result.Receipt!;
+        }
+        // end-snippet: workflow-publication
+        return result;
+    }
+
     public static async Task<PackageRegistration> UploadPackageAsync(IWorkflowCatalogStore catalog,
         IArtifactStore artifacts, WorkflowPublisherOptions publisherOptions, Stream stream,
         string? actor, CancellationToken cancellationToken)

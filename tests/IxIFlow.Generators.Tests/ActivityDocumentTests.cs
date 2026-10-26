@@ -510,6 +510,7 @@ public sealed class ActivityDocumentTests
         public Task<bool> HasEventAsync(string key, CancellationToken token) => Task.FromResult(true);
         public Task<bool> HasWorkflowAsync(string name, int? version, CancellationToken token) => Task.FromResult(true);
         public Task<bool> HasStepTemplateAsync(string key, CancellationToken token) => Task.FromResult(false);
+        public Task<TemplateDocumentContract?> FindTemplateAsync(string key, int? version, CancellationToken token) => Task.FromResult<TemplateDocumentContract?>(null);
     }
 
     [Theory]

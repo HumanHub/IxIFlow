@@ -1,3 +1,4 @@
+using IxIFlow.Core;
 using System.Net;
 using NuGet.Configuration;
 using NuGet.Protocol;
@@ -62,7 +63,7 @@ internal sealed class NuGetCredentialScope : ICredentialService, IDisposable
         catch
         {
             scope.Dispose();
-            throw new InvalidOperationException("NuGet credential providers could not be initialized");
+            throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "NuGet credential providers could not be initialized");
         }
     }
 

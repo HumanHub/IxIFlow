@@ -17,17 +17,26 @@ internal static class PackageDescriptorReader
         ResolvedWorkflowPackages packages, TimeSpan timeout, CancellationToken token)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(timeout, TimeSpan.Zero);
-        var completion = new TaskCompletionSource<(PackageDescriptorSet? Result, string? Error)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completion = new TaskCompletionSource<(PackageDescriptorSet? Result, WorkflowPublishDiagnostic? Error)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var profile = WorkflowSharedAssemblies.Current;
         var thread = new Thread(() =>
         {
-            try { completion.TrySetResult((Inspect(packages), null)); }
-            catch (Exception error) { completion.TrySetResult((null, error.Message)); }
+            try { using var scope = WorkflowSharedAssemblies.Enter(profile); completion.TrySetResult((Inspect(packages), null)); }
+            catch (Exception error)
+            {
+                // Only portable diagnostics leave the collectible context. Expected descriptor
+                // refusals retain their specific code; programming errors stay redacted.
+                var diagnostic = error is WorkflowEngineException { Kind: WorkflowErrorKind.InvalidDefinition }
+                    ? WorkflowPublishFailures.Diagnostic("PUB016", error.Message, WorkflowPublishDiagnosticClass.Authoring)
+                    : WorkflowPublishFailures.Classify(error);
+                completion.TrySetResult((null, diagnostic));
+            }
         }) { IsBackground = true, Name = "IxIFlow package descriptors" };
         using (ExecutionContextFlow.SuppressIfNeeded()) thread.Start();
         try
         {
             var (result, error) = await completion.Task.WaitAsync(timeout, token);
-            if (error != null) throw new WorkflowPublishException("PUB016", error, new(1, 1));
+            if (error != null) throw new WorkflowPublishException(error.Code, error.Message, new(error.Line, error.Column));
             return result!;
         }
         catch (TimeoutException)
@@ -37,7 +46,7 @@ internal static class PackageDescriptorReader
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static PackageDescriptorSet Inspect(ResolvedWorkflowPackages packages)
     {
-        var context = new PackageScratchContext(packages.RuntimeAssemblies);
+        var context = new PackageScratchContext(packages.RuntimeAssemblies, packages.RuntimeSymbols);
         try
         {
             using var scope = WorkflowTypeIdentity.Enter(context);
@@ -57,7 +66,7 @@ internal static class PackageDescriptorReader
                     var assembly = context.LoadFromAssemblyName(identity);
                     foreach (var descriptor in ActivityDescriptor.Scan(assembly, pin.Id, pin.Version))
                     {
-                        if (!keys.Add(descriptor.Key)) throw new InvalidOperationException($"Duplicate package activity key '{descriptor.Key}'");
+                        if (!keys.Add(descriptor.Key)) throw new WorkflowPublishException("PUB016", $"Duplicate package activity key '{descriptor.Key}'", new(1, 1));
                         descriptors.Add(ActivityDescriptor.Parse(descriptor.ToJson()));
                         assemblies.Add(descriptor.Key, identity.Name!);
                     }
@@ -74,13 +83,20 @@ internal static class PackageDescriptorReader
     }
 }
 
-internal sealed class PackageScratchContext(IReadOnlyDictionary<string, byte[]> assemblies) : AssemblyLoadContext(isCollectible: true)
+internal sealed class PackageScratchContext(IReadOnlyDictionary<string, byte[]> assemblies, IReadOnlyDictionary<string, byte[]>? symbols = null) : AssemblyLoadContext(isCollectible: true)
 {
+    private readonly WorkflowSharedAssemblyProfile? _profile = WorkflowSharedAssemblies.Current;
     protected override Assembly Load(AssemblyName name)
     {
+        using var profile = WorkflowSharedAssemblies.Enter(_profile);
         if (WorkflowSharedAssemblies.IsShared(name)) return Default.LoadFromAssemblyName(name);
-        if (assemblies.TryGetValue(name.Name!, out var bytes)) return LoadFromStream(new MemoryStream(bytes, writable: false));
-        throw new FileNotFoundException($"Package dependency '{name.Name}' has no implementation in the selected runtime closure");
+        if (assemblies.TryGetValue(name.Name!, out var bytes))
+        {
+            using var dll = new MemoryStream(bytes, writable: false);
+            using var pdb = symbols?.TryGetValue(name.Name!, out var data) == true ? new MemoryStream(data, writable: false) : null;
+            return LoadFromStream(dll, pdb);
+        }
+        throw new PublishDependencyNotFoundException($"Package dependency '{name.Name}' has no implementation in the selected runtime closure");
     }
 }
 

@@ -44,7 +44,8 @@ public sealed class WorkflowPublishingReferenceRegressionTests
         {
             var first = Emit(directory, "first.dll", "Duplicate", "[assembly: System.Reflection.AssemblyVersion(\"1.0.0.0\")] public class Duplicate { }");
             var second = Emit(directory, "second.dll", "Duplicate", "[assembly: System.Reflection.AssemblyVersion(\"2.0.0.0\")] public class Duplicate { }");
-            var error = Assert.Throws<InvalidOperationException>(() => WorkflowCompilation.NormalizeReferences([first, second]));
+            var error = Assert.Throws<WorkflowPublishException>(() => WorkflowCompilation.NormalizeReferences([first, second]));
+            Assert.Equal("PUB003", error.Code);
             Assert.Equal("Conflicting reference versions for assembly 'Duplicate': 1.0.0.0, 2.0.0.0", error.Message);
         }
         finally { Directory.Delete(directory, recursive: true); }
@@ -96,8 +97,8 @@ public sealed class WorkflowPublishingReferenceRegressionTests
                         var draft = await store.SaveDefinitionAsync(new("Cold", 1, "workflow", yaml), null);
                         var result = await new WorkflowPublisher(store, store).PublishAsync(draft.Id);
                         if (!result.Success) { Console.Error.WriteLine(string.Join("; ", result.Diagnostics)); return 11; }
-                        Console.WriteLine(result.Version!.ArtifactDigest);
-                        Console.WriteLine(result.Version.ManifestJson);
+                        Console.WriteLine(result.Workflow!.ArtifactDigest);
+                        Console.WriteLine(result.Workflow.ManifestJson);
                         return 0;
                     }
                 }

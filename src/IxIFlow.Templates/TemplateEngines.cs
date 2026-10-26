@@ -4,6 +4,7 @@ namespace IxIFlow.Templates;
 public sealed class TemplateEngines
 {
     private readonly Dictionary<string, ITemplateEngine> _engines = new(StringComparer.OrdinalIgnoreCase);
+    public int Count => _engines.Count;
 
     public TemplateEngines(IEnumerable<ITemplateEngine> engines)
     {

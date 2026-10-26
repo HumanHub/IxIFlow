@@ -306,7 +306,7 @@ public sealed class WorkflowDescriptorCatalogScenarios
         var draft = await store.SaveDefinitionAsync(new("PublishedPresentation", 1, WorkflowDraftKinds.Workflow, yaml), null);
         var published = await new WorkflowPublisher(catalog, store, options).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
-        var row = published.Version!;
+        var row = published.Workflow!;
         Assert.Equal("Published display", row.Descriptor.DisplayName);
         var revision = await store.GetCatalogRevisionAsync();
         await Assert.ThrowsAsync<WorkflowEngineException>(() => store.RegisterWorkflowVersionAsync(row with { Descriptor = row.Descriptor with { DisplayName = "Changed" } }));
@@ -315,7 +315,7 @@ public sealed class WorkflowDescriptorCatalogScenarios
         Assert.True(detail.ArtifactPresent); Assert.Equal(row.ContractJson, detail.Contract.ToJson());
         Assert.Equal(draft.Id, detail.PublishedDraft); Assert.Equal(row.Descriptor, detail.Summary.Descriptor);
         var retry = await new WorkflowPublisher(catalog, store, options).PublishAsync(draft.Id);
-        Assert.True(retry.Success); Assert.Equal(row.Descriptor, retry.Version!.Descriptor);
+        Assert.True(retry.Success); Assert.Equal(row.Descriptor, retry.Workflow!.Descriptor);
     }
 
     public static TheoryData<string> Relational => new(StoreProfiles.ProfileNames.Where(profile => profile != StoreProfiles.LocalMemory));

@@ -61,7 +61,7 @@ public static class ActivityCompilation
         var authored = SourceText.From(sourceText, new UTF8Encoding(false));
         var tree = CSharpSyntaxTree.ParseText(generated, new CSharpParseOptions(LanguageVersion.CSharp14),
             "activity.g.cs", cancellationToken);
-        var references = ReferencePaths(options).Select(path => MetadataReference.CreateFromFile(path));
+        var references = CreateReferences(options);
         var compilation = CSharpCompilation.Create(identity.AssemblyName, [tree], references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, optimizationLevel: OptimizationLevel.Release,
                 deterministic: true, nullableContextOptions: NullableContextOptions.Enable));
@@ -128,8 +128,21 @@ public static class ActivityCompilation
         return new(assembly.ToArray(), pdb.ToArray(), diagnostics);
     }
 
-    /// <summary>The runtime/SDK profile plus explicitly prepared package and shared contract references.</summary>
-    public static string[] ReferencePaths(ActivityCompilationOptions? options = null)
+    private static IEnumerable<PortableExecutableReference> CreateReferences(ActivityCompilationOptions? options = null) =>
+        ActivityFrameworkReferences.Metadata.Concat(FileReferencePaths(options).Select(path => MetadataReference.CreateFromFile(path)));
+
+    /// <summary>The bundled .NET 10 framework references plus SDK, prepared package and shared contract references.</summary>
+    public static string[] ReferencePaths(ActivityCompilationOptions? options = null) =>
+        WorkflowCompilation.NormalizeReferences(ActivityFrameworkReferences.Paths.Concat(FileReferencePaths(options)));
+
+    private static IEnumerable<string> FileReferencePaths(ActivityCompilationOptions? options) =>
+        RuntimeReferencePaths(options).Where(path =>
+            !ActivityFrameworkReferences.Contains(Path.GetFileNameWithoutExtension(path)) &&
+            Path.GetDirectoryName(path) != Path.GetDirectoryName(typeof(object).Assembly.Location));
+
+    // Keep implementation paths out of Roslyn, but available for inspecting the
+    // emitted dependency closure and deriving actual SDK package versions.
+    internal static string[] RuntimeReferencePaths(ActivityCompilationOptions? options = null)
     {
         options ??= new();
         var platform = ((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? "")

@@ -13,7 +13,7 @@ public static class DocumentSchema
         typeof(IxIFlow.Core.WorkflowDefinition).Assembly.GetName().Version!.ToString(3) + "/src/IxIFlow/schemas/" + Kind(rootType) + ".schema.json";
 
     private static string Kind(Type rootType) => rootType == typeof(WorkflowDocument) ? "workflow" :
-        rootType == typeof(ActivityDocument) ? "activity" : throw new ArgumentException("Unsupported document root", nameof(rootType));
+        rootType == typeof(ActivityDocument) ? "activity" : rootType == typeof(TemplateDocument) ? "template" : throw new ArgumentException("Unsupported document root", nameof(rootType));
 
     public static string Write(Type rootType)
     {
@@ -106,6 +106,13 @@ public static class DocumentSchema
             };
             if (required.Count > 0) result["required"] = required;
             GraphRules(type, result);
+            if (type == typeof(TemplateHeaderDocument))
+            {
+                properties["key"]!["pattern"] = @"^(?!.*[A-Z])\w+([.-]\w+)*$";
+                properties["key"]!["maxLength"] = 100;
+                ((JsonObject)properties["version"]!).Remove("default");
+                properties["version"]!["minimum"] = 1;
+            }
             if (type == typeof(ActivityDefinitionDocument))
             {
                 properties["key"]!["pattern"] = "^[a-z][a-z0-9]*([.-][a-z][a-z0-9]*)*$";

@@ -19,7 +19,7 @@ var receipt = await ingestion.StorePackageAsync(candidate, actor, cancellationTo
 
 `UploadPackageAsync(stream, actor, cancellationToken)` combines these calls. Both paths enforce the configured archive, entry, expanded-size, entry-count and nuspec bounds. Storage revalidates caller-created candidates. A verified upload supplies its root bytes directly to resolution, so the root needs no feed or prior catalog registration.
 
-`PackageRegistration.Stored` is the stored audited row, `Activities` is its stored extraction result, and `Created` is true for exactly the first accepted registration. Replays preserve the first registration's time and actor. Origins strengthen from `Resolved` to `Uploaded`; publishing has its own origin. An existing identity cannot acquire different archive bytes, entry hashes or dependency metadata.
+`PackageRegistration.Stored` is the stored audited row, `Activities` is its stored extraction result, and `Created` is true for exactly the first accepted registration. Replays preserve the first registration's time and actor. Origins strengthen from `Resolved` to `Uploaded` to `Published`. An existing identity cannot acquire different archive bytes, entry hashes or dependency metadata.
 
 Extraction selects this publisher's managed runtime assets and uses a bounded collectible context. It derives descriptors without constructing or executing activities. Attributes and default converters can execute trusted package code. A timeout abandons waiting; arbitrary managed code cannot be forcibly canceled.
 
@@ -37,6 +37,20 @@ services.AddHostedService(provider => new PackageIndexingService(
 ```
 
 Its passes are bounded, continue through pending work, and retry completion against the recorded digest. Reference/runtime disagreement reports `PUB014`; a selected dependency closure changing an indexed activity's contract reports `PUB015`.
+
+## Publication, withdrawal and retention
+
+`PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor)` atomically records a Published package, exactly its matching activity descriptor, its resolved closure and store audit, and consumes the exact activity draft. The package identity is the draft key and integer version expressed as `n.0.0`. The package's `PublishedDraft` must match the complete kind/name/version/generation/revision. Retries return the first stored receipt; an uploaded identity without that receipt conflicts. Activity document compilation and package construction are supplied by the activity publisher handler.
+
+Use `WorkflowPublisher.ValidateAsync(activityDraft)` for a full no-write Scratch run or `PublishAsync(activityDraft.Id, actor)` to produce the deterministic nupkg and atomically publish it. The typed result's `Package` is the audited stored row. Source retrieval uses the nupkg's verbatim `ixiflow/activity.yaml`; profile and digest-pinned closure metadata use `ixiflow/activity.json`. Portable symbols and embedded source accompany the DLL. Package readers verify archive/entry hashes before scratch or bundle loaders use a sibling PDB.
+
+Shared application interfaces must be declared in `WorkflowPublisherOptions.SharedContractAssemblies` and in each host's `builder.ShareContracts(...)`. These default-context, closed profiles freeze before use and record exact required versions. Contracts stay application-supplied rather than private package dependencies, so host DI and package code use the same interface types. Missing or incompatible contracts prevent authoring/load and host capability advertisement. See the [Authoring API](../src/IxIFlow.Authoring/README.md) for Test, dependency and consumer behavior.
+
+`SetPackageWithdrawnAsync(id, version, true, new CatalogMutationToken(package.LifecycleRevision), actor)` withdraws a package from new authoring. A stale token raises `CatalogPreconditionException`. Withdrawal is allowed with holders and preserves identity, descriptors and bytes. Known withdrawn identities are rejected before feed acquisition, including explicit imports and seeded candidates. Existing digest-pinned execution, verified callee copying and exact package downloads keep using their saved bytes.
+
+Restore by uploading the identical verified archive through `PackageIngestion` or `WorkflowPublisher`. The store clears withdrawal atomically, advances its lifecycle token and preserves the original registration/publication audit and stronger origin. Different bytes are refused; `SetPackageWithdrawnAsync(..., false, ...)` cannot restore metadata alone. Resolver replay and extraction completion cannot restore a package.
+
+`GetPackageHoldersAsync(id, version, scope)` reports scoped workflow, template and package references, instance pins, unreadable orphan pins and whether holders exist outside scope. Holders inform retention and never veto withdrawal. Uploaded and Published packages retain their complete closures, including while withdrawn. Template model packages, workflow manifests and retained instance pins also protect bytes. Unreadable orphan pins conservatively protect package content and recorded closures while unrelated abandoned bundles remain collectable. Unheld Resolved bytes may be collected after retention grace; their immutable identity and activity rows remain visible with `ArtifactPresent` false.
 
 ## Scoped readers
 

@@ -15,6 +15,9 @@ public sealed class WorkflowSourceContracts(WorkflowSourceOptions options) : IWo
     private bool KnownType(string key) => options.Types.ContainsKey(key) || !options.RequireResolvedTypes &&
         !Microsoft.CodeAnalysis.CSharp.SyntaxFactory.ParseTypeName(key).ContainsDiagnostics;
     public Task<bool> HasStepTemplateAsync(string key, CancellationToken token) => Task.FromResult(false);
+    public Task<TemplateDocumentContract?> FindTemplateAsync(string key, int? version, CancellationToken token) =>
+        Task.FromResult<TemplateDocumentContract?>(options.Templates.Values.Where(item => item.Key == key && (version == null || item.Version == version))
+            .OrderByDescending(item => item.Version).FirstOrDefault());
 
     public WorkflowDataDocumentContract? FindDataContract(string dataType) => options.DataContracts.TryGetValue(dataType, out var contract) ? contract : null;
     public WorkflowDataDocumentContract? FindWorkflowContract(string name, int? version) =>

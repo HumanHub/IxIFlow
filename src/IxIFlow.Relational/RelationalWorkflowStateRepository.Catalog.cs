@@ -277,6 +277,8 @@ public abstract partial class RelationalWorkflowStateRepository
             if (winner != null) return winner;
             WorkflowCatalogRules.CheckInvocations(version, versions);
             await WorkflowCatalogRules.CheckArtifactsAsync(version, artifacts);
+            WorkflowCatalogRules.CheckAuthoringPackages(version,
+                (await connection.QueryAsync<PackageRow>(RequiredSql(Statement.CatalogPackages), new { Id = (string?)null }, transaction)).Select(row => row.Value), versions);
             foreach (var dependency in version.Dependencies ?? [])
                 WorkflowCatalogRules.CheckStartable(versions.SingleOrDefault(row => row.Name == dependency.Name && row.Version == dependency.Version), dependency.Name, dependency.Version);
             var revision = await AdvanceCatalogRevisionAsync(connection, transaction);

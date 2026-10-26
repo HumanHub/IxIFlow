@@ -31,7 +31,7 @@ public static class PublishedBundleScenario
         var draft = await store.SaveDefinitionAsync(new("BundleParent", 1, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-        return result.Version!;
+        return result.Workflow!;
     }
 
     public static async Task<WorkflowVersion> PublishAsync(IWorkflowStateRepository store, int version = 1)
@@ -58,7 +58,7 @@ public static class PublishedBundleScenario
         var draft = await store.SaveDefinitionAsync(new("BundleLifecycle", version, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-        return result.Version!;
+        return result.Workflow!;
     }
 
     public static ServiceProvider Host(IWorkflowStateRepository store, string cache, int capacity = 16,

@@ -19,7 +19,7 @@ internal static class ScopePackageContracts
         var scopes = type.AllInterfaces.Where(item => item.OriginalDefinition.ToDisplayString() == "IxIFlow.Core.IScopeActivity<TValue>").ToArray();
         if (type.IsAbstract || type.DeclaredAccessibility != Accessibility.Public || type.IsGenericType ||
             (!ordinary && scopes.Length != 1) || ordinary && scopes.Length != 0)
-            throw new InvalidOperationException($"Package activity '{key}' requires exactly one ordinary or scope implementation");
+            throw new WorkflowPublishException("PUB003", $"Package activity '{key}' requires exactly one ordinary or scope implementation", null);
         var declarations = new List<AttributeData>();
         for (var current = type; current != null; current = current.BaseType) declarations.AddRange(current.GetAttributes());
         int Mode(string name)
@@ -27,7 +27,7 @@ internal static class ScopePackageContracts
             var attribute = declarations.FirstOrDefault(item => item.AttributeClass?.ToDisplayString() == "IxIFlow.Core." + name);
             if (attribute == null) return 0;
             if (scopes.Length == 0 || attribute.ConstructorArguments.FirstOrDefault().Value is not int mode || mode is < 0 or > 1)
-                throw new InvalidOperationException($"Package activity '{key}' has an invalid scope mode");
+                throw new WorkflowPublishException("PUB003", $"Package activity '{key}' has an invalid scope mode", null);
             return mode;
         }
         var names = new Stack<string>();
@@ -45,12 +45,12 @@ internal static class ScopePackageContracts
         foreach (var claim in claims)
         {
             var assembly = context.LoadFromAssemblyName(new AssemblyName(claim.Assembly));
-            var type = assembly.GetType(claim.MetadataName) ?? throw new InvalidOperationException($"Package activity '{claim.Key}' has no runtime implementation");
+            var type = assembly.GetType(claim.MetadataName) ?? throw new WorkflowPublishException("PUB003", $"Package activity '{claim.Key}' has no runtime implementation", null);
             var descriptor = ActivityDescriptor.OfType(type, claim.PackageId, claim.PackageVersion);
             if (descriptor.Key != claim.Key || descriptor.Version != claim.Version || descriptor.Scope?.ValueTypeName != claim.ValueType ||
                 descriptor.Scope is { } scope && (scope.Concurrency != claim.Concurrency || scope.Threading != claim.Threading) ||
                 !descriptor.RequiresScopes.Select(item => item.TypeName).Order(StringComparer.Ordinal).SequenceEqual(claim.Requirements))
-                throw new InvalidOperationException($"Package activity '{claim.Key}' scope contract disagrees between reference and runtime assemblies");
+                throw new WorkflowPublishException("PUB003", $"Package activity '{claim.Key}' scope contract disagrees between reference and runtime assemblies", null);
         }
     }
 }

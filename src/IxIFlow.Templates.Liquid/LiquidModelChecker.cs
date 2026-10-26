@@ -21,14 +21,17 @@ internal sealed class LiquidModelChecker
     private readonly List<Dictionary<string, Shape>> _scopes = [];
 
     private readonly Type _model;
+    private LiquidSourceLocations _source;
+    private (int? Line, int? Column) _position;
 
-    private LiquidModelChecker(TemplateOptions options, Type model)
+    private LiquidModelChecker(TemplateOptions options, Type model, string content)
     {
         _options = options;
         _model = model;
+        _source = new(content);
     }
 
-    public static IReadOnlyList<TemplateDiagnostic> Check(IStatementList template, Type model, TemplateOptions options)
+    public static IReadOnlyList<TemplateDiagnostic> Check(IStatementList template, Type model, TemplateOptions options, string content)
     {
         if (!LiquidModel.IsObject(model))
         {
@@ -36,7 +39,7 @@ internal sealed class LiquidModelChecker
                 $"A Liquid template reads the members of its model, and '{TemplateVersion.ModelTypeName(model)}' " +
                 "has none; wrap it in a model type")];
         }
-        var checker = new LiquidModelChecker(options, model);
+        var checker = new LiquidModelChecker(options, model, content);
         checker._scopes.Add(LiquidModel.Members(model)
             .Where(member => member.Readable)
             .GroupBy(member => member.Name, StringComparer.Ordinal)
@@ -44,6 +47,8 @@ internal sealed class LiquidModelChecker
         checker.Statements(template.Statements);
         return checker._diagnostics;
     }
+
+    private void Add(TemplateDiagnostic diagnostic) => _diagnostics.Add(diagnostic with { Line = _position.Line, Column = _position.Column });
 
     private void Statements(IReadOnlyList<Statement>? statements)
     {
@@ -68,19 +73,21 @@ internal sealed class LiquidModelChecker
                 Assign(capture.Identifier, Shape.Of(typeof(string)));
                 break;
             case ForStatement loop:
-                var element = Elements(Expression(loop.Source));
-                Expression(loop.Limit);
+                var loopLocations = _source.Loop();
+                var element = Elements(Expression(loop.Source, loopLocations["source"]));
+                Expression(loop.Limit, loopLocations["limit"]);
                 // offset: continue resumes where the last loop over the same source stopped; it names no variable.
                 if (!loop.OffsetIsContinue)
-                    Expression(loop.Offset);
+                    Expression(loop.Offset, loopLocations["offset"]);
                 Scoped(loop.Statements, (loop.Identifier, element), ("forloop", Shape.Named(ForLoopMembers)));
                 Statements(loop.Else?.Statements);
                 break;
             case TableRowStatement table:
-                var row = Elements(Expression(table.Source));
-                Expression(table.Limit);
-                Expression(table.Offset);
-                Expression(table.Cols);
+                var tableLocations = _source.Loop();
+                var row = Elements(Expression(table.Source, tableLocations["source"]));
+                Expression(table.Limit, tableLocations["limit"]);
+                Expression(table.Offset, tableLocations["offset"]);
+                Expression(table.Cols, tableLocations["cols"]);
                 Scoped(table.Statements, (table.Identifier, row), ("tablerowloop", Shape.Unknown));
                 break;
             case IfStatement branch:
@@ -114,7 +121,8 @@ internal sealed class LiquidModelChecker
                     Expression(value);
                 break;
             case IncludeStatement or RenderStatement:
-                _diagnostics.Add(new TemplateDiagnostic(
+                _position = _source.Find(statement is IncludeStatement ? "include" : "render");
+                Add(new TemplateDiagnostic(
                     "A template cannot include another template: each template version is self-contained"));
                 break;
             case TagStatement tag:
@@ -136,6 +144,14 @@ internal sealed class LiquidModelChecker
         _scopes.RemoveAt(_scopes.Count - 1);
     }
 
+    private Shape Expression(Expression? expression, LiquidSourceLocations locations)
+    {
+        var previous = _source;
+        _source = locations;
+        try { return Expression(expression); }
+        finally { _source = previous; }
+    }
+
     private Shape Expression(Expression? expression)
     {
         switch (expression)
@@ -144,11 +160,12 @@ internal sealed class LiquidModelChecker
                 return Member(member);
             case FilterExpression filter:
                 var input = Expression(filter.Input);
+                _position = _source.Find(filter.Name);
                 if (!_options.Filters.TryGetValue(filter.Name, out _))
-                    _diagnostics.Add(new TemplateDiagnostic($"There is no filter named '{filter.Name}'"));
+                    Add(new TemplateDiagnostic($"There is no filter named '{filter.Name}'"));
                 else if (LiquidTemplateEngine.DateFilters.Contains(filter.Name) && input.Text is { } text &&
                          !LiquidTemplateEngine.TryParseDate(text, out _))
-                    _diagnostics.Add(new TemplateDiagnostic(LiquidTemplateEngine.NotADate(text)));
+                    Add(new TemplateDiagnostic(LiquidTemplateEngine.NotADate(text)));
                 foreach (var argument in filter.Parameters ?? [])
                     Expression(argument.Expression);
                 return Shape.Unknown;
@@ -177,10 +194,11 @@ internal sealed class LiquidModelChecker
             return Shape.Unknown;
         }
         var shape = Lookup(root.Identifier);
+        _position = _source.Find(root.Identifier);
         var path = root.Identifier;
         if (shape == null)
         {
-            _diagnostics.Add(LiquidModel.Member(_model, root.Identifier) is { Readable: false } member
+            Add(LiquidModel.Member(_model, root.Identifier) is { Readable: false } member
                 ? Unreadable("the model", member)
                 : new TemplateDiagnostic(
                     $"'{root.Identifier}' is not a member of the model or a variable of the template"));
@@ -209,6 +227,7 @@ internal sealed class LiquidModelChecker
         switch (segment)
         {
             case IdentifierSegment identifier:
+                _position = _source.Find(identifier.Identifier);
                 return Read(shape, identifier.Identifier, path);
             case IndexerSegment indexer:
                 Expression(indexer.Expression);
@@ -233,7 +252,7 @@ internal sealed class LiquidModelChecker
         {
             if (members.Contains(name))
                 return Shape.Unknown;
-            _diagnostics.Add(new TemplateDiagnostic($"'{path}' has no member '{name}'"));
+            Add(new TemplateDiagnostic($"'{path}' has no member '{name}'"));
             return Shape.Unknown;
         }
         if (shape.Type is not { } type)
@@ -258,10 +277,10 @@ internal sealed class LiquidModelChecker
         {
             if (member.Readable)
                 return Shape.Of(member.Type);
-            _diagnostics.Add(Unreadable(path, member));
+            Add(Unreadable(path, member));
             return Shape.Unknown;
         }
-        _diagnostics.Add(new TemplateDiagnostic(
+        Add(new TemplateDiagnostic(
             $"'{path}' has no member '{name}': it is {TypeName(type)}"));
         return Shape.Unknown;
     }

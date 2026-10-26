@@ -43,7 +43,7 @@ public sealed class PublishedInvokeTests
         var draft = await store.SaveDefinitionAsync(new(name, version, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-        return result.Version!;
+        return result.Workflow!;
     }
 
     private static async Task<WorkflowBundle> Bundle(IWorkflowStateRepository store, WorkflowVersion version)
@@ -197,7 +197,7 @@ public sealed class PublishedInvokeTests
         var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", yaml), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.Contains(result.Diagnostics, error => error.Code == "PUB010" && error.Message.Contains("fixture.activities"));
-        Assert.Null(result.Version);
+        Assert.Null(result.Workflow);
         Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
     }
 
@@ -211,7 +211,7 @@ public sealed class PublishedInvokeTests
         var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller()), null);
         var result = await new WorkflowPublisher(catalog, store, Options()).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-        Assert.Equal(new WorkflowVersionDependency("Callee", 1, WorkflowDependencyKind.Child), Assert.Single(result.Version!.Dependencies!));
+        Assert.Equal(new WorkflowVersionDependency("Callee", 1, WorkflowDependencyKind.Child), Assert.Single(result.Workflow!.Dependencies!));
     }
 
     [Theory]

@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using Fluid;
 using Fluid.Ast;
 using Fluid.Values;
+using IxIFlow.Core;
 using Microsoft.Extensions.FileProviders;
 
 namespace IxIFlow.Templates.Liquid;
@@ -59,7 +60,7 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
         // Drafts are parsed afresh, so validating them keeps nothing; only what is rendered is kept.
         var parsed = ParseOnce(template);
         IReadOnlyList<TemplateDiagnostic> diagnostics = parsed.Template is IStatementList statements
-            ? LiquidModelChecker.Check(statements, modelType, OptionsFor(modelType))
+            ? LiquidModelChecker.Check(statements, modelType, OptionsFor(modelType), template.Content)
             : [parsed.Error!];
         return ValueTask.FromResult(diagnostics);
     }
@@ -79,6 +80,7 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
         if (parsed.Template == null)
             throw new TemplateRenderException(template, parsed.Error!.ToString());
         cancellationToken.ThrowIfCancellationRequested();
+        var context = new TemplateContext(model, OptionsFor(modelType), allowModelMembers: false) { CultureInfo = culture };
         var outer = LiquidValues.Culture.Value;
         LiquidValues.Culture.Value = culture;
         // Fluid compares and formats some values with the current culture, sort by a member among them.
@@ -90,14 +92,20 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
         {
             // The model's own members come through the member access strategy, like every other type's, so a model
             // of a derived type shows no more than the type the template was published against.
-            var context = new TemplateContext(model, OptionsFor(modelType), allowModelMembers: false)
-            {
-                CultureInfo = culture
-            };
             return await parsed.Template.RenderAsync(context,
                 template.Format == TemplateFormat.Html ? HtmlEncoder.Default : NullEncoder.Default);
         }
-        catch (Exception error) when (error is FluidException or InvalidOperationException or FormatException
+        // Fluid 2.40 uses these non-inlined guard methods for both configured budgets.
+        // Identify the vendor throw site, including recursion after scopes unwind,
+        // without classifying arbitrary model exceptions by their text.
+        catch (InvalidOperationException error) when (error.TargetSite?.DeclaringType?.Assembly == typeof(TemplateContext).Assembly &&
+            error.TargetSite.DeclaringType.FullName == "Fluid.ExceptionHelper" &&
+            error.TargetSite.Name is "ThrowMaximumRecursionException" or "ThrowMaximumStatementsException")
+        {
+            var limit = new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Liquid rendering exceeds the configured execution limit");
+            throw new TemplateRenderException(template, limit.Message, limit);
+        }
+        catch (Exception error) when (error is WorkflowEngineException { Kind: WorkflowErrorKind.InvalidDefinition } or FluidException or FormatException
                                           or ArgumentException or InvalidCastException or OverflowException)
         {
             throw new TemplateRenderException(template, error.Message, error);
@@ -165,7 +173,7 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
                 var text = input.ToStringValue();
                 return TryParseDate(text, out var date)
                     ? filter(new DateTimeValue(date), arguments, context)
-                    : throw new InvalidOperationException(NotADate(text));
+                    : throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, NotADate(text));
             });
         }
         return options;

@@ -15,7 +15,8 @@ public sealed record WorkflowVersionDependency(string Name, int Version, Workflo
 /// <summary>A child invocation and its authoring position, retained for catalog validation.</summary>
 public sealed record WorkflowVersionInvocation(string Name, int Version, string Step, string SourceLocation);
 
-/// <summary>Version identity and contracts are immutable. Code presentation refreshes at registration.</summary>
+/// <summary>Version identity and contracts are immutable. Code presentation refreshes at registration.
+/// Artifact references retain the full package closure, including pins copied from verified callees.</summary>
 public sealed record WorkflowVersion(string Name, int Version, string StructureHash,
     string ContractJson, string ContractHash,
     [property: System.Text.Json.Serialization.JsonRequired] WorkflowDescriptor Descriptor,
@@ -25,6 +26,10 @@ public sealed record WorkflowVersion(string Name, int Version, string StructureH
     IReadOnlyList<ArtifactDigest>? ArtifactReferences = null,
     WorkflowDraftId? PublishedDraft = null, string? ManifestJson = null)
 {
+    /// <summary>The new authoring package closure, before union with verified callee pins.
+    /// Shared pins remain here for the final withdrawal check; ArtifactReferences retains the full union.</summary>
+    public IReadOnlyList<ArtifactDigest> AuthoringPackageReferences { get; init; } = [];
+
     public DateTime? PublishedAtUtc { get; init; }
     public string? PublishedBy { get; init; }
     public DateTime? StateChangedAtUtc { get; init; }
@@ -36,7 +41,8 @@ public sealed record WorkflowVersion(string Name, int Version, string StructureH
         ContractJson == other.ContractJson && ContractHash == other.ContractHash && Descriptor == other.Descriptor && State == other.State &&
         ArtifactDigest == other.ArtifactDigest && PublishedDraft == other.PublishedDraft &&
         ManifestJson == other.ManifestJson && SameValues(Invocations, other.Invocations) &&
-        SameValues(Dependencies, other.Dependencies) && SameValues(ArtifactReferences, other.ArtifactReferences);
+        SameValues(Dependencies, other.Dependencies) && SameValues(ArtifactReferences, other.ArtifactReferences) &&
+        SameValues(AuthoringPackageReferences, other.AuthoringPackageReferences);
 
     public override int GetHashCode()
     {
@@ -47,6 +53,7 @@ public sealed record WorkflowVersion(string Name, int Version, string StructureH
         AddValues(ref hash, Invocations);
         AddValues(ref hash, Dependencies);
         AddValues(ref hash, ArtifactReferences);
+        AddValues(ref hash, AuthoringPackageReferences);
         return hash.ToHashCode();
     }
 
@@ -98,6 +105,8 @@ public interface IWorkflowCatalogStore
     Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null);
     Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null);
     Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope);
+    Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null);
+    Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected, string? actor = null);
     Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null);
     Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null);
     Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit);
@@ -282,6 +291,8 @@ public sealed partial class WorkflowCatalog : IWorkflowCatalog, IDisposable
     public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => _store.GetTemplateVersionsAsync(key);
     public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => _store.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
     public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => _store.GetPackageHoldersAsync(id, version, scope);
+    public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _store.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor);
+    public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected, string? actor = null) => _store.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor);
     public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _store.RegisterPackageAsync(package, activities, artifacts, actor);
     public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _store.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
     public IArtifactStore? CatalogArtifacts { get => _store.CatalogArtifacts; set => _store.CatalogArtifacts = value; }
@@ -479,6 +490,11 @@ internal static class WorkflowCatalogRules
         if (!Enum.IsDefined(row.State)) throw new ArgumentOutOfRangeException(nameof(row.State));
         foreach (var digest in (row.ArtifactReferences ?? []).Concat(row.ArtifactDigest is { } artifact ? [artifact] : []))
             _ = new ArtifactDigest(digest.Value);
+        ArgumentNullException.ThrowIfNull(row.AuthoringPackageReferences);
+        foreach (var digest in row.AuthoringPackageReferences)
+            _ = new ArtifactDigest(digest.Value);
+        if (row.AuthoringPackageReferences.Except(row.ArtifactReferences ?? []).Any())
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Authoring package references must be retained in artifact references");
         foreach (var dependency in row.Dependencies ?? [])
         {
             ValidateName(dependency.Name);
@@ -511,7 +527,8 @@ internal static class WorkflowCatalogRules
             existing.ContractJson != loaded.ContractJson || existing.ContractHash != loaded.ContractHash ||
             !SameInvocations(existing.Invocations, loaded.Invocations) ||
             !(existing.Dependencies ?? []).SequenceEqual(loaded.Dependencies ?? []) ||
-            !(existing.ArtifactReferences ?? []).SequenceEqual(loaded.ArtifactReferences ?? []))
+            !(existing.ArtifactReferences ?? []).SequenceEqual(loaded.ArtifactReferences ?? []) ||
+            !existing.AuthoringPackageReferences.SequenceEqual(loaded.AuthoringPackageReferences))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow version metadata is immutable");
     }
 
@@ -567,6 +584,22 @@ internal static class WorkflowCatalogRules
         public IReadOnlyList<WorkflowPackagePin> ActivityPackages { get; init; } = [];
     }
 
+    internal static void CheckAuthoringPackages(WorkflowVersion version, IEnumerable<WorkflowPackage> packages,
+        IEnumerable<WorkflowVersion> versions)
+    {
+        // Verified callee payload copying is an existing pinned consumer. It does not
+        // reacquire a package for new authoring, including after withdrawal.
+        var callees = (version.Dependencies ?? []).Select(edge => (edge.Name, edge.Version)).ToHashSet();
+        var copied = ArtifactReferences(versions.Where(row => callees.Contains((row.Name, row.Version))));
+        var references = ArtifactReferences([version]).Except(copied).ToHashSet();
+        // Retention references include callee-only pins. Restore only the separately recorded
+        // authoring closure, so shared pins cannot erase the caller's own acquisition.
+        references.UnionWith(version.AuthoringPackageReferences);
+        foreach (var package in packages)
+            if (package.Withdrawn && references.Contains(package.Digest))
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A withdrawn package cannot be used for new authoring");
+    }
+
     internal sealed record OrphanPin(IReadOnlyList<ArtifactDigest> Packages, string? Error = null);
 
     internal static async Task<IReadOnlyDictionary<ArtifactDigest, OrphanPin>> ReadOrphanPinsAsync(IReadOnlyList<WorkflowVersion> versions,
@@ -610,7 +643,7 @@ internal static class WorkflowCatalogRules
             {
                 // Unknown dependencies cannot be collected safely. Preserve package identities'
                 // content, but still collect unrelated abandoned bundles. Do not stop the pass.
-                references.UnionWith(packages.Select(package => package.Digest));
+                references.UnionWith(packages.SelectMany(package => (package.Closure ?? []).Select(pin => pin.Digest).Append(package.Digest)));
                 Runtime.Telemetry.ArtifactRetentionUnreadablePins.Add(1, new KeyValuePair<string, object?>("reason", pin.Error));
                 System.Diagnostics.Trace.TraceWarning($"Artifact retention: unreadable orphan instance pin {digest} ({pin.Error}); package content retained conservatively");
             }

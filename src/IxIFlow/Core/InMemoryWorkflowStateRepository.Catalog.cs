@@ -45,7 +45,7 @@ public partial class InMemoryWorkflowStateRepository
     public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null)
     {
         PackageIndexRules.Registration(package, actor);
-        return AcceptPackageAsync(package, activities, artifacts, actor, false);
+        return AcceptPackageAsync(package, activities, artifacts, actor, false, null);
     }
 
     public async Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest,
@@ -55,11 +55,47 @@ public partial class InMemoryWorkflowStateRepository
         var package = await GetPackageAsync(id, version);
         if (package == null || package.Digest != expectedDigest)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package extraction identity changed");
-        return await AcceptPackageAsync(package, activities, artifacts, actor, true);
+        return await AcceptPackageAsync(package, activities, artifacts, actor, true, null);
+    }
+
+    public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package,
+        PackageActivities activities, IArtifactStore artifacts, string? actor = null)
+    {
+        PackageIndexRules.Publication(draftId, package, actor);
+        return AcceptPackageAsync(package, activities, artifacts, actor, false, draftId);
+    }
+
+    public async Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn,
+        CatalogMutationToken expected, string? actor = null)
+    {
+        WorkflowCatalogRules.ValidateText(id);
+        WorkflowCatalogRules.ValidateText(version);
+        id = WorkflowPackageRules.NormalizeId(id);
+        version = WorkflowPackageRules.NormalizeVersion(version);
+        WorkflowPublicationRules.Actor(actor);
+        ArgumentNullException.ThrowIfNull(expected);
+        await _catalogLock.WaitAsync();
+        try
+        {
+            lock (_claimLock)
+            {
+                var row = _packages.GetValueOrDefault((id, version))
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Package version not found");
+                PackageIndexRules.Token(row, expected);
+                PackageIndexRules.Withdrawal(withdrawn);
+                if (row.Withdrawn) return WorkflowPackageRules.Copy(row);
+                var revision = checked(_catalogRevision + 1);
+                row = row with { Withdrawn = true, WithdrawnAtUtc = Now, WithdrawnBy = actor, LifecycleRevision = revision };
+                _packages[(id, version)] = row;
+                _catalogRevision = revision;
+                return WorkflowPackageRules.Copy(row);
+            }
+        }
+        finally { _catalogLock.Release(); }
     }
 
     private async Task<PackageRegistration> AcceptPackageAsync(WorkflowPackage package, PackageActivities activities,
-        IArtifactStore artifacts, string? actor, bool completion)
+        IArtifactStore artifacts, string? actor, bool completion, WorkflowDraftId? draft)
     {
         WorkflowPackageRules.Validate(package);
         package = WorkflowPackageRules.Copy(package);
@@ -67,27 +103,41 @@ public partial class InMemoryWorkflowStateRepository
         await _catalogLock.WaitAsync();
         try
         {
-            lock (_claimLock) WorkflowPackageRules.CheckRegistration(_packages.GetValueOrDefault((package.Id, package.Version)), package);
+            lock (_claimLock)
+            {
+                var existing = _packages.GetValueOrDefault((package.Id, package.Version));
+                if (draft != null && PackageIndexRules.PublicationWinner(draft, existing, _definitions.GetValueOrDefault((draft.Kind, draft.Name, draft.Version))))
+                    return new(WorkflowPackageRules.Copy(existing!), PackageIndexRules.Snapshot(existing!, _packageActivities[(package.Id, package.Version)]), false);
+                WorkflowPackageRules.CheckRegistration(existing, package);
+            }
+            if (draft != null) PackageIndexRules.PublicationActivities(draft, activities);
             await PackageIndexRules.CheckArtifactsAsync(package, activities, artifacts);
             lock (_claimLock)
             {
                 var key = (package.Id, package.Version);
                 var existing = _packages.GetValueOrDefault(key);
+                if (draft != null && PackageIndexRules.PublicationWinner(draft, existing, _definitions.GetValueOrDefault((draft.Kind, draft.Name, draft.Version))))
+                    return new(WorkflowPackageRules.Copy(existing!), PackageIndexRules.Snapshot(existing!, _packageActivities[key]), false);
                 if (completion && existing == null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package disappeared");
                 WorkflowPackageRules.CheckRegistration(existing, package);
-                if (existing?.Withdrawn == true) throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package is withdrawn");
-                foreach (var reference in activities.Closure ?? [])
+                var restoring = PackageIndexRules.Restoring(existing, package, completion);
+                if (existing?.Withdrawn == true && !restoring) throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package is withdrawn");
+                foreach (var reference in restoring ? Array.Empty<WorkflowPackageReference>() : activities.Closure ?? [])
                     if (_packages.TryGetValue((reference.Id, reference.Version), out var dependency) &&
                         (dependency.Digest != reference.Digest || dependency.Withdrawn))
                         throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Package closure identity changed");
                 var prior = _packageActivities.GetValueOrDefault(key);
                 var merged = prior == null ? activities : PackageIndexRules.Merge(prior, activities);
-                if (existing == null || existing.Origin < package.Origin || !PackageIndexRules.Equal(prior!, merged))
+                if (existing == null || restoring || existing.Origin < package.Origin || !PackageIndexRules.Equal(prior!, merged))
                 {
                     var revision = checked(_catalogRevision + 1);
-                    var stored = PackageIndexRules.Stamp(package, existing, merged, Now, actor, revision);
+                    var now = Now;
+                    var stored = PackageIndexRules.Stamp(package, existing, merged, now, actor, revision);
+                    if (draft != null) stored = stored with { PublishedDraft = draft, PublishedAtUtc = now, PublishedBy = actor };
+                    if (restoring) stored = stored with { Withdrawn = false, WithdrawnAtUtc = null, WithdrawnBy = null };
                     _packages[key] = WorkflowPackageRules.Copy(stored);
                     _packageActivities[key] = merged;
+                    if (draft != null) _definitions.Remove((draft.Kind, draft.Name, draft.Version));
                     _catalogRevision = revision;
                 }
                 var saved = _packages[key];
@@ -208,6 +258,7 @@ public partial class InMemoryWorkflowStateRepository
                 // Draft edits use the instance monitor rather than the catalog gate.
                 WorkflowCatalogRules.CheckPublication(draftId, version, _definitions.GetValueOrDefault((draftId.Kind, draftId.Name, draftId.Version)), null);
                 WorkflowCatalogRules.CheckInvocations(version, _versions.Values);
+                WorkflowCatalogRules.CheckAuthoringPackages(version, _packages.Values, _versions.Values);
                 foreach (var dependency in version.Dependencies ?? [])
                     WorkflowCatalogRules.CheckStartable(_versions.GetValueOrDefault((dependency.Name, dependency.Version)), dependency.Name, dependency.Version);
                 var revision = checked(_catalogRevision + 1);

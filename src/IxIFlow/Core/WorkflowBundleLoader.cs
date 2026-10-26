@@ -12,6 +12,7 @@ namespace IxIFlow.Core;
 /// <summary>Enables published workflows on a host. Idle contexts are bounded independently of running operations.</summary>
 public sealed record WorkflowBundleOptions(string CacheDirectory, int MaxCachedBundles = 16)
 {
+    internal WorkflowSharedAssemblyProfile? SharedProfile { get; init; }
     public WorkflowBundleReadLimits ReadLimits { get; init; } = new();
     public TimeSpan FetchTimeout { get; init; } = TimeSpan.FromSeconds(30);
     public TimeSpan CacheLockTimeout { get; init; } = TimeSpan.FromSeconds(30);
@@ -292,6 +293,7 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
 {
     private readonly IReadOnlyDictionary<string, Assembly> _shared;
     private readonly Dictionary<string, ReadOnlyMemory<byte>> _private = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ReadOnlyMemory<byte>> _symbols = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, nint> _native = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     private readonly object _lifetime = new();
     private bool _unloading;
@@ -326,13 +328,15 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
                 }
         };
         _shared = WorkflowSharedAssemblies.Validate(bundle.Manifest);
-        foreach (var (path, bytes) in bundle.Entries.Where(pair => pair.Key.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)).Concat(packageAssemblies))
+        var contents = bundle.Entries.Concat(packageAssemblies).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        foreach (var (path, bytes) in contents.Where(pair => pair.Key.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)))
         {
             using var pe = new System.Reflection.PortableExecutable.PEReader(new MemoryStream(bytes.ToArray()));
             var metadata = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(pe);
             var name = metadata.GetString(metadata.GetAssemblyDefinition().Name);
             if (_shared.ContainsKey(name) || !_private.TryAdd(name, bytes))
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, $"Duplicate or shared private assembly '{name}'");
+            if (contents.TryGetValue(Path.ChangeExtension(path, ".pdb"), out var symbols)) _symbols.Add(name, symbols);
         }
         if (native.Count != 0) throw new ArgumentException("Native images must be verified before loading", nameof(native));
     }
@@ -356,7 +360,11 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
     {
         if (_shared.TryGetValue(assemblyName.Name!, out var shared)) return shared;
         if (_private.TryGetValue(assemblyName.Name!, out var bytes))
-            return LoadFromStream(new MemoryStream(bytes.ToArray(), writable: false));
+        {
+            using var assembly = new MemoryStream(bytes.ToArray(), writable: false);
+            using var symbols = _symbols.TryGetValue(assemblyName.Name!, out var pdb) ? new MemoryStream(pdb.ToArray(), writable: false) : null;
+            return LoadFromStream(assembly, symbols);
+        }
         // Returning null would allow the runtime to search the default context.
         throw new FileNotFoundException($"Private bundle dependency '{assemblyName}' is missing");
     }
@@ -516,21 +524,35 @@ internal sealed class BundleLoadContext : AssemblyLoadContext
     }
 }
 
-/// <summary>The exact shared compatibility profile. Application assemblies are private bundle assets.</summary>
+/// <summary>The SDK/runtime profile, extended only by explicitly declared application contracts for a host or publisher.</summary>
 public static class WorkflowSharedAssemblies
 {
+    private static readonly AsyncLocal<WorkflowSharedAssemblyProfile?> Selected = new();
+    internal static WorkflowSharedAssemblyProfile? Current => Selected.Value;
+    internal static WorkflowSharedAssemblyProfile CreateProfile(IEnumerable<Assembly> contracts) => new(BaseProfile, contracts);
+    internal static IDisposable Enter(WorkflowSharedAssemblyProfile? profile)
+    {
+        var previous = Selected.Value;
+        Selected.Value = profile;
+        return new ProfileScope(previous);
+    }
+    private sealed class ProfileScope(WorkflowSharedAssemblyProfile? previous) : IDisposable
+    {
+        public void Dispose() => Selected.Value = previous;
+    }
     public static bool IsSharedName(string name) => Profile.ContainsKey(name);
     public static AssemblyName? Identity(string name) => Profile.TryGetValue(name, out var identity)
         ? identity.Version == null ? AssemblyLoadContext.Default.LoadFromAssemblyName(identity).GetName() : new AssemblyName(identity.FullName!) : null;
     private static readonly IReadOnlyDictionary<string, AssemblyName> Framework;
-    private static readonly IReadOnlyDictionary<string, AssemblyName> Profile;
+    private static readonly IReadOnlyDictionary<string, AssemblyName> BaseProfile;
+    private static IReadOnlyDictionary<string, AssemblyName> Profile => Selected.Value?.Identities ?? BaseProfile;
 
     static WorkflowSharedAssemblies()
     {
         Framework = RuntimeAssemblies((string?)AppContext.GetData("APP_CONTEXT_DEPS_FILES"), AppContext.BaseDirectory,
             out var available);
         HasFrameworkIdentities = available;
-        Profile = CreateProfile();
+        BaseProfile = CreateProfile();
     }
 
     /// <summary>Whether runtime framework identity discovery completed with a usable framework.</summary>
@@ -552,6 +574,7 @@ public static class WorkflowSharedAssemblies
 
     public static bool IsShared(AssemblyName name) => name.Name != null &&
         Profile.TryGetValue(name.Name, out var identity) &&
+        (Selected.Value?.Contracts.Any(contract => contract.GetName().Name == name.Name) != true || name.Version == identity.Version) &&
         (name.CultureName ?? "") == (identity.CultureName ?? "") &&
         name.GetPublicKeyToken().AsSpan().SequenceEqual(identity.GetPublicKeyToken());
 
@@ -683,6 +706,7 @@ internal sealed class LoadedBundle(BundleLoadContext context, WorkflowDefinition
 
 internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBundleOptions options, ILogger? logger = null) : IDisposable
 {
+    private readonly WorkflowSharedAssemblyProfile? _profile = options.SharedProfile;
     private readonly object _gate = new();
     private readonly BundleCache _cache = new(artifacts, options.CacheDirectory, options.ReadLimits, options.FetchTimeout, options.CacheLockTimeout, logger);
     private readonly Dictionary<ArtifactDigest, Entry> _loaded = [];
@@ -730,6 +754,7 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
 
     private async Task<LoadedBundle> LoadAsync(ArtifactDigest digest, CancellationToken token)
     {
+        using var profile = WorkflowSharedAssemblies.Enter(_profile);
         try
         {
             var bundle = await _cache.ReadAsync(digest, token);
@@ -743,7 +768,12 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
                     (!pin.RequiresRuntimeIdentifier ? pin.RuntimeAssets.GetValueOrDefault("") : null)
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Package '{pin.Id}@{pin.Version}' has no native assets for runtime '{rid}'");
                 var entries = await _cache.ReadPackageAsync(pin, token);
-                foreach (var path in selected.ManagedAssemblies) managed.Add(pin.Id + "/" + path, entries[path]);
+                foreach (var path in selected.ManagedAssemblies)
+                {
+                    managed.Add(pin.Id + "/" + path, entries[path]);
+                    var sibling = Path.ChangeExtension(path, ".pdb");
+                    if (entries.TryGetValue(sibling, out var symbols)) managed.Add(pin.Id + "/" + sibling, symbols);
+                }
                 foreach (var path in selected.NativeLibraries)
                 {
                     if (!native.TryAdd(Path.GetFileName(path), (entries[path], pin.Entries[path])))

@@ -273,8 +273,8 @@ public sealed class ScopeBundleInventoryReview3Tests
         var result = await new WorkflowPublisher(catalog, source, new()
         { SourceOptions = YamlTestContracts.Create(("Data", typeof(Data)), ("Effect", typeof(Effect))) }).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-        Assert.Single(result.Version!.Invocations);
-        return (source, result.Version);
+        Assert.Single(result.Workflow!.Invocations);
+        return (source, result.Workflow);
     }
     private static WorkflowDefinition Child() => Workflow.Create<Data>("InventoryChild").RequiresScope<Value>().Build();
     private static async Task WithStore(bool sqlite, Func<IWorkflowStateRepository, string?, Task> test)

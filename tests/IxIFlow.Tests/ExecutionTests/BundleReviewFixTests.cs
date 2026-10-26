@@ -434,7 +434,7 @@ public sealed class BundleReviewFixTests
         var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", yaml), null);
         var published = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
-        return published.Version!;
+        return published.Workflow!;
     }
 
     [Theory]

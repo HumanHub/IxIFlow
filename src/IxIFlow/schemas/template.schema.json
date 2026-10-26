@@ -1,0 +1,123 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/HumanHub/IxIFlow/v1.0.0/src/IxIFlow/schemas/template.schema.json",
+  "title": "IxIFlow template",
+  "type": "object",
+  "description": "A versioned template and its culture variants.",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "The editor schema this document binds to; readers ignore it."
+    },
+    "schemaVersion": {
+      "type": "string",
+      "description": "The document contract version.",
+      "enum": [
+        "1.0"
+      ],
+      "default": "1.0"
+    },
+    "template": {
+      "$ref": "#/definitions/templateHeader",
+      "description": "The template identity, engine and declared model."
+    },
+    "imports": {
+      "$ref": "#/definitions/workflowImports",
+      "description": "Package dependencies for the model and its type arguments."
+    },
+    "content": {
+      "type": "string",
+      "description": "The base variant\u0027s Liquid text."
+    },
+    "cultures": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Liquid text keyed by culture name."
+    }
+  },
+  "required": [
+    "template",
+    "content"
+  ],
+  "definitions": {
+    "templateHeader": {
+      "type": "object",
+      "description": "The identity and declared read surface of a template.",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "The lowercase package-style template key.",
+          "pattern": "^(?!.*[A-Z])\\w\u002B([.-]\\w\u002B)*$",
+          "maxLength": 100
+        },
+        "version": {
+          "type": "integer",
+          "description": "The positive integer template version.",
+          "minimum": 1
+        },
+        "engine": {
+          "type": "string",
+          "description": "The template engine name: liquid."
+        },
+        "format": {
+          "type": "string",
+          "description": "The output format: text or html.",
+          "enum": [
+            "text",
+            "html"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "description": "The full C# model type expression, including generic arguments."
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The template display name."
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The template description."
+        }
+      },
+      "required": [
+        "key",
+        "version",
+        "engine",
+        "format",
+        "model"
+      ]
+    },
+    "workflowImports": {
+      "type": "object",
+      "description": "Dependencies resolved by a publishing host before translation.",
+      "additionalProperties": false,
+      "properties": {
+        "catalogs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Activity catalog dependencies to resolve and pin."
+        },
+        "workflows": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Workflow dependencies to resolve and pin."
+        }
+      }
+    }
+  }
+}

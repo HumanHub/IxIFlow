@@ -5,6 +5,7 @@ namespace IxIFlow.Core.Runtime;
 /// <summary>How many instances the host runs at once and how long it drains on stop.</summary>
 internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan PollInterval, string Name)
 {
+    internal WorkflowSharedAssemblyProfile? SharedProfile { get; init; }
     private readonly SemaphoreSlim _capabilityGate = new(1, 1);
     private sealed record VersionCapability(string StructureHash, bool Compatible, string? ManifestHash);
     private sealed record CapabilitySnapshot(IWorkflowCatalog Catalog, long Revision, long CatalogRevision,
@@ -45,6 +46,7 @@ internal sealed record HostSettings(int Slots, TimeSpan DrainTimeout, TimeSpan P
 
     private async Task<IReadOnlyDictionary<string, string>> ReadCapabilitiesAsync(IWorkflowCatalog catalog)
     {
+        using var profile = WorkflowSharedAssemblies.Enter(SharedProfile);
         // Capture local registration revision before enumeration so a racing registration
         // invalidates this snapshot on the next placement lookup.
         var revision = catalog.DefinitionRevision;

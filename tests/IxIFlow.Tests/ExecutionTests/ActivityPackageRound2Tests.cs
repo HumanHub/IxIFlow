@@ -288,8 +288,8 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.root", "1.0.0", new(), "<dependency id=\"fixture.metadata\" version=\"[1.0.0,3.0.0)\"/>")));
         var artifacts = new RecordingArtifacts(store);
         using var resolved = await new WorkflowPackageResolver(store, artifacts, new()).ResolveAsync(new List<string> { "fixture.root@1.0.0" }, PackageAcquisition.Persist, [], default);
-        Assert.DoesNotContain(unselected.Digest, artifacts.Opened);
-        Assert.Equal(1, artifacts.Opened.Count(digest => digest == selected.Digest));
+        Assert.DoesNotContain(unselected.Stored.Digest, artifacts.Opened);
+        Assert.Equal(1, artifacts.Opened.Count(digest => digest == selected.Stored.Digest));
         Assert.Equal(2, artifacts.Opened.Count);
     }
 
@@ -299,7 +299,7 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         var store = new InMemoryWorkflowStateRepository();
         var package = await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.history", "1.0.0", new())));
         var historical = await store.PutAsync(ArtifactKind.Package, new MemoryStream([1]));
-        for (var i = 2; i < 2055; i++) await store.RegisterPackageAsync(package with { Version = i + ".0.0", Digest = historical }, new([], PackageExtraction.Pending, null, null, []), store);
+        for (var i = 2; i < 2055; i++) await store.RegisterPackageAsync(package.Stored with { Version = i + ".0.0", Digest = historical }, new([], PackageExtraction.Pending, null, null, []), store);
         await store.DeleteAsync(historical);
         foreach (var import in new[] { "fixture.history@1.0.0", "fixture.history" })
         {
@@ -372,7 +372,8 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         var path = Path.Combine(Folder(), "NuGet.Config");
         await File.WriteAllTextAsync(path, $"<configuration><packageSources><clear/><add key=\"offline\" value=\"{Folder("feed")}\"/></packageSources><packageSourceMapping><packageSource key=\"offline\"><package pattern=\"other.*\"/></packageSource></packageSourceMapping></configuration>");
         var store = new InMemoryWorkflowStateRepository();
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = path }).ResolveAsync(new List<string> { "fixture.unmapped" }, PackageAcquisition.Persist, [], default));
+        var error = await Assert.ThrowsAsync<WorkflowPublishException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = path }).ResolveAsync(new List<string> { "fixture.unmapped" }, PackageAcquisition.Persist, [], default));
+        Assert.Equal("PUB003", error.Code);
         Assert.Contains("fixture.unmapped", error.Message);
         Assert.Contains("source mapping", error.Message);
     }
@@ -385,7 +386,8 @@ public sealed class ActivityPackageRound2Tests : IDisposable
         var path = Path.Combine(Folder(), "NuGet.Config");
         await File.WriteAllTextAsync(path, $"<configuration><packageSources><clear/><add key=\"safe-source\" value=\"{feed}\"/></packageSources></configuration>");
         var store = new InMemoryWorkflowStateRepository();
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = path }).ResolveAsync(new List<string> { "fixture.broken@1.0.0" }, PackageAcquisition.Persist, [], default));
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => new WorkflowPackageResolver(store, store, new() { NuGetConfigPath = path }).ResolveAsync(new List<string> { "fixture.broken@1.0.0" }, PackageAcquisition.Persist, [], default));
+        Assert.Equal(WorkflowErrorKind.Infrastructure, error.Kind);
         Assert.Contains("safe-source", error.Message);
         Assert.Contains("fixture.broken", error.Message);
         Assert.DoesNotContain("very-secret", error.ToString());

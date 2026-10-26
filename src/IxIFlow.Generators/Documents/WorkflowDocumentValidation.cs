@@ -26,7 +26,10 @@ public interface IWorkflowValidationContext
     Task<bool> HasEventAsync(string key, CancellationToken token);
     Task<bool> HasWorkflowAsync(string name, int? version, CancellationToken token);
     Task<bool> HasStepTemplateAsync(string key, CancellationToken token);
+    Task<TemplateDocumentContract?> FindTemplateAsync(string key, int? version, CancellationToken token);
 }
+
+public sealed record TemplateDocumentContract(string Key, int Version, string ModelType);
 
 public sealed record ActivityDocumentContract(string Key, string Version, string PackageName = "", string PackageVersion = "");
 

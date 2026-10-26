@@ -89,7 +89,7 @@ public sealed class WorkflowPublishingTypeSyntaxTests
                             var draft = await store.SaveDefinitionAsync(new("TypeSyntax", 1, "workflow", yaml), null);
                             var result = await new WorkflowPublisher(store, store, new() { SourceOptions = source }).PublishAsync(draft.Id);
                             if (!result.Success) throw new Exception(configured + ": " + string.Join("; ", result.Diagnostics));
-                            if (result.Version!.ManifestJson!.Contains("DynamicPlugin")) throw new Exception("Plugin entered the profile");
+                            if (result.Workflow!.ManifestJson!.Contains("DynamicPlugin")) throw new Exception("Plugin entered the profile");
                         }
 
                         const string missing = "global::DynamicPlugin.Data";
@@ -112,7 +112,7 @@ public sealed class WorkflowPublishingTypeSyntaxTests
                                 var result = await new WorkflowPublisher(store, store, new() { SourceOptions = source }).PublishAsync(draft.Id);
                                 if (result.Success) throw new Exception("Accepted an out-of-profile generic argument");
                                 var error = result.Diagnostics.Single();
-                                if (error.Code != "PUB007" || error.Stage != WorkflowPublishStage.Validate ||
+                                if (error.Code != "PUB003" || error.Stage != WorkflowPublishStage.Validate ||
                                     !error.Message.Contains("Configured type '" + invalid[i] + "'") ||
                                     !error.Message.Contains("component '" + missing + "'") ||
                                     !error.Message.Contains("host reference profile")) throw new Exception(error.ToString());

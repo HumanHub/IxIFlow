@@ -39,13 +39,13 @@ internal sealed class WorkflowPackageFeed(SourceRepository source, SourceCacheCo
     private async Task<string> BaseAddressAsync(CancellationToken token)
     {
         if (_baseAddress != null) return _baseAddress;
-        var bytes = await ReadAsync(source.PackageSource.Source, token) ?? throw new InvalidOperationException("NuGet service index is unavailable");
+        var bytes = await ReadAsync(source.PackageSource.Source, token) ?? throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "NuGet service index is unavailable");
         using var json = JsonDocument.Parse(bytes);
         var address = json.RootElement.GetProperty("resources").EnumerateArray()
             .First(resource => resource.GetProperty("@type").GetString()!.StartsWith("PackageBaseAddress/3.0.0", StringComparison.Ordinal))
             .GetProperty("@id").GetString()!;
         if (!Uri.TryCreate(address, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
-            throw new InvalidOperationException("NuGet package base address is invalid");
+            throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "NuGet package base address is invalid");
         return _baseAddress = address.TrimEnd('/') + "/";
     }
 

@@ -61,7 +61,7 @@ public sealed class WorkflowPublishingTests
         Assert.Null(await catalog.GetWorkflowDefinitionAsync(draft.Name, draft.Version));
         var result = await new WorkflowPublisher(catalog, store, Options()).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-        var version = Assert.IsType<WorkflowVersion>(result.Version);
+        var version = Assert.IsType<WorkflowVersion>(result.Workflow);
         Assert.Equal(WorkflowVersionState.Published, version.State);
         Assert.Equal(draft.Id, version.PublishedDraft);
         Assert.Null(await store.GetDefinitionAsync("workflow", draft.Name, draft.Version));
@@ -104,7 +104,7 @@ public sealed class WorkflowPublishingTests
         // A fresh publisher/catalog sees the durable receipt after the draft has gone.
         var retry = await new WorkflowPublisher(new WorkflowCatalog(store), store, Options()).PublishAsync(draft.Id);
         Assert.True(retry.Success);
-        Assert.Equal(version.ArtifactDigest, retry.Version!.ArtifactDigest);
+        Assert.Equal(version.ArtifactDigest, retry.Workflow!.ArtifactDigest);
         Assert.Single(await store.GetWorkflowVersionsAsync());
         await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SaveDefinitionAsync(draft with { Generation = Guid.Empty, Revision = 0 }, null));
     }
@@ -116,7 +116,7 @@ public sealed class WorkflowPublishingTests
     [InlineData("translate", WorkflowPublishStage.Translate, 2)]
     [InlineData("compile", WorkflowPublishStage.Compile, 10)]
     [InlineData("test", WorkflowPublishStage.Test, 6)]
-    [InlineData("identity", WorkflowPublishStage.Test, 2)]
+    [InlineData("identity", WorkflowPublishStage.Validate, 2)]
     [InlineData("imports", WorkflowPublishStage.Validate, 6)]
     public async Task FailuresKeepYamlPositionsAndLeaveDraftUntouched(string failure, WorkflowPublishStage stage, int line)
     {
@@ -141,7 +141,17 @@ public sealed class WorkflowPublishingTests
         var error = Assert.Single(result.Diagnostics, item => item.Severity == WorkflowDiagnosticSeverity.Error);
         Assert.Equal(stage, error.Stage);
         Assert.Equal("workflow.yaml", error.Path);
-        Assert.Equal(line, error.Line);
+        var mapped = WorkflowYamlSerializer.Read(WorkflowYamlSerializer.Write(WorkflowYamlSerializer.Read(yaml)));
+        var expectedLine = failure switch
+        {
+            "validate" => DocumentModel.GetLocation(WorkflowYamlSerializer.Read(yaml), "workflow.dataType").Line,
+            "translate" => mapped.Workflow.Location.Line,
+            "compile" => DocumentModel.GetLocation(mapped, "definitions[0].input[0].target").Line,
+            "test" => mapped.Definitions[0].Location.Line,
+            "identity" => WorkflowYamlSerializer.Read(yaml).Workflow.Location.Line,
+            _ => line
+        };
+        Assert.Equal(expectedLine, error.Line);
         Assert.True(error.Column > 0);
         Assert.Equal(draft, await store.GetDefinitionAsync("workflow", draft.Name, draft.Version));
         Assert.Empty(await store.GetWorkflowVersionsAsync());
@@ -172,7 +182,10 @@ public sealed class WorkflowPublishingTests
         });
         var result = await new WorkflowPublisher(store, upload, Options()).PublishAsync(draft.Id);
         Assert.False(result.Success);
-        Assert.Equal(WorkflowPublishStage.Publish, Assert.Single(result.Diagnostics).Stage);
+        var conflict = Assert.Single(result.Diagnostics);
+        Assert.Equal(WorkflowPublishStage.Publish, conflict.Stage);
+        Assert.Equal("PUB040", conflict.Code);
+        Assert.Equal(WorkflowPublishDiagnosticClass.Conflict, conflict.Class);
         Assert.Equal(2, (await store.GetDefinitionAsync("workflow", draft.Name, draft.Version))!.Revision);
         Assert.Empty(await store.GetWorkflowVersionsAsync());
         Assert.True(await store.ExistsAsync(upload.Digest!.Value));
@@ -192,7 +205,7 @@ public sealed class WorkflowPublishingTests
             return new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         }));
         Assert.All(results, result => Assert.True(result.Success, string.Join("; ", result.Diagnostics)));
-        Assert.Equal(results[0].Version!.ArtifactDigest, results[1].Version!.ArtifactDigest);
+        Assert.Equal(results[0].Workflow!.ArtifactDigest, results[1].Workflow!.ArtifactDigest);
         Assert.Single(await store.GetWorkflowVersionsAsync());
         Assert.Null(await store.GetDefinitionAsync("workflow", draft.Name, draft.Version));
     }
@@ -226,14 +239,15 @@ public sealed class WorkflowPublishingTests
         var (thread, context) = await HangingDefaultAttribute.Entered.Task.WaitAsync(TimeSpan.FromSeconds(15));
         var result = await publication.WaitAsync(TimeSpan.FromSeconds(15));
         Assert.False(result.Success);
-        Assert.Null(result.Version);
+        Assert.Null(result.Workflow);
         var error = Assert.Single(result.Diagnostics);
         Assert.Equal(WorkflowPublishStage.Test, error.Stage);
         Assert.Equal(WorkflowDiagnosticSeverity.Error, error.Severity);
-        Assert.Equal("PUB004", error.Code);
-        Assert.Equal($"Build() exceeded the publish timeout of {timeout}", error.Message);
+        Assert.Equal("PUB043", error.Code);
+        Assert.Equal(WorkflowPublishDiagnosticClass.Unavailable, error.Class);
+        Assert.Equal("Build() exceeded the configured timeout", error.Message);
         Assert.Equal("workflow.yaml", error.Path);
-        Assert.Equal(WorkflowYamlSerializer.Read(Yaml).Workflow.Location.Line, error.Line);
+        Assert.Equal(WorkflowYamlSerializer.Read(WorkflowYamlSerializer.Write(WorkflowYamlSerializer.Read(Yaml))).Workflow.Location.Line, error.Line);
         Assert.True(timer.Elapsed >= timeout);
         Assert.True(timer.Elapsed < TimeSpan.FromSeconds(15));
         Assert.True(thread.IsAlive);

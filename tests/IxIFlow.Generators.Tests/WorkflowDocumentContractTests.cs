@@ -28,6 +28,10 @@ public sealed class WorkflowDocumentContractTests
     // One translatable document per closed member; a member declared without a case here fails DeclaredValuesTranslate.
     private static readonly Dictionary<(Type, string), Func<string, DocumentNode>> ValueDocuments = new()
     {
+        [(typeof(TemplateDocument), nameof(TemplateDocument.SchemaVersion))] = value =>
+            Template() with { SchemaVersion = value },
+        [(typeof(TemplateHeaderDocument), nameof(TemplateHeaderDocument.Format))] = value =>
+            Template() with { Template = Template().Template with { Format = value } },
         [(typeof(ActivityDocument), nameof(ActivityDocument.SchemaVersion))] = value =>
             new ActivityDocument { Activity = new() { Key = "acme.values", Version = 1 }, Body = "await Task.Yield();", SchemaVersion = value },
         [(typeof(ActivityMemberDocument), nameof(ActivityMemberDocument.Control))] = value =>
@@ -75,8 +79,21 @@ public sealed class WorkflowDocumentContractTests
     {
         WorkflowDocument workflow => WorkflowSourceTranslator.Translate(workflow, "values.yaml"),
         ActivityDocument activity => ActivitySourceTranslator.Translate(activity, WorkflowYamlSerializer.Write(activity), "values.yaml"),
+        TemplateDocument template => ValidateTemplate(template),
         _ => throw new ArgumentException("Unsupported document root", nameof(document))
     };
+
+    private static TemplateDocument Template() => new()
+    {
+        Template = new() { Key = "values", Version = 1, Engine = "liquid", Format = "text", Model = "FlowData" }, Content = "{{ Value }}"
+    };
+
+    private static string ValidateTemplate(TemplateDocument template)
+    {
+        var validation = TemplateDocumentValidator.Validate(template);
+        if (!validation.IsValid) throw new WorkflowSourceException(validation.Diagnostics[0].Message, "values.yaml", 1, 1);
+        return WorkflowYamlSerializer.Write(template);
+    }
 
     private static WorkflowDocument Document(WorkflowStepDocument step) =>
         new() { Workflow = new() { Name = "Values", DataType = "FlowData" }, Definitions = [step] };

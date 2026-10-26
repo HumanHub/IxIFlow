@@ -8,6 +8,8 @@ public sealed class WorkflowSchemaTests
     private static readonly Lazy<JsonSchema> Schema = new(() => JsonSchema.FromFile(WorkflowSchemaFiles.SchemaPath));
     private static readonly Lazy<JsonSchema> ActivitySchema = new(() => JsonSchema.FromFile(
         Path.Combine(WorkflowSchemaFiles.RepositoryRoot(), "src/IxIFlow/schemas/activity.schema.json")));
+    private static readonly Lazy<JsonSchema> TemplateSchema = new(() => JsonSchema.FromFile(
+        Path.Combine(WorkflowSchemaFiles.RepositoryRoot(), "src/IxIFlow/schemas/template.schema.json")));
     private const string Header = "workflow: {name: Schema, dataType: FlowData}\n";
 
     private static readonly string Root = WorkflowSchemaFiles.RepositoryRoot();
@@ -117,6 +119,7 @@ public sealed class WorkflowSchemaTests
     {
         "workflow" => WorkflowYamlSerializer.Read(yaml),
         "activity" => WorkflowYamlSerializer.ReadActivity(yaml),
+        "template" => WorkflowYamlSerializer.ReadTemplate(yaml),
         _ => throw new ArgumentException("Unsupported document root", nameof(yaml))
     };
 
@@ -124,7 +127,8 @@ public sealed class WorkflowSchemaTests
     {
         // Schema tests intentionally include missing roots, so select from the raw value.
         var value = WorkflowYamlSchemaValueTests.Read(yaml);
-        var schema = value.ValueKind == System.Text.Json.JsonValueKind.Object && value.TryGetProperty("activity", out _)
+        var schema = value.ValueKind == System.Text.Json.JsonValueKind.Object && value.TryGetProperty("template", out _)
+            ? TemplateSchema.Value : value.ValueKind == System.Text.Json.JsonValueKind.Object && value.TryGetProperty("activity", out _)
             ? ActivitySchema.Value : Schema.Value;
         return schema.Evaluate(value, new EvaluationOptions { OutputFormat = OutputFormat.List });
     }

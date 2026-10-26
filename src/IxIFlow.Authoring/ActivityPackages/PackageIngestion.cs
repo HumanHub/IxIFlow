@@ -46,6 +46,14 @@ public sealed class PackageIngestion(IWorkflowCatalogStore catalog, IArtifactSto
         if (existing != null)
         {
             var indexed = await catalog.GetPackageDetailAsync(existing.Id, existing.Version, CatalogScope.Unrestricted);
+            // A verified upload restores the recorded extraction/closure without resolving a
+            // withdrawn root as a new-authoring dependency. The store owns the atomic restore.
+            if (existing.Withdrawn)
+            {
+                var restored = await PersistAsync(catalog, artifacts,
+                    [new(new(verified.Package with { Origin = origin }, verified.Bytes), indexed!.Activities)], actor, token, completion);
+                return restored[0];
+            }
             if (indexed?.Activities.Extraction == PackageExtraction.Indexed && await ClosureAvailableAsync(indexed.Activities))
             {
                 var replayed = await PersistAsync(catalog, artifacts,

@@ -94,19 +94,19 @@ public sealed class PublishedActivityPackageScenarios
         var publisher = new WorkflowPublisher(store, store);
         var fixture = ActivityPackageFixture.Create();
         var package = await publisher.UploadPackageAsync(new MemoryStream(fixture.Activity));
-        Assert.Equal(package.Digest, (await publisher.UploadPackageAsync(new MemoryStream(fixture.Activity))).Digest);
+        Assert.Equal(package.Stored.Digest, (await publisher.UploadPackageAsync(new MemoryStream(fixture.Activity))).Stored.Digest);
         if (store is IAsyncDisposable disposable) await disposable.DisposeAsync();
         var reopened = database.NewRepository();
         publisher = new WorkflowPublisher(reopened, reopened);
         var saved = Assert.Single(await reopened.GetPackagesAsync("FIXTURE.ACTIVITIES"));
-        Assert.Equal(package.Id, saved.Id);
-        Assert.Equal(package.Version, saved.Version);
-        Assert.Equal(package.Digest, saved.Digest);
-        Assert.Equal(package.Entries.OrderBy(pair => pair.Key), saved.Entries.OrderBy(pair => pair.Key));
+        Assert.Equal(package.Stored.Id, saved.Id);
+        Assert.Equal(package.Stored.Version, saved.Version);
+        Assert.Equal(package.Stored.Digest, saved.Digest);
+        Assert.Equal(package.Stored.Entries.OrderBy(pair => pair.Key), saved.Entries.OrderBy(pair => pair.Key));
         var different = ActivityPackageFixture.Package("fixture.activities", "1.0.0", new() { ["extra.txt"] = [1] });
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => publisher.UploadPackageAsync(new MemoryStream(different)));
         Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
-        Assert.Equal(package.Digest, Assert.Single(await reopened.GetPackagesAsync()).Digest);
+        Assert.Equal(package.Stored.Digest, Assert.Single(await reopened.GetPackagesAsync()).Digest);
     }
 
     [Theory]
@@ -126,7 +126,7 @@ public sealed class PublishedActivityPackageScenarios
         var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", 1, "workflow", ActivityPackageFixture.Yaml()), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-        var version = result.Version!;
+        var version = result.Workflow!;
         var packages = JsonSerializer.Deserialize<WorkflowBundleManifest>(version.ManifestJson!)!.ActivityPackages;
         foreach (var file in Directory.EnumerateFiles(root, "*.artifact")) File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddDays(-100));
         Assert.Equal(1, await store.PurgeArtifactsAsync(files, TimeSpan.FromDays(90), 100));
@@ -170,11 +170,11 @@ public sealed class PublishedActivityPackageScenarios
         {
             await gate.Task;
             try { return (Package: await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(bytes)), Error: (WorkflowEngineException?)null); }
-            catch (WorkflowEngineException error) { return (Package: (WorkflowPackage?)null, Error: error); }
+            catch (WorkflowEngineException error) { return (Package: (PackageRegistration?)null, Error: error); }
         })).ToArray();
         gate.SetResult();
         var results = await Task.WhenAll(tasks);
-        var winner = Assert.Single(results, result => result.Package != null).Package!;
+        var winner = Assert.Single(results, result => result.Package != null).Package!.Stored;
         Assert.Equal(WorkflowErrorKind.InvalidState, Assert.Single(results, result => result.Error != null).Error!.Kind);
         var saved = Assert.Single(await store.GetPackagesAsync("FIXTURE.CONCURRENT"));
         Assert.Equal("1.0.0-beta", saved.Version);
@@ -190,8 +190,18 @@ public sealed class PublishedActivityPackageScenarios
         var store = database.NewRepository();
         var root = Folder();
         var files = new FileSystemArtifactStore(root);
-        var publisher = new WorkflowPublisher(store, files);
-        var package = await publisher.UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("fixture.conservative", "1.0.0", new())));
+        var feed = Folder();
+        await File.WriteAllBytesAsync(Path.Combine(feed, "fixture.conservative.1.0.0.nupkg"),
+            ActivityPackageFixture.Package("fixture.conservative", "1.0.0", new()));
+        var config = Path.Combine(feed, "NuGet.Config");
+        await File.WriteAllTextAsync(config, "<configuration><packageSources><clear/><add key=\"fixture\" value=\"" +
+            System.Security.SecurityElement.Escape(feed) + "\"/></packageSources></configuration>");
+        var publisher = new WorkflowPublisher(store, files, new() { NuGetConfigPath = config });
+        var draft = await store.SaveDefinitionAsync(new("OrphanFixture", 1, "workflow",
+            "workflow: {name: OrphanFixture, version: 1, dataType: MissingType}\nimports: {catalogs: [fixture.conservative@1.0.0]}\ndefinitions: []"), null);
+        Assert.False((await publisher.PublishAsync(draft.Id)).Success);
+        var package = (await store.GetPackageAsync("fixture.conservative", "1.0.0"))!;
+        Assert.Equal(WorkflowPackageOrigin.Resolved, package.Origin);
         var missing = ArtifactDigest.Of([91]);
         await store.SeedAsync(new WorkflowInstance
         {

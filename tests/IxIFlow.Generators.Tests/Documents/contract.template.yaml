@@ -1,0 +1,17 @@
+$schema: template.schema.json
+schemaVersion: '1.0'
+template:
+  key: contract.template
+  version: 2
+  engine: liquid
+  format: html
+  model: Shop.Envelope<Shop.Order>
+  displayName: Order confirmation
+  description: Confirms the order.
+imports:
+  catalogs: [shop.models@1.2.0]
+content: |
+  <p>{{ Value.Number }}</p>
+cultures:
+  de: |
+    <p>Bestellung {{ Value.Number }}</p>

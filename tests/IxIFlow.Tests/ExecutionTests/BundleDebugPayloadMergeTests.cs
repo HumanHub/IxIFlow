@@ -556,6 +556,6 @@ public sealed class BundleDebugPayloadMergeTests
         var draft = await store.SaveDefinitionAsync(new("BundleDebugMerge", version, "workflow", yaml), null);
         var published = await new WorkflowPublisher(store, (IArtifactStore)store).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
-        return published.Version!;
+        return published.Workflow!;
     }
 }

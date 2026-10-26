@@ -18,7 +18,7 @@ public sealed class WorkflowReceiptConversionTests
         var contract = WorkflowContract.OfType(typeof(object));
         var row = await store.PublishDefinitionAsync(draft.Id, new(draft.Name, draft.Version, "hash", contract.ToJson(), contract.Hash,
             Descriptor: new WorkflowDescriptor(draft.Name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), [], ArtifactDigest: digest, PublishedDraft: draft.Id, ManifestJson: "{}"), store, "publisher");
-        var result = new WorkflowPublishResult(row, []);
+        var result = new WorkflowPublishResult(WorkflowDraftKinds.Workflow, row, null, null, []);
         Assert.True(result.Success);
         Assert.Equal(draft.Id, result.Receipt!.Draft);
         Assert.Equal(JsonSerializer.Serialize(row), result.Receipt.ReceiptJson);
@@ -26,6 +26,6 @@ public sealed class WorkflowReceiptConversionTests
         Assert.Equal(draft.Generation, decoded.PublishedDraft!.Generation);
         Assert.Equal("publisher", decoded.PublishedBy);
         Assert.Equal(row.LifecycleRevision, decoded.LifecycleRevision);
-        Assert.Null(new WorkflowPublishResult(null, []).Receipt);
+        Assert.Null(new WorkflowPublishResult(WorkflowDraftKinds.Workflow, null, null, null, []).Receipt);
     }
 }

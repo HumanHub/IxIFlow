@@ -33,7 +33,8 @@ public partial class InMemoryWorkflowStateRepository
                 return Task.FromResult(WorkflowPublicationRules.Copy(prior));
             var stored = _versions.GetValueOrDefault((draftId.Name, draftId.Version));
             var canStart = _definitions.GetValueOrDefault((draftId.Kind, draftId.Name, draftId.Version))?.Id == draftId || stored?.PublishedDraft == draftId ||
-                draftId.Kind == WorkflowDraftKinds.Template && _templates.GetValueOrDefault((draftId.Name, draftId.Version))?.PublishedDraft == draftId;
+                draftId.Kind == WorkflowDraftKinds.Template && _templates.GetValueOrDefault((draftId.Name, draftId.Version))?.PublishedDraft == draftId ||
+                draftId.Kind == WorkflowDraftKinds.Activity && _packages.GetValueOrDefault((draftId.Name, PackageIndexRules.PublishedVersion(draftId)))?.PublishedDraft == draftId;
             if (!canStart && prior?.State is not (WorkflowPublicationState.Running or WorkflowPublicationState.Abandoned))
                 throw new CatalogPreconditionException("The definition identity changed");
             if (prior?.State == WorkflowPublicationState.Running)
@@ -79,7 +80,8 @@ public partial class InMemoryWorkflowStateRepository
         {
             var row = OwnedPublication(id, hostId) ?? throw new CatalogPreconditionException("The publication attempt is no longer owned by this host");
             outcome = WorkflowPublicationRules.Outcome(row.Draft, outcome, _versions.GetValueOrDefault((row.Draft.Name, row.Draft.Version)),
-                row.Draft.Kind == WorkflowDraftKinds.Template ? _templates.GetValueOrDefault((row.Draft.Name, row.Draft.Version)) : null);
+                row.Draft.Kind == WorkflowDraftKinds.Template ? _templates.GetValueOrDefault((row.Draft.Name, row.Draft.Version)) : null,
+                row.Draft.Kind == WorkflowDraftKinds.Activity ? _packages.GetValueOrDefault((row.Draft.Name, PackageIndexRules.PublishedVersion(row.Draft))) : null);
             row = WorkflowPublicationRules.Copy(row with { State = outcome.Receipt == null ? WorkflowPublicationState.Failed : WorkflowPublicationState.Published,
                 FinishedAtUtc = Now, Outcome = outcome });
             _publications[id] = row;

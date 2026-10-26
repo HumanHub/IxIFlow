@@ -75,4 +75,49 @@ internal static class PackageIndexRules
         if (package.Origin is not (WorkflowPackageOrigin.Resolved or WorkflowPackageOrigin.Uploaded) || package.PublishedDraft != null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Only resolved or uploaded packages can be registered");
     }
+
+    internal static string PublishedVersion(WorkflowDraftId draft) =>
+        draft.Version.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".0.0";
+
+    internal static void Publication(WorkflowDraftId draft, WorkflowPackage package, string? actor)
+    {
+        WorkflowPublicationRules.Id(draft);
+        WorkflowPublicationRules.Actor(actor);
+        if (draft.Kind != WorkflowDraftKinds.Activity || package.Id != draft.Name || package.Version != PublishedVersion(draft) ||
+            package.PublishedDraft != draft || package.Origin != WorkflowPackageOrigin.Published)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Package and activity draft identities differ");
+    }
+
+    internal static bool PublicationWinner(WorkflowDraftId draft, WorkflowPackage? existing, WorkflowDraft? current)
+    {
+        if (existing != null)
+        {
+            if (existing.PublishedDraft == draft) return true;
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The package publication identity is occupied");
+        }
+        if (current?.Id != draft) throw new CatalogPreconditionException("The definition identity changed");
+        return false;
+    }
+
+    internal static void PublicationActivities(WorkflowDraftId draft, PackageActivities activities)
+    {
+        if (activities.Extraction != PackageExtraction.Indexed || activities.Activities.Count != 1 ||
+            activities.Activities[0].Key != draft.Name ||
+            activities.Activities[0].Version != draft.Version.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Publication requires exactly the matching activity descriptor");
+    }
+
+    internal static bool Restoring(WorkflowPackage? existing, WorkflowPackage incoming, bool completion) =>
+        existing?.Withdrawn == true && incoming.Origin == WorkflowPackageOrigin.Uploaded && !completion;
+
+    internal static void Token(WorkflowPackage row, CatalogMutationToken expected)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        if (row.LifecycleRevision != expected.Revision) throw new CatalogPreconditionException("The package lifecycle revision changed");
+    }
+
+    internal static void Withdrawal(bool withdrawn)
+    {
+        if (!withdrawn) throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Restore a package by uploading identical verified bytes");
+    }
 }

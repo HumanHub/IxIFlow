@@ -53,7 +53,7 @@ public sealed class WorkflowContractBundleTests
         var draft = await store.SaveDefinitionAsync(new("ContractBundle", 1, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-        var row = result.Version!;
+        var row = result.Workflow!;
         var expected = WorkflowContract.OfType(typeof(WorkflowContractData));
         Assert.Equal(expected.ToJson(), row.ContractJson);
         Assert.Equal(expected.Hash, row.ContractHash);
@@ -107,7 +107,7 @@ public sealed class WorkflowContractBundleTests
         {
             await using var provider = PublishedBundleScenario.Host(store, cache);
             var catalog = provider.GetRequiredService<IWorkflowCatalog>();
-            using var lease = await catalog.AcquireWorkflowDefinitionAsync(published.Version!.Name, 1, published.Version.ArtifactDigest);
+            using var lease = await catalog.AcquireWorkflowDefinitionAsync(published.Workflow!.Name, 1, published.Workflow.ArtifactDigest);
             var definition = lease.Definition;
             Assert.NotSame(typeof(WorkflowContractData).Assembly, definition.WorkflowDataType!.Assembly);
             Assert.Equal(WorkflowTypeIdentity.SavedName(typeof(WorkflowContractData)), WorkflowTypeIdentity.SavedName(definition.WorkflowDataType));

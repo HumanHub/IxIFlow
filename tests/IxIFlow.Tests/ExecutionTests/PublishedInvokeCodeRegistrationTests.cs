@@ -94,7 +94,7 @@ public sealed class PublishedInvokeCodeRegistrationTests
             if (scenario == "matching")
             {
                 Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-                Assert.Equal(new WorkflowVersionDependency("Callee", 1, WorkflowDependencyKind.Child), Assert.Single(result.Version!.Dependencies!));
+                Assert.Equal(new WorkflowVersionDependency("Callee", 1, WorkflowDependencyKind.Child), Assert.Single(result.Workflow!.Dependencies!));
             }
             else
             {
@@ -105,7 +105,7 @@ public sealed class PublishedInvokeCodeRegistrationTests
                 Assert.Equal(5, error.Line);
                 Assert.Contains(name, error.Message);
                 Assert.Contains(scenario == "identity" ? "conflicting identity" : "conflicting contents", error.Message);
-                Assert.Null(result.Version);
+                Assert.Null(result.Workflow);
                 Assert.Null(await store.GetWorkflowVersionAsync("Caller", 1));
                 Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
             }

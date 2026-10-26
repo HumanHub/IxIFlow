@@ -334,5 +334,6 @@ public sealed class YamlParityValidationTests
         public Task<bool> HasEventAsync(string key, CancellationToken token) => Task.FromResult(key != "Nope");
         public Task<bool> HasWorkflowAsync(string name, int? version, CancellationToken token) => Task.FromResult(true);
         public Task<bool> HasStepTemplateAsync(string key, CancellationToken token) => Task.FromResult(false);
+        public Task<IxIFlow.Dsl.Compilation.TemplateDocumentContract?> FindTemplateAsync(string key, int? version, CancellationToken token) => Task.FromResult<IxIFlow.Dsl.Compilation.TemplateDocumentContract?>(null);
     }
 }

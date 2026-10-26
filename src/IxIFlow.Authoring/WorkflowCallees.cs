@@ -10,10 +10,30 @@ using IxIFlow.Generators;
 
 namespace IxIFlow.Authoring;
 
-internal sealed class WorkflowPublishException(string code, string message, DocumentLocation location) : Exception(message)
+internal sealed class WorkflowPublishException(string code, string message, DocumentLocation? location, Exception? inner = null) : Exception(message, inner)
 {
     internal string Code { get; } = code;
-    internal DocumentLocation Location { get; } = location;
+    internal DocumentLocation? Location { get; } = location;
+}
+
+/// <summary>
+/// A load context's deliberate refusal of an assembly the author's closure does not provide. It derives from
+/// FileNotFoundException because a load context must report a missing assembly that way; publication reports it
+/// as the author's error (PUB003) with the assembly named, not as an unavailable artifact.
+/// </summary>
+internal sealed class PublishDependencyNotFoundException(string message) : FileNotFoundException(message)
+{
+    /// <summary>The refusal anywhere in the chain a load failure is wrapped in (FileLoadException, TypeLoadException, invocation).</summary>
+    internal static PublishDependencyNotFoundException? Find(Exception? error)
+    {
+        for (var depth = 0; error != null && depth < 16; depth++, error = error.InnerException)
+        {
+            if (error is PublishDependencyNotFoundException refusal) return refusal;
+            if (error is System.Reflection.ReflectionTypeLoadException types)
+                return types.LoaderExceptions.Select(Find).FirstOrDefault(item => item != null);
+        }
+        return null;
+    }
 }
 
 internal sealed record WorkflowCallee(WorkflowVersion Version, string DataType, DocumentLocation Location)
@@ -84,9 +104,9 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
                     throw new WorkflowPublishException("PUB009", $"Callee '{row.Name}@{row.Version}' has no available data type metadata; publish the callee or supply its code registration", location);
                 dataType = WorkflowTypeIdentity.SavedName(type);
                 try { privateAssemblies = CodePrivateAssemblies(type); }
-                catch (Exception error) when (error is InvalidOperationException or IOException or BadImageFormatException or UnauthorizedAccessException or NotSupportedException)
+                catch (Exception error) when (error is WorkflowEngineException { Kind: WorkflowErrorKind.ArtifactUnavailable } or IOException or BadImageFormatException or UnauthorizedAccessException or NotSupportedException)
                 {
-                    throw new WorkflowPublishException("PUB009", $"Callee '{row.Name}@{row.Version}' executable DTO assembly closure is unavailable; publish the callee or supply its code registration: {error.Message}", location);
+                    throw new WorkflowPublishException("PUB009", $"Callee '{row.Name}@{row.Version}' executable DTO assembly closure is unavailable; publish the callee or supply its code registration", location, error);
                 }
             }
             var resolved = new WorkflowCallee(row, dataType, location) { PrivateAssemblies = privateAssemblies };
@@ -139,7 +159,7 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
             var identity = assembly.GetName();
             if (WorkflowSharedAssemblies.IsShared(identity) || result.ContainsKey(identity.Name!)) continue;
             if (assembly.IsDynamic || assembly.Location.Length == 0)
-                throw new InvalidOperationException($"Assembly '{identity.Name}' has no readable implementation");
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Assembly '{identity.Name}' has no readable implementation");
             result.Add(identity.Name!, File.ReadAllBytes(assembly.Location));
             // Resolve through the executable type's context, never through caller-selected package references.
             var context = AssemblyLoadContext.GetLoadContext(assembly)!;
@@ -166,8 +186,8 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
                 dataType = references.SavedTypeName(callee.DataType, assemblies);
                 foreach (var member in contract.Inputs.Concat(contract.Outputs)) references.SavedTypeName(member.Type, assemblies);
             }
-            catch (Exception error) when (error is InvalidOperationException or ArgumentException or FormatException or OverflowException)
-            { throw new WorkflowPublishException("PUB009", $"Callee '{row.Name}@{row.Version}' data type is unavailable in the publishing profile; republish the callee: {error.Message}", callee.Location); }
+            catch (Exception error) when (error is WorkflowEngineException { Kind: WorkflowErrorKind.ArtifactMismatch } or ArgumentException or FormatException or OverflowException)
+            { throw new WorkflowPublishException("PUB009", $"Callee '{row.Name}@{row.Version}' data type is unavailable in the publishing profile; republish the callee", callee.Location, error); }
             CheckPrivateAssemblies(callee, assemblies, references, packages);
             source.Types[dataType] = dataType;
             source.Workflows[row.Name + "@" + row.Version] = new(dataType, row.Version)

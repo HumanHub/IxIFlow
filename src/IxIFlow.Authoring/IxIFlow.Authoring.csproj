@@ -5,17 +5,45 @@
     <Nullable>enable</Nullable>
     <Version>1.0.0</Version>
     <Description>Workflow document validation and activity catalogs for IxIFlow.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
+    <PackageDownload Include="Microsoft.NETCore.App.Ref" Version="[10.0.0]" />
     <PackageReference Include="NuGet.Protocol" Version="6.14.3" />
     <PackageReference Include="NuGet.Resolver" Version="6.14.3" />
     <InternalsVisibleTo Include="IxIFlow.Tests" />
+    <InternalsVisibleTo Include="IxIFlow.AspNetCore" />
     <ProjectReference Include="..\IxIFlow\IxIFlow.csproj" />
+    <ProjectReference Include="..\IxIFlow.Templates\IxIFlow.Templates.csproj" />
     <ProjectReference Include="..\IxIFlow.Generators\IxIFlow.Generators.csproj" />
   </ItemGroup>
+  <!-- Ship a fixed compile-time profile; a publishing host need not have an SDK installed.
+       Resolve after restore so global and fallback package folders are both supported. -->
+  <Target Name="IncludeActivityFrameworkReferences" BeforeTargets="AssignTargetPaths;_GetPackageFiles">
+    <ItemGroup>
+      <_ActivityPackageRoot Include="$(NuGetPackageFolders)" />
+      <_ActivityReferenceRoot Include="%(_ActivityPackageRoot.Identity)/microsoft.netcore.app.ref/10.0.0/ref/net10.0"
+                              Condition="Exists('%(_ActivityPackageRoot.Identity)/microsoft.netcore.app.ref/10.0.0/ref/net10.0')" />
+    </ItemGroup>
+    <PropertyGroup>
+      <_ActivityFirstReferenceRoot>@(_ActivityReferenceRoot)</_ActivityFirstReferenceRoot>
+      <_ActivityFirstReferenceRoot Condition="$(_ActivityFirstReferenceRoot.Contains(';'))">$(_ActivityFirstReferenceRoot.Substring(0, $(_ActivityFirstReferenceRoot.IndexOf(';'))))</_ActivityFirstReferenceRoot>
+    </PropertyGroup>
+    <Error Condition="'$(_ActivityFirstReferenceRoot)' == ''" Text="The .NET 10 activity compilation reference pack was not restored." />
+    <ItemGroup>
+      <_ActivityFrameworkReference Include="$(_ActivityFirstReferenceRoot)/*.dll" />
+      <EmbeddedResource Include="@(_ActivityFrameworkReference)"
+                        LogicalName="IxIFlow.Authoring.References.net10.0.%(_ActivityFrameworkReference.Filename)%(_ActivityFrameworkReference.Extension)" />
+      <_ActivityFrameworkNotice Include="$(_ActivityFirstReferenceRoot)/../../LICENSE.TXT;$(_ActivityFirstReferenceRoot)/../../THIRD-PARTY-NOTICES.TXT" />
+      <EmbeddedResource Include="@(_ActivityFrameworkNotice)"
+                        LogicalName="IxIFlow.Authoring.References.%(_ActivityFrameworkNotice.Filename)%(_ActivityFrameworkNotice.Extension)" />
+      <None Include="@(_ActivityFrameworkNotice)" Pack="true" PackagePath="licenses/Microsoft.NETCore.App.Ref/" />
+    </ItemGroup>
+  </Target>
   <ItemGroup>
     <EmbeddedResource Include="ActivityPackages/PortableRuntimeIdentifierGraph.json" />
     <None Update="ActivityPackages/PortableRuntimeIdentifierGraph.LICENSE.txt" Pack="true" PackagePath="licenses/" />
+    <None Include="README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 </Project>

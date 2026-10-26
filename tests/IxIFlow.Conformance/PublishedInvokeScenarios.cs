@@ -24,7 +24,7 @@ public sealed class PublishedInvokeScenarios
             var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", yaml), null);
             var result = await publisher.PublishAsync(draft.Id);
             Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-            return result.Version!;
+            return result.Workflow!;
         }
         var callee = await Publish("Callee", """
             workflow: {name: Callee, version: 1, dataType: Data, input: [Value], output: [Value]}

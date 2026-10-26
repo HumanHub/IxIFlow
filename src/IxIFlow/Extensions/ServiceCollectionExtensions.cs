@@ -15,6 +15,9 @@ namespace IxIFlow.Extensions;
 /// </summary>
 public static class ServiceCollectionExtensions
 {
+    private static WorkflowBundleOptions? BundleOptions(IServiceProvider provider) =>
+        provider.GetService<WorkflowBundleOptions>() is { } options
+            ? options with { SharedProfile = provider.GetService<SharedContractRegistration>()?.Freeze() } : null;
     /// <summary>
     /// Adds IxIFlow workflow services to the service collection. The builder it returns chooses the store, such as
     /// <c>.UseSqlServer(connectionString)</c> from IxIFlow.SqlServer; without one, instances live in memory.
@@ -24,13 +27,15 @@ public static class ServiceCollectionExtensions
     public static IIxIFlowBuilder AddIxIFlow(this IServiceCollection services)
     {
         services.AddLogging();
+        services.TryAddSingleton(new SharedContractRegistration());
         ActivityBuilderExtensions.Registrations(services);
         services.TryAddSingleton(InspectionRedactionPolicy.Default);
         services.AddScoped<IWorkflowDiagnostics, WorkflowDiagnostics>();
         // Core workflow services
         services.TryAddSingleton<ScopeThreadRegistry>(_ => new ScopeThreadRegistry(64));
         services.TryAddSingleton<HostSettings>(provider => HostSettings.Default with
-        { BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
+        { SharedProfile = provider.GetService<SharedContractRegistration>()?.Freeze(),
+            BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
             CapabilityLogger = provider.GetService<ILogger<WorkflowHeartbeatService>>() });
         services.TryAddSingleton(RetentionSettings.Default);
         services.TryAddSingleton<IRunnableNotifier, NullRunnableNotifier>();
@@ -78,7 +83,7 @@ public static class ServiceCollectionExtensions
         // Workflow state and persistence
         services.AddSingleton<IWorkflowCatalog>(provider => new WorkflowCatalog(
             provider.GetRequiredService<IWorkflowStateRepository>(), provider.GetServices<WorkflowDefinition>(),
-            provider.GetRequiredService<IArtifactStore>(), provider.GetService<WorkflowBundleOptions>(),
+            provider.GetRequiredService<IArtifactStore>(), BundleOptions(provider),
             provider.GetService<ILogger<WorkflowCatalog>>()));
         services.TryAddSingleton<IArtifactStore>(provider => new RepositoryArtifactStore(provider.GetRequiredService<IWorkflowStateRepository>()));
         services.AddSingleton<IWorkflowDefinitionSource>(provider => provider.GetRequiredService<IWorkflowCatalog>());
@@ -162,6 +167,7 @@ public static class ServiceCollectionExtensions
         services.Replace(ServiceDescriptor.Singleton<HostSettings>(provider =>
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
             { MaxScopeThreadsPerHost = options.MaxScopeThreadsPerHost, Debugging = options.Debugging, HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes,
+                SharedProfile = provider.GetService<SharedContractRegistration>()?.Freeze(),
                 BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
                 CapabilityLogger = provider.GetService<ILogger<WorkflowHeartbeatService>>(),
                 UnschedulableScanInterval = options.UnschedulableScanInterval }));

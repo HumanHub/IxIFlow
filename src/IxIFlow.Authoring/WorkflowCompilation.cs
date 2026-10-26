@@ -15,7 +15,10 @@ namespace IxIFlow.Authoring;
 
 public enum WorkflowPublishStage { Validate, Translate, Compile, Test, Publish }
 public sealed record WorkflowPublishDiagnostic(WorkflowPublishStage Stage, string Code, string Message,
-    WorkflowDiagnosticSeverity Severity, string Path, int Line, int Column);
+    WorkflowDiagnosticSeverity Severity, string Path, int Line, int Column)
+{
+    public WorkflowPublishDiagnosticClass Class { get; init; } = WorkflowPublishDiagnosticClass.Authoring;
+}
 public sealed record WorkflowCompilationResult(byte[] Assembly, byte[] Pdb,
     IReadOnlyList<WorkflowPublishDiagnostic> Diagnostics)
 {
@@ -35,6 +38,7 @@ public static class WorkflowCompilation
     {
         var paths = new HashSet<string>(((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? "")
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
+        foreach (var contract in WorkflowSharedAssemblies.Current?.Contracts ?? []) paths.Add(contract.Location);
         var pending = new Queue<Assembly>();
         if (Assembly.GetEntryAssembly() is { } entry) pending.Enqueue(entry);
         var visited = new HashSet<string>(StringComparer.Ordinal);
@@ -85,7 +89,7 @@ public static class WorkflowCompilation
                 if (name is IdentifierNameSyntax identifier && identifier.Identifier.Text is "dynamic" or "nint" or "nuint") continue;
                 var candidates = MetadataNames(name, options.Namespace).ToArray();
                 if (!references.Assemblies.Any(assembly => candidates.Any(candidate => WorkflowPublisher.FindType(assembly, candidate) != null)))
-                    throw new InvalidOperationException($"Configured type '{configured}' has component '{name}' outside the host reference profile (trusted-platform assemblies and entry assembly closure)");
+                    throw new WorkflowPublishException("PUB003", $"Configured type '{configured}' has component '{name}' outside the host reference profile (trusted-platform assemblies and entry assembly closure)", null);
             }
         }
     }
@@ -149,13 +153,13 @@ public static class WorkflowCompilation
 
         internal string SavedTypeName(string savedName, ISet<string>? assemblyNames = null)
         {
-            if (!savedName.StartsWith("ixi-type:1:", StringComparison.Ordinal)) throw new InvalidOperationException("Invalid saved workflow data type");
+            if (!savedName.StartsWith("ixi-type:1:", StringComparison.Ordinal)) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type");
             var compilation = CSharpCompilation.Create("WorkflowTypeReferences", references: Metadata);
             var position = "ixi-type:1:".Length;
             int Count()
             {
                 var end = savedName.IndexOf(':', position);
-                if (end <= position || end - position > 6) throw new InvalidOperationException("Invalid saved workflow data type");
+                if (end <= position || end - position > 6) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type");
                 var value = int.Parse(savedName.AsSpan(position, end - position), System.Globalization.CultureInfo.InvariantCulture);
                 position = end + 1;
                 return value;
@@ -169,22 +173,22 @@ public static class WorkflowCompilation
             }
             ITypeSymbol Read(int depth)
             {
-                if (depth > 64) throw new InvalidOperationException("Invalid saved workflow data type nesting");
+                if (depth > 64) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type nesting");
                 var kind = savedName[position++];
                 if (kind is 'V' or 'A')
                 {
                     var rank = kind == 'V' ? 1 : Count();
                     return compilation.CreateArrayTypeSymbol(Read(depth + 1), rank);
                 }
-                if (kind != 'N') throw new InvalidOperationException("Invalid saved workflow data type");
+                if (kind != 'N') throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type");
                 var assembly = Part();
                 assemblyNames?.Add(assembly);
                 var name = Part();
                 var count = Count();
-                if (count > 128) throw new InvalidOperationException("Invalid saved workflow data type arguments");
+                if (count > 128) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type arguments");
                 var arguments = Enumerable.Range(0, count).Select(_ => Read(depth + 1)).ToArray();
                 var type = Assemblies.SingleOrDefault(item => item.Identity.Name == assembly)?.GetTypeByMetadataName(name)
-                    ?? throw new InvalidOperationException($"Callee data type '{name}' in '{assembly}' is outside the publishing reference closure");
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, $"Callee data type '{name}' in '{assembly}' is outside the publishing reference closure");
                 var index = 0;
                 INamedTypeSymbol Construct(INamedTypeSymbol definition)
                 {
@@ -196,11 +200,11 @@ public static class WorkflowCompilation
                     return result.Construct(selected);
                 }
                 var result = count == 0 ? type : Construct(type);
-                if (index != count) throw new InvalidOperationException("Invalid saved workflow data type arity");
+                if (index != count) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type arity");
                 return result;
             }
             var result = Read(0);
-            if (position != savedName.Length) throw new InvalidOperationException("Invalid saved workflow data type suffix");
+            if (position != savedName.Length) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type suffix");
             return result.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
         }
     }
@@ -215,7 +219,7 @@ public static class WorkflowCompilation
         {
             var versions = group.Select(item => item.Name.Version).Distinct().ToArray();
             if (versions.Length > 1)
-                throw new InvalidOperationException($"Conflicting reference versions for assembly '{group.First().Name.Name}': {string.Join(", ", versions.Select(item => item?.ToString() ?? "unspecified"))}");
+                throw new WorkflowPublishException("PUB003", $"Conflicting reference versions for assembly '{group.First().Name.Name}': {string.Join(", ", versions.Select(item => item?.ToString() ?? "unspecified"))}", null);
             return group.First().Path;
         }).Order(StringComparer.Ordinal).ToArray();
 
@@ -279,8 +283,9 @@ public static class WorkflowCompilation
         return InspectDefinition(new CompilationContext(references), assemblyBytes, pdbBytes, inspect);
     }
 
-    internal static T WithDefinition<T>(byte[] assemblyBytes, byte[] pdbBytes, IReadOnlyDictionary<string, byte[]> dependencies, Func<WorkflowDefinition, T> inspect, Action<AssemblyLoadContext>? validate = null) =>
-        InspectDefinition(new ScratchContext(dependencies), assemblyBytes, pdbBytes, inspect, validate);
+    internal static T WithDefinition<T>(byte[] assemblyBytes, byte[] pdbBytes, IReadOnlyDictionary<string, byte[]> dependencies, Func<WorkflowDefinition, T> inspect, Action<AssemblyLoadContext>? validate = null,
+        IReadOnlyDictionary<string, byte[]>? symbols = null) =>
+        InspectDefinition(new PackageScratchContext(dependencies, symbols), assemblyBytes, pdbBytes, inspect, validate);
 
     private static T InspectDefinition<T>(AssemblyLoadContext context, byte[] assemblyBytes, byte[] pdbBytes, Func<WorkflowDefinition, T> inspect, Action<AssemblyLoadContext>? validate = null)
     {
@@ -302,16 +307,7 @@ public static class WorkflowCompilation
     private sealed class CompilationContext(IReadOnlyDictionary<string, string> references) : AssemblyLoadContext(isCollectible: true)
     {
         protected override Assembly Load(AssemblyName name) => references.TryGetValue(name.Name!, out var path)
-            ? Default.LoadFromAssemblyPath(path) : throw new FileNotFoundException($"Compilation dependency '{name}' is outside the reference profile");
+            ? Default.LoadFromAssemblyPath(path) : throw new PublishDependencyNotFoundException($"Compilation dependency '{name}' is outside the reference profile");
     }
 
-    private sealed class ScratchContext(IReadOnlyDictionary<string, byte[]> dependencies) : AssemblyLoadContext(isCollectible: true)
-    {
-        protected override Assembly Load(AssemblyName name)
-        {
-            if (dependencies.TryGetValue(name.Name!, out var bytes)) return LoadFromStream(new MemoryStream(bytes, writable: false));
-            if (WorkflowSharedAssemblies.IsShared(name)) return Default.LoadFromAssemblyName(name);
-            throw new FileNotFoundException($"Private publish dependency '{name}' has no runtime implementation");
-        }
-    }
 }

@@ -46,8 +46,8 @@ public sealed class PublishedInvokeReviewTests
             "workflow: {name: Original, dataType: Data, input: [], output: []}\ndefinitions: []"), null);
         var child = await publisher.PublishAsync(childDraft.Id);
         Assert.True(child.Success, string.Join("; ", child.Diagnostics));
-        await using var stream = await store.OpenAsync(child.Version!.ArtifactDigest!.Value);
-        var bundle = await WorkflowBundleArchive.ReadAsync(stream!, child.Version.ArtifactDigest!.Value);
+        await using var stream = await store.OpenAsync(child.Workflow!.ArtifactDigest!.Value);
+        var bundle = await WorkflowBundleArchive.ReadAsync(stream!, child.Workflow.ArtifactDigest!.Value);
         var selected = typeof(FirstData).Assembly.GetName();
         var source = $$"""
             [assembly: System.Reflection.AssemblyVersion("{{(differentVersion ? "99.0.0.0" : selected.Version!.ToString())}}")]
@@ -71,7 +71,7 @@ public sealed class PublishedInvokeReviewTests
         var archive = WorkflowBundleArchive.Create(bundle.Manifest with { Name = "Callee" }, entries);
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(archive));
         var saved = await WorkflowBundleArchive.ReadAsync(new MemoryStream(archive), digest);
-        await store.RegisterWorkflowVersionAsync(child.Version with
+        await store.RegisterWorkflowVersionAsync(child.Workflow with
         {
             Name = "Callee", ArtifactDigest = digest, PublishedDraft = null,
             ManifestJson = JsonSerializer.Serialize(saved.Manifest)
@@ -89,7 +89,7 @@ public sealed class PublishedInvokeReviewTests
         Assert.Equal(WorkflowPublishStage.Validate, error.Stage);
         Assert.Equal(4, error.Line);
         Assert.True(error.Message.Contains(selected.Name!, StringComparison.Ordinal), error.Message);
-        Assert.Null(result.Version);
+        Assert.Null(result.Workflow);
         Assert.Null(await store.GetWorkflowVersionAsync("Caller", 1));
         Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Caller", 1));
     }
@@ -111,7 +111,7 @@ public sealed class PublishedInvokeReviewTests
         Assert.Equal(WorkflowPublishStage.Validate, error.Stage);
         Assert.Equal(1, error.Line);
         Assert.True(error.Column > 1);
-        Assert.Null(result.Version);
+        Assert.Null(result.Workflow);
         Assert.Null(await store.GetWorkflowVersionAsync("Generic", 1));
         Assert.Equal(draft, await store.GetDefinitionAsync("workflow", "Generic", 1));
     }
@@ -127,7 +127,7 @@ public sealed class PublishedInvokeReviewTests
         var result = await new WorkflowPublisher(store, store, GenericOptions(nested)).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
         Assert.Equal(typeof(string), IxIFlow.Core.Runtime.WorkflowTypeIdentity.Resolve(
-            Assert.Single(WorkflowContract.Parse(result.Version!.ContractJson).Outputs).Type));
+            Assert.Single(WorkflowContract.Parse(result.Workflow!.ContractJson).Outputs).Type));
     }
 
     private static WorkflowPublisherOptions GenericOptions(bool nested)

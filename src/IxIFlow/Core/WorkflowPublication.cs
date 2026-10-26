@@ -106,7 +106,7 @@ internal static class WorkflowPublicationRules
     });
 
     internal static WorkflowPublicationOutcome Outcome(WorkflowDraftId draft, WorkflowPublicationOutcome outcome, WorkflowVersion? stored,
-        IxIFlow.Templates.TemplateVersionEntry? template = null)
+        IxIFlow.Templates.TemplateVersionEntry? template = null, WorkflowPackage? package = null)
     {
         ArgumentNullException.ThrowIfNull(outcome);
         ArgumentNullException.ThrowIfNull(outcome.Diagnostics);
@@ -117,6 +117,17 @@ internal static class WorkflowPublicationRules
         if (outcome.FailureClass is { } failure && !Enum.IsDefined(failure)) throw new ArgumentException("Invalid failure class", nameof(outcome));
         if (outcome.Receipt is { } receipt)
         {
+            if (draft.Kind == WorkflowDraftKinds.Activity)
+            {
+                WorkflowPackage? submittedPackage;
+                try { submittedPackage = JsonSerializer.Deserialize<WorkflowPackage>(receipt.ReceiptJson); }
+                catch (JsonException error) { throw new ArgumentException("Invalid package publication receipt", nameof(outcome), error); }
+                if (receipt.Draft != draft || package?.PublishedDraft != draft || submittedPackage == null ||
+                    submittedPackage.PublishedDraft != draft || PackagePublicationContent(submittedPackage) != PackagePublicationContent(package) ||
+                    outcome.FailureClass != null || outcome.Diagnostics.Any(item => item.Severity == "Error"))
+                    throw new ArgumentException("Publication receipt must match the audited immutable package entry", nameof(outcome));
+                return outcome with { Receipt = new(draft, JsonSerializer.Serialize(package)) };
+            }
             if (draft.Kind == WorkflowDraftKinds.Template)
             {
                 IxIFlow.Templates.TemplateVersionEntry? submittedTemplate;
@@ -144,6 +155,11 @@ internal static class WorkflowPublicationRules
             throw new ArgumentException("A failed publication requires a failure class", nameof(outcome));
         return outcome;
     }
+
+    private static string PackagePublicationContent(WorkflowPackage package) => JsonSerializer.Serialize(package with
+    {
+        Withdrawn = false, WithdrawnAtUtc = null, WithdrawnBy = null, LifecycleRevision = 0
+    });
 
     internal static WorkflowPublication Copy(WorkflowPublication value) =>
         JsonSerializer.Deserialize<WorkflowPublication>(JsonSerializer.Serialize(value))!;

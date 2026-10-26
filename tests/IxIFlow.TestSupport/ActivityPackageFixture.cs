@@ -232,7 +232,7 @@ public static class ActivityPackageFixture
         var draft = await store.SaveDefinitionAsync(new("PackageLifecycle", version, "workflow", yaml ?? Yaml(version)), null);
         var result = await publisher.PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-        return result.Version!;
+        return result.Workflow!;
     }
 
     public static async Task CrossHostAsync(Func<IWorkflowStateRepository> repository, string root,

@@ -105,7 +105,7 @@ public sealed class WorkflowPublishingReviewRegressionTests
                 finally { barrier.Release.TrySetResult(); }
                 var loser = await losing.WaitAsync(TimeSpan.FromSeconds(20));
                 Assert.True(loser.Success, string.Join("; ", loser.Diagnostics));
-                Assert.Equal(JsonSerializer.Serialize(winner.Version), JsonSerializer.Serialize(loser.Version));
+                Assert.Equal(JsonSerializer.Serialize(winner.Workflow), JsonSerializer.Serialize(loser.Workflow));
                 Assert.Null(await store.GetDefinitionAsync("workflow", name, 1));
                 return;
             }
@@ -128,13 +128,13 @@ public sealed class WorkflowPublishingReviewRegressionTests
                 if (scenario == Scenario.Reupload)
                 {
                     Assert.True(result.Success, string.Join("; ", result.Diagnostics));
-                    Assert.True(await artifacts.ExistsAsync(result.Version!.ArtifactDigest!.Value));
+                    Assert.True(await artifacts.ExistsAsync(result.Workflow!.ArtifactDigest!.Value));
                     Assert.Null(await store.GetDefinitionAsync("workflow", name, 1));
                 }
                 else
                 {
                     Assert.False(result.Success);
-                    Assert.Contains(result.Diagnostics, item => item.Stage == WorkflowPublishStage.Publish && item.Message.Contains("missing artifact"));
+                    Assert.Contains(result.Diagnostics, item => item.Stage == WorkflowPublishStage.Publish && item.Code == "PUB041" && item.Class == WorkflowPublishDiagnosticClass.Unavailable);
                     Assert.Equal(draft, await store.GetDefinitionAsync("workflow", name, 1));
                     Assert.Null(await store.GetWorkflowVersionAsync(name, 1));
                 }
@@ -221,7 +221,8 @@ public sealed class WorkflowPublishingReviewRegressionTests
         Assert.Equal(WorkflowPublishStage.Test, error.Stage);
         Assert.Equal("PUB004", error.Code);
         Assert.Contains(message, error.Message);
-        Assert.InRange(error.Line, 1, 7);
+        var canonical = WorkflowYamlSerializer.Write(WorkflowYamlSerializer.Read(Yaml("Overflow")));
+        Assert.InRange(error.Line, 1, canonical.Split('\n').Length);
         Assert.Equal(draft, await store.GetDefinitionAsync("workflow", draft.Name, 1));
     }
 
@@ -254,7 +255,9 @@ public sealed class WorkflowPublishingReviewRegressionTests
         var fixture = typeof(BrokenMessageException).Assembly;
         var result = await WorkflowBuild.RunAsync(compilation, new Dictionary<string, byte[]> { [fixture.GetName().Name!] = File.ReadAllBytes(fixture.Location) }, TimeSpan.FromSeconds(10),
             Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, CancellationToken.None);
-        Assert.Equal("Build() failed while inspecting its result", result.Error);
+        Assert.Equal("An unexpected publication failure occurred", result.Error);
+        Assert.Equal("PUB007", result.ErrorCode);
+        Assert.Equal(WorkflowPublishDiagnosticClass.Internal, result.ErrorClass);
     }
 
     public sealed class BrokenMessageException : Exception
@@ -341,6 +344,8 @@ public sealed class WorkflowPublishingReviewRegressionTests
     public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => inner.GetTemplateVersionsAsync(key);
     public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
     public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => inner.GetPackageHoldersAsync(id, version, scope);
+    public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor);
+    public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected, string? actor = null) => inner.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor);
     public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.RegisterPackageAsync(package, activities, artifacts, actor);
     public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
     public IArtifactStore? CatalogArtifacts { get => inner.CatalogArtifacts; set => inner.CatalogArtifacts = value; }

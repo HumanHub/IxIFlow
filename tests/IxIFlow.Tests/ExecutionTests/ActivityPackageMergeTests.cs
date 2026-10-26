@@ -94,7 +94,7 @@ public sealed class ActivityPackageMergeTests
             var draft = await store.SaveDefinitionAsync(new("PackageConditions", 1, "workflow", yaml), null);
             var published = await publisher.PublishAsync(draft.Id);
             Assert.True(published.Success, string.Join("; ", published.Diagnostics));
-            var manifest = JsonSerializer.Deserialize<WorkflowBundleManifest>(published.Version!.ManifestJson!)!;
+            var manifest = JsonSerializer.Deserialize<WorkflowBundleManifest>(published.Workflow!.ManifestJson!)!;
             Assert.Equal(new[] { "fixture.condition-data", "fixture.condition-model" }, manifest.ActivityPackages.Select(pin => pin.Id));
             var services = new ServiceCollection();
             services.AddIxIFlow(options => options.Debugging = true).UseWorkflowBundles(Path.Combine(root, "cache"), 0);
@@ -143,7 +143,7 @@ public sealed class ActivityPackageMergeTests
             Assert.Null(stop.Reason);
             Assert.Empty(stop.Diagnostics);
             Assert.Equal(1, stop.HitCount);
-            Assert.Equal(published.Version.ArtifactDigest, (await store.GetWorkflowInstanceAsync(id))!.BundleDigest);
+            Assert.Equal(published.Workflow.ArtifactDigest, (await store.GetWorkflowInstanceAsync(id))!.BundleDigest);
         }
         finally { if (store is IAsyncDisposable disposable) await disposable.DisposeAsync(); }
     }

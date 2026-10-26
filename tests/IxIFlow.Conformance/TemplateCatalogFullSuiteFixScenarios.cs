@@ -44,13 +44,13 @@ public sealed class TemplateCatalogFullSuiteFixScenarios
             var publisher = new WorkflowPublisher(store, files);
             var accepted = await publisher.UploadPackageAsync(new MemoryStream(
                 ActivityPackageFixture.Package("retention.uploaded", "1.0.0", new())));
-            Assert.Equal(WorkflowPackageOrigin.Uploaded, accepted.Origin);
+            Assert.Equal(WorkflowPackageOrigin.Uploaded, accepted.Stored.Origin);
             var aborted = await files.PutAsync(ArtifactKind.Package, new MemoryStream([1, 2, 3]));
             var resolved = await Register(store, files, "retention.resolved", [], WorkflowPackageOrigin.Resolved);
             Age(folder);
 
             Assert.Equal(2, await store.PurgeArtifactsAsync(files, TimeSpan.FromDays(90), 100));
-            Assert.True(await files.ExistsAsync(accepted.Digest));
+            Assert.True(await files.ExistsAsync(accepted.Stored.Digest));
             Assert.False(await files.ExistsAsync(aborted));
             Assert.False(await files.ExistsAsync(resolved.Digest));
             // Collection preserves the immutable identity/digest guard.
