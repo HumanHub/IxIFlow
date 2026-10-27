@@ -155,3 +155,7 @@ These facts contain no mapped values, wait capabilities or exception text. Error
 ## Assignment picks
 
 Assign is a real executable pick. A breakpoint before it sees old data; stepping to the next pick sees the assigned data. Full tracing records `StepEntered` and a `DataAssigned` completion with the structural destination and step identity. Computed keys, values and expression text are omitted. Activities-only tracing can omit this control-flow completion. Replay stops at `StepEntered` and never evaluates either expression. The step catalog includes the destination and declared value type; ordinary data inspection supplies redacted values.
+
+## Scope lifecycle
+
+`ScopeOpened`, `ScopeClosed` and `ScopeCloseFailed` record the scope step, continuation and activation identity, whether an open is a re-open, the recorded-open count, and close reason/cause. Their payloads carry identifiers and reasons rather than resource values or configuration. A lost pass may later be recorded as interrupted. Re-open and close are not extra successful commit boundaries. Correlate these events with [inspection](inspection-and-replay.md#scope-activities) to see saved, redacted configuration and modes.

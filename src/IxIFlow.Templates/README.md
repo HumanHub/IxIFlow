@@ -28,3 +28,37 @@ Code registration binds the model and generic argument assemblies to registered 
 `IWorkflowCatalogStore` exposes `RegisterTemplateVersionAsync`, `GetTemplateVersionAsync`, `GetTemplateVersionsAsync` and `PublishTemplateDefinitionAsync` on every store. Draft publication checks the complete generation/revision, consumes that exact draft atomically, and returns its first winning receipt on retries. Content bytes exclude receipt and audit. `GetPackageHoldersAsync` includes templates and scope-masks their names.
 
 `AddIxIFlowTemplates` explicitly registers `SendTemplateMessage` through the activity registry as `ixiflow.templates.send-message`, version `1.0`, category `Templates`. Applications supply `ITemplateMessageSender`; its message ID is the idempotency key. Workflow YAML publishing recognizes the built-in key from the shared template assembly without a package import.
+
+Published workflow documents use the built-in `renderTemplate` step:
+
+<!-- snippet: samples/IxIFlow.Samples/CatalogExamples.cs#render-yaml -->
+```yaml
+        workflow: {name: CatalogRenderSample, dataType: IxIFlow.Samples.MessageData}
+        definitions:
+          - kind: renderTemplate
+            id: render
+            template: quote@1
+            modelType: IxIFlow.Samples.QuoteData
+            model: {path: workflow.Quote}
+            culture: {kind: constant, value: fr-CA}
+            output: [{source: Rendered, to: {path: workflow.Body}}]
+```
+
+Publishing resolves an omitted version to the highest published template version and infers its declared model type. The canonical YAML records both the exact version and `modelType`. A build-time generator without a publishing catalog requires an explicit version and `modelType`. The generated activity is `RenderTemplate<TModel>`, with the same mappings and structure as fluent authoring. Rendering can use saga error policies; it has no compensation.
+
+Manifest format 6 embeds canonical template JSON at `templates/{key}@{version}.json`, pins the complete model package closure, and records permitted template references separately for each runtime catalog site. Inline callers copy verified callee payloads and remap their bindings to grafted sites. Cold loading verifies content digests, model identities and reconstructed constants before making the template set available.
+
+During a bundled run, every renderer call uses that dispatch's embedded template set and permitted references. This includes custom activities, parallel branches, compensation and recovery. A site's permission does not authorize another site's template. A missing binding, changed saved input or mismatched model fails with an engine `InvalidDefinition`; workflow Catch and saga error/retry handlers do not handle these guard failures, even if an activity catches the renderer's exception. Ordinary authored exceptions retain their normal handling. Bundled rendering makes no template catalog queries. Code-defined execution continues to use the durable catalog.
+
+`TemplateStepDescriptors.RenderTemplate()` supplies the registered catalog descriptor; `Bind(version)` resolves its dependent Model input to the selected template's saved and C# model names. Culture is a nullable string. Rendering remains one recoverable activity for breakpoints, stepping and restart; template text is content rather than a separate executable source.
+
+Editors use `IWorkflowCatalogStore.ListStepDescriptorsAsync(scope)` alongside
+activity reads, and `ListTemplatesAsync(CatalogTemplateQuery)`,
+`ListTemplateVersionsAsync(key, CatalogVersionQuery)` and
+`GetTemplateDetailAsync(key, version, scope)` for template choices. These reads
+apply template scope before paging and mask related model packages by package
+scope. Pages use projections without loading variant content. The descriptor
+factory lives with the core catalog value contracts and describes the rendering
+assembly's output by portable identity, without loading an engine into a store.
+See the [unified catalog API](../../docs/workflow-catalog.md) for shapes,
+ordering, cursor and caching rules.

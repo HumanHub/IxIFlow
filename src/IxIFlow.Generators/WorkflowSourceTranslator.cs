@@ -47,7 +47,7 @@ public static partial class WorkflowSourceTranslator
         if (diagnostic != null)
         {
             var location = DocumentModel.GetLocation(document, diagnostic.Path);
-            throw new WorkflowSourceException(((diagnostic.Code.StartsWith("SWITCH", StringComparison.Ordinal) || diagnostic.Code.StartsWith("ASSIGN", StringComparison.Ordinal) || diagnostic.Code.StartsWith("THROW", StringComparison.Ordinal) || diagnostic.Code.StartsWith("RETHROW", StringComparison.Ordinal)) ? diagnostic.Code + ": " : "") + diagnostic.Message, sourcePath, location.Line, location.Column);
+            throw new WorkflowSourceException(((diagnostic.Code.StartsWith("SCOPE", StringComparison.Ordinal) || diagnostic.Code.StartsWith("SWITCH", StringComparison.Ordinal) || diagnostic.Code.StartsWith("ASSIGN", StringComparison.Ordinal) || diagnostic.Code.StartsWith("THROW", StringComparison.Ordinal) || diagnostic.Code.StartsWith("RETHROW", StringComparison.Ordinal)) ? diagnostic.Code + ": " : "") + diagnostic.Message, sourcePath, location.Line, location.Column);
         }
         return new Translation(document, sourcePath, options).Run();
     }
@@ -59,6 +59,7 @@ public static partial class WorkflowSourceTranslator
     public static IEnumerable<string> TypeNames(WorkflowDocument document)
     {
         yield return document.Workflow.DataType;
+        foreach (var type in document.Workflow.RequiresScopes) yield return type;
         foreach (var activity in document.Activities.Values) yield return activity.Activity;
         foreach (var step in Flatten(document.Definitions.Concat(document.Steps.Values.SelectMany(template => template.Steps))))
             foreach (var type in StepTypeNames(step)) yield return type;
@@ -80,6 +81,8 @@ public static partial class WorkflowSourceTranslator
     {
         switch (step)
         {
+            case ScopeStepDocument scope: yield return scope.Activity; break;
+            case RenderTemplateStepDocument { ModelType: { } modelType }: yield return modelType; break;
             case StateMachineStepDocument machine:
                 foreach (var transition in machine.States.SelectMany(state => state.Transitions))
                 {
@@ -110,6 +113,10 @@ public static partial class WorkflowSourceTranslator
                     if (policy.Exception != null) yield return policy.Exception;
                 yield return invocation.WorkflowType;
                 if (invocation.DataType != null) yield return invocation.DataType;
+                break;
+            case UseTypeStepDocument inline:
+                yield return inline.WorkflowType;
+                if (inline.DataType != null) yield return inline.DataType;
                 break;
             case TryStepDocument attempt:
                 foreach (var scope in attempt.ChildScopes().Where(scope => scope.Kind == "catch"))
@@ -182,22 +189,32 @@ public static partial class WorkflowSourceTranslator
             Line("    public static WorkflowDefinition Build()");
             Line("    {");
             var initial = document.Definitions.FirstOrDefault();
-            var rootDeclarations = initial is not (ActivityStepDocument or ActivityReferenceStepDocument) && (workflow.Input != null || workflow.Output != null);
+            var rootDeclarations = initial is not (RenderTemplateStepDocument or ActivityStepDocument or ActivityReferenceStepDocument or UseStepDocument or UseTypeStepDocument) && (workflow.Input != null || workflow.Output != null || workflow.RequiresScopes.Count > 0);
             if (rootDeclarations)
             {
                 Line($"var declarations = Workflow.Create<{data}>({Quote(name)}, {workflow.Version});");
                 Declarations(workflow.Input, "Input", "declarations");
                 Declarations(workflow.Output, "Output", "declarations");
+                Requirements("declarations");
                 Line("var declared = declarations.Build();");
             }
             Locate(workflow, "dataType");
-            Line(initial is ActivityStepDocument or ActivityReferenceStepDocument
+            Line(initial is RenderTemplateStepDocument or ActivityStepDocument or ActivityReferenceStepDocument or UseStepDocument or UseTypeStepDocument
                 ? $"var builder0 = Workflow.Create<{data}>({Quote(name)}, {workflow.Version});"
-                : $"var builder0 = new WorkflowBuilder<{data}, object>(new(), {Quote(name)}, {workflow.Version}{(rootDeclarations ? ", declaredInputs: declared.DeclaredInputs, declaredOutputs: declared.DeclaredOutputs" : "")});");
+                : $"var builder0 = new WorkflowBuilder<{data}, object>({(rootDeclarations ? "declared.Steps" : "new()")}, {Quote(name)}, {workflow.Version}{(rootDeclarations ? ", declaredInputs: declared.DeclaredInputs, declaredOutputs: declared.DeclaredOutputs" : "")});");
             if (!rootDeclarations)
             {
                 Declarations(workflow.Input, "Input", "builder0");
                 Declarations(workflow.Output, "Output", "builder0");
+                Requirements("builder0");
+            }
+            void Requirements(string builder)
+            {
+                foreach (var type in workflow.RequiresScopes)
+                {
+                    Locate(workflow, "requiresScopes");
+                    Line($"{builder}.RequiresScope<{Type(type, workflow, "requiresScopes")}>();");
+                }
             }
             void Declarations(IReadOnlyList<string>? members, string direction, string builder)
             {
@@ -274,6 +291,51 @@ public static partial class WorkflowSourceTranslator
                         break;
                     case TransitionStepDocument transition:
                         Line($"var {next} = {builder}.Transition({Destination(transition.To)});");
+                        break;
+                    case RenderTemplateStepDocument render:
+                        var selected = render.Template.Split('@');
+                        var selectedTemplate = options.Templates.Values.Where(item => item.Key == selected[0] &&
+                                (selected.Length == 1 || item.Version.ToString(CultureInfo.InvariantCulture) == selected[1]))
+                            .OrderByDescending(item => item.Version).FirstOrDefault();
+                        var renderModel = selectedTemplate?.ModelType ?? render.ModelType!;
+                        var renderVersion = selectedTemplate?.Version ?? int.Parse(selected[1], CultureInfo.InvariantCulture);
+                        var renderType = "global::IxIFlow.Templates.RenderTemplate<" + Type(renderModel, render, "modelType") + ">";
+                        Locate(render, "template");
+                        Line($"var {next} = {builder}.Step<{renderType}>(setup => {{");
+                        Line($"setup.Input(act => act.Template).From(ctx => new global::IxIFlow.Templates.TemplateReference({Quote(selected[0])}, {renderVersion}));");
+                        Locate(render.Model, render.Model is PathExpressionDocument ? "path" : render.Model is ConstantExpressionDocument ? "value" : null);
+                        Line($"setup.Input(act => act.Model).From(ctx => {Expression(render.Model)});");
+                        if (render.Culture != null)
+                        {
+                            Locate(render.Culture, render.Culture is PathExpressionDocument ? "path" : render.Culture is ConstantExpressionDocument ? "value" : null);
+                            Line($"setup.Input(act => act.Culture).From(ctx => {Expression(render.Culture)});");
+                        }
+                        Mappings([], render.Output);
+                        StepPolicies(render.OnError);
+                        Line("});");
+                        previousType = renderType;
+                        break;
+                    case ScopeStepDocument scopeStep:
+                        var scopeType = Type(scopeStep.Activity, scopeStep, "activity");
+                        var scopeBody = "scope" + _next;
+                        Locate(scopeStep, "activity");
+                        Line($"var {next} = {builder}.Scope<{scopeType}>(setup => {{");
+                        Defaults(scopeStep.Defaults, scopeStep.Input, scopeStep);
+                        Mappings(scopeStep.Input, scopeStep.Output);
+                        if (scopeStep.Retry != null)
+                        {
+                            Locate(scopeStep.Retry);
+                            Line($"setup.Retry({Retry(scopeStep.Retry)});");
+                        }
+                        if (scopeStep.Threading != null)
+                        {
+                            Locate(scopeStep, "threading");
+                            Line($"setup.Threading(ScopeThreading.{(scopeStep.Threading == "threadAffine" ? "ThreadAffine" : "AnyThread")});");
+                        }
+                        Line($"}}, {scopeBody} => {{");
+                        Steps(scopeStep.ChildScopes().Single().Steps, scopeBody, id + "/scope", scopeType, builderScope);
+                        Line("});");
+                        previousType = scopeType;
                         break;
                     case ActivityStepDocument activity:
                         Activity(activity.Activity, activity.Defaults, activity.Input, activity.Output, activity, builder, next, previousType, builderScope);
@@ -373,6 +435,34 @@ public static partial class WorkflowSourceTranslator
                     case ResultStepDocument result:
                         Locate(result, "value");
                         Line($"var {next} = {builder}.Result(valueExpression: ctx => {Expression(result.Value)});");
+                        break;
+                    case UseTypeStepDocument typedInline:
+                        if (options.RequireResolvedTypes &&
+                            (!options.WorkflowIdentities.TryGetValue(typedInline.WorkflowType, out var inlineIdentity) ||
+                             string.IsNullOrWhiteSpace(inlineIdentity.Name) || inlineIdentity.Version < 1))
+                            throw Error(typedInline, "Workflow class requires [Workflow(\"Name\", Version = n)] with a nonblank name and positive version", "workflowType");
+                        var inlineType = Type(typedInline.WorkflowType, typedInline, "workflowType");
+                        var inlineData = Type(options.WorkflowDataTypes.TryGetValue(typedInline.WorkflowType, out var inlineInferred) ? inlineInferred :
+                            typedInline.DataType ?? throw Error(typedInline, "Cannot infer IWorkflow<T>; supply dataType or a resolved workflow type contract", "workflowType"), typedInline, "dataType");
+                        Locate(typedInline, "workflowType");
+                        Line($"var {next} = {builder}.Use<{inlineType}, {inlineData}>(setup => {{");
+                        Mappings(typedInline.Input, typedInline.Output);
+                        Line("});");
+                        previousType = inlineData;
+                        break;
+                    case UseStepDocument inline:
+                        var inlineReference = inline.Workflow;
+                        var recipe = options.Workflows[inlineReference.Name + (inlineReference.Version == null ? "" : "@" + inlineReference.Version)];
+                        if (recipe.EntryType == null || recipe.AssemblyName == null || recipe.BundleDigest == null || recipe.StructureHash == null || recipe.ContractHash == null)
+                            throw Error(inlineReference, "Published inline composition requires a verified executable entry and pin");
+                        var usedData = Type(recipe.DataType, inlineReference);
+                        Locate(inline, "workflow");
+                        Line($"var {next} = {builder}.Use<{usedData}>(() => global::{recipe.EntryType}.Build(), " +
+                            $"new WorkflowInlinePin({Quote(inlineReference.Name)}, {recipe.Version}, {Quote(recipe.StructureHash)}, {Quote(recipe.ContractHash)}) " +
+                            $"{{ BundleDigest = new ArtifactDigest({Quote(recipe.BundleDigest)}), EntryType = {Quote(recipe.EntryType)}, AssemblyName = {Quote(recipe.AssemblyName)} }}, setup => {{");
+                        Mappings(inline.Input, inline.Output);
+                        Line("});");
+                        previousType = usedData;
                         break;
                     case InvokeWorkflowTypeStepDocument typedInvocation:
                         if (options.RequireResolvedTypes &&
@@ -491,14 +581,7 @@ public static partial class WorkflowSourceTranslator
             }
             Line($"var {next} = {builder}.{(request == null ? "Step" : "Request")}<{activityType}>(" +
                 (request == null ? "" : Quote(request.Key!) + ", ") + "setup => {");
-            foreach (var pair in defaults)
-                if (!inputs.Any(input => input.Target == pair.Key))
-                {
-                    Locate(node, "defaults." + pair.Key);
-                    var prefix = $"setup.Input(act => act.{Member(pair.Key, node)}).From(ctx => ";
-                    var literal = Literal(pair.Value, node);
-                    Line(prefix + literal + ");", prefix.Length, literal.Length);
-                }
+            Defaults(defaults, inputs, node);
             Mappings(inputs, outputs);
             if (node is ActivityStepDocument activity) SagaSetup(activity, activityType, previousType);
             if (request?.Subject != null)
@@ -507,6 +590,18 @@ public static partial class WorkflowSourceTranslator
                 Line($"}}, subjectExpression: ctx => {Expression(request.Subject)});");
             }
             else Line("});");
+        }
+
+        private void Defaults(Dictionary<string, object?> defaults, List<InputMappingDocument> inputs, DocumentNode node)
+        {
+            foreach (var pair in defaults)
+                if (!inputs.Any(input => input.Target == pair.Key))
+                {
+                    Locate(node, "defaults." + pair.Key);
+                    var prefix = $"setup.Input(act => act.{Member(pair.Key, node)}).From(ctx => ";
+                    var literal = Literal(pair.Value, node);
+                    Line(prefix + literal + ");", prefix.Length, literal.Length);
+                }
         }
 
         private void Mappings(IEnumerable<InputMappingDocument> inputs, IEnumerable<OutputMappingDocument> outputs,

@@ -19,11 +19,12 @@ public sealed class TemplateRenderer(IWorkflowCatalogStore store, TemplateEngine
     public async Task<RenderedTemplate> RenderAsync<TModel>(TemplateReference template, TModel model,
         string? culture, CancellationToken cancellationToken = default)
     {
+        var bundled = WorkflowDefinitionScope.Resolve(template, typeof(TModel), model is not null);
         ArgumentNullException.ThrowIfNull(template);
         if (model is null)
             throw new ArgumentNullException(nameof(model), $"Template {template} needs a model to render");
         cancellationToken.ThrowIfCancellationRequested();
-        var version = (await store.GetTemplateVersionAsync(template.Key, template.Version))?.Version
+        var version = bundled ?? (await store.GetTemplateVersionAsync(template.Key, template.Version))?.Version
                       ?? throw new TemplateNotFoundException($"Template {template} is not published");
         var modelType = TemplateVersion.ModelTypeName(typeof(TModel));
         if (version.ModelType != modelType || version.ModelTypeId != WorkflowTypeIdentity.SavedName(typeof(TModel)))

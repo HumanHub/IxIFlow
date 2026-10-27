@@ -13,6 +13,31 @@ public sealed class DebugPauseTests
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(12);
 
+    [Fact, Trait("Spec", "F-26")]
+    public async Task PauseLetsAnAffineAsyncCallbackResumeBeforeClosingAndReopensOnContinue()
+    {
+        var store = new ProbeStore(); var probe = new ScopeDebuggerFixture.Probe();
+        await using var host = ScopeDebuggerFixture.Services(store, new WorkflowCatalog(), probe);
+        var client = host.GetRequiredService<IWorkflowClient>(); var ops = host.GetRequiredService<IWorkflowOperations>();
+        var definition = new WorkflowBuilder<ScopeDebuggerFixture.Data, object>([], "AffineAsyncPause")
+            .Scope<ScopeDebuggerFixture.Container>(null, b => b.Step<ScopeDebuggerFixture.Block>()
+                .Step<ScopeDebuggerFixture.Read>().WithId("after-await")).Build();
+        var id = Guid.NewGuid().ToString("N");
+        var run = client.RunAsync(definition, new ScopeDebuggerFixture.Data(), new() { InstanceId = id });
+        try
+        {
+            await probe.Started.Task.WaitAsync(Timeout);
+            await ops.PauseAsync(id, "pause"); await store.PauseObserved.Task.WaitAsync(Timeout);
+            Assert.False(run.IsCompleted); Assert.Empty(probe.Closes);
+        }
+        finally { probe.Resume.TrySetResult(); }
+        Assert.Equal(WorkflowExecutionStatus.Paused, (await run.WaitAsync(Timeout)).Status);
+        Assert.Equal(1, probe.Reads); Assert.Equal(ScopeCloseReason.Suspended, Assert.Single(probe.Closes));
+        Assert.Equal(WorkflowExecutionStatus.Success, (await ops.ContinueAsync(id, "continue").WaitAsync(Timeout)).Status);
+        Assert.Equal(2, probe.Reads); Assert.Equal(2, probe.Threads.Distinct().Count());
+        Assert.Equal(ScopeCloseReason.Completed, probe.Closes.Last());
+    }
+
     [Fact]
     public async Task InFlightActivityCommitsBeforePauseAndTheLeaseIsReleased()
     {

@@ -68,7 +68,14 @@ public static class ActivitySourceTranslator
         Locate("activity.key", "[global::IxIFlow.ActivitySdk.WorkflowActivity(" + Literal(header.Key) + ", " + string.Join(", ", metadata) + ")]");
         if (header.Description != null)
             Locate("activity.description", "[global::System.ComponentModel.Description(" + Literal(header.Description) + ")]");
-        Line("public sealed class " + identity.ClassName + " : global::IxIFlow.Core.IAsyncActivity");
+        foreach (var type in header.RequiresScopes)
+            Locate("activity.requiresScopes", "[global::IxIFlow.Core.RequiresScope<" + type + ">]");
+        if (header.Concurrency != null)
+            Locate("activity.concurrency", "[global::IxIFlow.Core.ScopeConcurrency(global::IxIFlow.Core.ScopeConcurrency." + (header.Concurrency == "shared" ? "Shared" : "Serialized") + ")]");
+        if (header.Threading != null)
+            Locate("activity.threading", "[global::IxIFlow.Core.ScopeThreading(global::IxIFlow.Core.ScopeThreading." + (header.Threading == "threadAffine" ? "ThreadAffine" : "AnyThread") + ")]");
+        Locate(header.Scope == null ? "activity.key" : "activity.scope", "public sealed class " + identity.ClassName + " : " +
+            (header.Scope == null ? "global::IxIFlow.Core.IAsyncActivity" : "global::IxIFlow.Core.IScopeActivity<" + header.Scope + ">"));
         Line("{");
         foreach (var direction in new[] { ("input", "ActivityInput", document.Input), ("output", "ActivityOutput", document.Output), ("inOut", "ActivityInputOutput", document.InOut) })
             foreach (var pair in direction.Item3)
@@ -99,7 +106,9 @@ public static class ActivitySourceTranslator
                 Locate(path + ".type", "public " + member.Type + " " + pair.Key + " { get; set; } = default!;", 7, member.Type.Length);
             }
         Line("#pragma warning disable CS1998");
-        Line("public async global::System.Threading.Tasks.Task ExecuteAsync(global::IxIFlow.Core.IActivityContext context, global::System.Threading.CancellationToken cancellationToken = default)");
+        Line(header.Scope == null
+            ? "public async global::System.Threading.Tasks.Task ExecuteAsync(global::IxIFlow.Core.IActivityContext context, global::System.Threading.CancellationToken cancellationToken = default)"
+            : "public async global::System.Threading.Tasks.Task<" + header.Scope + "> OpenAsync(global::IxIFlow.Core.ScopeOpening opening, global::IxIFlow.Core.IScopeContext context, global::System.Threading.CancellationToken cancellationToken)");
         Line("{");
         Block("body", document.Body);
         Line("}");

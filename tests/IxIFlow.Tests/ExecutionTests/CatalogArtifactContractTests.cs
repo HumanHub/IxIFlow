@@ -122,7 +122,7 @@ public sealed class CatalogArtifactContractTests
                 var original = await store.GetWorkflowVersionAsync(name, 1);
                 var other = new WorkflowCatalog(store);
                 await other.RegisterWorkflowAsync(Definition(name));
-                await Refused(() => other.RegisterWorkflowAsync(Workflow.Create<Data>(name).Step<Noop>().Step<Noop>().Build()), WorkflowErrorKind.InvalidRequest);
+                await Refused(() => other.RegisterWorkflowAsync(Workflow.Create<Data>(name).Step<Noop>().Step<Noop>().Build()), WorkflowErrorKind.InvalidState);
                 Assert.Equal(original!.StructureHash, (await store.GetWorkflowVersionAsync(name, 1))!.StructureHash);
                 Assert.NotNull(await other.GetWorkflowDefinitionAsync(name, 1));
                 break;

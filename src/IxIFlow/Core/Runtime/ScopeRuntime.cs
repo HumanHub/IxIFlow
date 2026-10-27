@@ -130,6 +130,7 @@ internal sealed class ScopeRuntime(
     private async Task<RunningActivity?> OpenAsync(ContinuationState needing, WorkflowStep step, CancellationTokenSource cancellation,
         ScopeFrameState? entry, bool reopen)
     {
+        using var templateDispatch = WorkflowDefinitionScope.Dispatch(definition, catalog.Id(step));
         entry ??= checkpoint.Scopes.SingleOrDefault(item => item.Phase is ScopePhase.Preparing or ScopePhase.Opening &&
             item.ContinuationId == needing.Id && item.StepId == catalog.Id(step));
         var fresh = entry == null || entry.Phase == ScopePhase.Preparing;
@@ -145,12 +146,17 @@ internal sealed class ScopeRuntime(
             if (!fresh) entry.Inputs.Restore(prepared.Activity, services);
             ActivityContract.ValidateRequired(prepared.Activity, fresh ? prepared.Inputs : entry.Inputs, services);
         }
-        catch (Exception error) when (WorkflowEngineException.IsFromWorkflowCode(error))
+        catch (Exception error)
         {
+            templateDispatch.ThrowIfFailed();
+            if (!WorkflowEngineException.IsFromWorkflowCode(error)) throw;
             if (!checkpoint.Scopes.Contains(entry)) checkpoint.Scopes.Add(entry);
             await OpenFailedAsync(needing, entry, step, error, reopen);
             return null;
         }
+        // Saved pins are engine decisions, outside the authored preparation boundary.
+        templateDispatch.ThrowIfFailed();
+        templateDispatch.ValidateInputs(fresh ? prepared.Inputs : entry.Inputs, prepared.Activity);
         if (fresh)
         {
             entry.Inputs = prepared.Inputs;
@@ -174,14 +180,25 @@ internal sealed class ScopeRuntime(
             {
                 task = (Task?)Invoke(method, prepared.Activity, [new ScopeOpening(reopen, captured.RecordedOpens), new ScopeContext(prepared.Context, contextValues), token]);
             }
-            catch (Exception error) when (WorkflowEngineException.IsFromWorkflowCode(error)) { return ActivityRunResult.Threw(error); }
+            catch (Exception error) when (WorkflowEngineException.IsFromWorkflowCode(error))
+            {
+                templateDispatch.ThrowIfFailed();
+                return ActivityRunResult.Threw(error);
+            }
             if (task == null) throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "A scope open returned a null task");
             try { await task; }
-            catch (Exception error) { return ActivityRunResult.Threw(error); }
+            catch (Exception error)
+            {
+                templateDispatch.ThrowIfFailed();
+                return ActivityRunResult.Threw(error);
+            }
             var value = task.GetType().GetProperty("Result")!.GetValue(task)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "A scope open returned a null value");
             // Transfer ownership before returning to the executor, including late/abandoned results.
             captured.Release = new ScopeRelease(value, callbackValues);
+            // Keep ownership of a returned value even when author code swallowed a refusal.
+            try { templateDispatch.ThrowIfFailed(); }
+            catch (Exception error) { return new(ActivityRunKind.Threw, Error: error); }
             return ActivityRunResult.Returned(null);
         }, cancellation.Token), cancellation.Token);
         var running = new RunningActivity(needing, step, actual, cancellation, prepared, needing.Stack.LastOrDefault()?.NextStepIndex ?? 0)
@@ -189,8 +206,11 @@ internal sealed class ScopeRuntime(
             CommitSettlement = false,
             LifecycleSettlement = async () =>
             {
+                using var templateFrame = templateDispatch.Resume();
                 captured.InFlight = null;
-                var result = await actual;
+                ActivityRunResult result;
+                try { result = await actual; templateDispatch.ThrowIfFailed(); }
+                catch (Exception error) { result = Failed(error); }
                 if (result.Kind == ActivityRunKind.Skipped)
                 {
                     if (!reopen)
@@ -202,7 +222,8 @@ internal sealed class ScopeRuntime(
                     needing.AuthorizedDispatch = null;
                     return;
                 }
-                if (!reopen && (needing.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled ||
+                if (!reopen && (result.Error == null || WorkflowEngineException.IsFromWorkflowCode(result.Error)) &&
+                    (needing.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled ||
                     needing.CancellationUnwind && !CancellationScopeTransitions.IsInsideHandler(needing) && !TryScopeTransitions.IsInsideFinally(needing) && !SagaScopeTransitions.IsInsideCompensation(needing)))
                 {
                     if (captured.Release?.Value is { } cancelledValue)
@@ -235,14 +256,21 @@ internal sealed class ScopeRuntime(
                                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, $"Scope property '{property.Name}' holds its live value");
                         SerializedValue saved;
                         try { saved = SerializedValue.From(prepared.Activity)!; }
-                        catch (Exception error) { throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "Scope configuration and outputs cannot be saved", error); }
+                        catch (Exception error)
+                        {
+                            templateDispatch.ThrowIfFailed();
+                            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "Scope configuration and outputs cannot be saved", error);
+                        }
+                        templateDispatch.ThrowIfFailed();
                         if (!reopen)
                         {
                             var copy = saved.Read(services)!;
                             checkpoint.MarkDataChanged(needing);
                             WorkflowValueBinding.ApplyActivityOutputs(step, copy, checkpoint.DataOf(needing), ForEachTransitions.ItemsOf(catalog, checkpoint, needing));
+                            templateDispatch.ThrowIfFailed();
                             captured.Activity = saved;
                             needing.SetPrevious(copy);
+                            templateDispatch.ThrowIfFailed();
                             needing.Stack.Add(new ScopePosition { Kind = FrameKind.Scope, ActivationId = captured.Id,
                                 ScopeId = catalog.ScopeBodyScope(step), EntryPrevious = saved });
                             captured.Phase = ScopePhase.Open;
@@ -257,7 +285,7 @@ internal sealed class ScopeRuntime(
                         Trace(captured, TraceEntryType.ScopeOpened, reopen: reopen);
                         return;
                     }
-                    catch (Exception error) { result = new(ActivityRunKind.Threw, Error: error); }
+                    catch (Exception error) { result = Failed(error); }
                 }
                 if (captured.Release?.Value is { } returned)
                 {
@@ -282,6 +310,13 @@ internal sealed class ScopeRuntime(
         Retain(actual);
         Reserve(running, enclosing);
         return running;
+
+        ActivityRunResult Failed(Exception error)
+        {
+            try { templateDispatch.ThrowIfFailed(); }
+            catch (Exception guard) { error = guard; }
+            return new(ActivityRunKind.Threw, Error: error);
+        }
     }
 
     private static async Task<ActivityRunResult> ObserveOpenDispatchAsync(Task<ActivityRunResult> dispatch, CancellationToken cancellation)
@@ -399,6 +434,8 @@ internal sealed class ScopeRuntime(
     private Task CloseValueAsync(ScopeFrameState entry, ScopeCloseReason reason, Exception? error, CancellationToken cancellation = default)
     {
         checkpoint.Signals?.ThrowIfOwnershipLost();
+        using var templateDispatch = WorkflowDefinitionScope.Dispatch(definition, entry.StepId);
+        templateDispatch.ValidateInputs(entry.Inputs, entry.LiveActivity!);
         var values = new ScopeValues([.. Entries(entry.EnclosingScopeIds), entry]);
         var prepared = entry.InFlight?.Prepared;
         return values.RunAsync(async token =>
@@ -409,7 +446,12 @@ internal sealed class ScopeRuntime(
             var task = (Task?)Invoke(method, entry.LiveActivity!, [entry.Value, new ScopeClosing(reason, error), context, token])
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "A scope close returned a null task");
             try { await task; }
-            catch (Exception failure) { WorkflowEngineException.FromWorkflowCode(failure); throw; }
+            catch (Exception failure)
+            {
+                templateDispatch.ThrowIfFailed();
+                WorkflowEngineException.FromWorkflowCode(failure); throw;
+            }
+            templateDispatch.ThrowIfFailed();
             return true;
         }, cancellation, cleanup: true);
     }
@@ -621,6 +663,7 @@ internal sealed class ScopeRuntime(
         try { return method.Invoke(target, arguments); }
         catch (TargetInvocationException error) when (error.InnerException != null)
         {
+            WorkflowDefinitionScope.ThrowIfDispatchFailed();
             WorkflowEngineException.FromWorkflowCode(error.InnerException);
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error.InnerException).Throw(); throw;
         }

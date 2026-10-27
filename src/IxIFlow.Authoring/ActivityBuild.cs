@@ -63,11 +63,13 @@ internal static class ActivityBuild
                 assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion != identity.InformationalVersion)
                 throw new WorkflowPublishException("PUB021", "Generated activity assembly identity differs from the document", new(1, 1));
             var type = assembly.GetType(identity.MetadataTypeName, throwOnError: true)!;
-            if (!typeof(IAsyncActivity).IsAssignableFrom(type) || !type.IsVisible || type.IsAbstract || type.IsGenericType)
-                throw new WorkflowPublishException("PUB021", "Generated activity is not an eligible IAsyncActivity", new(1, 1));
+            var ordinary = typeof(IAsyncActivity).IsAssignableFrom(type);
+            var scopes = type.GetInterfaces().Count(item => item.IsGenericType && item.GetGenericTypeDefinition() == typeof(IScopeActivity<>));
+            if (ordinary == (scopes > 0) || scopes > 1 || !type.IsVisible || type.IsAbstract || type.IsGenericType)
+                throw new WorkflowPublishException("PUB021", "Generated activity requires exactly one ordinary or scope implementation", new(1, 1));
             var descriptor = ActivityDescriptor.OfType(type, identity.PackageId, identity.PackageVersion);
             ActivityDescriptorRules.Validate(descriptor);
-            if (descriptor.Key != identity.PackageId || descriptor.Version != identity.ActivityVersion || descriptor.Scope != null)
+            if (descriptor.Key != identity.PackageId || descriptor.Version != identity.ActivityVersion)
                 throw new WorkflowPublishException("PUB021", "Generated activity declaration differs from the document", new(1, 1));
             return descriptor.ToJson();
         }

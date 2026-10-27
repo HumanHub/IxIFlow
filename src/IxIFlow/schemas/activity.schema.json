@@ -59,7 +59,7 @@
     },
     "body": {
       "type": "string",
-      "description": "C# statements executed by the activity, authored as a literal block."
+      "description": "C# ExecuteAsync statements, or OpenAsync statements returning the scope value, authored as a literal block."
     },
     "declarations": {
       "type": [
@@ -127,6 +127,44 @@
             "null"
           ],
           "description": "The activity description."
+        },
+        "scope": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The C# scope value type; when supplied, body implements OpenAsync and declarations must implement CloseAsync."
+        },
+        "requiresScopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scope value types required by this activity, including enclosing requirements of a scope activity."
+        },
+        "concurrency": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Scope concurrency; omission uses serialized. Only scope activities can declare this member.",
+          "enum": [
+            "serialized",
+            "shared",
+            null
+          ]
+        },
+        "threading": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Minimum scope threading; omission uses anyThread. Only scope activities can declare this member.",
+          "enum": [
+            "anyThread",
+            "threadAffine",
+            null
+          ]
         }
       },
       "required": [

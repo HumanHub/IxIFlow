@@ -427,11 +427,14 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
     /// <summary>Composes a fresh body after verifying its exact pin.</summary>
     public IWorkflowBuilder<TWorkflowData, TInvokedData> Use<TInvokedData>(Func<WorkflowDefinition> callee, WorkflowInlinePin pin,
         Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
-        where TInvokedData : class =>
-        AddInline<TInvokedData>(InlineConstruction.Factory(callee, pin), null, configure, sourcePath, sourceLine);
+        where TInvokedData : class
+    {
+        pin = InlineConstruction.FactoryPin(callee, pin);
+        return AddInline<TInvokedData>(InlineConstruction.Factory(callee, pin), null, configure, sourcePath, sourceLine, pin);
+    }
 
     private IWorkflowBuilder<TWorkflowData, TInvokedData> AddInline<TInvokedData>(WorkflowDefinition callee, Type? workflowType,
-        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure, string sourcePath, int sourceLine)
+        Action<IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>>? configure, string sourcePath, int sourceLine, WorkflowInlinePin? pin = null)
         where TInvokedData : class
     {
         if (callee.WorkflowDataType != typeof(TInvokedData))
@@ -447,6 +450,8 @@ public class WorkflowBuilder<TWorkflowData, TPreviousStepData>(
             WorkflowType = workflowType, WorkflowName = callee.Name, WorkflowVersion = callee.Version,
             InvokedDataType = typeof(TInvokedData), InlineSteps = callee.Steps,
             InlineStructureHash = WorkflowDefinitionValidator.Inspect(callee),
+            InlinePin = pin ?? new(callee.Name, callee.Version, WorkflowDefinitionValidator.Inspect(callee), contract.Hash)
+            { EntryType = workflowType?.FullName, AssemblyName = workflowType?.Assembly.GetName().Name },
             InvokedContract = contract, InvokedContractHash = contract.Hash,
             InvokedContractKind = WorkflowInvocationContractKind.ExactPin,
             InlineDemands = callee.Demands.ToArray(),

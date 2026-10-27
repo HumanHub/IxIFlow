@@ -39,6 +39,8 @@ internal sealed class PublishDependencyNotFoundException(string message) : FileN
 internal sealed record WorkflowCallee(WorkflowVersion Version, string DataType, DocumentLocation Location)
 {
     internal IReadOnlyDictionary<string, ReadOnlyMemory<byte>> PrivateAssemblies { get; init; } = new Dictionary<string, ReadOnlyMemory<byte>>();
+    internal WorkflowBundle? Bundle { get; init; }
+    internal bool Inline { get; set; }
 }
 
 internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactStore artifacts, WorkflowPublisherOptions options)
@@ -55,12 +57,19 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
                 $"Workflow '{document.Workflow.Name}', step '{identity}' cannot invoke " +
                 $"'{row.Name}' v{row.Version}: an independent child cannot supply required scopes", step.Location);
         }
-        async Task<WorkflowCallee> Resolve(string name, int? version, DocumentLocation location, InvokeWorkflowStepDocument? invocation = null)
+        static void Use(WorkflowCallee callee, DocumentLocation location)
+        {
+            if (callee.Bundle == null)
+                throw new WorkflowPublishException("PUB012", $"Callee '{callee.Version.Name}@{callee.Version.Version}' has no published artifact; use useType for a code-defined workflow", location);
+            callee.Inline = true;
+        }
+        async Task<WorkflowCallee> Resolve(string name, int? version, DocumentLocation location, InvokeWorkflowStepDocument? invocation = null, bool inline = false)
         {
             token.ThrowIfCancellationRequested();
             if (requests.TryGetValue((name, version), out var existing))
             {
                 CheckInvocation(existing.Version, invocation);
+                if (inline) Use(existing, location);
                 return existing;
             }
             var row = version is { } pin ? await catalog.GetWorkflowVersionAsync(name, pin) :
@@ -68,18 +77,24 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
             if (row == null || row.State is not (WorkflowVersionState.Published or WorkflowVersionState.Deprecated))
                 throw new WorkflowPublishException("STEP011", $"Workflow '{name}' needs a resolved workflow contract and pinned version; the requested catalog version is unavailable", location);
             CheckInvocation(row, invocation);
+            if (inline && row.ArtifactDigest == null)
+                throw new WorkflowPublishException("PUB012", $"Callee '{row.Name}@{row.Version}' has no published artifact; use useType for a code-defined workflow", location);
             if (result.TryGetValue((row.Name, row.Version), out existing))
             {
                 requests.Add((name, version), existing);
+                if (inline) Use(existing, location);
                 return existing;
             }
             string dataType;
+            WorkflowBundle? bundle = null;
             IReadOnlyDictionary<string, ReadOnlyMemory<byte>> privateAssemblies = new Dictionary<string, ReadOnlyMemory<byte>>();
             if (row.ArtifactDigest is { } digest)
             {
                 await using var stream = await artifacts.OpenAsync(digest, token)
                     ?? throw new WorkflowPublishException("PUB009", $"Callee '{row.Name}@{row.Version}' bundle is unavailable; republish the callee", location);
-                var bundle = await WorkflowBundleArchive.ReadAsync(stream, digest, token, options.PackageReadLimits);
+                try { bundle = await WorkflowBundleArchive.ReadAsync(stream, digest, token, options.PackageReadLimits); }
+                catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.ArtifactMismatch)
+                { throw new WorkflowPublishException("PUB009", $"Callee '{row.Name}@{row.Version}' bundle is invalid; republish the callee", location, error); }
                 var manifest = bundle.Manifest;
                 if (manifest.Name != row.Name || manifest.Version != row.Version || manifest.StructureHash != row.StructureHash ||
                     manifest.Contract != row.ContractJson || manifest.ContractHash != row.ContractHash ||
@@ -94,8 +109,15 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
                     throw new WorkflowPublishException("PUB009", $"Callee '{row.Name}@{row.Version}' is incompatible with the publishing profile; republish the callee", location);
                 await new WorkflowPackageResolver(catalog, artifacts, options).UnionAsync(packages, manifest.ActivityPackages, location, token);
                 dataType = manifest.DataType;
-                privateAssemblies = bundle.Entries.Where(pair => pair.Key.StartsWith("private/", StringComparison.Ordinal))
-                    .ToDictionary(pair => ResolvedWorkflowPackages.AssemblyIdentity(pair.Value).Name!, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+                var privateMap = new Dictionary<string, ReadOnlyMemory<byte>>(StringComparer.OrdinalIgnoreCase);
+                foreach (var bytes in bundle.Entries.Where(pair => pair.Key.StartsWith("private/", StringComparison.Ordinal) && pair.Key.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)).Select(pair => pair.Value))
+                {
+                    var assemblyName = ResolvedWorkflowPackages.AssemblyIdentity(bytes).Name!;
+                    if (privateMap.TryGetValue(assemblyName, out var previous) && !previous.Span.SequenceEqual(bytes.Span))
+                        throw new WorkflowPublishException("PUB010", $"Callee '{row.Name}@{row.Version}' contains conflicting private assembly '{assemblyName}'", location);
+                    privateMap.TryAdd(assemblyName, bytes);
+                }
+                privateAssemblies = privateMap;
             }
             else
             {
@@ -109,7 +131,8 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
                     throw new WorkflowPublishException("PUB009", $"Callee '{row.Name}@{row.Version}' executable DTO assembly closure is unavailable; publish the callee or supply its code registration", location, error);
                 }
             }
-            var resolved = new WorkflowCallee(row, dataType, location) { PrivateAssemblies = privateAssemblies };
+            var resolved = new WorkflowCallee(row, dataType, location) { PrivateAssemblies = privateAssemblies, Bundle = bundle };
+            if (inline) Use(resolved, location);
             result.Add((row.Name, row.Version), resolved);
             requests.Add((name, version), resolved);
             return resolved;
@@ -121,6 +144,12 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
         foreach (var step in WorkflowSourceTranslator.Flatten(document.Definitions.Concat(document.Steps.Values.SelectMany(template => template.Steps))).OfType<InvokeWorkflowStepDocument>())
         {
             var callee = await Resolve(step.Workflow.Name, step.Workflow.Version, step.Workflow.Location, step);
+            step.Workflow.Version = callee.Version.Version;
+            imports.Add(callee.Version.Name + "@" + callee.Version.Version);
+        }
+        foreach (var step in WorkflowSourceTranslator.Flatten(document.Definitions.Concat(document.Steps.Values.SelectMany(template => template.Steps))).OfType<UseStepDocument>())
+        {
+            var callee = await Resolve(step.Workflow.Name, step.Workflow.Version, step.Workflow.Location, inline: true);
             step.Workflow.Version = callee.Version.Version;
             imports.Add(callee.Version.Name + "@" + callee.Version.Version);
         }
@@ -192,7 +221,11 @@ internal sealed class WorkflowCallees(IWorkflowCatalogStore catalog, IArtifactSt
             source.Types[dataType] = dataType;
             source.Workflows[row.Name + "@" + row.Version] = new(dataType, row.Version)
             {
-                ContractJson = row.ContractJson, Contract = new(members)
+                ContractJson = row.ContractJson, Contract = new(members),
+                EntryType = callee.Inline ? callee.Bundle!.Manifest.EntryType : null,
+                AssemblyName = callee.Inline ? WorkflowBundleIdentity.AssemblyName(row.Name, row.Version) : null,
+                BundleDigest = callee.Inline ? row.ArtifactDigest!.Value.Value : null,
+                StructureHash = row.StructureHash, ContractHash = row.ContractHash
             };
         }
     }

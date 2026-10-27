@@ -1,0 +1,9 @@
+workflow: {name: ScopedWorkbook, dataType: IxIFlow.Samples.ScopeData}
+definitions:
+  - kind: scope
+    activity: IxIFlow.Samples.ExcelScope
+    threading: threadAffine
+    input: [{target: WorkbookRef, from: {path: workflow.Reference}}]
+    steps:
+      - {kind: activity, activity: IxIFlow.Samples.WriteCells}
+      - {kind: activity, activity: IxIFlow.Samples.SaveWorkbook}

@@ -31,7 +31,13 @@ public interface IWorkflowValidationContext
 
 public sealed record TemplateDocumentContract(string Key, int Version, string ModelType);
 
-public sealed record ActivityDocumentContract(string Key, string Version, string PackageName = "", string PackageVersion = "");
+public sealed partial record ActivityDocumentContract(string Key, string Version, string PackageName = "", string PackageVersion = "")
+{
+    public string? Scope { get; init; }
+    public IReadOnlyList<string> RequiresScopes { get; init; } = [];
+    public string? Concurrency { get; init; }
+    public string? Threading { get; init; }
+}
 
 public interface IWorkflowDocumentValidator
 {
@@ -50,6 +56,13 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
         var diagnostics = new List<WorkflowDiagnostic>();
 
         diagnostics.AddRange(DocumentRules.Validate(document).Diagnostics);
+        if (document.Workflow != null)
+            for (var index = 0; index < document.Workflow.RequiresScopes.Count; index++)
+            {
+                var type = document.Workflow.RequiresScopes[index];
+                if (string.IsNullOrWhiteSpace(type) || !await context.HasDataTypeAsync(type, cancellationToken))
+                    Invalid("SCOPE006", $"Unknown required scope value type '{type}'", $"workflow.requiresScopes[{index}]", diagnostics);
+            }
         if (!HasMissingMember("workflow", diagnostics) && document.Workflow != null)
         {
             if (document.Workflow.Icon is { } icon && (icon.Length > 100 || !System.Text.RegularExpressions.Regex.IsMatch(icon, @"\A[a-z][a-z0-9-]*\z")))
@@ -129,6 +142,11 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             var step = steps[index];
             var stepPath = $"{pathPrefix}[{index}]";
 
+            if (scope is WorkflowDocumentScope.Saga or WorkflowDocumentScope.SagaHandler && ContainsInline(step, new HashSet<string>(StringComparer.Ordinal)))
+            {
+                Invalid("STEP012", "Inline workflow calls are not supported in saga scopes", stepPath, diagnostics);
+                continue;
+            }
             if (!Supports(scope, step) || faultBindings.Count > 0 &&
                 (step is ResultStepDocument && faultExit == FaultBodyExit.None ||
                  step is TransitionStepDocument && faultExit != FaultBodyExit.Timeout))
@@ -273,6 +291,27 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                         await ValidateStepsAsync(outcome.Default, stepPath + ".default", document, diagnostics, context, cancellationToken, aliases, scope, faultBindings: faultBindings, expandingTemplates: expandingTemplates);
                     break;
                 }
+                case UseTypeStepDocument inline:
+                {
+                    RequiredType(inline.WorkflowType, stepPath + ".workflowType", diagnostics);
+                    if (inline.DataType != null) RequiredType(inline.DataType, stepPath + ".dataType", diagnostics);
+                    ValidateInputMappings(inline.Input, diagnostics, stepPath + ".input", false, aliases, document.Code);
+                    ValidateOutputMappings(inline.Output, diagnostics, stepPath + ".output");
+                    ValidateWorkflowMappings(inline.Input, inline.Output,
+                        (context as IWorkflowContractValidationContext)?.FindWorkflowTypeContract(inline.WorkflowType, inline.DataType), stepPath, diagnostics);
+                    break;
+                }
+                case UseStepDocument inline:
+                {
+                    if (!HasMissingMember(stepPath + ".workflow", diagnostics) && !string.IsNullOrWhiteSpace(inline.Workflow.Name) &&
+                        !await context.HasWorkflowAsync(inline.Workflow.Name, inline.Workflow.Version, cancellationToken))
+                        Invalid("STEP011", $"Workflow '{inline.Workflow.Name}' needs a resolved workflow contract and pinned version", stepPath + ".workflow.name", diagnostics);
+                    ValidateInputMappings(inline.Input, diagnostics, stepPath + ".input", false, aliases, document.Code);
+                    ValidateOutputMappings(inline.Output, diagnostics, stepPath + ".output");
+                    ValidateWorkflowMappings(inline.Input, inline.Output,
+                        (context as IWorkflowContractValidationContext)?.FindWorkflowContract(inline.Workflow.Name, inline.Workflow.Version), stepPath, diagnostics);
+                    break;
+                }
                 case InvokeWorkflowTypeStepDocument invocation:
                 {
                     ValidateStepPolicies(invocation.OnError, stepPath, diagnostics);
@@ -295,6 +334,46 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                     break;
                 }
 
+                case RenderTemplateStepDocument render:
+                    var parts = render.Template.Split('@');
+                    var hasVersion = parts.Length == 2 && int.TryParse(parts[1], out var selectedVersion) && selectedVersion > 0;
+                    var templateContract = parts.Length <= 2 ? await context.FindTemplateAsync(parts[0], hasVersion ? int.Parse(parts[1], CultureInfo.InvariantCulture) : null, cancellationToken) : null;
+                    if (parts.Length > 2 || parts.Length == 2 && !hasVersion || string.IsNullOrWhiteSpace(parts[0]))
+                        Invalid("TPL010", "Invalid template reference", stepPath + ".template", diagnostics);
+                    else if (templateContract == null && (!hasVersion || string.IsNullOrWhiteSpace(render.ModelType)))
+                        Invalid("TPL010", "renderTemplate requires publishing to resolve its version and modelType", stepPath + ".template", diagnostics);
+                    if (templateContract != null && render.ModelType != null && render.ModelType.Replace("global::", "") != templateContract.ModelType.Replace("global::", ""))
+                        Invalid("TPL011", "Explicit modelType differs from the selected template model", stepPath + ".modelType", diagnostics);
+                    if (render.Compensation.Count > 0) Invalid("TPL009", "Rendering has no compensation", stepPath + ".compensation", diagnostics);
+                    ValidateExpression(render.Model, diagnostics, stepPath + ".model", inputRoots, document.Code);
+                    ValidateExpression(render.Culture, diagnostics, stepPath + ".culture", inputRoots, document.Code);
+                    ValidateOutputMappings(render.Output, diagnostics, stepPath + ".output");
+                    await ValidateSagaActivityAsync(new ActivityStepDocument { OnError = render.OnError }, stepPath, document, diagnostics, context, cancellationToken, aliases, scope);
+                    break;
+
+                case ScopeStepDocument scopeStep:
+                    if (!string.IsNullOrWhiteSpace(scopeStep.Activity))
+                    {
+                        var descriptor = await context.FindActivityAsync(scopeStep.Activity, cancellationToken);
+                        if (descriptor == null)
+                            Invalid("STEP003", $"Unknown activity '{scopeStep.Activity}'", stepPath + ".activity", diagnostics);
+                        else
+                        {
+                            ValidateActivityDependency(scopeStep.ActivityVersion, descriptor, document, diagnostics, stepPath);
+                            if (descriptor.Scope == null)
+                                Invalid("SCOPE003", $"Activity '{descriptor.Key}' is not a scope activity", stepPath + ".activity", diagnostics);
+                            if (scopeStep.Threading == "anyThread" && descriptor.Threading == "threadAffine")
+                                Invalid("SCOPE005", "Scope threading cannot weaken the implementation requirement", stepPath + ".threading", diagnostics);
+                        }
+                    }
+                    ValidateInputMappings(scopeStep.Input, diagnostics, stepPath + ".input", false, aliases, document.Code);
+                    ValidateOutputMappings(scopeStep.Output, diagnostics, stepPath + ".output");
+                    if (scopeStep.Retry != null) ValidateRetry(scopeStep.Retry, stepPath + ".retry", diagnostics);
+                    foreach (var child in scopeStep.ChildScopes())
+                        await ValidateStepsAsync(child.Steps, stepPath + ".steps", document, diagnostics, context, cancellationToken,
+                            aliases, scope, faultBindings, expandingTemplates);
+                    break;
+
                 case ActivityStepDocument activityStep:
                     if (!string.IsNullOrWhiteSpace(activityStep.Activity))
                     {
@@ -306,6 +385,7 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
                         else
                         {
                             ValidateActivityDependency(activityStep.ActivityVersion, descriptor, document, diagnostics, stepPath);
+                            ValidateOrdinaryActivity(descriptor, stepPath, diagnostics);
                         }
                     }
 
@@ -416,6 +496,14 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             }
 
         }
+
+        bool ContainsInline(WorkflowStepDocument step, HashSet<string> templates)
+        {
+            if (step is UseStepDocument or UseTypeStepDocument) return true;
+            if (step is StepReferenceStepDocument reference && templates.Add(reference.Ref) && document.Steps.TryGetValue(reference.Ref, out var body) &&
+                body.Steps.Any(child => ContainsInline(child, templates))) return true;
+            return step.ChildScopes().Any(child => child.Steps.Any(nested => ContainsInline(nested, templates)));
+        }
     }
 
     private static void ValidateWorkflowMappings(IReadOnlyList<InputMappingDocument> inputs, IReadOnlyList<OutputMappingDocument> outputs,
@@ -451,11 +539,18 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
             else
             {
                 ValidateActivityDependency(template.ActivityVersion, descriptor, document, diagnostics, $"activities.{templateKey}");
+                ValidateOrdinaryActivity(descriptor, $"activities.{templateKey}", diagnostics);
             }
         }
 
         ValidateInputMappings(template.Input, diagnostics, $"activities.{templateKey}.input", allowEventRoot: false, aliases: document.Steps.Values.SelectMany(block => block.Parameters.Keys).Append("fault").Distinct().ToArray(), code: document.Code);
         ValidateOutputMappings(template.Output, diagnostics, $"activities.{templateKey}.output");
+    }
+
+    private static void ValidateOrdinaryActivity(ActivityDocumentContract descriptor, string path, List<WorkflowDiagnostic> diagnostics)
+    {
+        if (descriptor.Scope != null)
+            Invalid("SCOPE004", $"Activity '{descriptor.Key}' is a scope activity; use kind: scope", path + ".activity", diagnostics);
     }
 
     private static void ValidateActivityDependency(
@@ -642,8 +737,8 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
 
     internal static bool Supports(WorkflowDocumentScope scope, WorkflowStepDocument step) => scope switch
     {
-        WorkflowDocumentScope.Saga => step is ActivityStepDocument or ActivityReferenceStepDocument or WaitStepDocument or CancellationScopeStepDocument or SwitchStepDocument or AssignStepDocument or ThrowStepDocument or RethrowStepDocument,
-        WorkflowDocumentScope.SagaHandler => step is ActivityStepDocument and not RequestStepDocument or ActivityReferenceStepDocument or WaitForStepDocument or CancellationScopeStepDocument or SwitchStepDocument or AssignStepDocument or ThrowStepDocument or RethrowStepDocument,
+        WorkflowDocumentScope.Saga => step is RenderTemplateStepDocument or ActivityStepDocument or ActivityReferenceStepDocument or WaitStepDocument or CancellationScopeStepDocument or SwitchStepDocument or AssignStepDocument or ThrowStepDocument or RethrowStepDocument,
+        WorkflowDocumentScope.SagaHandler => step is RenderTemplateStepDocument or ActivityStepDocument and not RequestStepDocument or ActivityReferenceStepDocument or WaitForStepDocument or CancellationScopeStepDocument or SwitchStepDocument or AssignStepDocument or ThrowStepDocument or RethrowStepDocument,
         WorkflowDocumentScope.Catch => true,
         _ => true
     };
@@ -662,8 +757,12 @@ public sealed partial class WorkflowDocumentValidator : IWorkflowDocumentValidat
         {
             var undo = step.Compensation[index];
             var undoPath = $"{path}.compensation[{index}]";
-            if (!HasMissingMember(undoPath + ".activity", diagnostics) && await context.FindActivityAsync(undo.Activity, token) == null)
-                Invalid("SAGA007", $"Unknown compensation activity '{undo.Activity}'", undoPath + ".activity", diagnostics);
+            if (!HasMissingMember(undoPath + ".activity", diagnostics))
+            {
+                var descriptor = await context.FindActivityAsync(undo.Activity, token);
+                if (descriptor == null) Invalid("SAGA007", $"Unknown compensation activity '{undo.Activity}'", undoPath + ".activity", diagnostics);
+                else ValidateOrdinaryActivity(descriptor, undoPath, diagnostics);
+            }
             if (undo.ReplyType != null && undo.PreviousActivity != null)
                 Invalid("SAGA008", "replyType and previousActivity select different compensation overloads", undoPath, diagnostics);
             if (undo.ReplyType != null) RequiredType(undo.ReplyType, undoPath + ".replyType", diagnostics);

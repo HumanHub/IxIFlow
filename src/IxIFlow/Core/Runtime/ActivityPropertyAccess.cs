@@ -8,9 +8,15 @@ internal static class ActivityPropertyAccess
 {
     internal static object? GetValue(PropertyInfo property, object activity)
     {
-        try { return property.GetValue(activity); }
+        try
+        {
+            var value = property.GetValue(activity);
+            WorkflowDefinitionScope.ThrowIfDispatchFailed();
+            return value;
+        }
         catch (TargetInvocationException error) when (error.InnerException != null)
         {
+            WorkflowDefinitionScope.ThrowIfDispatchFailed();
             ExceptionDispatchInfo.Capture(WorkflowEngineException.FromWorkflowCode(error.InnerException)).Throw();
             throw;
         }
@@ -18,9 +24,14 @@ internal static class ActivityPropertyAccess
 
     internal static void SetValue(PropertyInfo property, object activity, object? value)
     {
-        try { property.SetValue(activity, value); }
+        try
+        {
+            property.SetValue(activity, value);
+            WorkflowDefinitionScope.ThrowIfDispatchFailed();
+        }
         catch (TargetInvocationException error) when (error.InnerException != null)
         {
+            WorkflowDefinitionScope.ThrowIfDispatchFailed();
             ExceptionDispatchInfo.Capture(WorkflowEngineException.FromWorkflowCode(error.InnerException)).Throw();
             throw;
         }

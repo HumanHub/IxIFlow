@@ -204,6 +204,10 @@ public sealed class DefinitionValidationTests
     public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => _catalog.ListWorkflowsAsync(query);
     public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => _catalog.ListWorkflowVersionsAsync(name, query);
     public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => _catalog.GetWorkflowVersionDetailAsync(name, version, scope);
+    public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query) => _catalog.ListTemplatesAsync(query);
+    public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query) => _catalog.ListTemplateVersionsAsync(key, query);
+    public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope) => _catalog.GetTemplateDetailAsync(key, version, scope);
+    public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope) => _catalog.ListStepDescriptorsAsync(scope);
     public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => _catalog.ListActivitiesAsync(query);
     public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => _catalog.ListActivityVersionsAsync(key, query);
     public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => _catalog.GetActivityAsync(key, version, provider, scope);

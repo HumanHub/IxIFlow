@@ -54,6 +54,10 @@ Restore by uploading the identical verified archive through `PackageIngestion` o
 
 ## Scoped readers
 
+The [unified catalog API](workflow-catalog.md) also documents workflow,
+template/version/detail and built-in step reads with the same scope and paging
+contracts.
+
 `ListActivitiesAsync`, `ListActivityVersionsAsync`, `GetActivityAsync`, `ListPackagesAsync`, `ListPackageVersionsAsync`, `GetPackageDetailAsync` and `GetPackageActivitiesAsync` take an explicit `CatalogScope`. Activity reads require both the activity key and provider package ID to be permitted. Package activity counts and related closure or missing-dependency summaries respect the same scope.
 
 Pages have stable keysets, a continuation cursor and the revision observed with their rows. Cursors bind the normalized filters and scope; reuse with a different query is refused. Text search treats wildcard characters literally. Availability filters run before page limiting and continue across absent-artifact batches.

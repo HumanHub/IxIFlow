@@ -19,7 +19,7 @@ public sealed class DemoActivityTests
         var registry = provider.GetRequiredService<IActivityRegistry>();
 
         Assert.Single(registry.Packages);
-        Assert.Equal(3, registry.Activities.Count);
+        Assert.Equal(5, registry.Activities.Count);
         var read = Assert.Single(registry.Activities, activity => activity.Key == "demo.json.read");
         Assert.Equal("read-json", read.Designer);
         Assert.Equal("file-input", read.Icon);

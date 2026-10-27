@@ -228,11 +228,11 @@ public static class WorkflowCompilation
         Compile(source, new ReferenceSet(NormalizeReferences(references ?? ReferencePaths())), sourcePath, cancellationToken);
 
     internal static WorkflowCompilationResult Compile(string source, ReferenceSet references,
-        string sourcePath, CancellationToken cancellationToken)
+        string sourcePath, CancellationToken cancellationToken, string? assemblyName = null)
     {
         var tree = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.CSharp14),
             "workflow.g.cs", Encoding.UTF8, cancellationToken);
-        var compilation = CSharpCompilation.Create("Workflow_" + ArtifactDigest.Of(Encoding.UTF8.GetBytes(source)).Value[7..],
+        var compilation = CSharpCompilation.Create(assemblyName ?? "Workflow_" + ArtifactDigest.Of(Encoding.UTF8.GetBytes(source)).Value[7..],
             [tree], references.Metadata,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, optimizationLevel: OptimizationLevel.Release,
                 deterministic: true, nullableContextOptions: NullableContextOptions.Enable));
@@ -294,6 +294,7 @@ public static class WorkflowCompilation
             using var assemblyStream = new MemoryStream(assemblyBytes);
             using var pdbStream = new MemoryStream(pdbBytes);
             var assembly = context.LoadFromStream(assemblyStream, pdbStream);
+            using var types = IxIFlow.Core.Runtime.WorkflowTypeIdentity.Enter(context);
             validate?.Invoke(context);
             var method = assembly.GetTypes().Select(type => type.GetMethod("Build", BindingFlags.Public | BindingFlags.Static,
                 Type.EmptyTypes)).Single(method => method?.ReturnType == typeof(WorkflowDefinition))!;

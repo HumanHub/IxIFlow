@@ -392,9 +392,10 @@ public abstract partial class RelationalWorkflowStateRepository
             {
                 var callers = versions.Where(caller => (caller.Dependencies ?? []).Any(edge => edge.Name == name && edge.Version == version)).ToArray();
                 WorkflowCatalogRules.CheckRetirement(row, callers, null);
-                if (callers.Length != 0)
+                var pairs = callers.Where(caller => WorkflowCatalogRules.HasChildDependency(caller, name, version))
+                    .Select(caller => new WorkflowVersionReference(caller.Name, caller.Version)).ToArray();
+                if (pairs.Length != 0)
                 {
-                    var pairs = callers.Select(caller => new WorkflowVersionReference(caller.Name, caller.Version));
                     var parent = await connection.QuerySingleOrDefaultAsync<UnfinishedCallerRow>(
                         RequiredSql(Statement.CatalogUnfinishedCallers), new { Callers = JsonSerializer.Serialize(pairs) }, transaction);
                     WorkflowCatalogRules.CheckRetirement(row, callers,

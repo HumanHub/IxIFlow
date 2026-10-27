@@ -136,6 +136,24 @@ and pinned child workflow contracts use `Workflows`. Imports require publishing 
 resolve and pin dependencies; publishing hosts attest completed pins through `ResolvedImports`.
 A workflow display name is retained in `definition.DisplayName`.
 
+`kind: scope` declares `activity`, optional `activityVersion`, `defaults`, `input`,
+`output`, `retry`, `threading`, and a `steps` body. Retry uses `maximumAttempts`,
+`initialInterval`, `maximumInterval`, and `backoffCoefficient`, exactly as the
+fluent `RetryPolicy` constructor. Threading is `anyThread` or `threadAffine`;
+omission uses the implementation's minimum, and an override may only strengthen it.
+Scope steps are available in workflow and catch bodies. A saga may run inside a
+scope. Scope implementations used as ordinary activities report SCOPE004; ordinary
+activities used as scopes report SCOPE003.
+
+`ActivityDocumentContract` carries the scope value's C# type in `Scope`, enclosing
+value types in `RequiresScopes`, and `Concurrency` (`serialized`/`shared`) and
+`Threading` (`anyThread`/`threadAffine`). Ordinary activities have null scope modes.
+Compiler hosts derive this metadata with `FromSymbol`; publishing projects verified
+package descriptors. `workflow.requiresScopes` lists value types supplied by an
+inline `use` or `useType` caller. The canonical workflow contract and inline bundle
+pins retain those requirements. Independent child invocation and root start follow
+the core scope requirement checks.
+
 A `forEach` infers its item type from `items`; its `as` name becomes a typed item handle.
 `as` defaults to `item`. `steps` defines the body; use a trailing `result` expression or a
 `kind: result` step to finish a result-producing body. `into` targets a `List<ItemResult<T>>`.

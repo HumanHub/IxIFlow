@@ -1,0 +1,9 @@
+workflow:
+  name: ScopeRequiringYaml
+  dataType: IxIFlow.Generators.Tests.ScopeYamlData
+  requiresScopes: [IxIFlow.Generators.Tests.ScopeYamlValue]
+definitions:
+  - kind: activity
+    id: read
+    activity: IxIFlow.Generators.Tests.ScopeYamlRead
+    output: [{source: Result, to: {path: workflow.Result}}]

@@ -30,7 +30,9 @@ internal sealed class WorkflowScopeCatalog
 
     public Type? RootDataType { get; }
     public string StructureHash { get; }
-    public StepTable StepTable { get; }
+    public StepTable StepTable { get; private set; }
+    internal void BindBundleSources(IReadOnlyList<WorkflowInlineWorkflow> inlineWorkflows) =>
+        StepTable = StepTable.InBundle(inlineWorkflows);
     public GraphTable GraphTable { get; }
     public SwitchTable SwitchTable { get; }
 

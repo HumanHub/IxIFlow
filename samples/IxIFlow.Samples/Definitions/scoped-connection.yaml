@@ -1,0 +1,10 @@
+workflow: {name: ScopedConnection, dataType: IxIFlow.Samples.ScopeData}
+definitions:
+  - kind: scope
+    activity: IxIFlow.Samples.FakeConnectionScope
+    input: [{target: ConnectionRef, from: {path: workflow.Reference}}]
+    retry: {initialInterval: '00:00:01', maximumInterval: '00:00:05', maximumAttempts: 2, backoffCoefficient: 2}
+    steps:
+      - kind: activity
+        activity: IxIFlow.Samples.ReadConnection
+        output: [{source: Result, to: {path: workflow.Result}}]

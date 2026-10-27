@@ -16,6 +16,7 @@ public static class TemplateServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(builder);
         var services = builder.Services;
         builder.AddActivity<SendTemplateMessage>();
+        services.TryAddSingleton(TemplateStepDescriptors.RenderTemplate());
         services.TryAddSingleton<IWorkflowCatalogStore>(provider => provider.GetRequiredService<IWorkflowCatalog>());
         services.TryAddSingleton<TemplateEngines>();
         services.TryAddSingleton<TemplatePublisher>();

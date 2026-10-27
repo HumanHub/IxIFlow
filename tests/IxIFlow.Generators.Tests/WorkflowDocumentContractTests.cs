@@ -28,6 +28,12 @@ public sealed class WorkflowDocumentContractTests
     // One translatable document per closed member; a member declared without a case here fails DeclaredValuesTranslate.
     private static readonly Dictionary<(Type, string), Func<string, DocumentNode>> ValueDocuments = new()
     {
+        [(typeof(ScopeStepDocument), nameof(ScopeStepDocument.Threading))] = value =>
+            Document(new ScopeStepDocument { Activity = "Scope", Threading = value }),
+        [(typeof(ActivityDefinitionDocument), nameof(ActivityDefinitionDocument.Concurrency))] = value =>
+            new ActivityDocument { Activity = new() { Key = "acme.values", Version = 1, Scope = "object", Concurrency = value }, Body = "return new object();" },
+        [(typeof(ActivityDefinitionDocument), nameof(ActivityDefinitionDocument.Threading))] = value =>
+            new ActivityDocument { Activity = new() { Key = "acme.values", Version = 1, Scope = "object", Threading = value }, Body = "return new object();" },
         [(typeof(TemplateDocument), nameof(TemplateDocument.SchemaVersion))] = value =>
             Template() with { SchemaVersion = value },
         [(typeof(TemplateHeaderDocument), nameof(TemplateHeaderDocument.Format))] = value =>
@@ -77,7 +83,10 @@ public sealed class WorkflowDocumentContractTests
 
     private static string Translate(DocumentNode document) => document switch
     {
-        WorkflowDocument workflow => WorkflowSourceTranslator.Translate(workflow, "values.yaml"),
+        WorkflowDocument workflow => WorkflowSourceTranslator.Translate(workflow, "values.yaml", new()
+        {
+            Activities = { ["Scope"] = new("Scope", "") { Scope = "object", Concurrency = "serialized", Threading = "anyThread" } }
+        }),
         ActivityDocument activity => ActivitySourceTranslator.Translate(activity, WorkflowYamlSerializer.Write(activity), "values.yaml"),
         TemplateDocument template => ValidateTemplate(template),
         _ => throw new ArgumentException("Unsupported document root", nameof(document))

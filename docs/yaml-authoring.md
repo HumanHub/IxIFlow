@@ -3,7 +3,7 @@ title: YAML authoring
 description: Every workflow document construct, strict validation and editor schema.
 ---
 
-YAML has a form for every fluent workflow construct. The source generator translates documents into the fluent API; generated and handwritten definitions use the same build rules and executor. Workflow names are required, and identity is the declared `(name, version)`. The parsed document model lowers to the same executable structure as fluent C#, so equivalent definitions have equal `StructureHash` values. Whitespace, comments, mapping key order, descriptions, display names and step labels do not affect the hash. Changed executable structure or expression shape does. Delegate bodies and captured values are excluded; bump the version when behavior changes. Checkpoint contract 10 refuses instances saved by earlier builds without migration.
+YAML has a form for every fluent workflow construct. The source generator translates documents into the fluent API; generated and handwritten definitions use the same build rules and executor. Workflow names are required, and identity is the declared `(name, version)`. The parsed document model lowers to the same executable structure as fluent C#, so equivalent definitions have equal `StructureHash` values. Whitespace, comments, mapping key order, descriptions, display names and step labels do not affect the hash. Changed executable structure or expression shape does. Delegate bodies and captured values are excluded; bump the version when behavior changes. Checkpoint contract 14 refuses instances saved by earlier builds without migration.
 
 The `IxIFlow` package automatically includes `*.workflow.yaml` and `*.workflow.yml` as compiler additional files. A file such as `reminder.workflow.yaml` generates `<RootNamespace>.Generated.Workflow_reminder_workflow.Build()`. Punctuation in filenames becomes underscores; use distinct filenames. Project-reference applications need analyzer references and package props explicitly, as in [the samples project](../samples/IxIFlow.Samples/IxIFlow.Samples.csproj).
 
@@ -39,7 +39,7 @@ definitions:
 | Root member | Meaning |
 | --- | --- |
 | `schemaVersion` | Document contract version; defaults to `"1.0"` |
-| `workflow` | Required `name` and `dataType`; positive `version` defaults to 1; optional `displayName`, `description`, `tags` |
+| `workflow` | Required `name` and `dataType`; positive `version` defaults to 1; optional `displayName`, `description`, `tags`, `requiresScopes` |
 | `definitions` | Ordered executable steps |
 | `activities` | Named local activity templates with `activity`, optional `activityVersion`, `defaults`, `input`, `output` |
 | `steps` | Named local step templates: `steps` and optional `parameters` |
@@ -60,6 +60,7 @@ All steps accept `id`; `name` is accepted only in workflow-scope bodies. A name 
 | `activity` | `activity`, optional `activityVersion`, `defaults`, `input`, `output`; within a saga, `compensation` and step `onError` |
 | `activityRef` | `ref` selects a local activity template |
 | `stepRef` | `ref` selects a local step template; `arguments` supplies named expressions |
+| `scope` | Scope `activity`, optional `activityVersion`, `defaults`, `input`, `output`, `retry`, `threading`, and body `steps` |
 | `sequence` | Ordered nested `steps` |
 | `if` | Boolean `condition`, `then`, optional `else` |
 | `whileDo` | `condition` tested before each pass through `steps` |
@@ -327,3 +328,26 @@ Catch or saga error handler. That handler receives the original fault after inte
 Completed work, internally handled faults and fully unhandled faults do not activate the handler.
 Finally, compensation and cancellation handlers run in nesting order. Administrative termination
 runs no workflow cleanup. See the [matching runnable examples](../samples/IxIFlow.Samples/CancellationApproval.cs).
+
+## Scope activities
+
+`kind: scope` selects an `IScopeActivity<TValue>` implementation, using its catalog key or CLR type. Its `steps` run with that value in force. Activity versions, copied inputs, defaults and output mappings use the ordinary activity rules. `retry` accepts `maximumAttempts`, `initialInterval`, `maximumInterval` and `backoffCoefficient` and applies to initial opens and re-opens. `threading` accepts `anyThread` or `threadAffine`; omission uses the implementation's minimum, and an override cannot weaken it. Concurrency comes from the implementation.
+
+<!-- snippet: samples/IxIFlow.Samples/Definitions/scoped-workbook.yaml -->
+```yaml
+workflow: {name: ScopedWorkbook, dataType: IxIFlow.Samples.ScopeData}
+definitions:
+  - kind: scope
+    activity: IxIFlow.Samples.ExcelScope
+    threading: threadAffine
+    input: [{target: WorkbookRef, from: {path: workflow.Reference}}]
+    steps:
+      - {kind: activity, activity: IxIFlow.Samples.WriteCells}
+      - {kind: activity, activity: IxIFlow.Samples.SaveWorkbook}
+```
+
+`SaveWorkbook` is an explicit body activity. Close releases the session; it is not an implicit save. [Connection](../samples/IxIFlow.Samples/Definitions/scoped-connection.yaml) and [mailbox](../samples/IxIFlow.Samples/Definitions/scoped-mailbox.yaml) twins demonstrate named references resolved by host services. All three documents are compiled and run by [ScopeSampleTests](../tests/IxIFlow.Samples.Tests/ScopeSampleTests.cs).
+
+Scopes are accepted in workflow and catch bodies, including nested graphs and branches. Saga bodies and handlers refuse scope declarations. Naming an ordinary activity with `scope` is `SCOPE003`; naming a scope activity with `activity` is `SCOPE004`; weakening threading is `SCOPE005`. Unknown members and mode values are rejected. `[RequiresScope<TValue>]` errors map to the authored YAML step.
+
+`workflow.requiresScopes` lists the C# value types a reusable workflow needs. `use` and `useType` inherit the caller's scope and threading. `invokeWorkflow` and `invokeWorkflowType` create independent children that inherit neither; root starts also refuse required scopes. Registration and publishing validate resolved requirements; loading a forged bundle refuses it as an artifact mismatch. See [scope lifetimes](execution-model.md#scopes).

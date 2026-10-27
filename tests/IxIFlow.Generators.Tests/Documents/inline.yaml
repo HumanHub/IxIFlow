@@ -1,0 +1,8 @@
+workflow: {name: InlineNamedDocument, version: 1, dataType: FlowData}
+definitions:
+  - kind: use
+    id: inline
+    name: Inline body
+    workflow: {name: Child, version: 3}
+    input: [{target: Value, from: {kind: constant, value: inline}}]
+    output: [{source: Value, to: {path: workflow.Value}}]

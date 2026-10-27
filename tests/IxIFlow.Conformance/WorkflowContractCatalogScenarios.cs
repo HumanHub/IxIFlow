@@ -28,7 +28,7 @@ public sealed class WorkflowContractCatalogScenarios
         })
         {
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.RegisterWorkflowVersionAsync(proposed));
-            Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
+            Assert.Equal(message == "immutable" ? WorkflowErrorKind.InvalidState : WorkflowErrorKind.InvalidRequest, error.Kind);
             Assert.Contains(message, error.Message);
             Assert.Equal(row.ContractJson, (await store.GetWorkflowVersionAsync(row.Name, row.Version))!.ContractJson);
             Assert.Equal(row.ContractHash, (await store.GetWorkflowVersionAsync(row.Name, row.Version))!.ContractHash);
@@ -57,7 +57,7 @@ public sealed class WorkflowContractCatalogScenarios
         Assert.Equal(contract.Hash, row.ContractHash);
         var changed = Workflow.Create<Data>(definition.Name).Input().Build();
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.RegisterWorkflowAsync(changed));
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
+        Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
         Assert.Contains("immutable", error.Message);
     }
 

@@ -790,6 +790,9 @@ internal sealed class ActivityInputSnapshot
 /// </summary>
 internal sealed class ActivityInputValue
 {
+    // Derived from the engine-owned saved copy during preparation/restoration. Never persisted, and
+    // never obtained from an activity getter. Guard checks must not run authored converters again.
+    internal IxIFlow.Templates.TemplateReference? RestoredTemplate { get; private set; }
     public SerializedValue? Value { get; set; }
     public SerializedException? Exception { get; set; }
     public bool RebindFromDefinition { get; set; }
@@ -843,10 +846,15 @@ internal sealed class ActivityInputValue
         }
     }
 
-    private object? ReadAs(Type type, PropertyInfo input, IServiceProvider services) =>
-        ActivityTypes.IsActivity(type) && !HasConverter(input)
+    private object? ReadAs(Type type, PropertyInfo input, IServiceProvider services)
+    {
+        var value = ActivityTypes.IsActivity(type) && !HasConverter(input)
             ? SerializedValue.ReadActivity(type, Value!.Json.InlineText, services)
             : JsonSerializer.Deserialize(Value!.Json.InlineText, type, OptionsFor(input));
+        if (input.PropertyType == typeof(IxIFlow.Templates.TemplateReference))
+            RestoredTemplate = value as IxIFlow.Templates.TemplateReference;
+        return value;
+    }
 
     // A value is saved under its own type, read back by name, which keeps a derived value whole. A non-public
     // collection, such as a LINQ iterator, is saved under the input's declared type: what it holds is its elements, and

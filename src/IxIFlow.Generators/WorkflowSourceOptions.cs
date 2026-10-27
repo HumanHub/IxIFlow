@@ -44,6 +44,12 @@ public sealed class WorkflowSourceReference(string dataType, int version)
     public int Version { get; } = version;
     /// <summary>Canonical immutable contract read from the publishing catalog.</summary>
     public string? ContractJson { get; init; }
+    /// <summary>Verified executable entry and pins for published inline composition.</summary>
+    public string? EntryType { get; init; }
+    public string? AssemblyName { get; init; }
+    public string? BundleDigest { get; init; }
+    public string? StructureHash { get; init; }
+    public string? ContractHash { get; init; }
     public WorkflowDataDocumentContract? Contract { get; init; }
     public IReadOnlyList<string>? Inputs { get; init; }
     public IReadOnlyList<string>? Outputs { get; init; }

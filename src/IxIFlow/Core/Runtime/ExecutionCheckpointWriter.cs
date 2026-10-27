@@ -185,17 +185,22 @@ internal static class ExecutionCheckpointWriter
             var stored = StoredCheckpoint.Split(checkpoint, dataJson, instance.PartsAt(instance.Revision),
                 checkpoint.TakeMarks(),
                 verify, payloads);
+            // Previous values are serialized here, after the activity callback and mappings.
+            WorkflowDefinitionScope.ThrowIfDispatchFailed();
             instance.WorkflowDataJson = stored.Parts[CheckpointParts.DataKey];
             checkpoint.RootDataChanged = false;
             if (!preserveSavedWorkflowData && workflowData != null && !reuseData)
                 checkpoint.RootDataUnchanged = BranchData.Observe(workflowData);
+            WorkflowDefinitionScope.ThrowIfDispatchFailed();
             instance.ExecutionStateJson = stored.Trunk;
             instance.Stored = stored;
             return stored;
         }
-        catch (Exception ex) when (ex is not CheckpointVerificationException and not ResourceLimitExceededException &&
-                                   ex is not WorkflowEngineException { Kind: WorkflowErrorKind.ResourceExhausted })
+        catch (Exception ex)
         {
+            WorkflowDefinitionScope.ThrowIfDispatchFailed();
+            if (ex is CheckpointVerificationException or ResourceLimitExceededException or
+                WorkflowEngineException { Kind: WorkflowErrorKind.ResourceExhausted }) throw;
             throw new CheckpointDataException(ex);
         }
     }

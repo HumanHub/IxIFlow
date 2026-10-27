@@ -34,6 +34,7 @@ internal sealed class ActivityAttempts(
         ActivityAttemptState? capturedAttempt = null, KeptActivityInputs? capturedRetry = null,
         Action<RunningActivity>? onStarted = null)
     {
+        using var templateDispatch = WorkflowDefinitionScope.Dispatch(definition, scopes.Id(step));
         checkpoint.Touch(continuation);
         var pending = continuation.PendingActivity;
         var isRecovery = pending != null;
@@ -76,9 +77,39 @@ internal sealed class ActivityAttempts(
             var earlier = pending?.Attempts ?? retried?.Attempts ?? [];
             prepared.SetAttempt(new ActivityAttempt(earlier.Count + 1,
                 earlier.Select(item => item.Seen(services)).ToList()));
+            if (!captureComplete) (pending?.Inputs ?? retryInputs)?.Restore(prepared.Activity, services);
+        }
+        catch (Exception error) when (!isRecovery && !WorkflowEngineException.IsEngineFailure(error))
+        {
+            templateDispatch.ThrowIfFailed();
+            return new RunningActivity(continuation, step,
+                Task.FromResult(ActivityRunResult.Threw(error)), activityCancellation,
+                null, continuation.Stack[^1].NextStepIndex) { TemplateDispatch = templateDispatch };
+        }
+        catch (Exception error) when (isRecovery && error is not WorkflowEngineException { IsInterruption: true })
+        {
+            templateDispatch.ThrowIfFailed();
+            pending!.ResolutionReason = $"Activity recovery could not be prepared: {error.Message}";
+            pending.ResolutionDiagnostic = checkpoint.RecordDiagnostic(error);
+            _inspectionPolicy.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
+            continuation.Status = ContinuationStatus.WaitingResolution;
+            await ExecutionCheckpointWriter.CommitAsync(host, instance, checkpoint, checkpoint.RootData, scopes, Now);
+            return null;
+        }
+        catch (WorkflowEngineException error)
+        {
+            templateDispatch.ThrowIfFailed();
+            error.At(instance.InstanceId, scopes.Id(step), attempt.Id);
+            throw;
+        }
+
+        // Pin checks are engine decisions, outside authored preparation/capture/recovery catches.
+        templateDispatch.ThrowIfFailed();
+        templateDispatch.ValidateInputs(pending?.Inputs ?? retryInputs ?? prepared.Inputs, prepared.Activity);
+        try
+        {
             if (pending == null)
             {
-                if (!captureComplete) retryInputs?.Restore(prepared.Activity, services);
                 if (!captureComplete && prepared.Activity is IRecoverableActivity recoverable)
                 {
                     if (scopeValues?.HasScopes != true)
@@ -90,17 +121,27 @@ internal sealed class ActivityAttempts(
                     {
                         var capture = ObserveDispatchAsync(scopeValues.RunAsync(_ =>
                         {
-                            try { return Task.FromResult(ActivityRunResult.Returned(recoverable.CaptureRecoveryStateObject(prepared.Context))); }
-                            catch (Exception error) { return Task.FromResult(ActivityRunResult.Threw(error)); }
+                            try
+                            {
+                                var state = recoverable.CaptureRecoveryStateObject(prepared.Context);
+                                templateDispatch.ThrowIfFailed();
+                                return Task.FromResult(ActivityRunResult.Returned(state));
+                            }
+                            catch (Exception error)
+                            {
+                                templateDispatch.ThrowIfFailed();
+                                return Task.FromResult(ActivityRunResult.Threw(error));
+                            }
                         }, activityCancellation.Token), activityCancellation.Token);
                         return new RunningActivity(continuation, step, capture, activityCancellation, prepared, continuation.Stack[^1].NextStepIndex)
                         {
+                            TemplateDispatch = templateDispatch,
                             CommitSettlement = false,
                             PreparationSettlement = async () =>
                             {
                                 var result = await capture;
                                 if (result.Kind == ActivityRunKind.Skipped || activityCancellation.IsCancellationRequested) return null;
-                                if (result.Error != null) return new RunningActivity(continuation, step, Task.FromResult(result), activityCancellation, prepared, continuation.Stack[^1].NextStepIndex);
+                                if (result.Error != null) return new RunningActivity(continuation, step, Task.FromResult(result), activityCancellation, prepared, continuation.Stack[^1].NextStepIndex) { TemplateDispatch = templateDispatch };
                                 var running = await StartActivityAsync(scopes, checkpoint, continuation, step, definition, instance, host,
                                     activityCancellation, scopeValues, prepared, result.Output, true, attempt, retried, onStarted);
                                 if (running != null) onStarted?.Invoke(running);
@@ -127,7 +168,6 @@ internal sealed class ActivityAttempts(
             }
             else
             {
-                pending.Inputs.Restore(prepared.Activity, services);
                 recoveryState = pending.RecoveryState?.Read(services);
                 prepared.SetRecoveryState(recoveryState);
                 if (pending.Resolution?.Kind == ActivityResolutionKind.Completed)
@@ -145,12 +185,14 @@ internal sealed class ActivityAttempts(
         }
         catch (Exception error) when (!isRecovery && !WorkflowEngineException.IsEngineFailure(error))
         {
+            templateDispatch.ThrowIfFailed();
             return new RunningActivity(continuation, step,
                 Task.FromResult(ActivityRunResult.Threw(error)), activityCancellation,
-                null, continuation.Stack[^1].NextStepIndex);
+                null, continuation.Stack[^1].NextStepIndex) { TemplateDispatch = templateDispatch };
         }
         catch (Exception error) when (isRecovery && error is not WorkflowEngineException { IsInterruption: true })
         {
+            templateDispatch.ThrowIfFailed();
             pending!.ResolutionReason = $"Activity recovery could not be prepared: {error.Message}";
             pending.ResolutionDiagnostic = checkpoint.RecordDiagnostic(error);
             _inspectionPolicy.LogSensitive(services.GetService(typeof(ILogger<SensitiveDiagnostics>)) as ILogger<SensitiveDiagnostics>, error);
@@ -160,9 +202,12 @@ internal sealed class ActivityAttempts(
         }
         catch (WorkflowEngineException error)
         {
+            templateDispatch.ThrowIfFailed();
             error.At(instance.InstanceId, scopes.Id(step), attempt.Id);
             throw;
         }
+
+        templateDispatch.ThrowIfFailed();
 
         if (isRecovery && pending!.Resolution == null && prepared.Activity is not IRecoverableActivity)
         {
@@ -217,10 +262,10 @@ internal sealed class ActivityAttempts(
         span?.SetTag(Telemetry.AttemptId, attempt.Id);
         span?.SetTag(Telemetry.AttemptNumber, pending.Attempts.Count);
         var task = Telemetry.AttemptEndedAsync(ObserveDispatchAsync((scopeValues ?? ScopeValues.None).RunAsync(token => ObserveActivityAsync(prepared, isRecovery, recoveryState,
-            pending.Resolution, skipCancelledRecovery, pending.Inputs, checkpoint, token), activityCancellation.Token), activityCancellation.Token), span, instance, activityType,
+            pending.Resolution, skipCancelledRecovery, pending.Inputs, checkpoint, templateDispatch, token), activityCancellation.Token), activityCancellation.Token), span, instance, activityType,
             System.Diagnostics.Stopwatch.GetTimestamp());
         return new RunningActivity(continuation, step, task, activityCancellation,
-            prepared, continuation.Stack[^1].NextStepIndex);
+            prepared, continuation.Stack[^1].NextStepIndex) { TemplateDispatch = templateDispatch };
     }
 
     private static async Task<ActivityRunResult> ObserveDispatchAsync(Task<ActivityRunResult> dispatch, CancellationToken cancellation)
@@ -242,6 +287,7 @@ internal sealed class ActivityAttempts(
         bool skipCancelledRecovery,
         ActivityInputSnapshot inputs,
         ExecutionCheckpoint checkpoint,
+        WorkflowDefinitionScope templateDispatch,
         CancellationToken cancellationToken)
     {
         if (operatorResolution?.Kind == ActivityResolutionKind.Completed)
@@ -259,10 +305,12 @@ internal sealed class ActivityAttempts(
             }
             catch (Exception error)
             {
+                templateDispatch.ThrowIfFailed();
                 return ActivityRunResult.Unresolved(
                     $"Recovery check failed: {error.Message}", error);
             }
 
+            templateDispatch.ThrowIfFailed();
             switch (resolution.Disposition)
             {
                 case ActivityRecoveryDisposition.Completed:
@@ -287,10 +335,12 @@ internal sealed class ActivityAttempts(
         {
             ActivityContract.ValidateRequired(prepared.Activity, inputs, prepared.Context.Services);
             await prepared.AsyncActivity.ExecuteAsync(prepared.Context, cancellationToken);
+            templateDispatch.ThrowIfFailed();
             return ActivityRunResult.Returned(prepared.Activity);
         }
         catch (Exception error)
         {
+            templateDispatch.ThrowIfFailed();
             return ActivityRunResult.Threw(error);
         }
     }
@@ -566,6 +616,7 @@ internal sealed class ActivityAttempts(
         WorkflowInstance instance,
         ExecutionSession host)
     {
+        using var templateFrame = activity.TemplateDispatch?.Resume();
         if (activity.PreparationSettlement != null)
         {
             var running = await activity.PreparationSettlement();
@@ -589,6 +640,7 @@ internal sealed class ActivityAttempts(
         try
         {
             var outcome = await activity.Task;
+            activity.TemplateDispatch?.ThrowIfFailed();
             if (outcome.Kind == ActivityRunKind.Unresolved)
             {
                 MarkActivityUnresolved(checkpoint, activity, outcome.Reason, outcome.Error);
@@ -634,9 +686,11 @@ internal sealed class ActivityAttempts(
                 {
                     SagaScopeTransitions.CompleteForwardActivity(scopes, checkpoint, activity.Continuation,
                         activity.Step, output, services, activity.Continuation.PendingActivity?.Id);
+                    activity.TemplateDispatch?.ThrowIfFailed();
                 }
                 catch (Exception error)
                 {
+                    activity.TemplateDispatch?.ThrowIfFailed();
                     MarkActivityUnresolved(checkpoint, activity,
                         $"Activity returned, but its saga output could not be saved: {error.Message}", error);
                     return;
@@ -649,6 +703,7 @@ internal sealed class ActivityAttempts(
                 else if (activity.Step.StepType == WorkflowStepType.WorkflowInvocation && !Unwinding(activity.Continuation))
                     WorkflowValueBinding.ApplyActivityOutputs(activity.Step, output, checkpoint.DataOf(activity.Continuation),
                         ForEachTransitions.ItemsOf(scopes, checkpoint, activity.Continuation));
+                activity.TemplateDispatch?.ThrowIfFailed();
                 if (activity.Continuation.Status is ContinuationStatus.Cancelling or ContinuationStatus.Cancelled ||
                     activity.Continuation.CancellationUnwind &&
                     !ContinuationTransitions.IsCleanup(activity.Continuation))
@@ -662,6 +717,7 @@ internal sealed class ActivityAttempts(
                 if (activity.Step.StepType == WorkflowStepType.WorkflowInvocation)
                     activity.Continuation.AcceptedWait = null;
                 activity.Continuation.SetPrevious(output);
+                activity.TemplateDispatch?.ThrowIfFailed();
                 activity.Continuation.Stack[^1].StepRetryCounts.Remove(
                     activity.Continuation.Stack[^1].NextStepIndex);
                 activity.Continuation.Stack[^1].NextStepIndex++;
@@ -669,18 +725,17 @@ internal sealed class ActivityAttempts(
             }
             catch (Exception error)
             {
+                activity.TemplateDispatch?.ThrowIfFailed();
                 if (!WorkflowEngineException.IsEngineFailure(error))
                     _ = SerializedException.Capture(error, scopes, checkpoint, activity.Continuation, newOccurrence: true);
                 MarkActivityEnd(activity, instance, checkpoint, "OutputFailed", error);
                 throw;
             }
         }
-        catch (Exception error) when (
-            !WorkflowEngineException.IsEngineFailure(error) &&
-            (activity.Continuation.Status is (ContinuationStatus.Cancelling or ContinuationStatus.Cancelled) ||
-             activity.Continuation.CancellationUnwind &&
-             !ContinuationTransitions.IsCleanup(activity.Continuation)))
+        catch (Exception error)
         {
+            activity.TemplateDispatch?.ThrowIfFailed();
+            if (WorkflowEngineException.IsEngineFailure(error) || !Unwinding(activity.Continuation)) throw;
             // The parent join has cancelled this branch.
             activity.Continuation.Status = ContinuationStatus.Cancelling;
         }
@@ -840,6 +895,7 @@ internal sealed record RunningActivity(
     PreparedActivity? Prepared,
     int StepNumber)
 {
+    public WorkflowDefinitionScope? TemplateDispatch { get; init; }
     public bool ActivityReturned { get; set; }
     public Func<Task<RunningActivity?>>? PreparationSettlement { get; init; }
     public Func<Task>? LifecycleSettlement { get; init; }

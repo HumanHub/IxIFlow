@@ -14,7 +14,7 @@ public static class ActivityDocumentValidator
 {
     private static readonly HashSet<string> ReservedNames = new(StringComparer.Ordinal)
     {
-        "ExecuteAsync", "Equals", "GetHashCode", "GetType", "ToString", "ReferenceEquals", "MemberwiseClone", "Finalize"
+        "ExecuteAsync", "OpenAsync", "CloseAsync", "Equals", "GetHashCode", "GetType", "ToString", "ReferenceEquals", "MemberwiseClone", "Finalize"
     };
 
     public static WorkflowValidationResult Validate(ActivityDocument document, string? sourceText = null)
@@ -35,6 +35,12 @@ public static class ActivityDocumentValidator
             foreach (var pair in new[] { ("icon", header.Icon), ("designer", header.Designer) })
                 if (pair.Item2 != null && !Regex.IsMatch(pair.Item2, @"\A[a-z][a-z0-9-]*\z", RegexOptions.CultureInvariant))
                     Invalid("ACTD008", "Icon and designer must be lowercase name tokens", "activity." + pair.Item1);
+            if (header.Scope == null && (header.Concurrency != null || header.Threading != null))
+                Invalid("ACTD017", "Concurrency and threading declarations require a scope activity", "activity");
+            foreach (var pair in header.RequiresScopes.Select((type, index) => (type, path: $"activity.requiresScopes[{index}]"))
+                         .Concat(header.Scope == null ? [] : new[] { (header.Scope, "activity.scope") }))
+                if (string.IsNullOrWhiteSpace(pair.Item1) || SyntaxFactory.ParseTypeName(pair.Item1).ContainsDiagnostics)
+                    Invalid("ACTD018", "Scope values require a C# reference type", pair.Item2);
         }
         var className = header != null && ActivityPackageIdentity.IsValidKey(header.Key) && header.Version is >= 1 and <= 65534
             ? new ActivityPackageIdentity(header.Key, header.Version).ClassName : null;

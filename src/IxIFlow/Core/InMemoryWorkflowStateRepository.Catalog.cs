@@ -359,7 +359,8 @@ public partial class InMemoryWorkflowStateRepository
                 {
                     var callers = _versions.Values.Where(caller => (caller.Dependencies ?? []).Any(edge => edge.Name == name && edge.Version == version)).ToArray();
                     WorkflowCatalogRules.CheckRetirement(row, callers, null);
-                    var pairs = callers.Select(caller => new WorkflowVersionReference(caller.Name, caller.Version)).ToHashSet();
+                    var pairs = callers.Where(caller => WorkflowCatalogRules.HasChildDependency(caller, name, version))
+                        .Select(caller => new WorkflowVersionReference(caller.Name, caller.Version)).ToHashSet();
                     WorkflowCatalogRules.CheckRetirement(row, callers, FindUnfinishedCaller(_instances.Select(entry => entry.Value), pairs));
                 }
                 if (state == WorkflowVersionState.Published)

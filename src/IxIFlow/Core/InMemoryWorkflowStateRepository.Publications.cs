@@ -13,7 +13,8 @@ public partial class InMemoryWorkflowStateRepository
         {
             if (!scope.Allows(WorkflowDraftKinds.Workflow, name)) return Task.FromResult(new RetirementBlockers([], null, true));
             var callers = _versions.Values.Where(row => (row.Dependencies ?? []).Any(edge => edge.Name == name && edge.Version == version)).ToArray();
-            var pairs = callers.Select(row => new WorkflowVersionReference(row.Name, row.Version)).ToHashSet();
+            var pairs = callers.Where(row => WorkflowCatalogRules.HasChildDependency(row, name, version))
+                .Select(row => new WorkflowVersionReference(row.Name, row.Version)).ToHashSet();
             return Task.FromResult(WorkflowPublicationRules.Mask(callers.Where(row => (row.Name, row.Version) != (name, version) && row.State is WorkflowVersionState.Published or WorkflowVersionState.Deprecated), FindUnfinishedCaller(_instances.Values, pairs), scope));
         }
     }

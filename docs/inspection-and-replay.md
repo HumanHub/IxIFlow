@@ -153,3 +153,9 @@ These facts contain no mapped values, wait capabilities or exception text. Error
 Pending invocation listings expose `PolicyAttemptId`. Submit that observed ID in `ActivityResolution.CompletedInvocation(..., expectedPolicyAttemptId: pending.PolicyAttemptId)` or `ActivityResolution.Failed(..., expectedPolicyAttemptId: pending.PolicyAttemptId)`. The HTTP resolution body uses `expectedPolicyAttemptId`; missing targets return 400 and stale targets return 409. Rejected decisions change no outputs, retry budget or accepted-resolution trace. The logical invocation ID is a correlation key, not a sufficient resolution target.
 
 Replay `Current.Invocations` retains recorded attempt facts and due times; `Current.Resolutions` retains the original operator targets. Trace omissions still make replay incomplete. The checkpoint record remains the durable history when tracing omitted entries.
+
+## Scope activities
+
+`InstanceInspection.Scopes` contains activation ID, owner continuation, step ID, value type, threading, concurrency, phase, recorded-open count and redacted saved inputs/outputs. Payload hydration uses the inspection budget. `InspectionThread.ScopesInForce` lists its own and inherited activation IDs, including closing entries still needed by a branch. Scope frames in inspection and execution snapshots have `Kind = "Scope"` and the owning step's name.
+
+The live resource is never inspected. Saved values describe the recorded open; they do not promise a live session or expose later resource mutations. DAP presents these values in its read-only Scopes scope. Replay retains scope frame positions; historical lifecycle values are unavailable and are never filled from current inspection. See [scope debugging](debugging.md#scope-activities).

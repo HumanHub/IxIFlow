@@ -4,7 +4,11 @@ namespace IxIFlow.Core;
 
 internal static class TemplateCatalogRules
 {
-    internal static void Key(string key, int version) => _ = new TemplateReference(key, version);
+    internal static void Key(string key, int version)
+    {
+        WorkflowCatalogRules.ValidateText(key);
+        _ = new TemplateReference(key, version);
+    }
     internal static void Publication(WorkflowDraftId id, TemplateVersion version)
     {
         WorkflowPublicationRules.Id(id);

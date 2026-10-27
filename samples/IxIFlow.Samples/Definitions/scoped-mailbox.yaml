@@ -1,0 +1,9 @@
+workflow: {name: ScopedMailbox, dataType: IxIFlow.Samples.ScopeData}
+definitions:
+  - kind: scope
+    activity: IxIFlow.Samples.MailboxScope
+    input: [{target: MailboxRef, from: {path: workflow.Reference}}]
+    steps:
+      - kind: activity
+        activity: IxIFlow.Samples.ReadMail
+        output: [{source: Result, to: {path: workflow.Result}}]

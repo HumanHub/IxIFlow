@@ -24,6 +24,7 @@
 | Discoverable wait defaults, retention/tombstones, custom completion publishers, webhook registration and host lifecycle | Documentation examples | C# only: application/client configuration | [DocumentationExamples.cs](IxIFlow.Samples/DocumentationExamples.cs), [DocumentationTests.cs](../tests/IxIFlow.Samples.Tests/DocumentationTests.cs) |
 | Versioned Liquid templates and message sending | Quote message | C# sample: template publication and sender registration use application APIs | [QuoteMessage.cs](IxIFlow.Samples/QuoteMessage.cs) |
 | Recoverable activity and operator resolution | Reservation | [reservation.workflow.yaml](IxIFlow.Samples/Definitions/reservation.workflow.yaml); operator client calls are C# only | [Recovery.cs](IxIFlow.Samples/Recovery.cs) |
+| Scope resources, named references and explicit workbook save | Connection, mailbox and affine workbook | [scoped-connection.yaml](IxIFlow.Samples/Definitions/scoped-connection.yaml), [scoped-mailbox.yaml](IxIFlow.Samples/Definitions/scoped-mailbox.yaml), [scoped-workbook.yaml](IxIFlow.Samples/Definitions/scoped-workbook.yaml) | [ScopeExamples.cs](IxIFlow.Samples/ScopeExamples.cs), [ConnectionScope.cs](IxIFlow.DemoActivities/ConnectionScope.cs) |
 
 ## Run the samples
 
@@ -101,3 +102,5 @@ Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in
 [SwitchRouting.cs](IxIFlow.Samples/SwitchRouting.cs) and its [YAML twin](IxIFlow.Samples/Definitions/switch-routing.workflow.yaml) select shipping, hold or manual-review bodies with one typed selector. Both compile to the same structure and routing behavior.
 
 [CancellationApproval.cs](IxIFlow.Samples/CancellationApproval.cs) and its [YAML twin](IxIFlow.Samples/Definitions/cancellation-approval.workflow.yaml) withdraw an unfinished approval during cancellation and leave a completed approval unchanged.
+
+The three scope YAML files are compiled through the product translator/compiler in [ScopeSampleTests.cs](../tests/IxIFlow.Samples.Tests/ScopeSampleTests.cs), which compares their fluent hashes, contracts and results. The fake connection/mailbox factories resolve names without external services; the workbook fake checks owning-thread access and explicit save. The [scoped approval recipe](IxIFlow.Recipes/ScopedApproval.cs) is exercised by the store conformance kit, including the independent-child resource boundary.

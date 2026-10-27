@@ -1,0 +1,11 @@
+workflow: {name: RenderYaml, dataType: IxIFlow.Generators.Tests.RenderYamlData}
+definitions:
+  - kind: renderTemplate
+    id: render
+    template: notice@1
+    modelType: IxIFlow.Generators.Tests.RenderYamlModel
+    model: {path: workflow.Model}
+    culture: {path: workflow.Culture}
+    output: [{source: Rendered, to: {path: workflow.Body}}]
+    compensation: []
+    onError: []

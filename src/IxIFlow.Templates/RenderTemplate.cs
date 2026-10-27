@@ -35,7 +35,7 @@ public sealed class RenderTemplate<TModel> : IRecoverableActivity<TemplateRender
     {
         ArgumentNullException.ThrowIfNull(context);
         if (Template is null)
-            throw new InvalidOperationException("RenderTemplate needs a template to render");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "RenderTemplate needs a template to render");
         Rendered = await context.Services.GetRequiredService<TemplateRenderer>()
             .RenderAsync(Template, Model, Culture, cancellationToken);
     }

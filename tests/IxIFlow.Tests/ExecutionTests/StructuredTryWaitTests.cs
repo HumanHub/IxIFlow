@@ -1592,6 +1592,10 @@ public class StructuredTryWaitTests
         public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => _inner.ListWorkflowsAsync(query);
         public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => _inner.ListWorkflowVersionsAsync(name, query);
         public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => _inner.GetWorkflowVersionDetailAsync(name, version, scope);
+        public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query) => _inner.ListTemplatesAsync(query);
+        public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query) => _inner.ListTemplateVersionsAsync(key, query);
+        public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope) => _inner.GetTemplateDetailAsync(key, version, scope);
+        public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope) => _inner.ListStepDescriptorsAsync(scope);
         public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => _inner.ListActivitiesAsync(query);
     public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => _inner.ListActivityVersionsAsync(key, query);
     public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => _inner.GetActivityAsync(key, version, provider, scope);

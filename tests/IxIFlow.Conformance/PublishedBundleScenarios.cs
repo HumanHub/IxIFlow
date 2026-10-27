@@ -69,7 +69,7 @@ public sealed class PublishedBundleScenarios
         var store = database.NewRepository();
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.PinRetention", Guid.NewGuid().ToString("N"));
         var files = new FileSystemArtifactStore(folder);
-        var manifest = new WorkflowBundleManifest(4, "PinRetention", 1, "store-contract", "fixture-data", "fixture-entry",
+        var manifest = new WorkflowBundleManifest(6, "PinRetention", 1, "store-contract", "fixture-data", "fixture-entry",
             typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
             "", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, IxIFlow.Authoring.WorkflowCompilation.Settings, new Dictionary<string, string>(), new Dictionary<string, ArtifactDigest>());
         var archive = WorkflowBundleArchive.Create(manifest, new Dictionary<string, byte[]>

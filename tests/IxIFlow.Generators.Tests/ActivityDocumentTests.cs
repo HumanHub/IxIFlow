@@ -202,6 +202,7 @@ public sealed class ActivityDocumentTests
         Assert.True(schema.Evaluate(WorkflowYamlSchemaValueTests.Read(Complete)).IsValid);
         var used = new HashSet<(Type, string)>();
         Collect(WorkflowYamlSerializer.ReadActivity(Complete));
+        Collect(WorkflowYamlSerializer.ReadActivity(File.ReadAllText(Path.Combine(WorkflowSchemaFiles.RepositoryRoot(), "tests/IxIFlow.Generators.Tests/Documents/scope-activity.yaml"))));
         foreach (var type in new[] { typeof(ActivityDocument), typeof(ActivityDefinitionDocument), typeof(ActivityMemberDocument) })
             foreach (var member in DocumentModel.GetMembers(type)) Assert.Contains((type, DocumentModel.GetName(member)), used);
         foreach (var value in DocumentModel.GetValues(typeof(ActivityMemberDocument), nameof(ActivityMemberDocument.Control)))

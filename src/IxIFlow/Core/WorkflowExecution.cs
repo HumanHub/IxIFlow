@@ -693,6 +693,8 @@ public class WorkflowDefinition
     /// <summary>Declared root outputs; null means no list, empty explicitly declares no outputs.</summary>
     public IReadOnlyList<string>? DeclaredOutputs { get; set; }
     internal ArtifactDigest? BundleDigest { get; set; }
+    internal IxIFlow.Templates.TemplateSet? Templates { get; set; }
+    internal IReadOnlyList<WorkflowTemplateBinding> TemplateBindings { get; set; } = [];
     internal System.Runtime.Loader.AssemblyLoadContext? BundleContext { get; set; }
     internal IReadOnlyDictionary<string, string>? BundleSources { get; set; }
     /// <summary>The executable definition's catalog, including author identities and call sites.</summary>
@@ -774,6 +776,8 @@ public class WorkflowDefinition
 /// </summary>
 public class WorkflowStep
 {
+    /// <summary>Executable provenance retained for published inline pin verification.</summary>
+    public WorkflowInlinePin? InlinePin { get; internal set; }
     public List<WorkflowStep> ScopeBodySteps { get; set; } = [];
     public Type? ScopeValueType { get; set; }
     public IxIFlow.Builders.RetryPolicy? ScopeRetryPolicy { get; set; }
@@ -1161,6 +1165,7 @@ public class WorkflowStep
             WorkflowType = WorkflowType,
             InvokedDataType = InvokedDataType,
             InlineStructureHash = InlineStructureHash,
+            InlinePin = InlinePin,
             InlineDemands = InlineDemands,
             InvokedContract = InvokedContract,
             InvokedContractHash = InvokedContractHash,

@@ -115,8 +115,10 @@ public abstract partial class RelationalWorkflowStateRepository
             if (!scope.Allows(WorkflowDraftKinds.Workflow, name)) return new RetirementBlockers([], null, true);
             var callers = (await ReadVersionsAsync(connection, transaction)).Where(row =>
                 (row.Dependencies ?? []).Any(edge => edge.Name == name && edge.Version == version)).ToArray();
-            var unfinished = callers.Length == 0 ? null : await connection.QuerySingleOrDefaultAsync<UnfinishedCallerRow>(
-                RequiredSql(Statement.CatalogUnfinishedCallers), new { Callers = JsonSerializer.Serialize(callers.Select(row => new WorkflowVersionReference(row.Name, row.Version))) }, transaction);
+            var pairs = callers.Where(row => WorkflowCatalogRules.HasChildDependency(row, name, version))
+                .Select(row => new WorkflowVersionReference(row.Name, row.Version)).ToArray();
+            var unfinished = pairs.Length == 0 ? null : await connection.QuerySingleOrDefaultAsync<UnfinishedCallerRow>(
+                RequiredSql(Statement.CatalogUnfinishedCallers), new { Callers = JsonSerializer.Serialize(pairs) }, transaction);
             return WorkflowPublicationRules.Mask(callers.Where(row => (row.Name, row.Version) != (name, version) && row.State is WorkflowVersionState.Published or WorkflowVersionState.Deprecated), unfinished == null ? null : new(unfinished.Name, unfinished.Version), scope);
         }, protectsStarts: false);
     }

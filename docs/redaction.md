@@ -69,3 +69,7 @@ When enabled, the engine sends full exceptions with their safe type and diagnost
 Engine rejections that contain no workflow data keep their readable reason and a `WorkflowErrorKind`. They do not manufacture a diagnostic ID without a stored record. Publishing diagnostics and request-validation messages remain readable.
 
 Redaction applies when producing new inspection output; it does not rewrite previously committed trace records.
+
+## Scope configuration and outputs
+
+Scope inspection and DAP Scopes variables use the same stored-value classification policy as activity values. `[Sensitive]` scope properties are erased or redacted before they reach the adapter, including nested saved values. Live scope resources are never serialized or displayed. Lifecycle traces contain identity and reason fields only. Keep credentials in host services and map named connection or mailbox references into the scope. See [scope inspection](inspection-and-replay.md#scope-activities).

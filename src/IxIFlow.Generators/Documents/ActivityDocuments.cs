@@ -21,7 +21,7 @@ public sealed record ActivityDocument : DocumentNode
     public Dictionary<string, ActivityMemberDocument> Output { get; init; } = new();
     [Description("Properties used as both inputs and outputs.")]
     public Dictionary<string, ActivityMemberDocument> InOut { get; init; } = new();
-    [Description("C# statements executed by the activity, authored as a literal block.")]
+    [Description("C# ExecuteAsync statements, or OpenAsync statements returning the scope value, authored as a literal block.")]
     [DocumentRequired]
     public string Body { get; init; } = string.Empty;
     [Description("Optional C# class declarations, authored as a literal block.")]
@@ -47,6 +47,16 @@ public sealed record ActivityDefinitionDocument : DocumentNode
     public string? Designer { get; init; }
     [Description("The activity description.")]
     public string? Description { get; init; }
+    [Description("The C# scope value type; when supplied, body implements OpenAsync and declarations must implement CloseAsync.")]
+    public string? Scope { get; init; }
+    [Description("Scope value types required by this activity, including enclosing requirements of a scope activity.")]
+    public List<string> RequiresScopes { get; init; } = [];
+    [Description("Scope concurrency; omission uses serialized. Only scope activities can declare this member.")]
+    [DocumentValues("serialized", "shared", DiagnosticCode = "ACTD017")]
+    public string? Concurrency { get; init; }
+    [Description("Minimum scope threading; omission uses anyThread. Only scope activities can declare this member.")]
+    [DocumentValues("anyThread", "threadAffine", DiagnosticCode = "ACTD017")]
+    public string? Threading { get; init; }
 }
 
 [Description("A typed activity property and its editor metadata.")]

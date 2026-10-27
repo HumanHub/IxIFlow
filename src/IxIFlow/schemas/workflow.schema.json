@@ -98,6 +98,13 @@
           },
           "description": "Output members added to workflow markers; an empty list explicitly declares no convention outputs."
         },
+        "requiresScopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Scope value types supplied by an enclosing inline caller; root starts and independent invocations are refused."
+        },
         "displayName": {
           "type": [
             "string",
@@ -492,6 +499,8 @@
             "stateMachine",
             "transition",
             "activity",
+            "scope",
+            "renderTemplate",
             "activityRef",
             "stepRef",
             "if",
@@ -499,6 +508,8 @@
             "forEach",
             "suspend",
             "invokeWorkflow",
+            "use",
+            "useType",
             "parallel",
             "whileDo",
             "doWhile",
@@ -577,6 +588,36 @@
           },
           "then": {
             "$ref": "#/definitions/activityStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "scope"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/scopeStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "renderTemplate"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/renderTemplateStep"
           }
         },
         {
@@ -682,6 +723,36 @@
           },
           "then": {
             "$ref": "#/definitions/invokeWorkflowStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "use"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/useStep"
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "const": "useType"
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/definitions/useTypeStep"
           }
         },
         {
@@ -1721,6 +1792,151 @@
         }
       }
     },
+    "scopeStep": {
+      "type": "object",
+      "description": "Opens a scope activity around a body of steps.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "scope",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "activity": {
+          "type": "string",
+          "description": "The scope activity CLR type or resolved catalog key."
+        },
+        "activityVersion": {
+          "type": "string",
+          "description": "The version that must match the resolved activity contract when supplied."
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": {},
+          "description": "Scalar scope input defaults overridden by explicit input mappings."
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Mappings to the scope\u0027s saved inputs."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Mappings from the outputs recorded on the first open."
+        },
+        "retry": {
+          "$ref": "#/definitions/retryPolicy",
+          "description": "The retry policy for opening and reopening the scope."
+        },
+        "threading": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional threading requirement, which may strengthen the implementation\u0027s requirement.",
+          "enum": [
+            "anyThread",
+            "threadAffine",
+            null
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/step"
+          },
+          "description": "The body that uses the scope value."
+        }
+      },
+      "required": [
+        "kind",
+        "activity"
+      ]
+    },
+    "renderTemplateStep": {
+      "type": "object",
+      "description": "Renders one pinned template against its declared model.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "renderTemplate",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "template": {
+          "type": "string",
+          "description": "A constant template key, optionally followed by @version; publishing pins the version."
+        },
+        "model": {
+          "$ref": "#/definitions/expression",
+          "description": "The typed model rendered by the selected template."
+        },
+        "culture": {
+          "$ref": "#/definitions/expression",
+          "description": "The optional culture name."
+        },
+        "modelType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The model C# type; required with an explicit version when building without publishing."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Mappings from Rendered to workflow data."
+        },
+        "onError": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/stepErrorPolicy"
+          },
+          "description": "Ordered saga error policies."
+        },
+        "compensation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/compensation"
+          },
+          "description": "Rendering has no compensation; a nonempty list is refused."
+        }
+      },
+      "required": [
+        "kind",
+        "template",
+        "model"
+      ]
+    },
     "activityReferenceStep": {
       "type": "object",
       "description": "An invocation of a reusable activity template.",
@@ -2135,6 +2351,103 @@
       },
       "required": [
         "name"
+      ]
+    },
+    "useStep": {
+      "type": "object",
+      "description": "A published workflow body composed inline with its own data copy.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "use",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "workflow": {
+          "$ref": "#/definitions/workflowReference",
+          "description": "The published workflow reference resolved before translation."
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Mappings from expressions to inline workflow inputs."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Mappings from inline workflow outputs to workflow data."
+        }
+      },
+      "required": [
+        "kind",
+        "workflow"
+      ]
+    },
+    "useTypeStep": {
+      "type": "object",
+      "description": "An inline body built through a workflow CLR type.",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "useType",
+          "description": "The discriminator selecting the concrete step type."
+        },
+        "id": {
+          "type": "string",
+          "description": "The stable step identifier, generated from its structural path when omitted."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The explicit step name used by the fluent definition."
+        },
+        "workflowType": {
+          "type": "string",
+          "description": "The CLR type implementing IWorkflow of dataType with a public parameterless constructor."
+        },
+        "dataType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The inline workflow data CLR type fallback when IWorkflow\u003CT\u003E cannot be inferred from resolved symbols."
+        },
+        "input": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/inputMapping"
+          },
+          "description": "Mappings from expressions to inline workflow inputs."
+        },
+        "output": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/outputMapping"
+          },
+          "description": "Mappings from inline workflow outputs to workflow data."
+        }
+      },
+      "required": [
+        "kind",
+        "workflowType"
       ]
     },
     "parallelStep": {

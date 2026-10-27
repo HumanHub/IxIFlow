@@ -1,0 +1,8 @@
+workflow: {name: InlineYamlCaller, version: 1, dataType: IxIFlow.Generators.Tests.InlineYamlData}
+definitions:
+  - kind: useType
+    id: inline
+    workflowType: IxIFlow.Generators.Tests.InlineYamlCallee
+    dataType: IxIFlow.Generators.Tests.InlineYamlData
+    input: [{target: Value, from: {path: workflow.Value}}]
+    output: [{source: Value, to: {path: workflow.Value}}]

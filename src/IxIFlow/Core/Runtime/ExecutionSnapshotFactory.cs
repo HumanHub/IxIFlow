@@ -58,7 +58,7 @@ internal static class ExecutionSnapshotFactory
                     Name = graph?.Name ?? name,
                     LoopIteration = iteration,
                     ForEachItemIndex = frame.ForEachIndex,
-                    Kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase or FrameKind.CancellationHandler
+                    Kind = frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase or FrameKind.CancellationHandler
                         ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId,
                     StepId = frame.ScopeId,
                     ParentFrameId = parent?.ActivationId,

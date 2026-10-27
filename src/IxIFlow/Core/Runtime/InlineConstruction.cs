@@ -7,6 +7,7 @@ namespace IxIFlow.Core.Runtime;
 internal static class InlineConstruction
 {
     private static readonly AsyncLocal<IReadOnlyList<(string Name, int Version)>?> Building = new();
+    private static readonly AsyncLocal<Type?> Executable = new();
     private static readonly ConditionalWeakTable<WorkflowStep, object> Owned = new();
     private static readonly ConditionalWeakTable<WorkflowDefinition, object> UsedDefinitions = new();
     internal static void Cataloged(WorkflowDefinition definition)
@@ -26,15 +27,32 @@ internal static class InlineConstruction
         var identity = WorkflowAttribute.For(typeof(TWorkflow));
         return Build(identity.Name, identity.Version, () =>
         {
-            TWorkflow workflow;
-            try { workflow = new TWorkflow(); }
-            catch (System.Reflection.TargetInvocationException error) when (error.InnerException is WorkflowEngineException inner)
-            { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inner).Throw(); throw; }
-            var builder = Workflow.Create<TData>(identity.Name, identity.Version);
-            builder.DisplayName(identity.DisplayName).Description(identity.Description ?? "").Tags(identity.Tags).Icon(identity.Icon).Category(identity.Category);
-            workflow.Build(builder);
-            return builder.Build();
+            var previous = Executable.Value;
+            Executable.Value = typeof(TWorkflow);
+            try
+            {
+                TWorkflow workflow;
+                try { workflow = new TWorkflow(); }
+                catch (System.Reflection.TargetInvocationException error) when (error.InnerException is WorkflowEngineException inner)
+                { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inner).Throw(); throw; }
+                var builder = Workflow.Create<TData>(identity.Name, identity.Version);
+                builder.DisplayName(identity.DisplayName).Description(identity.Description ?? "").Tags(identity.Tags).Icon(identity.Icon).Category(identity.Category);
+                workflow.Build(builder);
+                return builder.Build();
+            }
+            finally { Executable.Value = previous; }
         });
+    }
+
+    internal static WorkflowInlinePin FactoryPin(Func<WorkflowDefinition> factory, WorkflowInlinePin pin)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        ArgumentNullException.ThrowIfNull(pin);
+        if (pin.BundleDigest != null || pin.EntryType != null || pin.AssemblyName != null) return pin;
+        // A factory is rebuilt by its containing executable; it need not declare a callee entry.
+        var owner = Executable.Value ?? factory.Method.DeclaringType
+            ?? throw Invalid("The inline factory has no executable provenance");
+        return pin with { EntryType = owner.FullName, AssemblyName = owner.Assembly.GetName().Name };
     }
 
     public static WorkflowDefinition Factory(Func<WorkflowDefinition> factory, WorkflowInlinePin pin)
@@ -95,7 +113,7 @@ internal static class InlineConstruction
             if (merged.TryGetValue(demand.Key, out var prior))
             {
                 if (prior.Value != null && demand.Value != null && prior.Value != demand.Value)
-                    throw Invalid($"Conflicting inline demands for '{demand.Key}': '{prior.Value}' and '{demand.Value}'");
+                    throw Invalid($"Conflicting inline demands for '{demand.Key}': '{prior.Value}' and '{demand.Value}'", "PUB011");
                 static DateTime? Later(DateTime? a, DateTime? b) => a == null || b == null ? null : a > b ? a : b;
                 var expiry = Later(prior.ExpiresAtUtc, demand.ExpiresAtUtc);
                 var valueExpiry = prior.Value == null ? demand.ValueExpiresAtUtc ?? demand.ExpiresAtUtc
@@ -110,5 +128,12 @@ internal static class InlineConstruction
             .Concat(demands.Where(demand => demand.Evaluate != null)).ToList();
     }
 
-    private static WorkflowEngineException Invalid(string message) => new(WorkflowErrorKind.InvalidDefinition, message);
+    internal static string? PublishCode(Exception error) => error.Data[typeof(InlineConstruction)] as string;
+
+    internal static WorkflowEngineException Invalid(string message, string code = "PUB013")
+    {
+        var error = new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, message);
+        error.Data[typeof(InlineConstruction)] = code;
+        return error;
+    }
 }

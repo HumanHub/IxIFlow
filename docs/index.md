@@ -43,3 +43,5 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 ## Examples
 
 The [sample feature map](../samples/README.md) links runnable C# and YAML twins. Every C# or YAML block in these guides names its compiled source or equivalent. [DocumentationExamples.cs](../samples/IxIFlow.Samples/DocumentationExamples.cs), [DocumentationTests.cs](../tests/IxIFlow.Samples.Tests/DocumentationTests.cs) and the existing sample tests keep the examples checked by the solution build and sample test run.
+
+Resource scopes share pass-local sessions with a nested body. See [fluent scope authoring](fluent-api.md#scope-activities), [YAML scopes](yaml-authoring.md#scope-activities), [lifetime and graph rules](execution-model.md#scopes), [debugging](debugging.md#scope-activities), and the [compiled samples](../samples/IxIFlow.Samples/ScopeExamples.cs).

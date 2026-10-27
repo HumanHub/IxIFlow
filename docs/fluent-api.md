@@ -74,6 +74,7 @@ The continuation builder exposes these families. The root builder exposes initia
 | Method | Behavior and compiled example |
 | --- | --- |
 | `Step<TActivity>` | Map typed inputs/outputs and expose the result; [Quote](../samples/IxIFlow.Samples/Quote.cs) |
+| `Scope<TScope>` | Open a shared resource around a nested body; [scope examples](../samples/IxIFlow.Samples/ScopeExamples.cs) |
 | `Sequence` | Group ordered steps; [Quote](../samples/IxIFlow.Samples/Quote.cs) |
 | `If` | Select a then or optional else path; [Quote](../samples/IxIFlow.Samples/Quote.cs) |
 | `WhileDo`, `DoWhile` | Test before or after the body; [Restock](../samples/IxIFlow.Samples/Restock.cs) |
@@ -319,3 +320,36 @@ workflow cleanup. External cleanup activities follow the usual recovery and idem
 
 The [approval example](../samples/IxIFlow.Samples/CancellationApproval.cs) has a matching
 [YAML definition](../samples/IxIFlow.Samples/Definitions/cancellation-approval.workflow.yaml).
+
+## Scope activities
+
+Use `Scope<TScope>(setup, body)` on a continuation or catch builder. Setup accepts input/output mappings, `Retry(RetryPolicy)` and `Threading(ScopeThreading)`. A scope activity implements `IScopeActivity<TValue>`; ordinary `Step<T>` accepts `IAsyncActivity`. Scope declarations inside saga bodies and handlers are refused; a saga inside a scope can use the resource during compensation.
+
+<!-- snippet: samples/IxIFlow.Samples/ScopeExamples.cs#connection -->
+```csharp
+    public static WorkflowDefinition Connection() =>
+        new WorkflowBuilder<ScopeData, object>([], "ScopedConnection")
+            .Scope<FakeConnectionScope>(setup => setup
+                .Input(scope => scope.ConnectionRef).From(ctx => ctx.WorkflowData.Reference)
+                .Retry(new RetryPolicy(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), 2, 2)),
+                body => body.Step<ReadConnection>(setup => setup
+                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Result)))
+            .Build();
+```
+
+Body activities call `context.Scope<TValue>()` for the nearest assignable value, or `ScopeOrDefault<TValue>()`. `[RequiresScope<TValue>]` checks lexical placement. `.RequiresScope<TValue>()` on a reusable workflow's root declares a requirement that an inline `Use` caller supplies; independent child invocations and root starts cannot supply one.
+
+The body's initial previous value and the previous value after the scope are the saved scope activity from its first recorded open. Outputs apply once from that snapshot. Close and re-open produce no outputs. Lifecycle code receives identity and services, with no workflow data. The live resource must never appear on an activity property. See [resource lifetime and graph rules](execution-model.md#scopes) and the [activity SDK](activity-sdk.md#scope-activities).
+
+Threading and concurrency are independent. `Serialized` is the default and admits one complete author operation at a time; `Shared` allows overlapping operations. `ThreadAffine` runs callbacks and captured async continuations on one dedicated thread per pass, STA on Windows and a portable pump elsewhere. A use-site override may strengthen `AnyThread` to `ThreadAffine`; it cannot weaken the implementation requirement. Save remote work explicitly in a body activity:
+
+<!-- snippet: samples/IxIFlow.Samples/ScopeExamples.cs#excel -->
+```csharp
+    public static WorkflowDefinition Excel() =>
+        new WorkflowBuilder<ScopeData, object>([], "ScopedWorkbook")
+            .Scope<ExcelScope>(setup => setup.Input(scope => scope.WorkbookRef).From(ctx => ctx.WorkflowData.Reference),
+                body => body.Step<WriteCells>().Step<SaveWorkbook>())
+            .Build();
+```
+
+The fake workbook asserts its owning thread before and after an await and during disposal. It requires no Office installation. [Its YAML twin](yaml-authoring.md#scope-activities) is compiled and executed by the sample tests.

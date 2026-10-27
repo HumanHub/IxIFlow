@@ -67,7 +67,7 @@ public sealed class SnapshotViewTests
             .WaitFor<ViewEvent>("go").Build();
         var catalog = changed.GetRequiredService<IWorkflowCatalog>();
         var registration = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.RegisterWorkflowAsync(definition));
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, registration.Kind);
+        Assert.Equal(WorkflowErrorKind.InvalidState, registration.Kind);
         await catalog.RegisterWorkflowAsync(Waiting("SnapshotDefinition"));
 
         var instance = (await repository.GetWorkflowInstanceAsync(instanceId))!;

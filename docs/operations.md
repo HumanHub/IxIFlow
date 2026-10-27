@@ -46,3 +46,9 @@ A pending terminate prevents lease renewal. If an activity or cancellation clean
 Unhandled saga `ThenTerminate` also produces `WorkflowExecutionStatus.Terminated`, and finished awaits recognize that status. A surrounding catch can still handle the saga exception. Failed compensation and exhausted retries retain failure semantics.
 
 Databases created by an earlier schema build must be recreated. The new row columns and search indexes are declared when each database is created.
+
+## Operating resource scopes
+
+Waits, parks, committed debugger pauses and orderly drains close live scopes as `Suspended`. Continuing or moving to another host re-opens them lazily before author work. Transient session state does not survive those boundaries; save required state explicitly in the remote system or workflow data. A database transaction belongs inside a single activity.
+
+Termination and ownership loss run no `CloseAsync`. Once in-flight users finish, the former owner releases values locally and disposes disposable values on their owning thread, without committing cleanup. Process death cannot run local disposal. Remote sessions may therefore linger. `ScopeCloseTimeout` bounds waiting for close; `ReleaseGrace` bounds local release waits. Timed-out work and its thread remain quarantined and counted until they actually finish. `MaxScopeThreadsPerHost` defaults to 64 and counts these retained threads. A resource-limit stop needs operator attention; an unresolved activity whose scope cannot re-open also waits for an operator. See [the lifecycle contract](activity-sdk.md#scope-activities) and [debugger pause behavior](debugging.md#scope-activities).

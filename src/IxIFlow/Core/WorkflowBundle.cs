@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
+using IxIFlow.Templates;
 
 namespace IxIFlow.Core;
 
@@ -18,6 +19,12 @@ public sealed record WorkflowBundleManifest(
 {
     [System.Text.Json.Serialization.JsonRequired]
     public IReadOnlyList<WorkflowVersionInvocation> Invocations { get; init; } = [];
+    [System.Text.Json.Serialization.JsonRequired]
+    public IReadOnlyList<WorkflowInlineWorkflow> InlineWorkflows { get; init; } = [];
+    [System.Text.Json.Serialization.JsonRequired]
+    public IReadOnlyList<WorkflowTemplatePin> Templates { get; init; } = [];
+    [System.Text.Json.Serialization.JsonRequired]
+    public IReadOnlyList<WorkflowTemplateBinding> TemplateBindings { get; init; } = [];
     public string TargetFramework { get; init; } = "net10.0";
     public IReadOnlyList<WorkflowPackagePin> ActivityPackages { get; init; } = [];
 }
@@ -162,11 +169,11 @@ public static class WorkflowBundleArchive
 
     internal static void CheckManifest(WorkflowBundleManifest manifest)
     {
-        if (manifest.FormatVersion != 4 || string.IsNullOrWhiteSpace(manifest.Name) || manifest.Version < 1 ||
+        if (manifest.FormatVersion != 6 || string.IsNullOrWhiteSpace(manifest.Name) || manifest.Version < 1 ||
             string.IsNullOrWhiteSpace(manifest.StructureHash) || string.IsNullOrWhiteSpace(manifest.DataType) ||
             string.IsNullOrWhiteSpace(manifest.EntryType) || string.IsNullOrWhiteSpace(manifest.EngineVersion) ||
             manifest.CheckpointContractVersion < 1 || manifest.Compiler == null || manifest.SharedAssemblies == null || manifest.Entries == null || manifest.ActivityPackages == null ||
-            manifest.Invocations == null || manifest.Invocations.Any(invocation => invocation == null ||
+            manifest.Templates == null || manifest.TemplateBindings == null || manifest.InlineWorkflows == null || manifest.Invocations == null || manifest.Invocations.Any(invocation => invocation == null ||
                 string.IsNullOrWhiteSpace(invocation.Name) || invocation.Name != invocation.Name.Trim() || invocation.Version < 1 ||
                 string.IsNullOrWhiteSpace(invocation.Step) || string.IsNullOrWhiteSpace(invocation.SourceLocation)))
             throw Mismatch("Invalid bundle manifest metadata");
@@ -199,6 +206,58 @@ public static class WorkflowBundleArchive
             _ = new ArtifactDigest(digest.Value);
         }
         if (RequiredEntries.Any(path => !manifest.Entries.ContainsKey(path))) throw Mismatch("Missing required bundle content");
+        var templates = new HashSet<TemplateReference>();
+        foreach (var pin in manifest.Templates)
+        {
+            if (pin == null) throw Mismatch("Invalid null template pin");
+            TemplateReference reference;
+            try { reference = new(pin.Key, pin.Version); }
+            catch (ArgumentException error) { throw Mismatch("Invalid template key or version", error); }
+            if (string.IsNullOrWhiteSpace(pin.ModelTypeId) ||
+                pin.Entry != $"templates/{pin.Key}@{pin.Version}.json" ||
+                !templates.Add(reference) || !manifest.Entries.ContainsKey(pin.Entry))
+                throw Mismatch("Invalid, duplicate or missing template pin");
+        }
+        if (manifest.Entries.Keys.Where(path => path.StartsWith("templates/", StringComparison.Ordinal))
+            .Any(path => !manifest.Templates.Any(pin => pin.Entry == path)))
+            throw Mismatch("Unpinned template payload");
+        var bindingSites = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var binding in manifest.TemplateBindings)
+        {
+            if (binding == null || string.IsNullOrWhiteSpace(binding.Step) || !bindingSites.Add(binding.Step) ||
+                binding.Templates == null || binding.Templates.Count == 0 ||
+                binding.Templates.Distinct().Count() != binding.Templates.Count ||
+                binding.Templates.Any(reference => reference == null || !templates.Contains(reference)))
+                throw Mismatch("Invalid or unpinned template binding");
+        }
+        var recipes = new HashSet<(string, int)>();
+        var sites = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var inline in manifest.InlineWorkflows)
+        {
+            if (inline == null || string.IsNullOrWhiteSpace(inline.Name) || inline.Name != inline.Name.Trim() || inline.Version < 1 ||
+                string.IsNullOrWhiteSpace(inline.StructureHash) || string.IsNullOrWhiteSpace(inline.ContractHash) ||
+                string.IsNullOrWhiteSpace(inline.EntryType) || string.IsNullOrWhiteSpace(inline.AssemblyName) ||
+                !recipes.Add((inline.Name, inline.Version)) || inline.Sites == null || inline.Sites.Count == 0 ||
+                inline.Sites.Any(site => string.IsNullOrWhiteSpace(site) || !sites.Add(site)))
+                throw Mismatch("Invalid or duplicate inline workflow recipe or site");
+            if (!SafePath(inline.AssemblyName + ".dll") || inline.AssemblyName.Contains('/'))
+                throw Mismatch("Invalid inline workflow assembly name");
+            if (inline.BundleDigest is { } digest)
+            {
+                _ = new ArtifactDigest(digest.Value);
+                var prefix = WorkflowBundleIdentity.InlineSourceDirectory(inline.Name, inline.Version);
+                if (inline.AssemblyName != WorkflowBundleIdentity.AssemblyName(inline.Name, inline.Version) ||
+                    !manifest.Entries.ContainsKey(prefix + YamlPath) || !manifest.Entries.ContainsKey(prefix + SourcePath))
+                    throw Mismatch("Missing inline workflow canonical sources or invalid assembly identity");
+            }
+            var inClosure = manifest.SharedAssemblies.Keys.Any(key => new System.Reflection.AssemblyName(key).Name == inline.AssemblyName) ||
+                inline.AssemblyName == WorkflowBundleIdentity.AssemblyName(manifest.Name, manifest.Version) ||
+                manifest.ActivityPackages.Any(package => package.RuntimeAssets.Values.Any(assets =>
+                    assets.ManagedAssemblies.Any(path => Path.GetFileNameWithoutExtension(path) == inline.AssemblyName)));
+            if (!manifest.Entries.ContainsKey("private/" + inline.AssemblyName + ".dll") &&
+                (inline.BundleDigest != null || !inClosure))
+                throw Mismatch("Missing inline workflow executable payload");
+        }
     }
 
     private static bool SafePath(string path) => path.Length > 0 && !path.Contains('\\') && !path.Contains(':') &&

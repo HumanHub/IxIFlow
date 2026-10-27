@@ -38,7 +38,7 @@ public sealed class LocalActivityRegistrationTests
             .AddActivities(typeof(ReadJsonActivity).Assembly);
         using var provider = services.BuildServiceProvider();
         var registry = provider.GetRequiredService<IActivityRegistry>();
-        Assert.Equal(3, registry.Activities.Count);
+        Assert.Equal(5, registry.Activities.Count);
         Assert.Single(registry.Packages);
         Assert.True(registry.IsRegistered(typeof(ReadJsonActivity)));
         Assert.False(registry.IsRegistered(typeof(Unmarked)));

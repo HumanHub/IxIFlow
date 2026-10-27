@@ -95,7 +95,7 @@ public sealed class ScopeBundleContractReview4Tests
         var manifest = WorkflowCompilation.WithDefinition(compiled.Assembly, compiled.Pdb, definition =>
         {
             var contract = WorkflowDefinitionValidator.GetContract(definition);
-            return new WorkflowBundleManifest(4, definition.Name, definition.Version, WorkflowDefinitionValidator.Inspect(definition),
+            return new WorkflowBundleManifest(6, definition.Name, definition.Version, WorkflowDefinitionValidator.Inspect(definition),
                 WorkflowTypeIdentity.SavedName(definition.WorkflowDataType!), "Entry", typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(),
                 WorkflowDefinitionValidator.CheckpointContractVersion, WorkflowDefinitionValidator.GetCombinerSignature(definition),
                 contract.ToJson(), contract.Hash, WorkflowCompilation.Settings,

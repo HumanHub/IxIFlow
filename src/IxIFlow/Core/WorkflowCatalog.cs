@@ -8,7 +8,7 @@ public enum WorkflowVersionState { Draft, Published, Deprecated, Retired }
 
 public sealed record WorkflowVersionReference(string Name, int Version);
 
-public enum WorkflowDependencyKind { Child }
+public enum WorkflowDependencyKind { Child, Inline }
 
 public sealed record WorkflowVersionDependency(string Name, int Version, WorkflowDependencyKind Kind = WorkflowDependencyKind.Child);
 
@@ -93,6 +93,14 @@ public interface IWorkflowCatalogStore
     Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query);
     Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query);
     Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope);
+    /// <summary>Lists matching template projections by key and integer version, scoped before paging.</summary>
+    Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query);
+    /// <summary>Lists one permitted template's projections in ascending integer version order.</summary>
+    Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query);
+    /// <summary>Verifies immutable content and returns scoped metadata and audit, without variant text.</summary>
+    Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope);
+    /// <summary>Lists built-in step contracts, which disclose no scoped catalog identities.</summary>
+    Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope);
     Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query);
     Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query);
     Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope);
@@ -278,6 +286,10 @@ public sealed partial class WorkflowCatalog : IWorkflowCatalog, IDisposable
         SetWorkflowVersionStateAsync(name, version, WorkflowVersionState.Retired, expected, actor: actor);
     public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version) => _store.GetDefinitionAsync(kind, name, version);
     public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) => _store.GetInstalledPackagesAsync(id);
+    public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query) => _store.ListTemplatesAsync(query);
+    public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query) => _store.ListTemplateVersionsAsync(key, query);
+    public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope) => _store.GetTemplateDetailAsync(key, version, scope);
+    public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope) => _store.ListStepDescriptorsAsync(scope);
     public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => _store.ListActivitiesAsync(query);
     public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => _store.ListActivityVersionsAsync(key, query);
     public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => _store.GetActivityAsync(key, version, provider, scope);
@@ -512,10 +524,11 @@ internal static class WorkflowCatalogRules
         }
     }
 
+    // An occupied version identity with different content is a conflict with stored state, as for packages.
     public static void CheckRegistration(WorkflowVersion existing, WorkflowVersion loaded)
     {
         if (existing.StructureHash != loaded.StructureHash)
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Workflow {loaded.Name} v{loaded.Version} is already registered with structure hash " +
                 $"'{existing.StructureHash}'; loaded structure hash '{loaded.StructureHash}' differs");
         // Source positions are presentation metadata. Each invocation's callee and
@@ -529,7 +542,7 @@ internal static class WorkflowCatalogRules
             !(existing.Dependencies ?? []).SequenceEqual(loaded.Dependencies ?? []) ||
             !(existing.ArtifactReferences ?? []).SequenceEqual(loaded.ArtifactReferences ?? []) ||
             !existing.AuthoringPackageReferences.SequenceEqual(loaded.AuthoringPackageReferences))
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow version metadata is immutable");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Workflow version metadata is immutable");
     }
 
     public static void CheckTransition(WorkflowVersionState from, WorkflowVersionState to)
@@ -571,6 +584,9 @@ internal static class WorkflowCatalogRules
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Workflow {target.Name} v{target.Version} has unfinished parent instances of {unfinishedCaller.Name} v{unfinishedCaller.Version}");
     }
+
+    internal static bool HasChildDependency(WorkflowVersion caller, string name, int version) =>
+        (caller.Dependencies ?? []).Any(edge => edge.Name == name && edge.Version == version && edge.Kind == WorkflowDependencyKind.Child);
 
     public static IReadOnlySet<ArtifactDigest> ArtifactReferences(IEnumerable<WorkflowVersion> rows) =>
         rows.SelectMany(row => (row.ArtifactReferences ?? []).Concat(row.ArtifactDigest is { } digest ? [digest] : [])

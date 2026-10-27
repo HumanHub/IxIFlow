@@ -17,6 +17,32 @@ public sealed class SteppingTests
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(15);
 
+    [Fact, Trait("Spec", "F-26")]
+    public async Task AffineScopeIntoOverAndOutAcrossReopensIncludeTheWholeResourceBody() =>
+        await IxIFlow.Tests.Infrastructure.ScopeDebuggerFixture.IntoOverOut(new InMemoryWorkflowStateRepository(), new WorkflowCatalog(), new());
+
+    [Fact, Trait("Spec", "F-26")]
+    public async Task OutOfAScopeInsideAnInlineCallStopsInTheCalleeAfterClose()
+    {
+        var probe = new IxIFlow.Tests.Infrastructure.ScopeDebuggerFixture.Probe();
+        await using var host = IxIFlow.Tests.Infrastructure.ScopeDebuggerFixture.Services(new InMemoryWorkflowStateRepository(), new WorkflowCatalog(), probe);
+        var client = host.GetRequiredService<IWorkflowClient>(); var ops = host.GetRequiredService<IWorkflowOperations>();
+        var definition = new WorkflowBuilder<IxIFlow.Tests.Infrastructure.ScopeDebuggerFixture.Data, object>([], "InlineScopedOut")
+            .WaitFor<Go>("start").Use<IxIFlow.Tests.Infrastructure.ScopeDebuggerFixture.InlineScope, IxIFlow.Tests.Infrastructure.ScopeDebuggerFixture.Data>()
+            .WithId("call").Step<IxIFlow.Tests.Infrastructure.ScopeDebuggerFixture.Noop>().WithId("caller-after").Build();
+        var idle = await client.RunAsync(definition, new IxIFlow.Tests.Infrastructure.ScopeDebuggerFixture.Data());
+        await ops.SetBreakpointsAsync(idle.InstanceId, [new("body", "call/read")], "setup");
+        Assert.Equal(WorkflowExecutionStatus.Paused, (await client.ResumeAsync(idle.InstanceId, "start", new Go())).Status);
+        var thread = Assert.Single((await ops.InspectAsync(idle.InstanceId))!.Threads).ContinuationId;
+        await ops.SetBreakpointsAsync(idle.InstanceId, [], "clear");
+        Assert.Equal(WorkflowExecutionStatus.Paused, (await ops.StepAsync(idle.InstanceId, thread, DebugStepKind.Out, "out")).Status);
+        var stopped = Assert.Single((await ops.InspectAsync(idle.InstanceId))!.Threads);
+        Assert.Equal("call/callee-after", stopped.AuthorStepId);
+        Assert.Contains(stopped.Frames, f => f.Kind == "InlineWorkflow"); Assert.DoesNotContain(stopped.Frames, f => f.Kind == "Scope");
+        Assert.Equal(2, probe.Reads); Assert.Equal(ScopeCloseReason.Completed, probe.Closes.Last());
+        Assert.Equal(WorkflowExecutionStatus.Success, (await ops.ContinueAsync(idle.InstanceId, "finish")).Status);
+    }
+
     public static TheoryData<string, DebugStepKind> Constructs
     {
         get

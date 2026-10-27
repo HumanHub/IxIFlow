@@ -99,6 +99,14 @@ public sealed partial class DebugAdapterSession
         if (_replay != null) throw new ProtocolException("Historical scope values are unavailable");
         return scope switch
         {
+            "scopes" => JsonSerializer.SerializeToElement(CurrentThreads().Single(t => t.ContinuationId == thread)
+                .ScopesInForce.Select(id => _inspection!.Scopes.Single(s => s.ActivationId == id))
+                .ToDictionary(s => s.ActivationId, s => new
+                {
+                    s.ActivationId, s.OwnerContinuationId, s.StepId, s.ValueType,
+                    Threading = s.Threading.ToString(), Concurrency = s.Concurrency.ToString(),
+                    s.Phase, s.RecordedOpens, s.Inputs, s.Outputs
+                }, StringComparer.Ordinal)),
             "attempt" => JsonSerializer.SerializeToElement(_inspection!.PendingAttempts.Where(p => p.ContinuationId == thread)),
             "waits" => JsonSerializer.SerializeToElement(_inspection!.Waits.Where(w => w.ContinuationId == thread)),
             "item" => JsonSerializer.SerializeToElement(new { index = CurrentThreads().Single(t => t.ContinuationId == thread)
@@ -112,7 +120,7 @@ public sealed partial class DebugAdapterSession
         var frame = Frame(args.Value<int>("frameId"));
         var scopes = new List<object>();
         foreach (var (name, scope) in new[] { ("Workflow data", "data"), ("Previous step (unavailable)", "previous"),
-            ("Catch fault", "fault"), ("Item", "item"), ("Attempt", "attempt"), ("Waits", "waits"), ("Graph", "graph") })
+            ("Catch fault", "fault"), ("Item", "item"), ("Attempt", "attempt"), ("Waits", "waits"), ("Scopes", "scopes"), ("Graph", "graph") })
         {
             if (scope == "graph" && GraphFrame(frame.Thread, frame.Frame) == null) continue;
             var reference = 0;

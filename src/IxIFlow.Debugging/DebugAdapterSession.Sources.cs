@@ -51,7 +51,7 @@ public sealed partial class DebugAdapterSession
             var location = Location(step?.SourceLocation);
             var id = checked(++_nextId);
             _frames[id] = new(thread.ContinuationId, f, Revision, Generation, Cursor);
-            return new { id, name = f.Phase != null ? f.Name : step?.Name ?? f.Name,
+            return new { id, name = f.Phase != null || f.Kind == "Scope" ? f.Name : step?.Name ?? f.Name,
                 line = location == null ? _lineBase : location.Line - 1 + _lineBase,
                 column = _columnBase, source = location == null ? null : Source(location.Path),
                 presentationHint = location == null ? "subtle" : "normal" };

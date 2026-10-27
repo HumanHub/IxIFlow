@@ -58,10 +58,30 @@ public static class WorkflowDefinitionValidator
     {
         Validate(definition);
         return ForExecution(definition).AllSteps.Select(pair => pair.Value)
-            .Where(step => step.WorkflowName != null && step.WorkflowVersion != null)
-            .Select(step => new WorkflowVersionDependency(step.WorkflowName!, step.WorkflowVersion!.Value, WorkflowDependencyKind.Child))
-            .Distinct().OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ToArray();
+            .Where(step => step.StepType is WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow)
+            .Select(step => new WorkflowVersionDependency(step.WorkflowName!, step.WorkflowVersion!.Value,
+                step.StepType == WorkflowStepType.InlineWorkflow ? WorkflowDependencyKind.Inline : WorkflowDependencyKind.Child))
+            .Distinct().OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ThenBy(item => item.Kind).ToArray();
     }
+
+    /// <summary>Returns the exact inline pins at every site, including nested grafts.</summary>
+    public static IReadOnlyList<WorkflowInlineWorkflow> GetInlineWorkflows(WorkflowDefinition definition)
+    {
+        Validate(definition);
+        return ForExecution(definition).AllSteps.Where(pair => pair.Value.StepType == WorkflowStepType.InlineWorkflow)
+            .GroupBy(pair => pair.Value.InlinePin ?? throw InlineConstruction.Invalid("Inline executable pin metadata is required"))
+            .Select(group => new WorkflowInlineWorkflow(group.Key.Name, group.Key.Version, group.Key.BundleDigest,
+                group.Key.StructureHash, group.Key.ContractHash, group.Key.EntryType ?? "", group.Key.AssemblyName ?? "",
+                group.Select(pair => pair.Key).Order(StringComparer.Ordinal).ToArray()))
+            .OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ToArray();
+    }
+
+    internal static bool SameInlineWorkflows(IReadOnlyList<WorkflowInlineWorkflow> expected, IReadOnlyList<WorkflowInlineWorkflow> actual) =>
+        expected.Count == actual.Count && expected.All(pin => actual.Any(other =>
+            pin.Name == other.Name && pin.Version == other.Version && pin.BundleDigest == other.BundleDigest &&
+            pin.StructureHash == other.StructureHash && pin.ContractHash == other.ContractHash &&
+            pin.EntryType == other.EntryType && pin.AssemblyName == other.AssemblyName &&
+            pin.Sites.Order(StringComparer.Ordinal).SequenceEqual(other.Sites.Order(StringComparer.Ordinal))));
 
     /// <summary>Returns each independent child invocation with its authoring position.</summary>
     public static IReadOnlyList<WorkflowVersionInvocation> GetInvocations(WorkflowDefinition definition)

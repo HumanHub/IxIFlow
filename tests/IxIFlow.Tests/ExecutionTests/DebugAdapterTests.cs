@@ -12,6 +12,7 @@ using IxIFlow.Extensions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Newtonsoft.Json.Linq;
+using ScopeFixture = IxIFlow.Tests.Infrastructure.ScopeDebuggerFixture;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
@@ -23,6 +24,84 @@ public sealed class DebugAdapterTests
     private const string SessionToken = "application-issued-debug-session-token-for-tests";
     private const string BuildRoot = "C:/build/workflows";
     private const string LocalRoot = "C:/checkout/workflows";
+
+    [Theory, InlineData(false), InlineData(true)]
+    [Trait("Spec", "F-26")]
+    public async Task ScopesVariablesShowSavedRedactedShadowedAndInheritedActivations(bool inherited)
+    {
+        var probe = new ScopeFixture.Probe();
+        await using var host = ScopeFixture.Services(new InMemoryWorkflowStateRepository(), new WorkflowCatalog(), probe);
+        var client = host.GetRequiredService<IWorkflowClient>(); var ops = host.GetRequiredService<IWorkflowOperations>();
+        var definition = new WorkflowBuilder<ScopeFixture.Data, object>([], "ScopesDap")
+            .WaitFor<Go>("go")
+            .Scope<ScopeFixture.Container>(s => s.Input(a => a.Label).From(c => "outer"), b => b
+                .Scope<ScopeFixture.Container>(s => s.Input(a => a.Label).From(c => "inner"), body =>
+                {
+                    if (inherited) body.Parallel(p => p.Do(x => x.Step<ScopeFixture.Read>().WithId("selected"))
+                        .Do(x => x.WaitFor<Go>("held")));
+                    else body.Step<ScopeFixture.Read>().WithId("selected");
+                })
+                .Named("Inner connection"))
+            .Named("Outer connection").Build();
+        var idle = await client.RunAsync(definition, new ScopeFixture.Data());
+        await ops.SetBreakpointsAsync(idle.InstanceId, [new("body", "selected")], "setup");
+        Assert.Equal(WorkflowExecutionStatus.Paused, (await client.ResumeAsync(idle.InstanceId, "go", new Go())).Status);
+        var inspection = (await ops.InspectAsync(idle.InstanceId))!;
+        var selected = Assert.Single(inspection.Threads, t => t.AuthorStepId == "selected");
+        Assert.Equal(2, selected.ScopesInForce.Count);
+        var snapshot = (await client.GetSnapshotAsync(idle.InstanceId))!;
+        Assert.Equal(new[] { "Outer connection", "Inner connection" }, snapshot.Frames.Where(f => f.Kind == "Scope").Select(f => f.Name));
+        Assert.Equal(new[] { "Outer connection", "Inner connection" }, inspection.Threads.SelectMany(t => t.Frames).Where(f => f.Kind == "Scope").Select(f => f.Name));
+        await using var dap = new Client(ops, Options());
+        await dap.Ok("initialize"); await dap.Ok("attach", new { instanceId = idle.InstanceId, sessionToken = SessionToken });
+        await dap.Ok("configurationDone"); await dap.Event("stopped");
+        var threads = (JArray)(await dap.Ok("threads"))["body"]!["threads"]!;
+        // A stopped event identifies the selected workflow continuation even when its parent is held.
+        var threadId = threads.Single(t => t.Value<string>("name")!.StartsWith(selected.Name, StringComparison.Ordinal)).Value<int>("id");
+        var frame = (await dap.Ok("stackTrace", new { threadId }))["body"]!["stackFrames"]![0]!;
+        var frameId = frame.Value<int>("id");
+        if (!inherited) Assert.Equal("Inner connection", frame.Value<string>("name"));
+        var scopes = (JArray)(await dap.Ok("scopes", new { frameId }))["body"]!["scopes"]!;
+        var reference = scopes.Single(s => s.Value<string>("name") == "Scopes").Value<int>("variablesReference");
+        var activations = (JArray)(await dap.Ok("variables", new { variablesReference = reference }))["body"]!["variables"]!;
+        Assert.Equal(selected.ScopesInForce, activations.Select(a => a.Value<string>("name")));
+        foreach (var activation in activations)
+        {
+            var fields = (JArray)(await dap.Ok("variables", new { variablesReference = activation.Value<int>("variablesReference") }))["body"]!["variables"]!;
+            Assert.Contains(fields, f => f.Value<string>("name") == "Threading" && f.Value<string>("value") == "\"ThreadAffine\"");
+            Assert.Contains(fields, f => f.Value<string>("name") == "Concurrency" && f.Value<string>("value") == "\"Serialized\"");
+            Assert.All(fields, f => Assert.Contains("readOnly", f["presentationHint"]!["attributes"]!.Values<string>()));
+            foreach (var name in new[] { "Inputs", "Outputs" })
+            {
+                var values = await dap.Ok("variables", new { variablesReference = fields.Single(f => f.Value<string>("name") == name).Value<int>("variablesReference") });
+                Assert.DoesNotContain("scope-secret", values.ToString());
+                Assert.DoesNotContain("Disposed", values.ToString());
+                var saved = inspection.Scopes.Single(s => s.ActivationId == activation.Value<string>("name"));
+                var members = (JArray)values["body"]!["variables"]!;
+                Assert.Contains(members, v => v.Value<string>("name") == "Label" && v.Value<string>("value") == JsonSerializer.Serialize(saved.Outputs.GetProperty("Label").GetString()));
+                if (name == "Outputs")
+                {
+                    Assert.Contains(members, v => v.Value<string>("name") == "Opened" && v.Value<string>("value") == JsonSerializer.Serialize(saved.Outputs.GetProperty("Opened").GetString()));
+                    Assert.Contains(members, v => v.Value<string>("name") == "Secret" && v.Value<string>("value") != "\"scope-secret\"");
+                }
+            }
+        }
+        Assert.False((await dap.Request("setVariable", new { variablesReference = reference, name = selected.ScopesInForce[0], value = "{}" })).Value<bool>("success"));
+        var revision = inspection.Revision;
+        await dap.Ok("stepBack", new { threadId }); await dap.Event("stopped");
+        var historicalFrame = (await dap.Ok("stackTrace", new { threadId }))["body"]!["stackFrames"]![0]!.Value<int>("id");
+        var historicalScopes = (JArray)(await dap.Ok("scopes", new { frameId = historicalFrame }))["body"]!["scopes"]!;
+        Assert.Equal(0, historicalScopes.Single(s => s.Value<string>("name") == "Scopes").Value<int>("variablesReference"));
+        Assert.Equal(revision, (await ops.InspectAsync(idle.InstanceId))!.Revision);
+        Assert.False((await dap.Request("variables", new { variablesReference = reference })).Value<bool>("success"));
+        await dap.Ok("disconnect");
+        await ops.SetBreakpointsAsync(idle.InstanceId, [], "clear");
+        var continued = await ops.StepAsync(idle.InstanceId, selected.ContinuationId, DebugStepKind.Over, "step-selected");
+        Assert.Equal(inherited ? WorkflowExecutionStatus.Paused : WorkflowExecutionStatus.Success, continued.Status);
+        Assert.Equal(1, probe.Reads);
+        Assert.Equal("inner", Assert.Single(probe.Labels));
+        if (inherited) await client.CancelAsync(idle.InstanceId, new() { ReasonCode = "done" });
+    }
 
     [Fact]
     public async Task FramedClientDrivesYamlBreakpointsEditsSteppingThreadsPauseAndReplay()

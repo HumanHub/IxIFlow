@@ -21,6 +21,30 @@ public sealed record AssignmentDescriptor(string Target, string ValueType);
 public sealed class StepTable : System.Collections.Generic.IReadOnlyList<StepTableEntry>
 {
     private readonly StepTableEntry[] _entries;
+    private StepTable(StepTableEntry[] entries) => _entries = entries;
+
+    // Published bodies retain their original PDB/#line document names. Resolve those
+    // names by the nearest graft owner, including nested and repeated callee sites.
+    // Keep authored step locations intact: invocation inventories verify those bytes.
+    internal StepTable InBundle(IReadOnlyList<WorkflowInlineWorkflow> inlineWorkflows)
+    {
+        var sites = inlineWorkflows.SelectMany(pin => pin.Sites.Select(site => (Pin: pin, Prefix: site + "/inline/")))
+            .OrderByDescending(site => site.Prefix.Length).ToArray();
+        return new(_entries.Select(entry =>
+        {
+            var source = entry.SourceLocation;
+            var colon = source?.LastIndexOf(':') ?? -1;
+            if (colon <= 0) return entry;
+            var path = source![..colon];
+            if (path is not (WorkflowBundleArchive.YamlPath or WorkflowBundleArchive.SourcePath)) return entry;
+            var owner = sites.FirstOrDefault(site => entry.CatalogId.StartsWith(site.Prefix, StringComparison.Ordinal)).Pin;
+            return owner?.BundleDigest == null ? entry : entry with
+            {
+                SourceLocation = WorkflowBundleIdentity.InlineSourceDirectory(owner.Name, owner.Version) + source
+            };
+        }).ToArray());
+    }
+
     internal StepTable(WorkflowScopeCatalog catalog)
     {
         _entries = catalog.AllSteps.Select(pair => new StepTableEntry(

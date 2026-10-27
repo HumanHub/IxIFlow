@@ -29,6 +29,22 @@ and `activity.g.cs` in the PDB. The generated class implements `IAsyncActivity`;
 can use `context`, `cancellationToken` and `await`. Optional `declarations` add fields,
 constructors, helper methods or nested types.
 
+For a scope implementation, set `activity.scope` to its C# value type. The generated
+class implements `IScopeActivity<TValue>`: `body` becomes `OpenAsync`, can use
+`opening`, `context` (`IScopeContext`), and `cancellationToken`, and returns the value.
+Supply `CloseAsync(TValue value, ScopeClosing closing, IScopeContext context,
+CancellationToken cancellationToken)` in `declarations`. The compiler reports a
+missing or incompatible close implementation. Public input/output properties are
+saved configuration and first-open outputs; the live value belongs in the return
+value, never on a public property.
+
+Optional `activity.concurrency: serialized | shared` and
+`activity.threading: anyThread | threadAffine` emit the scope attributes. Omitting
+them uses serialized/anyThread. Ordinary activities cannot declare these modes
+(ACTD017). `activity.requiresScopes` lists enclosing C# value types and emits
+`RequiresScope<T>` on either activity kind. Publishing inspects both kinds through
+the same descriptor validation and package pipeline without executing lifecycle code.
+
 Compilation uses the bundled, pinned .NET 10 framework reference assemblies and the
 shared SDK profile, without requiring an installed SDK on the publishing host. Framework
 implementations are used when loading the activity for inspection. Supply prepared

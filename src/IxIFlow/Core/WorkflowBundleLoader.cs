@@ -28,7 +28,15 @@ public sealed class WorkflowDefinitionLease : IDisposable
     internal WorkflowDefinitionLease(WorkflowDefinition definition, Action? release, Func<WorkflowDefinitionLease>? retain = null)
     { _definition = definition; _release = release; _retain = retain; }
     public WorkflowDefinition Definition => _definition ?? throw new ObjectDisposedException(nameof(WorkflowDefinitionLease));
-    internal IDisposable EnterTypes() => WorkflowTypeIdentity.Enter(Definition.BundleContext);
+    internal IDisposable EnterTypes() => new DefinitionTypes(Definition);
+    private sealed class DefinitionTypes : IDisposable
+    {
+        private readonly IDisposable _types;
+        private readonly IDisposable _definition;
+        internal DefinitionTypes(WorkflowDefinition definition)
+        { _types = WorkflowTypeIdentity.Enter(definition.BundleContext); _definition = WorkflowDefinitionScope.Enter(definition); }
+        public void Dispose() { _definition.Dispose(); _types.Dispose(); }
+    }
     internal WorkflowDefinitionLease Retain() => _retain?.Invoke() ?? new(Definition);
     public void Dispose()
     {
@@ -803,18 +811,46 @@ internal sealed class WorkflowBundleLoader(IArtifactStore artifacts, WorkflowBun
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Built workflow contract differs from the verified bundle manifest");
                 if (!WorkflowCatalogRules.SameInvocations(bundle.Manifest.Invocations, WorkflowDefinitionValidator.GetInvocations(definition)))
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Built invocation inventory differs from the verified bundle manifest");
+                if (!WorkflowDefinitionValidator.SameInlineWorkflows(bundle.Manifest.InlineWorkflows, WorkflowDefinitionValidator.GetInlineWorkflows(definition)))
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Built inline workflow pins or sites differ from the verified bundle manifest");
+                var templates = WorkflowBundleTemplates.Read(bundle);
+                foreach (var template in templates.Versions)
+                {
+                    var model = WorkflowTypeIdentity.Resolve(template.ModelTypeId);
+                    try
+                    {
+                        if (model == null || IxIFlow.Templates.TemplateVersion.ModelTypeName(model) != template.ModelType)
+                            throw new ArgumentException("Template model identity differs");
+                        IxIFlow.Templates.TemplateModelTypes.Validate(model);
+                    }
+                    catch (ArgumentException error)
+                    { throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Bundled template model is unavailable or differs from its declared identity", error); }
+                }
+                var bindings = TemplateBindings.Scan(definition, (reference, model) =>
+                {
+                    var version = templates.Find(reference) ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Rebuilt template reference is absent from the bundle");
+                    if (model != null && (version.ModelTypeId != WorkflowTypeIdentity.SavedName(model) || version.ModelType != IxIFlow.Templates.TemplateVersion.ModelTypeName(model)))
+                        throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Rebuilt template model differs from the bundle");
+                });
+                if (!TemplateBindings.Same(bundle.Manifest.TemplateBindings, bindings))
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Rebuilt template bindings differ from the verified bundle manifest");
+                definition.Templates = templates;
+                definition.TemplateBindings = bindings;
                 definition.BundleDigest = digest;
                 definition.BundleContext = context;
-                definition.BundleSources = new Dictionary<string, string>(StringComparer.Ordinal)
-                {
-                    [WorkflowBundleArchive.YamlPath] = System.Text.Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.YamlPath].Span),
-                    [WorkflowBundleArchive.SourcePath] = System.Text.Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.SourcePath].Span)
-                };
+                definition.BundleSources = bundle.Entries.Where(pair => pair.Key is WorkflowBundleArchive.YamlPath or WorkflowBundleArchive.SourcePath ||
+                        pair.Key.StartsWith("inline/", StringComparison.Ordinal) &&
+                        (pair.Key.EndsWith(".yaml", StringComparison.Ordinal) || pair.Key.EndsWith(".g.cs", StringComparison.Ordinal)))
+                    .ToDictionary(pair => pair.Key, pair => System.Text.Encoding.UTF8.GetString(pair.Value.Span), StringComparer.Ordinal);
+                WorkflowDefinitionValidator.ForExecution(definition).BindBundleSources(bundle.Manifest.InlineWorkflows);
                 token.ThrowIfCancellationRequested();
                 return new(context, definition);
             }
             catch { Retire(context); throw; }
         }
+        catch (Exception error) when (error is WorkflowEngineException { Kind: WorkflowErrorKind.InvalidDefinition } ||
+            error is TargetInvocationException { InnerException: WorkflowEngineException { Kind: WorkflowErrorKind.InvalidDefinition } })
+        { throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Bundled inline reconstruction differs from its pins", error); }
         catch (Exception error) when (error is not (WorkflowEngineException or OperationCanceledException or OutOfMemoryException))
         { throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Could not load bundle {digest}: {error.GetBaseException().Message}", error); }
     }

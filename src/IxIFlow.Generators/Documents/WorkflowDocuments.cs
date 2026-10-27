@@ -41,6 +41,8 @@ public sealed record WorkflowDefinitionDocument : DocumentNode
     public List<string>? Input { get; init; }
     [Description("Output members added to workflow markers; an empty list explicitly declares no convention outputs.")]
     public List<string>? Output { get; init; }
+    [Description("Scope value types supplied by an enclosing inline caller; root starts and independent invocations are refused.")]
+    public List<string> RequiresScopes { get; init; } = [];
     [Description("The display name stored on the workflow definition.")]
     public string? DisplayName { get; init; }
     [Description("The lowercase workflow icon token.")]
@@ -138,6 +140,9 @@ public abstract record WorkflowStepDocument : DocumentNode
     {
         switch (this)
         {
+            case ScopeStepDocument scope:
+                yield return ("scope", null, scope.Steps);
+                break;
             case FlowchartStepDocument:
             case StateMachineStepDocument:
                 foreach (var child in GraphChildScopes())
@@ -242,6 +247,52 @@ public record ActivityStepDocument : WorkflowStepDocument
     public List<CompensationDocument> Compensation { get; init; } = [];
     [Description("The ordered error policies configured for a saga activity or request.")]
     public List<StepErrorPolicyDocument> OnError { get; init; } = [];
+}
+
+[Description("Opens a scope activity around a body of steps.")]
+[DocumentKind("scope")]
+public sealed record ScopeStepDocument : WorkflowStepDocument
+{
+    [Description("The scope activity CLR type or resolved catalog key.")]
+    [DocumentRequired]
+    public string Activity { get; init; } = string.Empty;
+    [Description("The version that must match the resolved activity contract when supplied.")]
+    public string ActivityVersion { get; init; } = string.Empty;
+    [Description("Scalar scope input defaults overridden by explicit input mappings.")]
+    public Dictionary<string, object?> Defaults { get; init; } = new();
+    [Description("Mappings to the scope's saved inputs.")]
+    public List<InputMappingDocument> Input { get; init; } = [];
+    [Description("Mappings from the outputs recorded on the first open.")]
+    public List<OutputMappingDocument> Output { get; init; } = [];
+    [Description("The retry policy for opening and reopening the scope.")]
+    public RetryPolicyDocument? Retry { get; init; }
+    [Description("Optional threading requirement, which may strengthen the implementation's requirement.")]
+    [DocumentValues("anyThread", "threadAffine", DiagnosticCode = "SCOPE005")]
+    public string? Threading { get; init; }
+    [Description("The body that uses the scope value.")]
+    public List<WorkflowStepDocument> Steps { get; init; } = [];
+}
+
+[Description("Renders one pinned template against its declared model.")]
+[DocumentKind("renderTemplate")]
+public sealed record RenderTemplateStepDocument : WorkflowStepDocument
+{
+    [Description("A constant template key, optionally followed by @version; publishing pins the version.")]
+    [DocumentRequired]
+    public string Template { get; set; } = string.Empty;
+    [Description("The typed model rendered by the selected template.")]
+    [DocumentRequired]
+    public ExpressionDocument Model { get; init; } = null!;
+    [Description("The optional culture name.")]
+    public ExpressionDocument? Culture { get; init; }
+    [Description("The model C# type; required with an explicit version when building without publishing.")]
+    public string? ModelType { get; set; }
+    [Description("Mappings from Rendered to workflow data.")]
+    public List<OutputMappingDocument> Output { get; init; } = [];
+    [Description("Ordered saga error policies.")]
+    public List<StepErrorPolicyDocument> OnError { get; init; } = [];
+    [Description("Rendering has no compensation; a nonempty list is refused.")]
+    public List<CompensationDocument> Compensation { get; init; } = [];
 }
 
 [Description("An invocation of a reusable activity template.")]
@@ -362,6 +413,34 @@ public sealed record InvokeWorkflowStepDocument : WorkflowStepDocument
     [Description("Mappings from expressions to child workflow inputs.")]
     public List<InputMappingDocument> Input { get; init; } = [];
     [Description("Mappings from child workflow outputs to workflow data.")]
+    public List<OutputMappingDocument> Output { get; init; } = [];
+}
+
+[Description("A published workflow body composed inline with its own data copy.")]
+[DocumentKind("use")]
+public sealed record UseStepDocument : WorkflowStepDocument
+{
+    [Description("The published workflow reference resolved before translation.")]
+    [DocumentRequired]
+    public WorkflowReferenceDocument Workflow { get; init; } = new();
+    [Description("Mappings from expressions to inline workflow inputs.")]
+    public List<InputMappingDocument> Input { get; init; } = [];
+    [Description("Mappings from inline workflow outputs to workflow data.")]
+    public List<OutputMappingDocument> Output { get; init; } = [];
+}
+
+[Description("An inline body built through a workflow CLR type.")]
+[DocumentKind("useType")]
+public sealed record UseTypeStepDocument : WorkflowStepDocument
+{
+    [Description("The CLR type implementing IWorkflow of dataType with a public parameterless constructor.")]
+    [DocumentRequired]
+    public string WorkflowType { get; init; } = string.Empty;
+    [Description("The inline workflow data CLR type fallback when IWorkflow<T> cannot be inferred from resolved symbols.")]
+    public string? DataType { get; init; }
+    [Description("Mappings from expressions to inline workflow inputs.")]
+    public List<InputMappingDocument> Input { get; init; } = [];
+    [Description("Mappings from inline workflow outputs to workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
 }
 

@@ -858,7 +858,7 @@ public class EngineContractRegressionTests
         Assert.Same(original, await registry.GetWorkflowDefinitionAsync("Order", 1));
         Assert.Equal("published", original.Description);
         var replacement = Workflow.Create<RegressionData>("Order", 1).Step<MarkChildActivity>().Build();
-        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest,
+        await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidState,
             () => registry.RegisterWorkflowAsync(replacement));
 
         Assert.Same(original, await registry.GetWorkflowDefinitionAsync("Order", 1));

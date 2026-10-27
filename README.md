@@ -234,3 +234,5 @@ Start with [getting started](docs/getting-started.md) or [samples and their feat
 See [CONTRIBUTING.md](CONTRIBUTING.md). IxIFlow is licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE).
 
 Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in `IxIFlow.Core`. `RegisterWorkflow<TWorkflow,TData>()` and `Invoke<TWorkflow,TData>(setup)` read it from the type without constructing the class to discover identity; missing attributes are refused. Typed YAML children need only `workflowType`, with no duplicate name/version field.
+
+Resource scope activities share a named connection, mailbox or thread-affine session with a nested body. See [scope authoring](docs/fluent-api.md#scope-activities) and [the connection, mailbox and workbook samples](samples/IxIFlow.Samples/ScopeExamples.cs), each with a compiled YAML twin.

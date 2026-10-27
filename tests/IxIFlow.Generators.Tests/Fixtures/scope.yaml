@@ -1,0 +1,17 @@
+schemaVersion: '1.0'
+workflow: {name: ScopeYaml, dataType: IxIFlow.Generators.Tests.ScopeYamlData}
+definitions:
+  - kind: scope
+    id: session
+    activity: IxIFlow.Generators.Tests.ScopeYamlActivity
+    activityVersion: '1.0'
+    defaults: {Factor: 2}
+    input: [{target: Factor, from: {path: workflow.Value}}]
+    output: [{source: Opened, to: {path: workflow.Opened}}]
+    retry: {maximumAttempts: 3, initialInterval: '00:00:05', maximumInterval: '00:00:10', backoffCoefficient: 2}
+    threading: threadAffine
+    steps:
+      - kind: activity
+        id: read
+        activity: IxIFlow.Generators.Tests.ScopeYamlRead
+        output: [{source: Result, to: {path: workflow.Result}}]

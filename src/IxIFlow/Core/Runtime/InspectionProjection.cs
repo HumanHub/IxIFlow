@@ -28,7 +28,7 @@ internal static class InspectionProjection
                 var iteration = owner?.StepType == WorkflowStepType.Loop ? parent!.LoopIterationCount : frame.LoopIterationCount;
                 var saved = before.Frames[index];
                 var graph = GraphFrameInfo.Of(scopes, continuation, index, checkpoint);
-                var kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase or FrameKind.CancellationHandler
+                var kind = frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase or FrameKind.CancellationHandler
                     ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId;
                 if (saved.ActivationId != frame.ActivationId || saved.ScopeId != frame.ScopeId ||
                     saved.ParentActivationId != parent?.ActivationId || saved.NextStepIndex != frame.NextStepIndex ||
@@ -67,7 +67,7 @@ internal static class InspectionProjection
                 if (frame.Kind == FrameKind.SwitchCase) name += frame.ScopeId.EndsWith("/default", StringComparison.Ordinal) ? " / default" : " / case " + frame.ScopeId[(frame.ScopeId.LastIndexOf('/') + 1)..];
                 if (frame.ForEachIndex is { } itemIndex) name += $" (item {itemIndex})";
                 var graph = GraphFrameInfo.Of(scopes, continuation, index, checkpoint);
-                var kind = frame.Kind is FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase or FrameKind.CancellationHandler
+                var kind = frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase or FrameKind.CancellationHandler
                     ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId;
                 frames.Add(new(frame.ActivationId, graph?.Name ?? name, kind,
                     frame.ScopeId, parent?.ActivationId, frame.NextStepIndex, iteration, frame.ForEachIndex)

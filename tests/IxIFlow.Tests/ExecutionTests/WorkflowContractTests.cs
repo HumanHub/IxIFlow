@@ -637,7 +637,7 @@ public sealed class WorkflowContractTests
             catalog, new InProcessInstanceGate(), renewer);
         var id = Guid.NewGuid().ToString("N");
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => operations.StartAsync(supplied, new Golden(), new() { InstanceId = id }, CancellationToken.None));
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
+        Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
         Assert.Contains("already registered with structure hash", error.Message);
         Assert.Null(await repository.GetWorkflowInstanceAsync(id));
     }

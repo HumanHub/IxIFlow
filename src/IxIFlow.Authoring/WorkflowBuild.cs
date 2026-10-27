@@ -9,13 +9,14 @@ internal sealed record WorkflowBuildResult(string Name = "", int Version = 0, st
     string DataType = "", string EntryType = "", string CombinerSignature = "",
     WorkflowVersionDependency[]? Dependencies = null, string? Error = null, int Line = 1, int Column = 1, string ContractJson = "",
     WorkflowVersionInvocation[]? Invocations = null, string DescriptorJson = "",
-    string ErrorCode = "PUB004", WorkflowPublishDiagnosticClass ErrorClass = WorkflowPublishDiagnosticClass.Authoring);
+    string ErrorCode = "PUB004", WorkflowPublishDiagnosticClass ErrorClass = WorkflowPublishDiagnosticClass.Authoring,
+    IReadOnlyList<WorkflowInlineWorkflow>? InlineWorkflows = null, IReadOnlyList<WorkflowTemplateBinding>? TemplateBindings = null);
 
 internal static class WorkflowBuild
 {
     public static async Task<WorkflowBuildResult> RunAsync(WorkflowCompilationResult compilation, IReadOnlyDictionary<string, byte[]> dependencies, TimeSpan timeout,
         ILogger logger, CancellationToken cancellationToken, IReadOnlyList<PackageScopeClaim>? activityClaims = null,
-        IReadOnlyDictionary<string, byte[]>? symbols = null)
+        IReadOnlyDictionary<string, byte[]>? symbols = null, Func<WorkflowDefinition, IReadOnlyList<WorkflowTemplateBinding>>? templates = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var completion = new TaskCompletionSource<WorkflowBuildResult>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -23,7 +24,7 @@ internal static class WorkflowBuild
         // A noncooperative Build must neither occupy the pool nor keep the process alive at shutdown.
         var thread = new Thread(() =>
         {
-            try { using var scope = WorkflowSharedAssemblies.Enter(profile); completion.TrySetResult(Inspect(compilation, dependencies, activityClaims, logger, symbols)); }
+            try { using var scope = WorkflowSharedAssemblies.Enter(profile); completion.TrySetResult(Inspect(compilation, dependencies, activityClaims, logger, symbols, templates)); }
             // Includes failures while extracting/formatting the original build diagnostic.
             catch (Exception error)
             {
@@ -57,7 +58,7 @@ internal static class WorkflowBuild
     }
 
     private static WorkflowBuildResult Inspect(WorkflowCompilationResult compilation, IReadOnlyDictionary<string, byte[]> dependencies, IReadOnlyList<PackageScopeClaim>? activityClaims, ILogger logger,
-        IReadOnlyDictionary<string, byte[]>? symbols)
+        IReadOnlyDictionary<string, byte[]>? symbols, Func<WorkflowDefinition, IReadOnlyList<WorkflowTemplateBinding>>? templates)
     {
         try
         {
@@ -74,7 +75,8 @@ internal static class WorkflowBuild
                     metadata.GetString(entry.Namespace) + "." + metadata.GetString(entry.Name),
                     WorkflowDefinitionValidator.GetCombinerSignature(definition), WorkflowDefinitionValidator.GetDependencies(definition).ToArray(),
                     ContractJson: WorkflowDefinitionValidator.GetContract(definition).ToJson(),
-                    Invocations: WorkflowDefinitionValidator.GetInvocations(definition).ToArray(), DescriptorJson: WorkflowDescriptor.Of(definition).ToJson());
+                    Invocations: WorkflowDefinitionValidator.GetInvocations(definition).ToArray(), DescriptorJson: WorkflowDescriptor.Of(definition).ToJson(),
+                    InlineWorkflows: WorkflowDefinitionValidator.GetInlineWorkflows(definition), TemplateBindings: templates?.Invoke(definition));
             }, context => ScopePackageContracts.ValidateRuntime(context, activityClaims ?? []), symbols);
         }
         catch (Exception error)
@@ -97,7 +99,7 @@ internal static class WorkflowBuild
                 var diagnostic = WorkflowPublishFailures.Classify(error, WorkflowPublishStage.Test);
                 return new(Error: diagnostic.Message, ErrorCode: diagnostic.Code, ErrorClass: diagnostic.Class);
             }
-            return new(Error: error.Message, Line: location.Success && int.TryParse(location.Groups[1].ValueSpan, out var line) && line > 0
+            return new(Error: error.Message, ErrorCode: error.Message.StartsWith("TPL013:", StringComparison.Ordinal) ? "TPL013" : IxIFlow.Core.Runtime.InlineConstruction.PublishCode(error) ?? "PUB004", Line: location.Success && int.TryParse(location.Groups[1].ValueSpan, out var line) && line > 0
                     ? line : Math.Max(1, frame?.GetFileLineNumber() ?? 1),
                 Column: Math.Max(1, frame?.GetFileColumnNumber() ?? 1));
         }

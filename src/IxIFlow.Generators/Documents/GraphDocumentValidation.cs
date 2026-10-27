@@ -92,7 +92,11 @@ public sealed partial class WorkflowDocumentValidator
                     var activity = string.IsNullOrWhiteSpace(transition.Activity) ? null : await context.FindActivityAsync(transition.Activity!, token);
                     if (string.IsNullOrWhiteSpace(transition.Activity) || activity == null)
                         Invalid("GRAPH006", "An activity trigger requires a resolved code activity", triggerPath + ".activity", diagnostics);
-                    else ValidateActivityDependency(transition.ActivityVersion, activity, document, diagnostics, triggerPath);
+                    else
+                    {
+                        ValidateActivityDependency(transition.ActivityVersion, activity, document, diagnostics, triggerPath);
+                        ValidateOrdinaryActivity(activity, triggerPath, diagnostics);
+                    }
                 }
                 else if (transition.ActivityVersion.Length > 0)
                     Invalid("GRAPH006", "activityVersion requires an activity trigger", triggerPath + ".activityVersion", diagnostics);
@@ -189,7 +193,7 @@ public sealed partial class WorkflowDocumentValidator
     private static string ChildPath(WorkflowStepDocument step, string path, string kind, string? key) => kind switch
     {
         "timeout" => path + ".onTimeout",
-        "sequence" or "loop" or "foreach" => path + ".steps",
+        "sequence" or "loop" or "foreach" or "scope" => path + ".steps",
         "branch" => $"{path}.branches[{key}].steps",
         "catch" => $"{path}.{(step is SagaStepDocument ? "onError" : "catches")}[{key}].steps",
         "case" => $"{path}.cases[{key}].steps",

@@ -163,7 +163,7 @@ public sealed class DeclaredStructureHashTests
         Assert.Same(first, await registry.GetWorkflowDefinitionAsync(first.Name, first.Version));
         var changed = Waiting(insert: true);
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => registry.RegisterWorkflowAsync(changed));
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
+        Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
         AssertMismatch(error.Message, first, changed);
         changed.Version++;
         await registry.RegisterWorkflowAsync(changed);
@@ -333,7 +333,7 @@ public sealed class DeclaredStructureHashTests
         using var second = Services(store);
         var catalog = second.GetRequiredService<IWorkflowCatalog>();
         var registration = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.RegisterWorkflowAsync(changed));
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, registration.Kind);
+        Assert.Equal(WorkflowErrorKind.InvalidState, registration.Kind);
         AssertMismatch(registration.Message, original, changed);
         await catalog.RegisterWorkflowAsync(original);
 

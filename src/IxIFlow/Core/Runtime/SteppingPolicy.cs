@@ -20,9 +20,9 @@ internal static class SteppingPolicy
         if (branch == null || branch.Stack.Count == 0 ||
             branch.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "The selected continuation is not live");
-        // Out leaves the enclosing node or state activation, including nested body and timeout frames.
+        // Out leaves the nearest resource, inline, node or state activation, including nested body frames.
         var origin = command.StepKind == DebugStepKind.Out
-            ? branch.Stack.LastOrDefault(frame => frame.Kind is FrameKind.Node or FrameKind.State or FrameKind.Inline or FrameKind.SwitchCase) ?? branch.Stack[^1]
+            ? branch.Stack.LastOrDefault(frame => frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.State or FrameKind.Inline or FrameKind.SwitchCase) ?? branch.Stack[^1]
             : branch.Stack[^1];
         return new(branch.Id, command.StepKind!.Value, Position(origin),
             branch.Stack.Select(f => f.ActivationId).ToArray(), [branch.Id], command.Id, command.Actor)

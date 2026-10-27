@@ -65,7 +65,7 @@ public sealed class CoreScenarios
         Assert.Equal(WorkflowStatus.Completed, (await cluster.GetInstanceAsync(started.InstanceId))!.Status);
     }
 
-    [Theory]
+    [Theory(Timeout = 60000)]
     [MemberData(nameof(StoreProfiles.MultipleHosts), MemberType = typeof(StoreProfiles))]
     public async Task ConcurrentResumesOfOneDeliveryApplyOnce(string profile)
     {

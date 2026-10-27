@@ -87,7 +87,7 @@ public sealed class CatalogArtifactReviewRegressionTests
                 await Refused(() => client.RunAsync(definition, new Data()), WorkflowErrorKind.ArtifactUnavailable);
                 Assert.Equal(1, recording.Registrations);
                 await Refused(() => catalog.RegisterWorkflowAsync(Workflow.Create<Data>(name).Step<Noop>().Step<Noop>().Build()),
-                    WorkflowErrorKind.InvalidRequest);
+                    WorkflowErrorKind.InvalidState);
                 break;
             }
             case Scenario.DraftRevisions:
@@ -539,6 +539,10 @@ public sealed class CatalogArtifactReviewRegressionTests
         public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => inner.ListWorkflowsAsync(query);
         public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => inner.ListWorkflowVersionsAsync(name, query);
         public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => inner.GetWorkflowVersionDetailAsync(name, version, scope);
+        public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query) => inner.ListTemplatesAsync(query);
+        public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query) => inner.ListTemplateVersionsAsync(key, query);
+        public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope) => inner.GetTemplateDetailAsync(key, version, scope);
+        public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope) => inner.ListStepDescriptorsAsync(scope);
         public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => inner.ListActivitiesAsync(query);
     public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => inner.ListActivityVersionsAsync(key, query);
     public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => inner.GetActivityAsync(key, version, provider, scope);

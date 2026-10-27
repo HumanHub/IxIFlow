@@ -44,7 +44,7 @@ public sealed class ScopeMetadataRegistrationReviewTests
         if (!childFirst) await catalog.RegisterWorkflowAsync(Child());
         var revision = await store.GetCatalogRevisionAsync();
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.RegisterWorkflowAsync(caller));
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
+        Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
         Assert.Null(await catalog.GetWorkflowDefinitionAsync(caller.Name, 1));
         Assert.Equal(revision, await store.GetCatalogRevisionAsync());
     });
@@ -95,7 +95,7 @@ public sealed class ScopeMetadataRegistrationReviewTests
         var invocation = Assert.Single(metadata.Invocations);
         await store.RegisterWorkflowVersionAsync(metadata with { Invocations = [invocation with { Step = "forged-step" }] });
         using var catalog = new WorkflowCatalog(store);
-        Assert.Equal(WorkflowErrorKind.InvalidRequest, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+        Assert.Equal(WorkflowErrorKind.InvalidState, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
             catalog.RegisterWorkflowAsync(caller))).Kind);
         Assert.Null(await catalog.GetWorkflowDefinitionAsync(caller.Name, 1));
         foreach (var changed in new[]
@@ -104,7 +104,7 @@ public sealed class ScopeMetadataRegistrationReviewTests
             metadata with { Invocations = [invocation with { Name = "Other" }], Dependencies = [new("Other", 1)] },
             metadata with { Invocations = [invocation with { Version = 2 }], Dependencies = [new(invocation.Name, 2)] }
         })
-            Assert.Equal(WorkflowErrorKind.InvalidRequest, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+            Assert.Equal(WorkflowErrorKind.InvalidState, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
                 store.RegisterWorkflowVersionAsync(changed))).Kind);
     });
 

@@ -804,7 +804,7 @@ public sealed class CatalogHeartbeatRevisionTests
     {
         var shared = new[] { typeof(WorkflowDefinition).Assembly, typeof(object).Assembly, Assembly.Load("System.Runtime") }
             .Select(assembly => assembly.GetName()).ToDictionary(assembly => assembly.FullName, assembly => assembly.Version!.ToString());
-        return System.Text.Json.JsonSerializer.Serialize(new WorkflowBundleManifest(4, name, 1, "hash", "data", "entry",
+        return System.Text.Json.JsonSerializer.Serialize(new WorkflowBundleManifest(6, name, 1, "hash", "data", "entry",
             typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion, "",
             WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash,
             new("test", "latest", "release", true, "portable"), shared, new[] { WorkflowBundleArchive.AssemblyPath, WorkflowBundleArchive.PdbPath,

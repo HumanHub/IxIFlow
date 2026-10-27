@@ -349,6 +349,7 @@ public sealed class WorkflowExecutor
                         signals.ThrowIfStopped();
                         if (finishedDuringPause == messageWake) continue;
                         var completedDuringPause = inFlight.Values.First(a => a.Task == finishedDuringPause);
+                        using var pauseTemplateFrame = completedDuringPause.TemplateDispatch?.Resume();
                         try
                         {
                             await _attempts.SettleAsync(scopes, checkpoint, completedDuringPause, inFlight, instance, host);
@@ -747,6 +748,7 @@ public sealed class WorkflowExecutor
                     continue;
                 signals.ThrowIfOwnershipLost();
                 var completedActivity = inFlight.Values.First(item => item.Task == finished);
+                using var settlementTemplateFrame = completedActivity.TemplateDispatch?.Resume();
                 try
                 {
                     await _attempts.SettleAsync(scopes, checkpoint, completedActivity, inFlight, instance, host);
@@ -1020,6 +1022,7 @@ public sealed class WorkflowExecutor
         // Activities that ignored cancellation are not settled; their starts are resolved on recovery.
         foreach (var activity in inFlight.Values.Where(item => item.Task.IsCompletedSuccessfully).ToArray())
         {
+            using var settlementTemplateFrame = activity.TemplateDispatch?.Resume();
             if (activity.Task.Result is { Kind: ActivityRunKind.Threw,
                     Error: OperationCanceledException })
                 continue;

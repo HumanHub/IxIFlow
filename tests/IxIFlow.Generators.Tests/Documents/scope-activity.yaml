@@ -1,0 +1,12 @@
+schemaVersion: '1.0'
+activity:
+  key: acme.scope
+  version: 1
+  scope: System.Text.StringBuilder
+  requiresScopes: [System.Object]
+  concurrency: shared
+  threading: threadAffine
+body: |
+  return new System.Text.StringBuilder();
+declarations: |
+  public Task CloseAsync(System.Text.StringBuilder value, ScopeClosing closing, IScopeContext context, CancellationToken cancellationToken) => Task.CompletedTask;

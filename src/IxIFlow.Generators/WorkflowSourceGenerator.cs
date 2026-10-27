@@ -102,7 +102,8 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
                 rows.Add(string.Join("\t", name, type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), version,
                     string.Join(";", properties.Distinct(StringComparer.Ordinal)), dataTypes.Length == 1 ? dataTypes[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) : "",
                     Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(workflowName)), workflowVersion,
-                    WorkflowDataDocumentContract.FromSymbol(type).Snapshot(), dataTypes.Length == 1 ? WorkflowDataDocumentContract.FromSymbol(dataTypes[0]).Snapshot() : ""));
+                    WorkflowDataDocumentContract.FromSymbol(type).Snapshot(), dataTypes.Length == 1 ? WorkflowDataDocumentContract.FromSymbol(dataTypes[0]).Snapshot() : "",
+                    ActivityDocumentContract.FromSymbol(type, name, version)?.Snapshot() ?? ""));
             }
         }
         return new BoundTypes(Lines(rows));
@@ -130,7 +131,7 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
                 contracts[row[4]] = row[8];
                 workflowIdentities.Add(string.Join("\t", row[0], row[5], row[6]));
             }
-            if (row[2].Length != 0) versions.Add(row[0], row[2]);
+            if (row[9].Length != 0) versions.Add(row[0], row[9]);
             foreach (var property in row[3].Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
             {
                 var key = row[0] + "." + char.ToLowerInvariant(property[0]) + property.Substring(1);
@@ -204,7 +205,7 @@ public sealed class WorkflowSourceGenerator : IIncrementalGenerator
         foreach (var line in types.Versions.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))
         {
             var entry = line.Split('\t');
-            options.Activities.Add(entry[0], new ActivityDocumentContract(entry[0], entry[1]));
+            options.Activities.Add(entry[0], ActivityDocumentContract.ReadSnapshot(entry[0], entry[1]));
         }
         Copy(types.WorkflowDataTypes, options.WorkflowDataTypes);
         foreach (var line in types.WorkflowIdentities.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))

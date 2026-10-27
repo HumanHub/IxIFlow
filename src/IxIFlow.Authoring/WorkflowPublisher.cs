@@ -140,16 +140,35 @@ public sealed partial class WorkflowPublisher(IWorkflowCatalogStore catalog, IAr
                 return Failure("PUB005", "The document identity does not match the draft identity");
             }
             document = WorkflowYamlSerializer.Read(draft.Source);
+            var templates = new WorkflowTemplates(catalog, templateEngines, cancellationToken);
+            await templates.ResolveDocumentAsync(document);
+            foreach (var modelPackage in templates.Versions.SelectMany(item => item.ModelPackages).Distinct())
+            {
+                if (document.Imports.Catalogs.Any(import => import.Split('@')[0].Equals(modelPackage.Id, StringComparison.OrdinalIgnoreCase) &&
+                        import != modelPackage.Id + "@" + modelPackage.Version))
+                    return Failure("TPL017", $"Template model package '{modelPackage.Id}' conflicts with an author import");
+                if (!document.Imports.Catalogs.Contains(modelPackage.Id + "@" + modelPackage.Version))
+                    document.Imports.Catalogs.Add(modelPackage.Id + "@" + modelPackage.Version);
+            }
             location = document.Workflow.Location;
             location = document.Imports.Catalogs.Count > 0 ? document.Imports.Location : document.Workflow.Location;
             using var packages = await new WorkflowPackageResolver(catalog, artifacts, _options).ResolveAsync(document.Imports.Catalogs, acquisition, [], cancellationToken);
+            foreach (var modelPackage in templates.Versions.SelectMany(item => item.ModelPackages))
+                if (!packages.Pins.Any(pin => pin.Id == modelPackage.Id && pin.Version == modelPackage.Version && pin.Digest == modelPackage.Digest))
+                    return Failure("TPL017", $"Template model package '{modelPackage.Id}' differs from its retained pin");
             // Preserve the new authoring closure before verified callees contribute their existing pins.
             // Shared pins still belong to this closure and must be rechecked at the final catalog write.
             var authoringPackages = packages.Pins.Select(package => package.Digest).ToArray();
             var callees = await new WorkflowCallees(catalog, artifacts, _options).ResolveAsync(document, packages, cancellationToken);
+            templates.Compose(callees);
             await new WorkflowPackageResolver(catalog, artifacts, _options).RefreshDescriptorsAsync(packages, cancellationToken);
-            var references = WorkflowCompilation.CreateReferences(_options.SourceOptions, packages.References);
+            using var inline = new WorkflowInlinePayload();
+            inline.Prepare(callees, packages);
+            var references = WorkflowCompilation.CreateReferences(_options.SourceOptions, packages.References.Concat(inline.References));
             var sourceOptions = ResolveTypes(document, _options.SourceOptions, references);
+            templates.Bind(sourceOptions, references);
+            sourceOptions.ClassName = (_options.SourceOptions.ClassName is { } prefix ? prefix + "_" : "") +
+                WorkflowBundleIdentity.ClassName(draft.Name, draft.Version);
             WorkflowCallees.Bind(callees, sourceOptions, references, packages);
             var activityClaims = ResolvePackageActivities(sourceOptions, references, packages);
             foreach (var import in document.Imports.Catalogs.Concat(document.Imports.Workflows)) sourceOptions.ResolvedImports.Add(import);
@@ -168,37 +187,65 @@ public sealed partial class WorkflowPublisher(IWorkflowCatalogStore catalog, IAr
             stage = WorkflowPublishStage.Translate;
             var source = WorkflowSourceTranslator.Translate(document, Path, sourceOptions);
             stage = WorkflowPublishStage.Compile;
-            var compilation = WorkflowCompilation.Compile(source, references, Path, cancellationToken);
+            var compilation = WorkflowCompilation.Compile(source, references, Path, cancellationToken,
+                WorkflowBundleIdentity.AssemblyName(draft.Name, draft.Version));
             diagnostics.AddRange(compilation.Diagnostics);
             if (!compilation.Success) return new(draft.Kind, null, null, null, diagnostics);
             stage = WorkflowPublishStage.Test;
             // Without a profile every runtime and SDK assembly would be bundled privately and no host could load it.
             if (!WorkflowSharedAssemblies.IsUsable)
                 return Failure("PUB008", "This process has no usable shared compatibility profile (a self-contained single-file process, or unreadable runtime metadata); publish from a framework-dependent process", WorkflowPublishDiagnosticClass.Unavailable);
-            var (entries, shared) = BundleAssemblies(compilation.Assembly, references.Paths, packages);
+            var (entries, shared) = BundleAssemblies(compilation.Assembly, references.Paths, packages, inline);
             var implementations = packages.RuntimeAssemblies.ToDictionary();
-            foreach (var bytes in entries.Values) implementations.TryAdd(ResolvedWorkflowPackages.AssemblyIdentity(bytes).Name!, bytes);
-            var tested = await WorkflowBuild.RunAsync(compilation, implementations, _options.BuildTimeout, _logger, cancellationToken, activityClaims, packages.RuntimeSymbols);
+            var symbols = packages.RuntimeSymbols.ToDictionary();
+            foreach (var (path, bytes) in entries.Where(pair => pair.Key.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)))
+            {
+                var name = ResolvedWorkflowPackages.AssemblyIdentity(bytes).Name!;
+                implementations.TryAdd(name, bytes);
+                if (entries.TryGetValue(System.IO.Path.ChangeExtension(path, ".pdb"), out var pdb)) symbols.TryAdd(name, pdb);
+            }
+            var tested = await WorkflowBuild.RunAsync(compilation, implementations, _options.BuildTimeout, _logger, cancellationToken, activityClaims, symbols,
+                definition => templates.Inspect(definition, packages));
             if (tested.Error != null)
             {
                 location = tested.Line > 1 ? FindBuildLocation(document, tested.Line, tested.Column) : document.Workflow.Location;
                 return Failure(tested.ErrorCode, tested.Error, tested.ErrorClass);
             }
+            var templatePackages = await templates.CompletePackagesAsync(packages, artifacts, _options, acquisition);
+            authoringPackages = authoringPackages.Concat(templatePackages).Distinct().ToArray();
+            // Fluent callee constants can discover model packages during bounded Build inspection.
+            // Their previously loaded implementation must agree byte-for-byte with the retained package.
+            foreach (var (name, image) in packages.RuntimeAssemblies)
+            {
+                if (implementations.TryGetValue(name, out var previous) && !previous.AsSpan().SequenceEqual(image))
+                    return Failure("TPL017", $"Template model implementation '{name}' conflicts with the bundle");
+                var path = "private/" + name + ".dll";
+                if (entries.TryGetValue(path, out var privateImage))
+                {
+                    if (!privateImage.AsSpan().SequenceEqual(image)) return Failure("TPL017", $"Template model assembly '{name}' differs from its retained package");
+                    entries.Remove(path);
+                    entries.Remove(System.IO.Path.ChangeExtension(path, ".pdb"));
+                }
+            }
             if (tested.Invocations == null)
                 return Failure("PUB004", "The workflow build did not report its invocation metadata");
+            if (tested.InlineWorkflows == null)
+                return Failure("PUB013", "The workflow build did not report its inline workflow pins");
+            inline.Verify(tested.InlineWorkflows);
             if (tested.Name != draft.Name || tested.Version != draft.Version)
             {
                 location = DocumentModel.GetLocation(document, tested.Name != draft.Name ? "workflow.name" : "workflow.version");
                 return Failure("PUB005", $"Declared identity '{tested.Name}' v{tested.Version} does not match draft '{draft.Name}' v{draft.Version}");
             }
-            if (acquisition == PackageAcquisition.Scratch) return new(draft.Kind, null, null, null, diagnostics);
             stage = WorkflowPublishStage.Publish;
-            var manifest = new WorkflowBundleManifest(4, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
+            var templatePins = templates.Embed(entries);
+            var manifest = new WorkflowBundleManifest(6, tested.Name, tested.Version, tested.StructureHash, tested.DataType, tested.EntryType,
                 typeof(WorkflowDefinition).Assembly.GetName().Version!.ToString(), WorkflowDefinitionValidator.CheckpointContractVersion,
                 tested.CombinerSignature, tested.ContractJson, WorkflowContract.Parse(tested.ContractJson).Hash, WorkflowCompilation.Settings,
                 shared,
                 new Dictionary<string, ArtifactDigest>())
-            { Invocations = tested.Invocations, TargetFramework = _options.TargetFramework, ActivityPackages = packages.Pins };
+            { Invocations = tested.Invocations, InlineWorkflows = tested.InlineWorkflows, TargetFramework = _options.TargetFramework, ActivityPackages = packages.Pins,
+                Templates = templatePins, TemplateBindings = tested.TemplateBindings ?? [] };
             entries.Add(WorkflowBundleArchive.AssemblyPath, compilation.Assembly);
             entries.Add(WorkflowBundleArchive.PdbPath, compilation.Pdb);
             entries.Add(WorkflowBundleArchive.YamlPath, Encoding.UTF8.GetBytes(canonical));
@@ -207,6 +254,7 @@ public sealed partial class WorkflowPublisher(IWorkflowCatalogStore catalog, IAr
             // Use the verified manifest, including entry hashes, as the durable catalog copy.
             var digest = ArtifactDigest.Of(archive);
             var bundle = await WorkflowBundleArchive.ReadAsync(new MemoryStream(archive), digest, cancellationToken);
+            if (acquisition == PackageAcquisition.Scratch) return new(draft.Kind, null, null, null, diagnostics);
             await using var upload = new MemoryStream(archive, writable: false);
             var storedDigest = await artifacts.PutAsync(ArtifactKind.Bundle, upload, cancellationToken);
             if (storedDigest != digest) return Failure("PUB006", "The artifact store returned a different archive digest", WorkflowPublishDiagnosticClass.Unavailable);
@@ -243,11 +291,11 @@ public sealed partial class WorkflowPublisher(IWorkflowCatalogStore catalog, IAr
     }
 
     private static (Dictionary<string, byte[]> Entries, Dictionary<string, string> Shared) BundleAssemblies(byte[] workflow, IEnumerable<string> referencePaths,
-        ResolvedWorkflowPackages packages)
+        ResolvedWorkflowPackages packages, WorkflowInlinePayload? inline = null)
     {
         var paths = referencePaths.ToDictionary(path => AssemblyName.GetAssemblyName(path).Name!, StringComparer.OrdinalIgnoreCase);
-        var entries = new Dictionary<string, byte[]>(StringComparer.Ordinal);
-        var shared = new Dictionary<string, string>(StringComparer.Ordinal);
+        var entries = new Dictionary<string, byte[]>(inline?.Entries ?? [], StringComparer.Ordinal);
+        var shared = new Dictionary<string, string>(inline?.Shared ?? [], StringComparer.Ordinal);
         void Share(string path)
         {
             var identity = AssemblyName.GetAssemblyName(path);
@@ -258,6 +306,7 @@ public sealed partial class WorkflowPublisher(IWorkflowCatalogStore catalog, IAr
         var pending = new Queue<byte[]>();
         pending.Enqueue(workflow);
         foreach (var bytes in packages.AllRuntimeAssemblies) pending.Enqueue(bytes);
+        foreach (var bytes in entries.Where(pair => pair.Key.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)).Select(pair => pair.Value)) pending.Enqueue(bytes);
         while (pending.TryDequeue(out var bytes))
         {
             using var pe = new System.Reflection.PortableExecutable.PEReader(new MemoryStream(bytes));
@@ -317,6 +366,10 @@ public sealed partial class WorkflowPublisher(IWorkflowCatalogStore catalog, IAr
             {
                 result.Types[key] = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                 result.DataContracts[key] = WorkflowDataDocumentContract.FromSymbol(type);
+                var activityContract = ActivityDocumentContract.FromSymbol(type, key,
+                    type.GetAttributes().FirstOrDefault(attribute => attribute.AttributeClass?.ToDisplayString() == "IxIFlow.ActivitySdk.WorkflowActivityAttribute")
+                        ?.NamedArguments.FirstOrDefault(pair => pair.Key == "Version").Value.Value as string ?? "");
+                if (activityContract != null && !result.Activities.ContainsKey(key)) result.Activities.Add(key, activityContract);
                 var workflowData = type.AllInterfaces.Where(contract => contract.OriginalDefinition.ToDisplayString() == "IxIFlow.Builders.Interfaces.IWorkflow<TWorkflowData>")
                     .Select(contract => contract.TypeArguments[0]).OfType<INamedTypeSymbol>().ToArray();
                 if (workflowData.Length == 1)
@@ -350,7 +403,13 @@ public sealed partial class WorkflowPublisher(IWorkflowCatalogStore catalog, IAr
             var type = references.Assemblies.Where(assembly => assembly.Identity.Name == packages.ActivityAssemblies[descriptor.Key])
                 .Select(assembly => assembly.GetTypeByMetadataName(descriptor.MetadataTypeName)).OfType<INamedTypeSymbol>().Single();
             claims.Add(ScopePackageContracts.Describe(type, descriptor.PackageId, descriptor.PackageVersion, descriptor.Key, descriptor.Version));
-            if (!options.Activities.TryAdd(descriptor.Key, new(descriptor.Key, descriptor.Version, descriptor.PackageId, descriptor.PackageVersion)))
+            if (!options.Activities.TryAdd(descriptor.Key, new(descriptor.Key, descriptor.Version, descriptor.PackageId, descriptor.PackageVersion)
+            {
+                Scope = descriptor.Scope?.ValueTypeName,
+                RequiresScopes = descriptor.RequiresScopes.Select(item => item.TypeName).ToArray(),
+                Concurrency = descriptor.Scope == null ? null : descriptor.Scope.Concurrency == ScopeConcurrency.Shared ? "shared" : "serialized",
+                Threading = descriptor.Scope == null ? null : descriptor.Scope.Threading == ScopeThreading.ThreadAffine ? "threadAffine" : "anyThread"
+            }))
                 throw new WorkflowPublishException("PUB014", $"Duplicate package activity key '{descriptor.Key}'", new(1, 1));
             options.Types[descriptor.Key] = descriptor.CSharpTypeName;
             foreach (var member in descriptor.Inputs.Concat(descriptor.Outputs))
