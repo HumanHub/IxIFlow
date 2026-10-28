@@ -67,3 +67,11 @@ Local providers use installed fingerprints as `Build`; artifact providers use th
 `WorkflowCatalog` uses its configured artifact store for current availability. Direct concrete store users can set `CatalogArtifacts` when files replace database artifacts. External file changes and host liveness do not advance the metadata revision. Responses containing `ArtifactPresent` or hosts must use `no-store`; a revision alone cannot validate them.
 
 Package acceptance, descriptors, closure, reverse dependency edges and revision commit together. Installed content insertion also advances the revision; equal registrations and mark-only heartbeats do not. Earlier database schemas and bundle manifests must be recreated with the current build; there are no compatibility readers or in-place migrations.
+
+## HTTP publication and consumption
+
+The [publishing HTTP group](publishing-http.md) exposes metadata under ReadPolicy, uploads under PublishPolicy, withdrawal and holders under LifecyclePolicy, and source/nupkg/NuGet reads under DownloadPolicy. The application supplies `ICatalogQueryScope` even for an unrestricted deployment. Metadata permission alone does not grant byte access.
+
+POST `/catalog/packages` accepts raw nupkg bytes and returns the scoped stored receipt and a resolving Location. First acceptance returns 201, identical verified bytes return 200, conflicting bytes return 409, and admission saturation returns 429. A same-byte upload restores a withdrawn row; new-authoring resolution still refuses withdrawn direct and transitive dependencies with PUB025.
+
+The NuGet version index includes authorized, available withdrawn versions for external consumers. Package IDs and filenames use normalized NuGet forms. Search, registration metadata, push and NuGet delete protocols are outside this read subset. [PublishedActivities](../samples/IxIFlow.Samples/PublishedActivities.cs) shows the integer activity version, package version and YAML/fluent consumers of the same artifact.

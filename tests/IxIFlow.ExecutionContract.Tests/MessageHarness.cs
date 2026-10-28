@@ -51,7 +51,7 @@ internal sealed class MessageHarness : IDisposable
             CorrelationId = "correlation", CreatedAt = now, StartedAt = now,
             ExecutionStateJson = JsonSerializer.Serialize(new
             {
-                Runtime = "structured-v2", SchemaVersion = 14, StructureHash = hash,
+                Runtime = "ixiflow-1", SchemaVersion = 1, StructureHash = hash,
                 Continuations = new[] { new { Id = "root", Stack = new[] { new { ScopeId = "root" } } } }
             })
         };

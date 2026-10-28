@@ -12,9 +12,9 @@ namespace IxIFlow.Tests.ExecutionTests;
 public sealed class PublishedInvokeCheckpointTests
 {
     [Theory]
-    [InlineData(-1, false)]
+    [InlineData(13, false)]
     [InlineData(1, false)]
-    [InlineData(-1, true)]
+    [InlineData(13, true)]
     [InlineData(1, true)]
     public async Task PublishRefusesCalleeCheckpointMismatchBeforeChangingDraftOrCatalog(int versionOffset, bool imported)
     {

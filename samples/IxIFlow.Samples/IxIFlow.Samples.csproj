@@ -21,4 +21,7 @@
     <ProjectReference Include="../IxIFlow.Recipes/IxIFlow.Recipes.csproj" />
   </ItemGroup>
   <Import Project="../../src/IxIFlow/buildTransitive/IxIFlow.props" />
+  <ItemGroup>
+    <EmbeddedResource Include="Definitions/double.activity.yaml" LogicalName="Samples.double.activity.yaml" />
+  </ItemGroup>
 </Project>

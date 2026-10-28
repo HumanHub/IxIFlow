@@ -2,12 +2,12 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public sealed partial class ChildScopeBaselineTests
 {
-    // Recaptured for checkpoint contract 14 / hash format 9, including CancellationScope.
+    // Recaptured for checkpoint contract 1 / hash format 1 (ixiflow-1), including CancellationScope.
     private const string MainBaseline = """
         [
           {
             "Name": "Empty",
-            "Hash": "32067E0F6A43FACCE27F255593504D89EB41D583633982DE0752BFDD4322D52B",
+            "Hash": "6271C9297B6EB068287A9035F02BF8B9F46499F8C29561B95D576518E86A97EB",
             "ScopeIds": [
               "root"
             ],
@@ -15,7 +15,7 @@ public sealed partial class ChildScopeBaselineTests
           },
           {
             "Name": "Every step",
-            "Hash": "1A5F074A81054B8919E6F71449C2494BBD8BC1EF4A95D085212928EA8F7D045F",
+            "Hash": "84EF99B7B79B798EB4636776CE80CCF0B1DAB664AE2218160D4089CA58CFAA98",
             "ScopeIds": [
               "root",
               "root/0/sequence",
@@ -344,7 +344,7 @@ public sealed partial class ChildScopeBaselineTests
           },
           {
             "Name": "Nested bodies",
-            "Hash": "25C53742E10676359CC62152A412FCDDA67574A2F179CDBEBBEBF27BD77B5F2D",
+            "Hash": "50D03FCB6DB8752F42266E402810D3B1509CDFCFCB2714CDB1064075E1717043",
             "ScopeIds": [
               "root",
               "root/0/sequence",

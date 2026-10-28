@@ -105,7 +105,7 @@ public sealed class InlineDebuggerScenarios
             Assert.Equal(new[] { "Value", "Secret" }, audit.Paths.Select(p => Assert.Single(p)));
             Assert.DoesNotContain(InlineDebuggerFixture.Secret, JsonSerializer.Serialize(trace));
             using var checkpoint = JsonDocument.Parse((await repository.GetWorkflowInstanceAsync(id))!.ExecutionStateJson);
-            Assert.Equal(14, checkpoint.RootElement.GetProperty("SchemaVersion").GetInt32());
+            Assert.Equal(1, checkpoint.RootElement.GetProperty("SchemaVersion").GetInt32());
             await second.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
         }
         finally { if (Directory.Exists(cache)) Directory.Delete(cache, true); }

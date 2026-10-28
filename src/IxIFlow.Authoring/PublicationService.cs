@@ -54,7 +54,7 @@ public sealed class PublicationService : IHostedService, IDisposable
             if (remaining <= TimeSpan.Zero) break;
             await Task.Delay(remaining < TimeSpan.FromMilliseconds(100) ? remaining : TimeSpan.FromMilliseconds(100), _time, cancellationToken);
             attempt = await _catalog.GetPublicationAsync(attempt.Id, CatalogScope.Unrestricted)
-                ?? throw new InvalidOperationException("The active publication attempt is unavailable");
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "The active publication attempt is unavailable");
             if (attempt.State != WorkflowPublicationState.Running) return attempt;
         }
         cancellationToken.ThrowIfCancellationRequested();

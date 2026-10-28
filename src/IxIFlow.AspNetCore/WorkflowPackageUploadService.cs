@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.AspNetCore;
 
-/// <summary>Bounded upload admission and proposed-package authorization, ready for the publishing route group.</summary>
+/// <summary>Bounded upload admission and authorization of proposed and existing packages.</summary>
 public sealed class WorkflowPackageUploadService : IDisposable
 {
     private readonly WorkflowPublisher _publisher;
@@ -49,6 +49,9 @@ public sealed class WorkflowPackageUploadService : IDisposable
             var scope = await http.RequestServices.GetRequiredService<ICatalogQueryScope>().ScopeAsync(http.User, http.RequestAborted);
             if (!scope.Allows("package", candidate.Package.Id)) return Results.NotFound();
             if (await WorkflowHttp.AuthorizeAsync(http, candidate.Package, _options.PublishPolicy!) is { } denied) return denied;
+            var existing = await _publisher.Catalog.GetPackageAsync(candidate.Package.Id, candidate.Package.Version);
+            if (existing != null && await WorkflowHttp.AuthorizeAsync(http, existing, _options.PublishPolicy!) is { } existingDenied)
+                return existingDenied;
             var actor = http.User.Identity?.Name;
             if (http.Request.Headers.TryGetValue("X-IxIFlow-Actor", out var header))
             {
@@ -59,12 +62,14 @@ public sealed class WorkflowPackageUploadService : IDisposable
             }
             var receipt = await _publisher.StorePackageAsync(candidate, actor, http.RequestAborted);
             var package = receipt.Stored;
-            var response = new WorkflowPackageUploadResponse(package.Id, package.Version, package.Digest.Value,
-                package.Origin.ToString(), receipt.Activities.Extraction.ToString(), package.RegisteredAtUtc, package.RegisteredBy);
+            var detail = await http.RequestServices.GetRequiredService<IWorkflowCatalogStore>()
+                .GetPackageDetailAsync(package.Id, package.Version, scope)
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "The accepted package is unavailable");
+            var response = new WorkflowPackageResponse(PublishingResponses.Project(detail), receipt.Created);
             var location = http.Request.PathBase.Add(catalogPath).ToString().TrimEnd('/') + "/" +
                 Uri.EscapeDataString(package.Id) + "/" + Uri.EscapeDataString(package.Version);
             http.Response.Headers.Location = location;
-            return Results.Json(response, statusCode: receipt.Created ? 201 : 200);
+            return WorkflowPublishingHttp.Json(response, receipt.Created ? 201 : 200);
         }
         catch (WorkflowEngineException error)
         {
@@ -112,9 +117,6 @@ public sealed class WorkflowPackageUploadService : IDisposable
     public void Dispose() => _admission.Dispose();
 }
 
-public sealed record WorkflowPackageUploadResponse(string Id, string Version, string Digest, string Origin,
-    string Extraction, DateTime? RegisteredAtUtc, string? RegisteredBy);
-
 public static class WorkflowPublishingServiceExtensions
 {
     /// <summary>Registers publishing and HTTP upload orchestration. Route mapping is separate.</summary>
@@ -125,6 +127,7 @@ public static class WorkflowPublishingServiceExtensions
         builder.AddPublishing(publisherOptions);
         builder.Services.TryAddSingleton(options);
         builder.Services.TryAddSingleton<WorkflowPackageUploadService>();
+        builder.Services.ConfigureAll<Microsoft.AspNetCore.OpenApi.OpenApiOptions>(WorkflowPublishingOpenApi.Configure);
         return builder;
     }
 }

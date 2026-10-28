@@ -15,21 +15,19 @@ The persistent catalog stores drafts and immutable version metadata, supports la
 
 [Placement](coordinator-and-hosts.md) combines definition, registration and start demands, explicit inheritance to children, expiring pins, matching and last-host affinity. [Coordinators](coordinators.md) supply stateless matching, discovery, multiple links, authenticated TLS and polling fallback. Unschedulable work is visible through client/operator reads, telemetry and `GET /unschedulable`. Demands place compute; [full data residency](coordinator-and-hosts.md#placement-and-data-residency) requires a separate cluster and store per region.
 
-Completion outbox publishers, outgoing signed webhooks and [incoming HTTP triggers](incoming-webhooks.md) with atomic idempotent admission are implemented, as are retained results, instance cleanup and tombstones. Committed control-flow, event and operator traces live outside checkpoints; snapshots, scoped logging and OpenTelemetry signals are available. The [debugger](debugging.md) (breakpoints, all-stop pause, stepping, audited data edits, the [Debug Adapter Protocol](debug-adapter.md), inspection and replay) and opt-in [large-payload](large-payloads.md) storage by reference are available. [Redaction](redaction.md) protects inspection values and error text, with privileged reads for raw diagnostics. Versioned Liquid templates and application-supplied message senders also work.
+Completion outbox publishers, outgoing signed webhooks and [incoming HTTP triggers](incoming-webhooks.md) with atomic idempotent admission are implemented, as are retained results, instance cleanup and tombstones. Committed control-flow, event and operator traces live outside checkpoints; snapshots, scoped logging and OpenTelemetry signals are available. The [debugger](debugging.md) (breakpoints, all-stop pause, stepping, audited data edits, the [Debug Adapter Protocol](debug-adapter.md), inspection and replay) and opt-in [large-payload](large-payloads.md) storage by reference are available. [Redaction](redaction.md) protects inspection values and error text, with privileged reads for raw diagnostics. Versioned Liquid templates, bundled rendering and application-supplied message senders also work. The unified catalog exposes workflow, activity, package, template and built-in step descriptors through scoped library and HTTP reads. YAML code activities publish as NuGet packages for YAML and fluent consumers. Published inline calls pin and copy their executable closures; typed workflow contracts validate input and output mappings. Scope activities provide pass-local resources in fluent and YAML definitions, catalog metadata, inspection and debugger views.
 
 Instance search, safe operator wait listings, trace paging, hard termination and outbox administration are available through [IWorkflowOperations](operations.md) and the authorized [HTTP operations mapping](operations-http.md). Termination can stop an instance even when no live host satisfies its demands or pin. [Reply tokens](reply-tokens.md) are capabilities for answering one wait; HTTP trace and snapshot reads require both inspect and reply authorization.
 
 Conformance covers memory, SQLite and distributed SQL Server/PostgreSQL, including zero, one and two coordinators. The existing fault categories cover lost acknowledgements, stale owners, a host dying after a wake, coordinator/poll races, event timing, nested-join recovery, parent/child cancellation and repeated host crashes through quarantine.
 
-## Remaining 1.0 work
+## Publishing and release verification
 
-| Area | Planned work |
-| --- | --- |
-| Workflow publishing/versioning | Template dependencies in published bundles; draft, upload and publishing HTTP APIs (activity-package resolution and digest pinning are implemented) |
-| Catalog and authoring services | Unified workflow/activity catalog API with input/output metadata, published code activities and YAML code activities, inline workflow calls, explicit workflow input/output contracts and local activity registration |
-| Verification | Identity-test traceability and conformance, fault-injection and commit-budget coverage for the remaining publishing and authoring paths |
+[Publishing HTTP](publishing-http.md) exposes workflow/activity/template drafts, full no-write validation, durable publication attempts and history, template preview, package upload, lifecycle changes, downloads and scoped catalog reads. The NuGet V3 read subset serves authorized available packages, including withdrawn versions retained for existing consumers. New IxIFlow authoring rejects withdrawn packages.
 
-The catalog and publishing library APIs are available, and hosts configured with `UseWorkflowBundles` fetch published versions; the draft, publishing, upload and catalog HTTP services remain planned. There is no checkpoint migration before 1.0.
+[Published-artifact samples](../samples/README.md#published-artifacts) exercise package consumers, bundled templates, inline calls and HTTP registration. Local tests cover these paths. SQL Server, PostgreSQL, coordinator profiles and process-based NuGet consumer checks need their matching integration environments; local runs do not establish those deployment results.
+
+The checkpoint and structure-hash formats are reset to 1 with the `ixiflow-1` marker; release verification remains before 1.0. There is no checkpoint migration before 1.0; recreate development stores and republish artifacts when the release formats change.
 
 ## After 1.0
 

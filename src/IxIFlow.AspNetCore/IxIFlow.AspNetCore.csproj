@@ -8,6 +8,7 @@
     <Description>Authorized HTTP triggers, CloudEvents ingress and workflow operations for IxIFlow.</Description>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.12" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="../IxIFlow/IxIFlow.csproj" />
     <ProjectReference Include="../IxIFlow.Authoring/IxIFlow.Authoring.csproj" />

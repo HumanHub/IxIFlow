@@ -54,8 +54,10 @@ At the lower store boundary, events addressed to a tombstoned ID are refused as 
 
 `IWorkflowStateRepository.DeleteWorkflowInstanceAsync(id, tombstoneRetention)` also leaves a tombstone. Its default is 90 days; pass the same period configured for automatic retention if yours differs. Deleting an unknown/already removed ID does not create or extend a tombstone. If the removed child still has a waiting parent, deletion also sends the terminating child notice atomically.
 
-## Artifact retention and remaining work
+## Artifact retention
 
 Unreferenced artifact retention is implemented. `IxIFlowOptions.ArtifactRetention` defaults to 90 days; each maintenance pass collects a bounded batch whose age has elapsed and whose digests have no catalog references, serialized against registration and publishing. Re-uploading an artifact refreshes its age. Referenced bundles are kept regardless of age.
 
-[Redaction](redaction.md) is implemented, and [data residency](coordinator-and-hosts.md#placement-and-data-residency) requires a separate cluster and store per region. Large-payload storage by reference remains [1.0 work](roadmap.md); its bodies will stay in the state store.
+[Redaction](redaction.md) is implemented, and [data residency](coordinator-and-hosts.md#placement-and-data-residency) requires a separate cluster and store per region. [Large-payload storage by reference](large-payloads.md) keeps its bodies in the state store.
+
+Uploaded and Published package identities retain their bytes and complete closures, including while withdrawn. Template model packages, workflow versions and retained instance pins are retention roots. Unheld Resolved artifacts can expire, while their catalog identities remain listed as unavailable. Holders inform retention and do not veto withdrawal; see [activity package retention](activity-catalog.md#publication-withdrawal-and-retention).

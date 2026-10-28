@@ -46,7 +46,7 @@ Published workflow documents use the built-in `renderTemplate` step:
 
 Publishing resolves an omitted version to the highest published template version and infers its declared model type. The canonical YAML records both the exact version and `modelType`. A build-time generator without a publishing catalog requires an explicit version and `modelType`. The generated activity is `RenderTemplate<TModel>`, with the same mappings and structure as fluent authoring. Rendering can use saga error policies; it has no compensation.
 
-Manifest format 6 embeds canonical template JSON at `templates/{key}@{version}.json`, pins the complete model package closure, and records permitted template references separately for each runtime catalog site. Inline callers copy verified callee payloads and remap their bindings to grafted sites. Cold loading verifies content digests, model identities and reconstructed constants before making the template set available.
+The bundle manifest embeds canonical template JSON at `templates/{key}@{version}.json`, pins the complete model package closure, and records permitted template references separately for each runtime catalog site. Inline callers copy verified callee payloads and remap their bindings to grafted sites. Cold loading verifies content digests, model identities and reconstructed constants before making the template set available.
 
 During a bundled run, every renderer call uses that dispatch's embedded template set and permitted references. This includes custom activities, parallel branches, compensation and recovery. A site's permission does not authorize another site's template. A missing binding, changed saved input or mismatched model fails with an engine `InvalidDefinition`; workflow Catch and saga error/retry handlers do not handle these guard failures, even if an activity catches the renderer's exception. Ordinary authored exceptions retain their normal handling. Bundled rendering makes no template catalog queries. Code-defined execution continues to use the durable catalog.
 
@@ -62,3 +62,5 @@ factory lives with the core catalog value contracts and describes the rendering
 assembly's output by portable identity, without loading an engine into a store.
 See the [unified catalog API](../../docs/workflow-catalog.md) for shapes,
 ordering, cursor and caching rules.
+
+[PublishedArtifacts](../../samples/IxIFlow.Samples/PublishedArtifacts.cs) provides a complete template document, read-only preview and bundled render example. The [YAML guide](../../docs/yaml-authoring.md#template-documents-and-bundled-rendering) documents the syntax and [HTTP guide](../../docs/publishing-http.md) describes PreviewPolicy, bounds and source download authorization.

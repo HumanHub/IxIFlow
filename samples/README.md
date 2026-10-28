@@ -40,7 +40,7 @@ dotnet test tests/IxIFlow.Samples.Tests
 
 The console entry point runs Quote in fluent C# or generated YAML form and prints Ada's amount and outcome: 12.50 and ready (number formatting follows the console culture). Other examples expose a `Definition()` method; [SampleTests.cs](../tests/IxIFlow.Samples.Tests/SampleTests.cs) and [YamlSampleTests.cs](../tests/IxIFlow.Samples.Tests/YamlSampleTests.cs) show their setup and execution. Review also registers its pinned child in `IWorkflowCatalog` before starting the parent.
 
-`IxIFlow.Samples` references the generator as an analyzer and imports the engine's package props because it uses project references. Its eighteen `*.workflow.yaml` files are compiler additional files. A NuGet consumer of `IxIFlow` gets that glob, generator, analyzers and code fixes from the package automatically. The same package ships the workflow JSON Schema for editors; see [editor support](../src/IxIFlow.Generators/README.md#editor-support).
+`IxIFlow.Samples` references the generator as an analyzer and imports the engine's package props because it uses project references. Its `*.workflow.yaml` files are compiler additional files. A NuGet consumer of `IxIFlow` gets that glob, generator, analyzers and code fixes from the package automatically. The same package ships the workflow JSON Schema for editors; see [editor support](../src/IxIFlow.Generators/README.md#editor-support).
 
 ## Activity contracts
 
@@ -56,14 +56,14 @@ Pure fluent activities can use the public-setter/input and public-getter/output 
 - ParallelQuotes covers all, any and conditional joins. It starts each branch from an isolated copy and uses `Sum<decimal>` to merge fee changes. Both general branches and parallel `forEach` have YAML twins.
 - RetryQuote retries a single saga step immediately and reads `context.Attempt.Number`, previous errors/notes and attempt IDs. SagaPaymentRecipe and its YAML twin refund a payment when stock reservation fails, then retry with a new reply token. These are different retry scopes.
 - Reusable reads the workflow clock in both versions; its YAML expression asset uses the generated selector context, `ctx.UtcNow`. Reminder parks for one hour and maps `ctx.UtcNow` after resumption. `FakeTimeProvider` drives the delay and approval deadline tests. RetryQuote uses zero backoff; the payment saga retry uses the one-second default, driven by the fake clock.
-- QuoteMessage publishes immutable Liquid variants, renders the parent French variant for fr-CA and sends through `ITemplateMessageSender`. The application sender must deduplicate by message ID. Template storage defaults to memory; workflow bundle/artifact persistence is future work.
+- QuoteMessage publishes immutable Liquid variants, renders the parent French variant for fr-CA and sends through `ITemplateMessageSender`. The application sender must deduplicate by message ID. Templates use the selected durable workflow store. Published workflows embed the pinned template content and model closure.
 - Recovery checks an external reservation by its saved invocation ID. If the provider cannot establish the outcome, an operator supplies an observed result through the client. [RecoveryTests.cs](../tests/IxIFlow.Samples.Tests/RecoveryTests.cs) reuses the existing memory-store fault injector to interrupt the commit after the effect and verifies both automatic recovery and operator resolution.
 - Hosting compiles all store registrations. Tests execute each workflow on memory and smoke-test SQLite. SQL Server/PostgreSQL registration tests construct the providers; database execution needs their integration environments.
 - Observability attaches standard .NET activity and meter listeners, then reads committed trace history and a snapshot through the client. Configure an OpenTelemetry SDK/exporter in the application if it needs external telemetry delivery.
 
 [SampleTests.cs](../tests/IxIFlow.Samples.Tests/SampleTests.cs) and [YamlSampleTests.cs](../tests/IxIFlow.Samples.Tests/YamlSampleTests.cs) compare saved structure hashes and serialized results for YAML/fluent pairs, including empty lists, loop boundaries, each parallel join, typed faults, retries, delays, replies and timeouts. Retry checks verify runtime IDs before comparing their roles across instances. [RecipeTests.cs](../tests/IxIFlow.Samples.Tests/RecipeTests.cs) runs every existing recipe on memory with fake time. [ReadmeExamples.cs](../tests/IxIFlow.Samples.Tests/ReadmeExamples.cs) compiles and executes the root README quick start. The existing conformance suite supplies additional store and failure scenarios.
 
-The [root roadmap](../README.md#status-and-roadmap) marks the remaining 1.0 work. Workflow bundle publishing, the coordinator, process executors, debugger controls, management endpoints and incoming HTTP triggers remain planned. Outgoing signed webhooks, public outbox publishers, instance retention and tombstones are implemented; see the [documentation index](../docs/index.md).
+The [root roadmap](../README.md#status-and-roadmap) records release verification and later work. Workflow publishing, coordinators, debugger controls, management HTTP and incoming HTTP triggers are available. Process isolation remains after 1.0; see the [documentation index](../docs/index.md).
 
 ## Demo activities
 
@@ -104,3 +104,17 @@ Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in
 [CancellationApproval.cs](IxIFlow.Samples/CancellationApproval.cs) and its [YAML twin](IxIFlow.Samples/Definitions/cancellation-approval.workflow.yaml) withdraw an unfinished approval during cancellation and leave a completed approval unchanged.
 
 The three scope YAML files are compiled through the product translator/compiler in [ScopeSampleTests.cs](../tests/IxIFlow.Samples.Tests/ScopeSampleTests.cs), which compares their fluent hashes, contracts and results. The fake connection/mailbox factories resolve names without external services; the workbook fake checks owning-thread access and explicit save. The [scoped approval recipe](IxIFlow.Recipes/ScopedApproval.cs) is exercised by the store conformance kit, including the independent-child resource boundary.
+
+## Published artifacts
+
+These examples extend the existing sample project; they run in [PublishedArtifactSampleTests.cs](../tests/IxIFlow.Samples.Tests/PublishedArtifactSampleTests.cs) and [PublishingHttpSampleTests.cs](../tests/IxIFlow.Samples.Tests/PublishingHttpSampleTests.cs).
+
+| Source | What the test exercises |
+| --- | --- |
+| [PublishedActivities.cs](IxIFlow.Samples/PublishedActivities.cs) and [double.activity.yaml](IxIFlow.Samples/Definitions/double.activity.yaml) | Publish `acme.double@1.0.0`; compile a fluent consumer against its nupkg DLL; publish and cold-run a YAML import; verify identical-byte upload into another catalog |
+| [PublishedArtifacts.cs](IxIFlow.Samples/PublishedArtifacts.cs) | No-write Liquid preview, template publication and bundled `renderTemplate` with parent-culture fallback; publish `use` and registered `useType` calls and cold-run them without child instances |
+| [PublishingHttpExamples.cs](IxIFlow.Samples/PublishingHttpExamples.cs) | `AddWorkflowPublishing`/`MapWorkflowPublishing`, seven explicit claim policies, a restricted `ICatalogQueryScope`, draft preconditions, source and actor audit on an in-process HTTP host |
+
+The activity's integer version `1` becomes package `1.0.0`. A fluent NuGet application references that package and uses its generated `IxIFlow.Activities.Acme.Double` type. The sample test performs compilation and execution in process. External NuGet restore/build and fresh-cache withdrawn restore use separate process-based integration tests.
+
+Publication runs trusted code. Supply application authentication for the HTTP sample and register template engines when preview or template publication is required. Bundle caches, sample package DLLs and HTTP test output use temporary directories; the console entry point remains the quote example.

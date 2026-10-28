@@ -92,7 +92,29 @@ Mapped inputs are copies. Output mappings propagate results. `WorkflowData` and 
 
 Implement `IRequestActivity<TReply>` when sending a request that expects an engine reply; `context.Reply` supplies its token/address. Implement `IRecoverableActivity<TState>` when an interrupted external effect can be checked safely. [Recovery.cs](../samples/IxIFlow.Samples/Recovery.cs) and the [execution guide](execution-model.md#interrupted-activities) show the recovery and operator-resolution paths.
 
-Broader catalog services and published activity packages/code activities are [planned](roadmap.md).
+The [activity and package catalog](activity-catalog.md) lists local and artifact providers. [YAML code activities](yaml-authoring.md#code-activity-documents) publish as NuGet packages; fluent applications reference the package and use its generated type. YAML consumers import the exact package and select the activity key and integer activity version. The [published activity sample](../samples/IxIFlow.Samples/PublishedActivities.cs) and its [tests](../tests/IxIFlow.Samples.Tests/PublishedArtifactSampleTests.cs) exercise both consumers from the published bytes.
+
+## Consume a published activity
+
+Add a PackageReference to `acme.double` version `1.0.0` from the authorized publishing feed. The generated type has ordinary typed inputs and outputs:
+
+<!-- snippet: samples/IxIFlow.Samples/PublishedActivities.cs#package-consumer-fluent -->
+```csharp
+using IxIFlow.Builders;
+using IxIFlow.Core;
+using IxIFlow.Samples;
+
+public static class DoubleConsumer
+{
+    public static WorkflowDefinition Build() => Workflow.Create<PublishedNumber>("FluentDouble")
+        .Step<IxIFlow.Activities.Acme.Double>(step => step
+            .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Value)
+            .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Value))
+        .Build();
+}
+```
+
+The sample test compiles this source against the DLL extracted from the published nupkg and executes it. Register `AddActivities` when the application also needs installed catalog metadata or custom activity factories. [Package publication and withdrawal](activity-catalog.md#publication-withdrawal-and-retention) describes immutable identities, retained bytes and pinned consumers.
 
 ## Scope activities
 

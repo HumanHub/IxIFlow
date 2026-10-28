@@ -83,7 +83,7 @@ public sealed class PublishedInlineTests
         {
             "engine" => bundle.Manifest with { EngineVersion = "99.0.0.0" },
             "framework" => bundle.Manifest with { TargetFramework = "net99.0" },
-            "checkpoint" => bundle.Manifest with { CheckpointContractVersion = 1 },
+            "checkpoint" => bundle.Manifest with { CheckpointContractVersion = 14 },
             "shared" => bundle.Manifest with { SharedAssemblies = new Dictionary<string, string> { ["System.Runtime, Version=99.0.0.0"] = "99.0.0.0" } },
             _ => bundle.Manifest
         };

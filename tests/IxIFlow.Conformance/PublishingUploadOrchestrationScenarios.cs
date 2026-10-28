@@ -65,7 +65,7 @@ public sealed class PublishingUploadOrchestrationScenarios
         replayContext.User = new(new ClaimsIdentity([new Claim(ClaimTypes.Name, "second")], "test"));
         var replay = await uploads.UploadAsync(replayContext, "/publishing/catalog/packages");
         Assert.Equal(200, ((IStatusCodeHttpResult)replay).StatusCode);
-        Assert.Equal("first", Assert.IsType<WorkflowPackageUploadResponse>(((IValueHttpResult)replay).Value).RegisteredBy);
+        Assert.Equal("first", Assert.IsType<WorkflowPackageResponse>(((IValueHttpResult)replay).Value).Package.RegisteredBy);
         var delegated = Context(); delegated.Request.Headers["X-IxIFlow-Actor"] = "delegate";
         Assert.Equal(403, ((IStatusCodeHttpResult)await uploads.UploadAsync(delegated, "/publishing/catalog/packages")).StatusCode);
     }

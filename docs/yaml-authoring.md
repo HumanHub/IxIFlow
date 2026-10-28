@@ -3,7 +3,7 @@ title: YAML authoring
 description: Every workflow document construct, strict validation and editor schema.
 ---
 
-YAML has a form for every fluent workflow construct. The source generator translates documents into the fluent API; generated and handwritten definitions use the same build rules and executor. Workflow names are required, and identity is the declared `(name, version)`. The parsed document model lowers to the same executable structure as fluent C#, so equivalent definitions have equal `StructureHash` values. Whitespace, comments, mapping key order, descriptions, display names and step labels do not affect the hash. Changed executable structure or expression shape does. Delegate bodies and captured values are excluded; bump the version when behavior changes. Checkpoint contract 14 refuses instances saved by earlier builds without migration.
+YAML has a form for every fluent workflow construct. The source generator translates documents into the fluent API; generated and handwritten definitions use the same build rules and executor. Workflow names are required, and identity is the declared `(name, version)`. The parsed document model lowers to the same executable structure as fluent C#, so equivalent definitions have equal `StructureHash` values. Whitespace, comments, mapping key order, descriptions, display names and step labels do not affect the hash. Changed executable structure or expression shape does. Delegate bodies and captured values are excluded; bump the version when behavior changes. Checkpoint contract 1 (`ixiflow-1`) refuses instances saved by earlier builds without migration.
 
 The `IxIFlow` package automatically includes `*.workflow.yaml` and `*.workflow.yml` as compiler additional files. A file such as `reminder.workflow.yaml` generates `<RootNamespace>.Generated.Workflow_reminder_workflow.Build()`. Punctuation in filenames becomes underscores; use distinct filenames. Project-reference applications need analyzer references and package props explicitly, as in [the samples project](../samples/IxIFlow.Samples/IxIFlow.Samples.csproj).
 
@@ -75,6 +75,8 @@ All steps accept `id`; `name` is accepted only in workflow-scope bodies. A name 
 | `request` | Activity members plus required `key` and optional `subject`; opens a request reply slot |
 | `waitFor` | Required `key` and `event`; plain event wait or the paired request's reply wait |
 | `suspend` | Required `event`, optional `reason` key (step ID fallback) |
+| `use`, `useType` | Inline a published catalog workflow or a registered workflow type with validated `input` and `output` mappings |
+| `renderTemplate` | Constant `template` reference, typed `model`, optional `culture` and output mappings |
 | `invokeWorkflow` | `workflow: { name, version? }`, `input`, `output`, ordered `onError`, optional `cancelWithParent` (true by default); publishing resolves catalog versions and contracts; local source generation requires an explicit version of another document in the compilation |
 | `invokeWorkflowType` | `workflowType`, optional `dataType` fallback, mappings and `cancelWithParent`; the generator reads the class's `[Workflow("Name", Version = n)]` identity; register the class with `services.RegisterWorkflow<TWorkflow>()` before building the service provider |
 
@@ -221,7 +223,7 @@ Call input precedence is explicit mapping, then `[DefaultValue]`, then construct
 
 `WorkflowPublisher` in `IxIFlow.Authoring` publishes YAML drafts with pinned package and workflow imports as verified bundles. It validates, translates and compiles the draft, then calls the generated `Build()` in the publishing process, inside a collectible scratch load context on a dedicated background thread. `WorkflowPublisherOptions.BuildTimeout` defaults to 30 seconds. If the build exceeds that deadline, publication fails with a build-timeout diagnostic and uploads nothing. The thread cannot be stopped: a warning reports that it and its scratch load context are abandoned until the process restarts. Supply an `ILogger<WorkflowPublisher>` to capture these warnings. A completed build is validated before its scratch context is unloaded and its bundle is uploaded and published against the draft revision.
 
-See the [generator guide](../src/IxIFlow.Generators/README.md) for custom filenames, opt-out, MSBuild metadata and explicit project references. Host bundle loading and activity-package dependency resolution and pinning are implemented (see the README's publishing section). YAML inline workflow calls and YAML-defined code activities remain planned. Application hosting, store choice, publishers and client calls use C# configuration.
+See the [generator guide](../src/IxIFlow.Generators/README.md) for custom filenames, opt-out, MSBuild metadata and explicit project references. Host bundle loading and activity-package dependency resolution and pinning are implemented (see the README's publishing section). YAML inline calls, YAML code activities and template documents use the same publisher. The [HTTP surface](publishing-http.md) adds policies, scope, preconditions, preview, upload and downloads. Application hosting, store choice, publishers and client calls use C# configuration.
 
 <!-- snippet: samples/IxIFlow.Samples/Definitions/switch-routing.workflow.yaml -->
 ```yaml
@@ -351,3 +353,97 @@ definitions:
 Scopes are accepted in workflow and catch bodies, including nested graphs and branches. Saga bodies and handlers refuse scope declarations. Naming an ordinary activity with `scope` is `SCOPE003`; naming a scope activity with `activity` is `SCOPE004`; weakening threading is `SCOPE005`. Unknown members and mode values are rejected. `[RequiresScope<TValue>]` errors map to the authored YAML step.
 
 `workflow.requiresScopes` lists the C# value types a reusable workflow needs. `use` and `useType` inherit the caller's scope and threading. `invokeWorkflow` and `invokeWorkflowType` create independent children that inherit neither; root starts also refuse required scopes. Registration and publishing validate resolved requirements; loading a forged bundle refuses it as an artifact mismatch. See [scope lifetimes](execution-model.md#scopes).
+
+## Code activity documents
+
+An activity document declares one activity. Its key is also the NuGet package ID. Integer activity version `1` becomes package version `1.0.0`; a workflow's `activityVersion` still selects the activity declaration version `"1"`.
+
+<!-- snippet: samples/IxIFlow.Samples/Definitions/double.activity.yaml -->
+```yaml
+activity:
+  key: acme.double
+  version: 1
+  name: Double
+input:
+  Value: { type: int, default: 3 }
+output:
+  Result: { type: int }
+body: |
+  Result = Value * 2;
+```
+
+The `input`, `output` and `inOut` dictionaries declare typed properties. Members support `required`, scalar `default`, `label`, `help` and `control` metadata. The generated class uses activity direction markers and .NET Required, DefaultValue, Display and UIHint attributes. A body contains C# statements and may await, use `context` and `cancellationToken`, or resolve services from `context.Services`. Optional `declarations` contains class members; `usings` supplies namespaces and `packages` pins dependencies. Code is trusted application code.
+
+`WorkflowPublisher.ValidateAsync` compiles and checks without storing packages or artifacts. `PublishAsync` constructs the deterministic nupkg, verifies it, records the matching activity descriptor and closure, and consumes the exact saved draft. Its `Package` result contains the stored audit and receipt. Workflows import published packages; they do not define code activities within a workflow document.
+
+<!-- snippet: samples/IxIFlow.Samples/PublishedActivities.cs#package-consumer-yaml -->
+```yaml
+workflow: {name: PublishedDouble, dataType: IxIFlow.Samples.PublishedNumber}
+imports: {catalogs: [acme.double@1.0.0]}
+definitions:
+  - kind: activity
+    activity: acme.double
+    activityVersion: "1"
+    input: [{target: Value, from: {path: workflow.Value}}]
+    output: [{source: Result, to: {path: workflow.Value}}]
+```
+
+A fluent application adds a PackageReference to `acme.double` version `1.0.0` and uses `IxIFlow.Activities.Acme.Double` with ordinary typed mappings. [PublishedActivities](../samples/IxIFlow.Samples/PublishedActivities.cs) and its [sample test](../tests/IxIFlow.Samples.Tests/PublishedArtifactSampleTests.cs) compile that consumer against the published DLL and execute both forms. The publishing HTTP host exposes a protected NuGet read subset for external consumers.
+
+## Template documents and bundled rendering
+
+Template documents have a `template` header, required base `content`, and optional `cultures`. `template.model` names the declared C# object surface. Imported model packages and their complete closures are pinned. Liquid and `text`/`html` are supported; scalar, collection and dictionary root models are refused. Template versions have no lifecycle transition or collection operation.
+
+<!-- snippet: samples/IxIFlow.Samples/PublishedArtifacts.cs#template-yaml -->
+```yaml
+template:
+  key: samples.greeting
+  version: 1
+  engine: liquid
+  format: text
+  model: IxIFlow.Samples.GreetingModel
+content: "Hello {{ Name }}"
+cultures:
+  fr: "Bonjour {{ Name }}"
+```
+
+<!-- snippet: samples/IxIFlow.Samples/PublishedArtifacts.cs#bundled-render-yaml -->
+```yaml
+workflow: {name: BundledGreeting, dataType: IxIFlow.Samples.GreetingData}
+definitions:
+  - kind: renderTemplate
+    id: greeting
+    template: samples.greeting
+    model: {path: workflow.Model}
+    culture: {kind: constant, value: fr-CA}
+    output: [{source: Rendered, to: {path: workflow.Body}}]
+```
+
+Publishing resolves an omitted template version and model type, then writes their exact values into canonical workflow YAML. The bundle embeds the template content and model closure with a binding for each executable site. The template reference must be constant; workflow data may supply model and culture. A build-time generator has no publishing catalog, so it needs an explicit version and `modelType`.
+
+A bundled render reads only its verified embedded content, including after suspension or publication of a newer live template. Each dispatch can render only its own bound references. Missing or changed pins fail as engine definition errors outside authored Catch and saga handling. `RenderTemplate<TModel>` remains one recoverable step; sending is a separate idempotent activity. See [durable templates](../src/IxIFlow.Templates/README.md).
+
+Template preview performs the full Scratch pipeline and renders the JSON model without writes. HTTP preview has a separate PreviewPolicy; full validation uses ExecutePolicy. Both may execute constructors, getters, converters or authored code. Model/output bounds and BuildTimeout limit input, output and waiting; timeout does not forcibly stop managed code.
+
+## Published inline calls
+
+<!-- snippet: samples/IxIFlow.Samples/PublishedArtifacts.cs#inline-yaml -->
+```yaml
+workflow: {name: InlineDouble, dataType: IxIFlow.Samples.PublishedNumber}
+imports: {workflows: [NumberBody@1]}
+definitions:
+  - kind: use
+    id: published
+    workflow: {name: NumberBody, version: 1}
+    input: [{target: Value, from: {path: workflow.Value}}]
+    output: [{source: Value, to: {path: workflow.Value}}]
+  - kind: useType
+    id: typed
+    workflowType: IxIFlow.Samples.DoubleNumber
+    input: [{target: Value, from: {path: workflow.Value}}]
+    output: [{source: Value, to: {path: workflow.Value}}]
+```
+
+`use` selects an artifact-backed Published or explicitly Deprecated catalog version. A code-defined callee uses `useType` and must already be registered in the catalog; its public parameterless constructor builds the body during publication. The publisher verifies and copies the executable closure and canonical source into the caller. Input and output mappings follow the callee's immutable contract. Static demands merge into the caller and contradictory demands fail publication.
+
+Inline bodies run in the caller's executor with their own checkpointed data frames and inherited scopes. They create no child instance. Independent `invokeWorkflow` calls retain child lifecycle and cancellation semantics. Inline pins continue from the caller's copied bytes after callee retirement; unfinished child callers still protect their callee. Private assembly or package conflicts fail publication. The [inline sample](../samples/IxIFlow.Samples/PublishedArtifacts.cs) publishes both forms and executes them from a fresh bundle host.

@@ -174,7 +174,9 @@ internal sealed class WorkflowScopeCatalog
         // adding an empty branch changes the topology even when it adds no steps.
         var manifest = new
         {
-            Format = 9,
+            Format = 1,
+            // The release namespace prevents reuse of a pre-release format-1 hash.
+            Runtime = ExecutionCheckpoint.RuntimeMarker,
             RequiredScopes = definition.RequiredScopes.Select(WorkflowTypeIdentity.StableName).Order(StringComparer.Ordinal),
             Data = WorkflowTypeIdentity.StableName(definition.WorkflowDataType),
             DataTypes = _steps.Values.Select(step => step.WorkflowDataType).Prepend(definition.WorkflowDataType)

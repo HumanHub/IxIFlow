@@ -3,7 +3,7 @@
 `IWorkflowCatalogStore` supplies scoped workflow, activity, package, template
 and built-in step metadata on memory, SQLite, SQL Server and PostgreSQL.
 `IWorkflowCatalog` forwards the same reads and adds live host queries. These are
-library APIs; HTTP adapters and their policies are separate work.
+library APIs also back the [publishing and catalog HTTP routes](publishing-http.md), with explicit policies and a per-request application scope.
 
 ## Scope and paging
 

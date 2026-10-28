@@ -3,7 +3,7 @@ title: Getting started
 description: Run a first IxIFlow workflow on .NET 10.
 ---
 
-Use a .NET 10 application and reference `IxIFlow`. Activity libraries can depend on `IxIFlow.Abstractions` alone. Add `IxIFlow.Sqlite`, `IxIFlow.SqlServer` or `IxIFlow.PostgreSql` for durable storage; add `IxIFlow.Authoring` for document serialization and the installed activity catalog.
+Use a .NET 10 application and reference `IxIFlow`. Activity libraries can depend on `IxIFlow.Abstractions` alone. Add `IxIFlow.Sqlite`, `IxIFlow.SqlServer` or `IxIFlow.PostgreSql` for durable storage; add `IxIFlow.Authoring` for document serialization and publication. Installed activity registration is part of the core engine.
 
 ## Run a quote
 
@@ -45,7 +45,7 @@ dotnet run --project samples/IxIFlow.Samples --no-restore -- --yaml
 dotnet test tests/IxIFlow.Samples.Tests --no-restore
 ```
 
-Both console modes run the quote. The [sample map](../samples/README.md) covers loops, parallel work, waits, children, recovery, sagas and templates.
+Both console modes run the quote. The [sample map](../samples/README.md) also covers loops, parallel work, waits, children, recovery, sagas, published code activities, bundled templates and inline workflow calls. Publication samples are exercised by the sample tests.
 
 ## Understand the result
 
@@ -63,4 +63,14 @@ A cancellation token interrupts the current call. Use `CancelAsync` with a `Canc
 
 The example above uses the default memory store. Use a generic host to start background recovery, outbox delivery and retention, and to drain execution at shutdown. [Hosting](coordinator-and-hosts.md) has the compiled setup; [stores](stores.md) explains persistence and deployment constraints.
 
-Parameterless activities can be constructed by the executor. Register activities with constructor dependencies in DI. Every process that might resume saved work must load its matching workflow definitions and activity code.
+Parameterless activities can be constructed by the executor. Register activities with constructor dependencies in DI. For code-defined workflows, every host that might resume saved work must load the matching definitions and activity code. Published workflows use the verified bundle-loading path below.
+
+## Publish and consume artifacts
+
+Use `WorkflowPublisher` with the selected catalog and artifact store. Save a kind-keyed draft, validate it with `ValidateAsync`, then publish its complete `Id` with `PublishAsync`. The result has one matching `Workflow`, `Package` or `Template` arm. Validation performs a full no-write build; only publication consumes the saved draft.
+
+[PublishedActivities.cs](../samples/IxIFlow.Samples/PublishedActivities.cs) publishes the existing double activity as `acme.double` package `1.0.0`, then publishes a YAML consumer. Its fluent consumer uses the package's generated `IxIFlow.Activities.Acme.Double` type after a package reference. [PublishedArtifacts.cs](../samples/IxIFlow.Samples/PublishedArtifacts.cs) publishes a Liquid template, embeds it with `renderTemplate`, and publishes `use`/`useType` calls. The sample tests run the published workflows in a fresh bundle host and compile the fluent consumer against the nupkg DLL.
+
+Configure `UseWorkflowBundles(cacheDirectory)` on each execution host. The host fetches verified digest-pinned artifacts and does not resolve NuGet dependencies at runtime. A published workflow's data types belong to its bundle context; use serialized data or declared shared contracts when crossing that boundary.
+
+For a publishing web host, add `IxIFlow.AspNetCore`, register `AddWorkflowPublishing` and `ICatalogQueryScope`, and map `MapWorkflowPublishing`. The [HTTP guide](publishing-http.md) covers the seven required policies, draft ETags, upload and the authenticated NuGet read subset.

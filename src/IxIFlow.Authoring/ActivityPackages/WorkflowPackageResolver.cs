@@ -114,6 +114,9 @@ internal sealed class ResolvedWorkflowPackages : IDisposable
 
 internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IArtifactStore artifacts, WorkflowPublisherOptions options)
 {
+    internal static WorkflowPublishException WithdrawnPackage(string id, string version, DocumentLocation? location = null) =>
+        new("PUB025", $"Withdrawn package '{id}@{version}' cannot be used for new authoring", location ?? new(1, 1));
+
     internal async Task UnionAsync(ResolvedWorkflowPackages result, IReadOnlyList<WorkflowPackagePin> pins, DocumentLocation location, CancellationToken token)
     {
         foreach (var pin in pins)
@@ -244,7 +247,7 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
         {
             ArgumentNullException.ThrowIfNull(candidate);
             if (candidate.Package != null && (await catalog.GetPackageAsync(candidate.Package.Id, candidate.Package.Version))?.Withdrawn == true)
-                throw new WorkflowPublishException("PUB025", "A withdrawn package cannot be used for new authoring", new(1, 1));
+                throw WithdrawnPackage(candidate.Package.Id, candidate.Package.Version);
             if (candidate.Bytes.Length > options.MaxPackageResolutionBytes - seededBytes)
                 throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Seeded package bytes exceed the configured limit");
             seededBytes += candidate.Bytes.Length;
@@ -281,6 +284,7 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
             var available = new Dictionary<PackageIdentity, SourcePackageDependencyInfo>(PackageIdentityComparer.Default);
             var ordinary = new Dictionary<PackageIdentity, PackageDependency[]>(PackageIdentityComparer.Default);
             var versions = new Dictionary<string, NuGetVersion[]>(StringComparer.OrdinalIgnoreCase);
+            var withdrawnVersions = new Dictionary<string, NuGetVersion[]>(StringComparer.OrdinalIgnoreCase);
             var roots = new List<PackageIdentity>();
             var queue = new Queue<PackageIdentity>();
             var scheduled = new HashSet<PackageIdentity>(PackageIdentityComparer.Default);
@@ -358,12 +362,13 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
                     }
                 }
                 all.ExceptWith(withdrawn);
+                withdrawnVersions[id] = withdrawn.Order().ToArray();
                 return versions[id] = all.Order().ToArray();
             }
             async Task<WorkflowPackage?> Record(PackageIdentity identity)
             {
                 var row = await catalog.GetPackageAsync(identity.Id, VersionKey(identity.Version));
-                if (row?.Withdrawn == true) throw new WorkflowPublishException("PUB025", "A withdrawn package cannot be used for new authoring", new(1, 1));
+                if (row?.Withdrawn == true) throw WithdrawnPackage(row.Id, row.Version);
                 if (acquisition != PackageAcquisition.CatalogOnly && seeds.TryGetValue(identity.Id + "@" + VersionKey(identity.Version), out var seed))
                 {
                     WorkflowPackageRules.CheckRegistration(row, seed.Package);
@@ -409,7 +414,12 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
                 if (!PackageIdValidator.IsValidPackageId(id) || split >= 0 && !NuGetVersion.TryParse(import[(split + 1)..], out _))
                     throw new WorkflowPublishException("PUB003", $"Invalid package import '{import}'", null);
                 var version = split < 0 ? (await Versions(id)).LastOrDefault(item => !item.IsPrerelease) : NuGetVersion.Parse(import[(split + 1)..]);
-                if (version == null) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"No package version is available for '{id}'");
+                if (version == null)
+                {
+                    var withdrawn = withdrawnVersions[id].LastOrDefault(item => !item.IsPrerelease);
+                    if (withdrawn != null) throw WithdrawnPackage(id, VersionKey(withdrawn));
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"No package version is available for '{id}'");
+                }
                 var identity = new PackageIdentity(id, version);
                 if (roots.Any(root => root.Id.Equals(id, StringComparison.OrdinalIgnoreCase))) throw new WorkflowPublishException("PUB003", $"Duplicate package import '{id}'", null);
                 await Record(identity);
@@ -527,12 +537,35 @@ internal sealed class WorkflowPackageResolver(IWorkflowCatalogStore catalog, IAr
             {
                 if (++rounds > options.MaxPackageCandidates) throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Package runtime resolution did not converge within the candidate limit");
                 await ExpandMetadata();
-                var choices = available.Values.Where(package => !rootVersions.TryGetValue(package.Id, out var pin) || package.Version == pin);
+                var choices = available.Values.Where(package => !rootVersions.TryGetValue(package.Id, out var pin) || package.Version == pin).ToArray();
                 var context = new PackageResolverContext(DependencyBehavior.Lowest, roots.Select(root => root.Id), roots.Select(root => root.Id), [], roots,
                     choices, repositories.Select(source => source.PackageSource), NullLogger.Instance);
                 try { resolved = new PackageResolver().Resolve(context, token).OrderBy(package => package.Id, StringComparer.OrdinalIgnoreCase).ToArray(); }
                 catch (Exception error) when (error is NuGetResolverConstraintException or NuGetResolverInputException)
                 {
+                    // Walk the current candidate graph from its pinned roots. Metadata explored
+                    // for an excluded version (or an orphan below it) cannot explain this failure.
+                    var relevant = new HashSet<PackageDependency>();
+                    var visited = new HashSet<PackageIdentity>(PackageIdentityComparer.Default);
+                    var pending = new Queue<PackageIdentity>(roots);
+                    while (pending.TryDequeue(out var identity))
+                    {
+                        if (!visited.Add(identity)) continue;
+                        var candidate = choices.SingleOrDefault(package => PackageIdentityComparer.Default.Equals(package, identity));
+                        if (candidate == null) continue;
+                        foreach (var dependency in candidate.Dependencies)
+                        {
+                            relevant.Add(dependency);
+                            foreach (var match in choices.Where(package => package.Id.Equals(dependency.Id, StringComparison.OrdinalIgnoreCase) &&
+                                         dependency.VersionRange.Satisfies(package.Version))) pending.Enqueue(match);
+                        }
+                    }
+                    foreach (var dependency in relevant.OrderBy(item => item.Id, StringComparer.OrdinalIgnoreCase))
+                        if (!choices.Any(identity => identity.Id.Equals(dependency.Id, StringComparison.OrdinalIgnoreCase) &&
+                                dependency.VersionRange.Satisfies(identity.Version)) &&
+                            withdrawnVersions.TryGetValue(dependency.Id, out var withdrawnChoices) &&
+                            withdrawnChoices.LastOrDefault(dependency.VersionRange.Satisfies) is { } withdrawn)
+                            throw WithdrawnPackage(dependency.Id.ToLowerInvariant(), VersionKey(withdrawn));
                     if (missingIds.Count != 0) throw new PackageClosureUnavailableException(missingIds.Order(StringComparer.Ordinal).ToArray());
                     throw new WorkflowPublishException("PUB003", $"NuGet could not resolve the package closure for {string.Join(", ", roots.Select(root => root.Id + "@" + VersionKey(root.Version)))}", null); }
                 if (resolved.Length > options.MaxResolvedPackages) throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Resolved package count exceeds the configured limit");

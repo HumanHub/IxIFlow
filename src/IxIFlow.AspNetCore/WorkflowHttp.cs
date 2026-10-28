@@ -86,7 +86,7 @@ internal static class WorkflowHttp
                             .SelectMany(s => s.Endpoints).OfType<RouteEndpoint>().ToArray();
                         if (routes.Select(r => r.Metadata.GetMetadata<WorkflowRoute>()).OfType<WorkflowRoute>()
                             .GroupBy(r => r.Identity, StringComparer.Ordinal).Any(g => g.Count() > 1))
-                            throw new InvalidOperationException("Workflow endpoint identities must be unique");
+                            throw RegistrationFailure(routes, "Workflow endpoint identities must be unique");
                         foreach (var group in routes.GroupBy(r => Shape(r.RoutePattern.RawText ?? ""), StringComparer.OrdinalIgnoreCase))
                         {
                             if (!group.Any(r => r.Metadata.GetMetadata<WorkflowRoute>() != null)) continue;
@@ -94,7 +94,7 @@ internal static class WorkflowHttp
                             foreach (var route in group)
                                 foreach (var method in route.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods ?? ["*"])
                                     if (!verbs.Add(method) || method == "*" && verbs.Count > 1 || method != "*" && verbs.Contains("*"))
-                                        throw new InvalidOperationException("Conflicting routes at " + group.Key);
+                                        throw RegistrationFailure(group, "Conflicting routes at " + group.Key);
                         }
                         return [];
                     }
@@ -103,5 +103,9 @@ internal static class WorkflowHttp
             }
         }
         public override IChangeToken GetChangeToken() => new CancellationChangeToken(CancellationToken.None);
+        private static Exception RegistrationFailure(IEnumerable<RouteEndpoint> routes, string message) =>
+            routes.Any(route => route.Metadata.GetMetadata<WorkflowPublishingEndpoint>() != null)
+                ? new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, message)
+                : new InvalidOperationException(message);
     }
 }

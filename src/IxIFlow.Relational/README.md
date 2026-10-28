@@ -4,7 +4,7 @@ Shared persistence implementation for the three first-party relational stores. T
 
 ## Shared protocol
 
-Persisted execution state must be a validated schema-4 checkpoint JSON object. Whole checkpoints are split into a trunk and state parts; full reads assemble them at one revision. Escaped strings, opaque state and excess JSON depth are rejected.
+Persisted execution state must be a validated contract-1 checkpoint JSON object with the `ixiflow-1` runtime marker. Pre-release checkpoints are refused; there is no migration. Whole checkpoints are split into a trunk and state parts; full reads assemble them at one revision. Escaped strings, opaque state and excess JSON depth are rejected.
 
 RelationalWorkflowStateRepository owns revision and receipt checks, ownership fencing, inbox arrivals and gone-child sequences, waits, child starts and cancellations, parent notices, parts, trace dispatch, runnable calculation, outbox claims, recovery scans, deletion and instance assembly.
 
@@ -77,7 +77,7 @@ Completion materialization takes the publisher lock shared; registration, unregi
 
 ClaimDeliveries takes delivery row locks, then the core samples OutboxClock and stamps the lease and the first-attempt time while incrementing attempts. DeliveryUpdate persists a row only under that transaction and lock. Renewal and settlement lock the delivery, read the store clock, and reject an expired or replaced token. A retry sends only a duration; the core stamps its next attempt from store time. Disabling is atomic with the fenced settlement and gives up all other pending deliveries for that publisher. Acknowledgments after disablement cannot revive a delivery.
 
-Workflow identity is the declared `(name, version)`, with names required. Checkpoint schema 8
+Workflow identity is the declared `(name, version)`, with names required. Checkpoint schema 1 (`ixiflow-1`)
 stores a compiler-free `StructureHash` and refuses incompatible definitions. Earlier saved instances
 are unreadable without migration; reset development state and restart hosts together. See the
 [identity and structure-hash contract](../../docs/fluent-api.md#identity-and-expressions).

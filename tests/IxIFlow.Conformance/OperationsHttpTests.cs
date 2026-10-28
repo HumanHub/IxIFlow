@@ -219,7 +219,7 @@ public sealed class OperationsHttpTests
     public async Task ResponsesExcludeSavedDataStacksTraceMetadataAndDeliveryCredentials()
     {
         var store = new InMemoryWorkflowStateRepository();
-        await using var factory = new OperationsHttpFactory(store);
+        await using var factory = new OperationsHttpFactory(store) { Wait = TimeSpan.FromSeconds(10) };
         using var http = factory.Operator();
         // The fixture makes the row due for a trace-only checkpoint. Keep the background scanner
         // from consuming that setup transition before its explicit owner has acquired the lease.

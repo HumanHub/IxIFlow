@@ -201,11 +201,10 @@ contributes its expression and Combine its property/combiner type, including com
 Whitespace, comments, key order, descriptions, display names, tags and step names do not contribute.
 Registration retains the first metadata when an equivalent definition is registered again.
 A structure mismatch refuses registration and saved-instance execution, naming identity and both hashes.
-Bump the version for behavior changes. Checkpoint schema 8 refuses earlier saved instances without
+Bump the version for behavior changes. The current checkpoint contract refuses earlier incompatible saved instances without
 migration; reset development state and coordinate host restarts.
 
-Publishing orchestration, dependency resolution, package pinning, inline `use`, code activities,
-bundles and artifact storage remain planned. Bundle digests and Native AOT validation remain planned too.
+[Authoring](../IxIFlow.Authoring/README.md) supplies publication, dependency resolution, package pins, inline `use`/`useType`, code activities and immutable bundles. The build-time generator remains offline and requires explicit references; it does not acquire catalog imports. See the [published-artifact samples](../../samples/README.md#published-artifacts). Native AOT validation remains later work.
 
 Typed child references use `workflowType`; the generator reads the class's
 `[Workflow("Name", Version = n)]` attribute. No adjacent `workflow: { name, version }`

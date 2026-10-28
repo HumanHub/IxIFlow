@@ -125,7 +125,7 @@ internal sealed class WorkflowTemplates(IWorkflowCatalogStore catalog, TemplateE
         foreach (var demand in demands)
         {
             var row = await catalog.GetPackageAsync(demand.Id, demand.Version);
-            if (row?.Withdrawn == true) throw new WorkflowPublishException("PUB025", "A withdrawn template model package cannot be used for new authoring", null);
+            if (row?.Withdrawn == true) throw WorkflowPackageResolver.WithdrawnPackage(row.Id, row.Version);
             if (row == null || row.Digest != demand.Digest || demands.Any(other => other.Id == demand.Id && other != demand) ||
                 packages.Pins.Any(pin => pin.Id == demand.Id && (pin.Version != demand.Version || pin.Digest != demand.Digest)))
                 throw new WorkflowPublishException("TPL017", $"Conflicting template model package '{demand.Id}'", null);

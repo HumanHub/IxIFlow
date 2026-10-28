@@ -25,8 +25,9 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [Coordinators](coordinators.md) | Local matching services, host links, awaits, discovery and fallback |
 | [Workflow operations](operations.md) | Instance search, wait inspection, trace pages and hard termination |
 | [Operations over HTTP](operations-http.md) | Management endpoints, policies, query scope, actors and bounded waits |
+| [Publishing and catalog over HTTP](publishing-http.md) | Drafts, publication, preview, upload, scoped catalogs, downloads and the NuGet read subset |
 | [Stores](stores.md) | Memory, SQLite, SQL Server and PostgreSQL; persistent catalog and artifact retention |
-| [YAML publishing](yaml-authoring.md#publishing-and-boundaries) | Import-free drafts, verified immutable bundles and remaining deployment boundaries |
+| [YAML publishing](yaml-authoring.md#publishing-and-boundaries) | Package imports, immutable bundles, code activities, templates and inline calls |
 | [Large payloads](large-payloads.md) | Checkpoint claim checks, byte limits and unavailable-payload recovery |
 | [Incoming webhooks](incoming-webhooks.md) | Authorized triggers, atomic idempotency, CloudEvents and public status |
 | [Outbox and publishers](outbox-and-publishers.md) | Completion delivery, custom publishers, outgoing webhooks and templates |

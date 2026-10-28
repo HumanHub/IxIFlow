@@ -42,6 +42,7 @@ public sealed partial class WorkflowPublisher(IWorkflowCatalogStore catalog, IAr
 {
     private readonly WorkflowPublisherOptions _options = options ?? new();
     private readonly ILogger<WorkflowPublisher> _logger = logger ?? NullLogger<WorkflowPublisher>.Instance;
+    internal IWorkflowCatalogStore Catalog => catalog;
     private const string Path = "workflow.yaml";
 
     public Task<PackageUploadCandidate> ReadPackageAsync(Stream package, CancellationToken cancellationToken = default) =>

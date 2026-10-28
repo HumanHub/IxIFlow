@@ -17,11 +17,11 @@ The publisher signs the exact UTF-8 CloudEvents structured JSON body, using webh
 
 Delivery starts immediately, then retries after 5 seconds, 5 minutes, 30 minutes, 2 hours, 5 hours, 10 hours, 14 hours, 20 hours and 24 hours. Retries add positive random jitter of at most 5%, capped at one minute, through an injectable Random. Failure of the tenth attempt gives up that delivery. Retry-After can extend a delay, up to 30 days, bounded by the host's remaining retry horizon (30 days from the first claim by default). All 2xx responses deliver; 410 atomically disables the endpoint in the store and gives up its pending deliveries. Other statuses and transport failures retry. Requests time out after 30 seconds; the builder disables HTTP redirects. Each attempt creates a named client from IHttpClientFactory; handlers use a five-minute pooled connection lifetime. The host renews delivery leases while requests run.
 
-There are no incoming webhook endpoints in this package; incoming HTTP triggers remain planned.
+Incoming HTTP triggers are supplied by [IxIFlow.AspNetCore](../IxIFlow.AspNetCore/README.md); see the [incoming webhooks guide](../../docs/incoming-webhooks.md).
 
 The schedule and signing format follow [Standard Webhooks](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md). The body follows [CloudEvents JSON format 1.0.2](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/formats/json-format.md).
 
-Workflow identity is the declared `(name, version)`, with names required. Checkpoint schema 8
+Workflow identity is the declared `(name, version)`, with names required. Checkpoint schema 1 (`ixiflow-1`)
 stores a compiler-free `StructureHash` and refuses incompatible definitions. Earlier saved instances
 are unreadable without migration; reset development state and restart hosts together. See the
 [identity and structure-hash contract](../../docs/fluent-api.md#identity-and-expressions).

@@ -8,6 +8,8 @@ namespace IxIFlow.Core.Runtime;
 
 internal sealed class ExecutionCheckpoint
 {
+    internal const string RuntimeMarker = "ixiflow-1";
+
     // Associations last for this execution only. Sources replace them for every new fault occurrence;
     // saved envelopes explicitly reattach themselves when propagated after recovery or unwinding.
     [JsonIgnore]
@@ -37,7 +39,7 @@ internal sealed class ExecutionCheckpoint
     public bool TraceReplayInitialized { get; set; }
 
     [JsonRequired]
-    public string Runtime { get; set; } = "structured-v2";
+    public string Runtime { get; set; } = RuntimeMarker;
     /// <summary>
     /// The checkpoint contract includes complete fault envelopes and original fault locations. A checkpoint in another form is refused
     /// as unsupported rather than read wrongly.
@@ -229,7 +231,7 @@ internal sealed class ExecutionCheckpoint
         var version = root.ValueKind == JsonValueKind.Object && root.TryGetProperty(nameof(SchemaVersion), out var savedVersion)
             ? savedVersion.ToString() : "missing";
         if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty(nameof(Runtime), out var runtime) || runtime.GetString() != "structured-v2" ||
+            !root.TryGetProperty(nameof(Runtime), out var runtime) || runtime.GetString() != RuntimeMarker ||
             !root.TryGetProperty(nameof(SchemaVersion), out savedVersion) ||
             savedVersion.ValueKind != JsonValueKind.Number || !savedVersion.TryGetInt32(out var number) || number != WorkflowDefinitionValidator.CheckpointContractVersion)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
@@ -528,7 +530,7 @@ internal sealed class ExecutionCheckpoint
             return false;
         using var document = JsonDocument.Parse(json);
         return document.RootElement.TryGetProperty(nameof(Runtime), out var runtime) &&
-            runtime.GetString() == "structured-v2";
+            runtime.GetString() == RuntimeMarker;
     }
 }
 
