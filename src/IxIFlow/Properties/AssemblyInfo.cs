@@ -12,3 +12,4 @@ using System.Runtime.CompilerServices;
 [assembly: InternalsVisibleTo("IxIFlow.Templates")]
 [assembly: InternalsVisibleTo("IxIFlow.Coordinator")]
 [assembly: InternalsVisibleTo("IxIFlow.Debugging")]
+[assembly: InternalsVisibleTo("DynamicProxyGenAssembly2")]

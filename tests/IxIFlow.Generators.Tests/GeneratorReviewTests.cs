@@ -11,7 +11,9 @@ namespace IxIFlow.Generators.Tests;
 public sealed class GeneratorReviewTests
 {
     private const string Header = "workflow:\n  name: Test\n  dataType: IxIFlow.Generators.Tests.FlowData\ndefinitions:\n";
-    private const string Activity = "  - kind: activity\n    id: multiply\n    activity: IxIFlow.Generators.Tests.Multiply\n    input:\n      - target: Value\n        from: {kind: constant, value: 1}\n";
+
+    private const string Activity =
+        "  - kind: activity\n    id: multiply\n    activity: IxIFlow.Generators.Tests.Multiply\n    input:\n      - target: Value\n        from: {kind: constant, value: 1}\n";
 
     [Theory]
     [InlineData("# only a comment", 1, 1)]
@@ -41,8 +43,11 @@ public sealed class GeneratorReviewTests
     [InlineData(true)]
     public void DeclaredActivityVersionIsEnforcedForStepsAndTemplates(bool template)
     {
-        var yaml = template ? Header + "  - {kind: activityRef, ref: reusable}\nactivities:\n  reusable:\n    activity: IxIFlow.Generators.Tests.Multiply\n    activityVersion: '2.0'\n    defaults: {Value: 1}\n"
+        var yaml = template
+            ? Header +
+            "  - {kind: activityRef, ref: reusable}\nactivities:\n  reusable:\n    activity: IxIFlow.Generators.Tests.Multiply\n    activityVersion: '2.0'\n    defaults: {Value: 1}\n"
             : Header + Activity + "    activityVersion: '2.0'\n";
+
         var options = new WorkflowSourceOptions();
         options.Activities[typeof(Multiply).FullName!] = new(typeof(Multiply).FullName!, "1.0");
         var error = Assert.Throws<WorkflowSourceException>(() => WorkflowSourceTranslator.Translate(yaml, "invalid.yaml", options));
@@ -77,7 +82,9 @@ public sealed class GeneratorReviewTests
     [Fact]
     public void DisplayNameIsPreservedAsMetadataWithoutChangingIdentity()
     {
-        var definition = GeneratorRegressionTests.Build((Header + Activity).Replace("  name: Test", "  name: Test\n  displayName: Customer orders"));
+        var definition =
+            GeneratorRegressionTests.Build((Header + Activity).Replace("  name: Test", "  name: Test\n  displayName: Customer orders"));
+
         Assert.Equal("Test", definition.Name);
         Assert.Equal("Customer orders", definition.DisplayName);
     }
@@ -88,7 +95,9 @@ public sealed class GeneratorReviewTests
     [InlineData("Some.Published.Type", "3", "requires publishing")]
     public void TemplateParameterTypesCannotBeIgnored(string type, string value, string expected)
     {
-        var yaml = Header + "  - {kind: stepRef, ref: block}\nsteps:\n  block:\n    parameters:\n      count: {type: " + type + ", default: " + value + "}\n    steps: []\n";
+        var yaml = Header + "  - {kind: stepRef, ref: block}\nsteps:\n  block:\n    parameters:\n      count: {type: " + type +
+            ", default: " + value + "}\n    steps: []\n";
+
         var error = Assert.Throws<WorkflowSourceException>(() => WorkflowSourceTranslator.Translate(yaml, "invalid.yaml"));
         Assert.Contains(expected, error.Message);
         Assert.True(error.Line > 1);
@@ -99,23 +108,30 @@ public sealed class GeneratorReviewTests
     public void SourceActivityAliasesUseTheAttributeSymbolAndObserveChanges()
     {
         const string source = """
-            namespace Local;
-            [global::IxIFlow.ActivitySdk.WorkflowActivity("local.multiply", Version = "1.0")]
-            public sealed class Multiply : global::IxIFlow.Core.IAsyncActivity
-            {
-                public int Value { get; set; }
-                public global::System.Threading.Tasks.Task ExecuteAsync(global::IxIFlow.Core.IActivityContext context,
-                    global::System.Threading.CancellationToken cancellationToken = default) => global::System.Threading.Tasks.Task.CompletedTask;
-            }
-            """;
+                              namespace Local;
+                              [global::IxIFlow.ActivitySdk.WorkflowActivity("local.multiply", Version = "1.0")]
+                              public sealed class Multiply : global::IxIFlow.Core.IAsyncActivity
+                              {
+                                  public int Value { get; set; }
+                                  public global::System.Threading.Tasks.Task ExecuteAsync(global::IxIFlow.Core.IActivityContext context,
+                                      global::System.Threading.CancellationToken cancellationToken = default) => global::System.Threading.Tasks.Task.CompletedTask;
+                              }
+                              """;
+
         var tree = CSharpSyntaxTree.ParseText(source);
         var compilation = GeneratorRegressionTests.Compilation().AddSyntaxTrees(tree);
         var yaml = Header + Activity.Replace(typeof(Multiply).FullName!, "local.multiply");
-        var driver = WorkflowGeneratorHarness.Driver(yaml).RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+
+        var driver = WorkflowGeneratorHarness.Driver(yaml)
+            .RunGeneratorsAndUpdateCompilation(compilation, out var output, out var diagnostics);
+
         Assert.Empty(diagnostics);
         Assert.Empty(output.GetDiagnostics().Where(item => item.Severity == DiagnosticSeverity.Error));
         Assert.Contains("global::Local.Multiply", Assert.Single(driver.GetRunResult().GeneratedTrees).ToString());
-        driver = driver.RunGenerators(compilation.ReplaceSyntaxTree(tree, CSharpSyntaxTree.ParseText(source.Replace("local.multiply", "local.changed"))));
+
+        driver = driver.RunGenerators(compilation.ReplaceSyntaxTree(tree,
+            CSharpSyntaxTree.ParseText(source.Replace("local.multiply", "local.changed"))));
+
         Assert.Contains(driver.GetRunResult().Diagnostics, item => item.GetMessage().Contains("Unknown activity"));
     }
 
@@ -127,20 +143,30 @@ public sealed class GeneratorReviewTests
         CSharpCompilation Build(string name, MetadataReference? reference = null)
         {
             var compilation = GeneratorRegressionTests.Compilation().WithAssemblyName(name);
-            if (reference != null) compilation = compilation.AddReferences(reference);
+
+            if (reference != null)
+                compilation = compilation.AddReferences(reference);
+
             var space = rootNamespace ? name + ".Root" : name;
+
             var driver = WorkflowGeneratorHarness.Driver(Header + Activity, "Orders.workflow.yaml", rootNamespace ? space : null)
                 .RunGeneratorsAndUpdateCompilation(compilation, out var generated, out var diagnostics);
+
             Assert.Empty(diagnostics);
             Assert.Contains("namespace " + space + ".Generated;", Assert.Single(driver.GetRunResult().GeneratedTrees).ToString());
+
             return (CSharpCompilation)generated;
         }
+
         var library = Build("OrdersLibrary");
         using var stream = new MemoryStream();
         Assert.True(library.Emit(stream).Success);
         var app = Build("OrdersApp", MetadataReference.CreateFromImage(stream.ToArray()));
         var space = rootNamespace ? "OrdersApp.Root" : "OrdersApp";
-        app = app.AddSyntaxTrees(CSharpSyntaxTree.ParseText("public static class UseOrders { public static object Build() => " + space + ".Generated.Workflow_Orders_workflow.Build(); }"));
+
+        app = app.AddSyntaxTrees(CSharpSyntaxTree.ParseText("public static class UseOrders { public static object Build() => " + space +
+            ".Generated.Workflow_Orders_workflow.Build(); }"));
+
         Assert.Empty(app.GetDiagnostics().Where(item => item.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning));
     }
 }

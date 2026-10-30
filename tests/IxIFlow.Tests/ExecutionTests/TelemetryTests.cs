@@ -11,7 +11,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>
 /// The engine emits OpenTelemetry through <c>System.Diagnostics</c>: spans for each run pass, activity attempt and
 /// commit, tagged with the instance, step, invocation and attempt; metrics tagged only with the workflow's name and
-/// version (G-02, D-39).
+/// version.
 /// </summary>
 [Trait("Feature", "tracing")]
 [Trait("Spec", "G-02")]
@@ -23,12 +23,14 @@ public sealed class TelemetryTests
     public async Task ARunHasASpanWithItsAttemptsAndCommitsInside()
     {
         var spans = new ConcurrentBag<Activity>();
+
         using var listener = new ActivityListener
         {
             ShouldListenTo = source => source.Name is "IxIFlow" or "IxIFlow.Tests.Telemetry",
             Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
             ActivityStopped = spans.Add
         };
+
         ActivitySource.AddActivityListener(listener);
         var name = "Traced" + Guid.NewGuid().ToString("N");
 
@@ -38,6 +40,7 @@ public sealed class TelemetryTests
         var run = Assert.Single(mine, span => span.DisplayName == $"run {name}");
         var attempts = mine.Where(span => span.DisplayName == $"activity {nameof(Works)}").ToList();
         Assert.Equal(2, attempts.Count);
+
         Assert.All(attempts, attempt =>
         {
             Assert.Equal(run.SpanId, attempt.ParentSpanId);
@@ -47,10 +50,13 @@ public sealed class TelemetryTests
             Assert.Equal(1, attempt.GetTagItem("ixiflow.attempt.number"));
             Assert.Equal("Returned", attempt.GetTagItem("ixiflow.outcome"));
         });
+
         Assert.Contains(mine, span => span.DisplayName == "commit" && span.ParentSpanId == run.SpanId);
+
         // The activity's own spans nest in its attempt's.
         var own = spans.Where(span => span.Source.Name == "IxIFlow.Tests.Telemetry" &&
-                                      span.GetTagItem("workflow") as string == name).ToList();
+            span.GetTagItem("workflow") as string == name).ToList();
+
         Assert.Equal(2, own.Count);
         Assert.All(own, span => Assert.Contains(attempts, attempt => attempt.SpanId == span.ParentSpanId));
     }
@@ -59,6 +65,7 @@ public sealed class TelemetryTests
     public async Task MetricsCarryTheWorkflowButNoInstance()
     {
         var measurements = new ConcurrentBag<(string Instrument, double Value, Dictionary<string, object?> Tags)>();
+
         using var listener = new MeterListener
         {
             InstrumentPublished = (instrument, meter) =>
@@ -67,24 +74,30 @@ public sealed class TelemetryTests
                     meter.EnableMeasurementEvents(instrument);
             }
         };
+
         listener.SetMeasurementEventCallback<double>((instrument, value, tags, _) =>
             measurements.Add((instrument.Name, value, Tags(tags))));
+
         listener.SetMeasurementEventCallback<long>((instrument, value, tags, _) =>
             measurements.Add((instrument.Name, value, Tags(tags))));
+
         listener.Start();
         var name = "Measured" + Guid.NewGuid().ToString("N");
 
         await Run(name);
 
         var mine = measurements.Where(item => item.Tags.TryGetValue("ixiflow.workflow.name", out var value) &&
-                                              Equals(value, name)).ToList();
+            Equals(value, name)).ToList();
+
         Assert.Equal(2, mine.Count(item => item.Instrument == "ixiflow.activity.duration" &&
-                                           Equals(item.Tags["ixiflow.outcome"], "Returned") &&
-                                           Equals(item.Tags["ixiflow.activity.type"], nameof(Works))));
+            Equals(item.Tags["ixiflow.outcome"], "Returned") &&
+            Equals(item.Tags["ixiflow.activity.type"], nameof(Works))));
+
         Assert.Contains(mine, item => item.Instrument == "ixiflow.commit.duration");
         Assert.Contains(mine, item => item.Instrument == "ixiflow.commit.size" && item.Value > 0);
         Assert.Equal(0, mine.Where(item => item.Instrument == "ixiflow.run.active").Sum(item => item.Value));
         Assert.Contains(mine, item => item.Instrument == "ixiflow.run.active" && item.Value == 1);
+
         Assert.All(mine, item =>
         {
             Assert.Equal(1, item.Tags["ixiflow.workflow.version"]);
@@ -98,21 +111,26 @@ public sealed class TelemetryTests
         services.AddLogging();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
+
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(
             Workflow.Create<Data>(name)
                 .Step<Works>(step => step.Input(activity => activity.Workflow).From(ctx => ctx.WorkflowData.Name))
                 .Step<Works>(step => step.Input(activity => activity.Workflow).From(ctx => ctx.WorkflowData.Name))
                 .Build(),
             new Data { Name = name });
+
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+
         return result;
     }
 
     private static Dictionary<string, object?> Tags(ReadOnlySpan<KeyValuePair<string, object?>> tags)
     {
         var all = new Dictionary<string, object?>();
+
         foreach (var (key, value) in tags)
             all[key] = value;
+
         return all;
     }
 

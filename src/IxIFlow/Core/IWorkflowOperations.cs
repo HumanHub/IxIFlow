@@ -4,46 +4,94 @@ using IxIFlow.Core.Runtime;
 namespace IxIFlow.Core;
 
 /// <summary>Operator access on the host pipeline. Applications enforce authorization at their boundary.</summary>
+/// <remarks>Cancellation tokens are last, after any expected incarnation. Cancelling a wait does not undo an accepted command.</remarks>
 public interface IWorkflowOperations
 {
     /// <summary>Due, unleased work that no live host can run. Applications control access.</summary>
     Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
         CancellationToken cancellationToken = default);
-    Task<WorkflowOperation> SubmitResolutionAsync(string instanceId, string invocationId, ActivityResolution resolution, Guid? expectedIncarnation = null);
-    Task<WorkflowOperation> SubmitReleaseAsync(string instanceId, string actor, Guid? expectedIncarnation = null);
-    Task<WorkflowOperation> SubmitCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null);
-    Task<WorkflowOperation> SubmitTerminationAsync(string instanceId, string reasonCode, string? description, string actor, Guid? expectedIncarnation = null);
-    Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName, string actor, CancellationToken cancellationToken = default);
+
+    /// <summary>Durably accepts a resolution for the specified invocation and returns an operation handle.</summary>
+    Task<WorkflowOperation> SubmitResolutionAsync(string instanceId, string invocationId, ActivityResolution resolution,
+        Guid? expectedIncarnation = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Durably accepts an operator release and returns an operation handle.</summary>
+    Task<WorkflowOperation> SubmitReleaseAsync(string instanceId, string actor, Guid? expectedIncarnation = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Durably accepts cancellation and returns an operation handle.</summary>
+    Task<WorkflowOperation> SubmitCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Durably accepts termination and returns an operation handle.</summary>
+    Task<WorkflowOperation> SubmitTerminationAsync(string instanceId, string reasonCode, string? description, string actor,
+        Guid? expectedIncarnation = null, CancellationToken cancellationToken = default);
+
+    /// <summary>Reads one retained delivery for the named publisher, or null when unavailable.</summary>
+    Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName, string actor,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Reads a scoped page of retained outbox deliveries.</summary>
     Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query, string actor, CancellationToken cancellationToken = default);
+
+    /// <summary>Schedules a retained delivery for another attempt when its state permits it.</summary>
     Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor, CancellationToken cancellationToken = default);
+
+    /// <summary>Reads registered publishers and their delivery state.</summary>
     Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync(string actor, CancellationToken cancellationToken = default);
+
+    /// <summary>Enables an existing publisher so pending deliveries may be claimed.</summary>
     Task<bool> EnablePublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default);
+
+    /// <summary>Unregisters a publisher and records the requesting actor.</summary>
     Task UnregisterPublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default);
+
+    /// <summary>Reads a scoped, cursor-paged set of workflow instance summaries.</summary>
     Task<InstancePage> SearchAsync(InstanceQuery query, CancellationToken cancellationToken = default);
+
+    /// <summary>Reads the instance summary, or null when it is unavailable.</summary>
     Task<InstanceSummary?> GetAsync(string instanceId, CancellationToken cancellationToken = default);
+
+    /// <summary>Reads pending waits for the supplied instance IDs; callers must protect reply capabilities.</summary>
     Task<IReadOnlyList<PendingWait>> GetWaitsAsync(IReadOnlyCollection<string> instanceIds, CancellationToken cancellationToken = default);
+
+    /// <summary>Reads a bounded page of committed trace entries after the supplied sequence.</summary>
     Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Requests terminal shutdown and waits for the resulting instance summary.</summary>
     Task<InstanceSummary> TerminateAsync(string instanceId, string reasonCode, string? description = null,
         string? actor = null, CancellationToken cancellationToken = default);
+
     /// <summary>Subscribes to local committed changes. Remote owners require bounded polling until coordinator notices are available.</summary>
     IDisposable WatchChanges(string instanceId, Action changed);
+
+    /// <summary>Reads detached step addresses and source locations through the instance definition.</summary>
     Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string instanceId, CancellationToken cancellationToken = default);
-    /// <summary>Reads detached graph topology through the instance's definition and privacy projection.</summary>
+
     /// <summary>Reads detached typed switch label descriptors through the definition privacy projection.</summary>
     Task<IReadOnlyList<SwitchTableEntry>> GetSwitchTableAsync(string instanceId, CancellationToken cancellationToken = default);
+
+    /// <summary>Reads detached graph topology through the instance's definition and privacy projection.</summary>
     Task<IReadOnlyList<GraphTableEntry>> GetGraphTableAsync(string instanceId, CancellationToken cancellationToken = default);
+
     /// <summary>Loads bounded, detached replay through the same privacy projection as inspection.</summary>
     Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries = 10000, CancellationToken cancellationToken = default);
+
     /// <summary>Reads only a source named by the instance's published step table; null when unavailable locally.</summary>
     Task<string?> GetSourceAsync(string instanceId, string path, CancellationToken cancellationToken = default);
+
     /// <summary>Starts a registered definition with an optional hold saved before any workflow code runs.</summary>
     Task<string> LaunchAsync(string instanceId, string workflow, int version, JsonElement input, bool stopOnEntry,
         string actor, CancellationToken cancellationToken = default);
+
     /// <summary>Reads a projection of the saved checkpoint, never the checkpoint itself.</summary>
     Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default);
+
     /// <summary>Requests a durable pause; running activities finish before it is committed.</summary>
-    Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+    Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, Guid? expectedIncarnation = null,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Continues a pause under a fresh lease on this host.</summary>
     /// <remarks>
     /// Records acceptance before result construction and retains command-specific recovery through failures or cancellation.
@@ -53,9 +101,13 @@ public interface IWorkflowOperations
     /// Paused can describe an earlier command's commit while this command is still scheduled.
     /// Default AwaitAsync can return the original pause; it does not await this command's acknowledgement.
     /// </remarks>
-    Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+    Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, Guid? expectedIncarnation = null,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Accepts a durable continue and schedules it on the host, without waiting for workflow activities to finish.</summary>
-    Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+    Task RequestContinueAsync(string instanceId, string actor, Guid? expectedIncarnation = null,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Runs only the selected continuation and branches it creates, under a fresh lease.</summary>
     /// <remarks>
     /// Records acceptance before result construction and retains command-specific recovery through failures or cancellation.
@@ -66,35 +118,49 @@ public interface IWorkflowOperations
     /// Default AwaitAsync can return the original pause; it does not await this command's acknowledgement.
     /// </remarks>
     Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
-        string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+        string actor, Guid? expectedIncarnation = null, CancellationToken cancellationToken = default);
+
     /// <summary>Edits a paused root or branch view with an immutable, caller-supplied edit ID.</summary>
     Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
-        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, Guid? expectedIncarnation = null,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Replaces the instance's breakpoint set and returns the resolved addresses.</summary>
     Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId, IReadOnlyList<Breakpoint> breakpoints,
-        string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null);
+        string actor, Guid? expectedIncarnation = null, CancellationToken cancellationToken = default);
+
     /// <summary>Reads the latest requested set with committed hit counts.</summary>
     Task<IReadOnlyList<Breakpoint>> GetBreakpointsAsync(string instanceId, CancellationToken cancellationToken = default);
-
 }
 
-internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimeProvider time,
-    IWorkflowCatalog catalog, IWorkflowStateRepository repository, IWorkflowClient client, CoordinationState coordination, Runtime.HostSettings? hostSettings = null) : IWorkflowOperations
+internal sealed partial class HostedWorkflowOperations(
+    WorkflowHost host,
+    TimeProvider time,
+    IWorkflowCatalog catalog,
+    IWorkflowStateRepository repository,
+    IWorkflowClient client,
+    CoordinationState coordination,
+    Runtime.HostSettings? hostSettings = null) : IWorkflowOperations
 {
     public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
         CancellationToken cancellationToken = default)
     {
         UnschedulableWork.Validate(limit, cursor);
-        return host.ReadAsync(client => client.GetUnschedulableAsync(limit, cursor, cancellationToken));
+
+        return host.ReadAsync(client => client.GetUnschedulableAsync(limit, cursor, cancellationToken),
+            cancellationToken: cancellationToken);
     }
 
-    public Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName, string actor, CancellationToken cancellationToken = default)
+    public Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName, string actor,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(eventId);
         ArgumentException.ThrowIfNullOrWhiteSpace(publisherName);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         cancellationToken.ThrowIfCancellationRequested();
-        return host.ReadAsync(client => client.GetDeliveryAsync(eventId, publisherName));
+
+        return host.ReadAsync(client => client.GetDeliveryAsync(eventId, publisherName, cancellationToken: cancellationToken),
+            cancellationToken: cancellationToken);
     }
 
     public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query, string actor, CancellationToken cancellationToken = default)
@@ -103,61 +169,86 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
         query.Validate();
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         cancellationToken.ThrowIfCancellationRequested();
-        return host.ReadAsync(client => client.ListDeliveriesAsync(query));
+
+        return host.ReadAsync(client => client.ListDeliveriesAsync(query, cancellationToken: cancellationToken),
+            cancellationToken: cancellationToken);
     }
 
     public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         cancellationToken.ThrowIfCancellationRequested();
-        return host.ReadAsync(client => client.RetryDeliveryAsync(eventId, publisherName, actor));
+
+        return host.ReadAsync(client => client.RetryDeliveryAsync(eventId, publisherName, actor, cancellationToken: cancellationToken),
+            cancellationToken: cancellationToken);
     }
 
     public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync(string actor, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         cancellationToken.ThrowIfCancellationRequested();
-        return host.ReadAsync(client => client.ListPublishersAsync());
+
+        return host.ReadAsync(client => client.ListPublishersAsync(cancellationToken: cancellationToken),
+            cancellationToken: cancellationToken);
     }
 
     public Task<bool> EnablePublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         cancellationToken.ThrowIfCancellationRequested();
-        return host.ReadAsync(client => client.EnablePublisherAsync(publisherName, actor));
+
+        return host.ReadAsync(client => client.EnablePublisherAsync(publisherName, actor, cancellationToken: cancellationToken),
+            cancellationToken: cancellationToken);
     }
 
     public Task UnregisterPublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
         cancellationToken.ThrowIfCancellationRequested();
-        return host.ReadAsync(async client => { await client.UnregisterPublisherAsync(publisherName, actor); return true; });
+
+        return host.ReadAsync(async client =>
+        {
+            await client.UnregisterPublisherAsync(publisherName, actor, cancellationToken: cancellationToken);
+
+            return true;
+        }, cancellationToken: cancellationToken);
     }
 
     public Task<InstancePage> SearchAsync(InstanceQuery query, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(query);
         query.Validate();
-        if (query.Limit > 1000) throw new ArgumentOutOfRangeException(nameof(query), "Operations pages contain at most 1000 instances");
+
+        if (query.Limit > 1000)
+            throw new ArgumentOutOfRangeException(nameof(query), "Operations pages contain at most 1000 instances");
+
         cancellationToken.ThrowIfCancellationRequested();
-        return host.ReadAsync(client => client.SearchInstancesAsync(query));
+
+        return host.ReadAsync(client => client.SearchInstancesAsync(query, cancellationToken: cancellationToken),
+            cancellationToken: cancellationToken);
     }
 
     public async Task<InstanceSummary?> GetAsync(string instanceId, CancellationToken cancellationToken = default)
     {
         InstanceIds.Validate(instanceId);
+
         return (await SearchAsync(new InstanceQuery(InstanceId: instanceId, Limit: 1), cancellationToken)).Items.SingleOrDefault();
     }
 
-    public Task<IReadOnlyList<PendingWait>> GetWaitsAsync(IReadOnlyCollection<string> instanceIds, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<PendingWait>> GetWaitsAsync(IReadOnlyCollection<string> instanceIds,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(instanceIds);
-        if (instanceIds.Count > 1000) throw new ArgumentException("At most 1000 instance IDs", nameof(instanceIds));
+
+        if (instanceIds.Count > 1000)
+            throw new ArgumentException("At most 1000 instance IDs", nameof(instanceIds));
+
         cancellationToken.ThrowIfCancellationRequested();
+
         return host.ReadAsync(async client => (IReadOnlyList<PendingWait>)(await client.GetOpenWaitsAsync(
-            new WaitQuery(Kind: WaitKind.Event, Limit: int.MaxValue, InstanceIds: instanceIds), cancellationToken))
+                new WaitQuery(Kind: WaitKind.Event, Limit: int.MaxValue, InstanceIds: instanceIds), cancellationToken))
             .Select(wait => new PendingWait(wait.InstanceId, wait.Key, wait.EventType, wait.DefaultPayloadJson,
-                wait.DeadlineUtc, wait.OpenedAtUtc)).ToArray());
+                wait.DeadlineUtc, wait.OpenedAtUtc)).ToArray(), cancellationToken: cancellationToken);
     }
 
     public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0, int limit = 1000,
@@ -165,7 +256,9 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
     {
         InstanceIds.Validate(instanceId);
         cancellationToken.ThrowIfCancellationRequested();
-        return host.ReadAsync(client => client.GetTraceAsync(instanceId, afterSequence, limit, cancellationToken));
+
+        return host.ReadAsync(client => client.GetTraceAsync(instanceId, afterSequence, limit, cancellationToken),
+            cancellationToken: cancellationToken);
     }
 
     public async Task<InstanceSummary> TerminateAsync(string instanceId, string reasonCode, string? description = null,
@@ -174,11 +267,17 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
         InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(reasonCode);
         cancellationToken.ThrowIfCancellationRequested();
-        var incarnation = await IncarnationAsync(instanceId, null);
-        var accepted = await host.ReadAsync(client => client.RequestTerminationAsync(instanceId, reasonCode, description, actor, incarnation));
+        var incarnation = await IncarnationAsync(instanceId, null, cancellationToken: cancellationToken);
+
+        var accepted =
+            await host.ReadAsync(
+                client => client.RequestTerminationAsync(instanceId, reasonCode, description, actor, incarnation,
+                    cancellationToken: cancellationToken), cancellationToken: cancellationToken);
+
         if (!accepted.Accepted)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Termination lost: workflow instance '{instanceId}' is absent or already finished");
+
         return await AwaitTerminationAsync(instanceId, accepted.Incarnation, cancellationToken);
     }
 
@@ -188,17 +287,24 @@ internal sealed partial class HostedWorkflowOperations(WorkflowHost host, TimePr
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
             // Watch before trying: when another run on this host holds the lease, such as recovery
             // woken by the accepted command, its end wakes this wait. Work elsewhere is seen by the poll.
             using var watch = host.WatchSettled(instanceId, out var settled);
             await host.RunAsync(null, (client, _, _) => client.FinishTerminationAsync(instanceId, incarnation), cancellationToken);
+
             var current = await GetAsync(instanceId, cancellationToken)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The terminated instance was removed");
+
             if (current.Incarnation != incarnation)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The instance was removed and its ID reused");
-            if (current.Status == WorkflowStatus.Terminated) return current;
+
+            if (current.Status == WorkflowStatus.Terminated)
+                return current;
+
             if (WorkflowStoreRules.IsTerminal(current.Status))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, $"Termination lost to {current.Status}");
+
             using var poll = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             await Task.WhenAny(settled, Task.Delay(TimeSpan.FromMilliseconds(100), time, poll.Token));
             poll.Cancel();

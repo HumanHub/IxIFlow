@@ -6,7 +6,7 @@ using IxIFlow.Tests.Infrastructure;
 namespace IxIFlow.Tests.AuthoringTests;
 
 /// <summary>
-/// Mappings follow the activity's contract when the workflow is built (D-26, spec F-22): inputs go into inputs and
+/// Mappings follow the activity's contract when the workflow is built: inputs go into inputs and
 /// outputs come from outputs, a marked activity's required inputs are mapped or defaulted, and a child's data and an
 /// event follow the same visibility rules. Each violation names the type and the property.
 /// </summary>
@@ -64,6 +64,7 @@ public sealed class MappingValidationTests
         var error = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<Data>("Unmapped")
             .Step<Marked>(step => step.Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Number))
             .Build());
+
         Assert.Contains("Activity property 'Marked.Amount' is a required input and is not mapped", error.Message);
 
         // Mapped, it builds; an optional input and a required one with a default may stay unmapped.
@@ -93,12 +94,14 @@ public sealed class MappingValidationTests
             .Step<Plain>()
             .Invoke<ChildData>("Child", 1, step => step.Input(child => child.Fixed).From(ctx => ctx.WorkflowData.Number))
             .Build());
+
         Assert.Contains("Child workflow property 'ChildData.Fixed' is not an input: it has no public setter", input.Message);
 
         var output = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<Data>("ChildOutput")
             .Step<Plain>()
             .Invoke<ChildData>("Child", 1, step => step.Output(child => child.Secret).To(ctx => ctx.WorkflowData.Number))
             .Build());
+
         Assert.Contains("Child workflow property 'ChildData.Secret' is not an output: it has no public getter", output.Message);
     }
 
@@ -137,6 +140,7 @@ public sealed class MappingValidationTests
             () => WorkflowDefinitionValidator.Validate(handBuilt));
 
         Assert.Contains("Activity property 'Plain.Computed' is not an input: it has no public setter", error.Message);
+
         WorkflowDefinitionValidator.Validate(Workflow.Create<Data>("Valid")
             .Step<Marked>(step => step.Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Number))
             .Build());
@@ -172,11 +176,9 @@ public sealed class MappingValidationTests
         [ActivityInput, System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DefaultValue(1)]
         public int Factor { get; set; } = 1;
 
-        [ActivityInput]
-        public int Optional { get; set; }
+        [ActivityInput] public int Optional { get; set; }
 
-        [ActivityOutput]
-        public int Result { get; set; }
+        [ActivityOutput] public int Result { get; set; }
 
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;

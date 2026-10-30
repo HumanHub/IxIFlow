@@ -20,10 +20,3 @@ Delivery starts immediately, then retries after 5 seconds, 5 minutes, 30 minutes
 Incoming HTTP triggers are supplied by [IxIFlow.AspNetCore](../IxIFlow.AspNetCore/README.md); see the [incoming webhooks guide](../../docs/incoming-webhooks.md).
 
 The schedule and signing format follow [Standard Webhooks](https://github.com/standard-webhooks/standard-webhooks/blob/main/spec/standard-webhooks.md). The body follows [CloudEvents JSON format 1.0.2](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/formats/json-format.md).
-
-Workflow identity is the declared `(name, version)`, with names required. Checkpoint schema 1 (`ixiflow-1`)
-stores a compiler-free `StructureHash` and refuses incompatible definitions. Earlier saved instances
-are unreadable without migration; reset development state and restart hosts together. See the
-[identity and structure-hash contract](../../docs/fluent-api.md#identity-and-expressions).
-
-Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in `IxIFlow.Core`. `RegisterWorkflow<TWorkflow,TData>()` and `Invoke<TWorkflow,TData>(setup)` read it from the type without constructing the class to discover identity; missing attributes are refused. Typed YAML children need only `workflowType`, with no duplicate name/version field.

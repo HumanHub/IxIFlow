@@ -20,17 +20,22 @@ internal sealed class NuGetCredentialScope : ICredentialService, IDisposable
     private bool _disposed;
     internal List<SourceRepository> Repositories { get; } = [];
 
-    private sealed class ScopedHttpSourceProvider(NuGetCredentialScope owner) : ResourceProvider(typeof(HttpSourceResource), nameof(ScopedHttpSourceProvider))
+    private sealed class ScopedHttpSourceProvider(NuGetCredentialScope owner)
+        : ResourceProvider(typeof(HttpSourceResource), nameof(ScopedHttpSourceProvider))
     {
         public override Task<Tuple<bool, INuGetResource>> TryCreate(SourceRepository source, CancellationToken token)
         {
-            if (!source.PackageSource.IsHttp) return Task.FromResult(Tuple.Create(false, (INuGetResource)null!));
+            if (!source.PackageSource.IsHttp)
+                return Task.FromResult(Tuple.Create(false, (INuGetResource)null!));
+
             // Do not call HttpSource.Create: the standard provider caches by source across resolutions.
             var http = new HttpSource(source.PackageSource, () => source.GetResourceAsync<HttpHandlerResource>(token), new NullThrottle());
             owner._httpSources.Add(http);
+
             return Task.FromResult(Tuple.Create(true, (INuGetResource)new HttpSourceResource(http)));
         }
     }
+
     private readonly Dictionary<Uri, ICredentials> _credentials = [];
     private readonly HashSet<Uri> _attempted = [];
 
@@ -38,31 +43,46 @@ internal sealed class NuGetCredentialScope : ICredentialService, IDisposable
     {
         var scope = new NuGetCredentialScope();
         var sources = repositories.ToArray();
+
         scope.Repositories.AddRange(sources.Select(source => new SourceRepository(source.PackageSource,
             Repository.Provider.GetCoreV3().Where(provider => provider.Value.ResourceType != typeof(HttpSourceResource))
                 .Prepend(new Lazy<INuGetResourceProvider>(() => new ScopedHttpSourceProvider(scope))))));
-        if (!sources.Any(source => source.PackageSource.IsEnabled && source.PackageSource.IsHttp)) return scope;
+
+        if (!sources.Any(source => source.PackageSource.IsEnabled && source.PackageSource.IsHttp))
+            return scope;
+
         await Gate.WaitAsync(token);
         scope._ownsGate = true;
         scope._previous = HttpHandlerResourceV3.CredentialService;
         scope._previousSuccess = HttpHandlerResourceV3.CredentialsSuccessfullyUsed;
+
         try
         {
             var manager = PluginManager.Instance;
+
             // Discovery is cheap. A provider process starts only when a feed challenges,
             // never for local feeds, uploads, or anonymous requests.
             scope._providers.AddRange(await manager.FindAvailablePluginsAsync(token));
             HttpHandlerResourceV3.CredentialService = new(() => scope);
+
             HttpHandlerResourceV3.CredentialsSuccessfullyUsed = (uri, credentials) =>
             {
-                lock (scope._credentials) scope._credentials[uri] = credentials;
+                lock (scope._credentials)
+                    scope._credentials[uri] = credentials;
             };
+
             return scope;
         }
-        catch (OperationCanceledException) { scope.Dispose(); throw; }
+        catch (OperationCanceledException)
+        {
+            scope.Dispose();
+
+            throw;
+        }
         catch
         {
             scope.Dispose();
+
             throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "NuGet credential providers could not be initialized");
         }
     }
@@ -73,45 +93,78 @@ internal sealed class NuGetCredentialScope : ICredentialService, IDisposable
         string message, CancellationToken cancellationToken)
     {
         bool retry;
-        lock (_credentials) retry = !_attempted.Add(uri);
+
+        lock (_credentials)
+            retry = !_attempted.Add(uri);
+
         foreach (var provider in _providers)
         {
-            var result = await PluginManager.Instance.TryGetSourceAgnosticPluginAsync(provider, OperationClaim.Authentication, cancellationToken);
-            if (!result.Item1 || result.Item2.Plugin is not { } plugin) continue;
-            var response = await plugin.Connection.SendRequestAndReceiveResponseAsync<GetAuthenticationCredentialsRequest, GetAuthenticationCredentialsResponse>(
-                MessageMethod.GetAuthenticationCredentials, new(uri, retry, isNonInteractive: true, canShowDialog: false), cancellationToken);
-            if (response.ResponseCode != MessageResponseCode.Success || !response.IsValid()) continue;
-            ICredentials credentials = new AuthenticationTypeCredentials(new NetworkCredential(response.Username, response.Password), response.AuthenticationTypes);
+            var result = await PluginManager.Instance.TryGetSourceAgnosticPluginAsync(provider, OperationClaim.Authentication,
+                cancellationToken);
+
+            if (!result.Item1 || result.Item2.Plugin is not { } plugin)
+                continue;
+
+            var response = await plugin.Connection
+                .SendRequestAndReceiveResponseAsync<GetAuthenticationCredentialsRequest, GetAuthenticationCredentialsResponse>(
+                    MessageMethod.GetAuthenticationCredentials, new(uri, retry, isNonInteractive: true, canShowDialog: false),
+                    cancellationToken);
+
+            if (response.ResponseCode != MessageResponseCode.Success || !response.IsValid())
+                continue;
+
+            ICredentials credentials = new AuthenticationTypeCredentials(new NetworkCredential(response.Username, response.Password),
+                response.AuthenticationTypes);
+
             return credentials;
         }
+
         return null;
     }
 
     public bool TryGetLastKnownGoodCredentialsFromCache(Uri uri, bool isProxy, out ICredentials credentials)
     {
-        lock (_credentials) return _credentials.TryGetValue(uri, out credentials!);
+        lock (_credentials)
+            return _credentials.TryGetValue(uri, out credentials!);
     }
 
     internal sealed class AuthenticationTypeCredentials(NetworkCredential credential, IEnumerable<string>? types) : ICredentials
     {
         private readonly HashSet<string> _types = new(types ?? [], StringComparer.OrdinalIgnoreCase);
-        public NetworkCredential? GetCredential(Uri uri, string authType) => _types.Count == 0 || _types.Contains(authType) ? credential : null;
+
+        public NetworkCredential? GetCredential(Uri uri, string authType) =>
+            _types.Count == 0 || _types.Contains(authType) ? credential : null;
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
+        if (_disposed)
+            return;
+
         _disposed = true;
+
         // Destroy all handlers that captured this service before restoring the global service.
-        foreach (var source in _httpSources) source.Dispose();
-        _httpSources.Clear(); Repositories.Clear();
+        foreach (var source in _httpSources)
+            source.Dispose();
+
+        _httpSources.Clear();
+        Repositories.Clear();
+
         if (_ownsGate)
         {
             HttpHandlerResourceV3.CredentialService = _previous;
             HttpHandlerResourceV3.CredentialsSuccessfullyUsed = _previousSuccess;
         }
-        lock (_credentials) { _credentials.Clear(); _attempted.Clear(); }
+
+        lock (_credentials)
+        {
+            _credentials.Clear();
+            _attempted.Clear();
+        }
+
         _providers.Clear();
-        if (_ownsGate) Gate.Release();
+
+        if (_ownsGate)
+            Gate.Release();
     }
 }

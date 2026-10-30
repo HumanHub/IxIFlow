@@ -16,31 +16,41 @@ internal sealed partial class WorkflowRecoveryService(
     ILogger<WorkflowRecoveryService> logger,
     TimeProvider? timeProvider = null,
     HostSettings? settings = null,
-    IRunnableWakeSource? wakeSource = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
-    InspectionRedactionPolicy? inspectionPolicy = null, CoordinationState? coordination = null) : BackgroundService
+    IRunnableWakeSource? wakeSource = null,
+    ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
+    InspectionRedactionPolicy? inspectionPolicy = null,
+    CoordinationState? coordination = null) : BackgroundService
 {
     private readonly HostSettings _settings = settings ?? HostSettings.Default;
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private readonly CoordinationState _coordination = coordination ?? new();
     private readonly object _lock = new();
+
     private bool _wakePending;
+
     // Only entries actually taken by a worker are reserved across overlapping passes.
     private readonly Dictionary<string, object> _recovering = new(StringComparer.Ordinal);
+
     // Dictionary insertion order is not an eviction contract; keep oldest-first explicitly.
     private readonly Dictionary<string, long> _refused = new(StringComparer.Ordinal);
     private readonly Queue<string> _refusalOrder = new();
     internal const int RefusedCapacity = 1024;
     internal static readonly TimeSpan RefusalInterval = TimeSpan.FromSeconds(1);
+
     private readonly Channel<bool> _wakes = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
     {
         FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true
     });
+
     private readonly Channel<bool> _refusalChanges = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
     {
         FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true
     });
+
     private readonly Dictionary<string, (long Started, TimeSpan Wait, int Times)> _deferred = new(StringComparer.Ordinal);
+
     private TimeSpan RefusalCooldown => _settings.PollInterval < RefusalInterval ? _settings.PollInterval : RefusalInterval;
+
     // Bound contention work even when discovery keeps finding more due instances.
     internal const int MaxCandidatesPerPass = 256;
     internal const int RefillPageSize = 8;
@@ -64,56 +74,80 @@ internal sealed partial class WorkflowRecoveryService(
     private async Task<Task> ClaimAsync(CancellationToken cancellationToken, bool woken = false)
     {
         var handedOff = false;
+
         try
         {
             var pass = await ReserveAsync(cancellationToken, woken);
             handedOff = true;
+
             return CompletePassAsync(pass);
         }
         finally
         {
             // Discovery can fail before there is any reserved work to clean up.
-            if (!handedOff) _coordination.CompleteClaimPass();
+            if (!handedOff)
+                _coordination.CompleteClaimPass();
         }
     }
 
     private async Task CompletePassAsync(Task pass)
     {
-        try { await pass; }
-        finally { _coordination.CompleteClaimPass(); }
+        try
+        {
+            await pass;
+        }
+        finally
+        {
+            _coordination.CompleteClaimPass();
+        }
     }
 
     private async Task<Task> ReserveAsync(CancellationToken cancellationToken, bool woken)
     {
-        lock (_lock) ExpireRefusals();
-        // A host claims only what it has slots for (D-10); the rest waits for the next pass or another host.
-        int limit;
-        using (var probe = scopes.CreateScope())
         lock (_lock)
-        {
-            limit = Math.Min(MaxCandidatesPerPass,
-                probe.ServiceProvider.GetService<WorkflowHost>()?.FreeSlots ?? _settings.Slots);
-            // A capacity event takes the same lock, so a return cannot race past arming this wake.
-            if (limit == 0) _wakePending |= woken;
-            else _wakePending = false;
-        }
+            ExpireRefusals();
+
+        // A host claims only what it has slots for; the rest waits for the next pass or another host.
+        int limit;
+
+        using (var probe = scopes.CreateScope())
+            lock (_lock)
+            {
+                limit = Math.Min(MaxCandidatesPerPass,
+                    probe.ServiceProvider.GetService<WorkflowHost>()?.FreeSlots ?? _settings.Slots);
+
+                // A capacity event takes the same lock, so a return cannot race past arming this wake.
+                if (limit == 0)
+                    _wakePending |= woken;
+                else
+                    _wakePending = false;
+            }
+
         if (limit == 0)
         {
             return Task.CompletedTask;
         }
+
         var owner = new object();
+
         lock (_lock)
         {
             var now = _time.GetTimestamp();
-            foreach (var stale in _deferred.Where(item => _time.GetElapsedTime(item.Value.Started, now) - item.Value.Wait > TimeSpan.FromMinutes(10))
+
+            foreach (var stale in _deferred.Where(item =>
+                             _time.GetElapsedTime(item.Value.Started, now) - item.Value.Wait > TimeSpan.FromMinutes(10))
                          .Select(item => item.Key).ToArray())
                 _deferred.Remove(stale);
         }
+
         ClaimQuery query;
+
         using (var probe = scopes.CreateScope())
             query = new ClaimQuery(_settings.Id, await _settings.GetCapabilitiesAsync(
                 probe.ServiceProvider.GetRequiredService<IWorkflowCatalog>()), limit);
+
         var first = await ReadCandidatesAsync(query, limit, [], cancellationToken);
+
         return RecoverCandidatesAsync(first, query, limit, owner, cancellationToken);
     }
 
@@ -121,21 +155,26 @@ internal sealed partial class WorkflowRecoveryService(
         IEnumerable<string> attempted, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+
         lock (_lock)
         {
             ExpireRefusals();
             var now = _time.GetTimestamp();
+
             // Keep this pass's IDs and all retained refusals; use the remaining room for
             // unexpired deferrals, oldest first. Deferrals must not keep occupying the head.
             var excluded = attempted.Concat(_refused.Keys).Distinct(StringComparer.Ordinal).ToArray();
             var room = ClaimQuery.MaxExcludedInstanceIds - excluded.Length;
             var deferred = _deferred.Where(item => _time.GetElapsedTime(item.Value.Started, now) < item.Value.Wait);
+
             if (_deferred.Count > room)
                 deferred = deferred.OrderByDescending(item => _time.GetElapsedTime(item.Value.Started, now));
+
             query = query.Excluding(excluded.Concat(deferred.Select(item => item.Key))
                 .Distinct(StringComparer.Ordinal).Take(ClaimQuery.MaxExcludedInstanceIds), limit);
         }
-        return repository.GetRunnableInstancesAsync(query);
+
+        return repository.GetRunnableInstancesAsync(query, cancellationToken: cancellationToken);
     }
 
     // Called only under _lock. Expiries are fixed at refusal and therefore oldest-first.
@@ -151,17 +190,26 @@ internal sealed partial class WorkflowRecoveryService(
     private void Refuse(string id)
     {
         bool schedule;
+
         lock (_lock)
         {
             ExpireRefusals();
-            if (_refused.ContainsKey(id)) return;
+
+            if (_refused.ContainsKey(id))
+                return;
+
             schedule = _refused.Count == 0;
-            if (_refused.Count == RefusedCapacity) _refused.Remove(_refusalOrder.Dequeue());
+
+            if (_refused.Count == RefusedCapacity)
+                _refused.Remove(_refusalOrder.Dequeue());
+
             _refusalOrder.Enqueue(id);
             _refused.Add(id, _time.GetTimestamp());
         }
+
         // A refusal can arrive while ExecuteAsync is already waiting on a ten-second poll.
-        if (schedule) _refusalChanges.Writer.TryWrite(true);
+        if (schedule)
+            _refusalChanges.Writer.TryWrite(true);
     }
 
     private async Task RecoverCandidatesAsync(IReadOnlyList<RunnableInstance> first, ClaimQuery query, int slots,
@@ -174,7 +222,10 @@ internal sealed partial class WorkflowRecoveryService(
         var exhausted = first.Count < slots;
         var continuationRequested = false; // Accessed only under discovery, including by delayed siblings.
         int refusalsAtStart;
-        lock (_lock) refusalsAtStart = _refused.Count;
+
+        lock (_lock)
+            refusalsAtStart = _refused.Count;
+
         try
         {
             await Parallel.ForEachAsync(Enumerable.Range(0, slots), new ParallelOptions
@@ -186,9 +237,11 @@ internal sealed partial class WorkflowRecoveryService(
                 while (true)
                 {
                     RunnableInstance? instance = null;
+
                     try
                     {
                         await discovery.WaitAsync(token);
+
                         try
                         {
                             while (instance == null)
@@ -205,39 +258,58 @@ internal sealed partial class WorkflowRecoveryService(
                                                 continuationRequested = true;
                                                 _wakes.Writer.TryWrite(true);
                                             }
+
                                         return;
                                     }
-                                    if (exhausted) return;
+
+                                    if (exhausted)
+                                        return;
+
                                     var requested = Math.Min(RefillPageSize, remaining);
                                     var next = await ReadCandidatesAsync(query, requested, seen, token);
                                     var accepted = next.Take(remaining).ToArray();
                                     remaining = Math.Max(0, remaining - next.Count);
                                     exhausted = next.Count < requested;
+
                                     foreach (var candidate in accepted)
-                                        if (seen.Add(candidate.InstanceId)) page.Enqueue(candidate);
-                                    if (page.Count == 0 && exhausted) return;
+                                        if (seen.Add(candidate.InstanceId))
+                                            page.Enqueue(candidate);
+
+                                    if (page.Count == 0 && exhausted)
+                                        return;
                                 }
+
                                 var candidateToTake = page.Dequeue();
+
                                 lock (_lock)
                                     if ((!_deferred.TryGetValue(candidateToTake.InstanceId, out var deferred) ||
-                                         _time.GetElapsedTime(deferred.Started) >= deferred.Wait) &&
+                                            _time.GetElapsedTime(deferred.Started) >= deferred.Wait) &&
                                         (!_refused.TryGetValue(candidateToTake.InstanceId, out var refusedAt) ||
-                                         _time.GetElapsedTime(refusedAt) >= RefusalCooldown) &&
+                                            _time.GetElapsedTime(refusedAt) >= RefusalCooldown) &&
                                         _recovering.TryAdd(candidateToTake.InstanceId, owner))
                                         instance = candidateToTake;
                             }
                         }
-                        finally { discovery.Release(); }
+                        finally
+                        {
+                            discovery.Release();
+                        }
                     }
-                    catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested)
+                    {
+                        throw;
+                    }
                     catch (Exception error)
                     {
                         (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics,
                             LogLevel.Error, error, "Could not refill workflows for recovery");
+
                         return;
                     }
+
                     // A no-grant result did not consume this slot; refill while siblings run.
-                    if (await RecoverAsync(instance, owner, token)) return;
+                    if (await RecoverAsync(instance, owner, token))
+                        return;
                 }
             });
         }
@@ -255,18 +327,22 @@ internal sealed partial class WorkflowRecoveryService(
         try
         {
             using var scope = scopes.CreateScope();
+
             // The host stops before the scanner and drains the work it admitted; the scanner's
             // own token then only interrupts runs still going, which stay recoverable.
             var result = await scope.ServiceProvider.GetRequiredService<IWorkflowClient>()
                 .RecoverAsync(instance.InstanceId, token);
+
             if (result.Status == WorkflowExecutionStatus.Faulted)
                 logger.LogWarning("Recovery of workflow {InstanceId} was rejected: {Reason}",
                     instance.InstanceId, InspectionRedactionPolicy.Default.ResultReason(result));
             else if (result.Status == WorkflowExecutionStatus.NeedsResolution && result.ErrorMessage != null)
                 logger.LogWarning("Workflow {InstanceId} needs an operator: {Reason}",
                     instance.InstanceId, InspectionRedactionPolicy.Default.ResultReason(result));
+
             // A row this host rejected, or left stopped, may still be due; let others go first.
-            if (result.Status is WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.NeedsResolution or WorkflowExecutionStatus.Paused)
+            if (result.Status is WorkflowExecutionStatus.Faulted or WorkflowExecutionStatus.NeedsResolution
+                or WorkflowExecutionStatus.Paused)
                 Defer(instance.InstanceId);
             else
             {
@@ -274,8 +350,11 @@ internal sealed partial class WorkflowRecoveryService(
                 {
                     _deferred.Remove(instance.InstanceId);
                 }
-                if (result.Status == WorkflowExecutionStatus.Running) Refuse(instance.InstanceId);
+
+                if (result.Status == WorkflowExecutionStatus.Running)
+                    Refuse(instance.InstanceId);
             }
+
             return result.Status != WorkflowExecutionStatus.Running;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -288,7 +367,9 @@ internal sealed partial class WorkflowRecoveryService(
         }
         catch (Exception error)
         {
-            (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not recover workflow {InstanceId}", instance.InstanceId);
+            (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error,
+                "Could not recover workflow {InstanceId}", instance.InstanceId);
+
             // A row whose recovery throws, such as unreadable data, must not hold the poll.
             Defer(instance.InstanceId);
         }
@@ -298,6 +379,7 @@ internal sealed partial class WorkflowRecoveryService(
                 if (_recovering.TryGetValue(instance.InstanceId, out var reservedBy) && ReferenceEquals(reservedBy, owner))
                     _recovering.Remove(instance.InstanceId);
         }
+
         return true;
     }
 
@@ -306,7 +388,10 @@ internal sealed partial class WorkflowRecoveryService(
         var passes = new List<Task>();
         void Wake() => _wakes.Writer.TryWrite(true);
         WorkflowHost? host;
-        using (var probe = scopes.CreateScope()) host = probe.ServiceProvider.GetService<WorkflowHost>();
+
+        using (var probe = scopes.CreateScope())
+            host = probe.ServiceProvider.GetService<WorkflowHost>();
+
         void CapacityChanged(bool _)
         {
             lock (_lock)
@@ -316,20 +401,32 @@ internal sealed partial class WorkflowRecoveryService(
                     Wake();
                 }
         }
-        if (host != null) host.FreeSlotsChanged += CapacityChanged;
+
+        if (host != null)
+            host.FreeSlotsChanged += CapacityChanged;
+
         _coordination.Wake += Wake;
         var listening = wakeSource == null ? Task.CompletedTask : ListenAsync(wakeSource, Wake, stoppingToken);
         var diagnostics = UnschedulableAsync(stoppingToken);
+
         // A pass runs until the work it handed out is idle or parked; the next tick does not wait for
         // it, and skips the instances it is still recovering.
         try
         {
             var woken = false;
+
             do
             {
-                try { Track(passes, PassAsync(await ClaimAsync(stoppingToken, woken), stoppingToken)); }
-                catch (Exception error) when (error is not OperationCanceledException)
-                { (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not scan running workflows for recovery"); }
+                try
+                {
+                    Track(passes, PassAsync(await ClaimAsync(stoppingToken, woken), stoppingToken));
+                }
+                catch (Exception error) when (error is not OperationCanceledException || !stoppingToken.IsCancellationRequested)
+                {
+                    (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error,
+                        "Could not scan running workflows for recovery");
+                }
+
                 woken = await WaitForPassAsync(stoppingToken);
             } while (true);
         }
@@ -339,13 +436,18 @@ internal sealed partial class WorkflowRecoveryService(
         finally
         {
             _coordination.Wake -= Wake;
-            if (host != null) host.FreeSlotsChanged -= CapacityChanged;
+
+            if (host != null)
+                host.FreeSlotsChanged -= CapacityChanged;
         }
+
         await listening;
         await diagnostics;
         Task[] running;
+
         lock (passes)
             running = passes.ToArray();
+
         await Task.WhenAll(running);
     }
 
@@ -353,20 +455,26 @@ internal sealed partial class WorkflowRecoveryService(
     {
         var started = _time.GetTimestamp();
         var pollInterval = _coordination.Connected ? _coordination.PollInterval : _settings.PollInterval;
+
         while (true)
         {
             using var wait = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
             var delay = pollInterval - _time.GetElapsedTime(started);
+
             lock (_lock)
                 if (_refusalOrder.TryPeek(out var id))
                     delay = TimeSpan.FromTicks(Math.Min(delay.Ticks, (RefusalCooldown - _time.GetElapsedTime(_refused[id])).Ticks));
+
             var tick = Task.Delay(delay > TimeSpan.Zero ? delay : TimeSpan.Zero, _time, wait.Token);
             var wake = _wakes.Reader.ReadAsync(wait.Token).AsTask();
             var changed = _refusalChanges.Reader.ReadAsync(wait.Token).AsTask();
             await Task.WhenAny(wake, tick, changed);
             wait.Cancel();
             stoppingToken.ThrowIfCancellationRequested();
-            if (wake.IsCompletedSuccessfully || tick.IsCompletedSuccessfully) return wake.IsCompletedSuccessfully;
+
+            if (wake.IsCompletedSuccessfully || tick.IsCompletedSuccessfully)
+                return wake.IsCompletedSuccessfully;
+
             // A late refusal changes the expiry timer, without starting an overlapping pass.
         }
     }
@@ -386,13 +494,23 @@ internal sealed partial class WorkflowRecoveryService(
         while (true)
         {
             var connected = _coordination.Observe(out var changed);
+
             if (connected)
             {
-                try { await changed.WaitAsync(stoppingToken); }
-                catch (OperationCanceledException) { return; }
+                try
+                {
+                    await changed.WaitAsync(stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+
                 continue;
             }
+
             using var listenStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+
             try
             {
                 var listening = source.ListenAsync(wake, listenStop.Token);
@@ -404,12 +522,16 @@ internal sealed partial class WorkflowRecoveryService(
             {
                 return;
             }
-            catch (OperationCanceledException) when (listenStop.IsCancellationRequested) { }
+            catch (OperationCanceledException) when (listenStop.IsCancellationRequested)
+            {
+            }
             catch (Exception error)
             {
-                (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Lost the store's wake-ups; polling every {PollInterval} until they return",
+                (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Warning, error,
+                    "Lost the store's wake-ups; polling every {PollInterval} until they return",
                     _settings.PollInterval);
             }
+
             try
             {
                 using var retry = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
@@ -435,7 +557,8 @@ internal sealed partial class WorkflowRecoveryService(
         }
         catch (Exception error)
         {
-            (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not scan running workflows for recovery");
+            (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error,
+                "Could not scan running workflows for recovery");
         }
     }
 }

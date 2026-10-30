@@ -9,6 +9,7 @@ public static class TemplateModelTypes
     public static void Validate(Type type)
     {
         ArgumentNullException.ThrowIfNull(type);
+
         if (!type.IsVisible || type.ContainsGenericParameters || type.IsPointer || type.IsByRef ||
             type.IsFunctionPointer || type.IsByRefLike || type == typeof(object) || type == typeof(void) ||
             !IsObject(type) ||
@@ -25,28 +26,60 @@ public static class TemplateModelTypes
     private static bool Readable(Type type)
     {
         var seen = new HashSet<Type>();
+
         while (seen.Add(type))
         {
             type = Nullable.GetUnderlyingType(type) ?? type;
-            if (type == typeof(object) || type.ContainsGenericParameters || type.IsPointer || type.IsByRef || type.IsFunctionPointer || type.IsByRefLike) return false;
-            if (Scalar(type)) return true;
+
+            if (type == typeof(object) || type.ContainsGenericParameters || type.IsPointer || type.IsByRef || type.IsFunctionPointer ||
+                type.IsByRefLike)
+                return false;
+
+            if (Scalar(type))
+                return true;
+
             var implementations = type.GetInterfaces().Prepend(type).ToArray();
-            var dictionary = implementations.FirstOrDefault(item => item.IsGenericType && item.GetGenericTypeDefinition() == typeof(IDictionary<,>));
+
+            var dictionary = implementations.FirstOrDefault(item =>
+                item.IsGenericType && item.GetGenericTypeDefinition() == typeof(IDictionary<,>));
+
             if (dictionary != null)
             {
                 type = dictionary.GetGenericArguments()[0] == typeof(string) ? dictionary.GetGenericArguments()[1] : typeof(object);
+
                 continue;
             }
-            if (typeof(IDictionary).IsAssignableFrom(type)) return false;
-            if (type.IsArray) { type = type.GetElementType()!; continue; }
-            var collection = implementations.FirstOrDefault(item => item.IsGenericType && item.GetGenericTypeDefinition() == typeof(IEnumerable<>));
-            if (collection != null) { type = collection.GetGenericArguments()[0]; continue; }
+
+            if (typeof(IDictionary).IsAssignableFrom(type))
+                return false;
+
+            if (type.IsArray)
+            {
+                type = type.GetElementType()!;
+
+                continue;
+            }
+
+            var collection =
+                implementations.FirstOrDefault(item => item.IsGenericType && item.GetGenericTypeDefinition() == typeof(IEnumerable<>));
+
+            if (collection != null)
+            {
+                type = collection.GetGenericArguments()[0];
+
+                continue;
+            }
+
             return !typeof(IEnumerable).IsAssignableFrom(type) && type.IsVisible;
         }
+
         return true;
     }
 
-    private static bool IsObject(Type type) => !Scalar(Nullable.GetUnderlyingType(type) ?? type) && !typeof(IEnumerable).IsAssignableFrom(type);
+    private static bool IsObject(Type type) =>
+        !Scalar(Nullable.GetUnderlyingType(type) ?? type) && !typeof(IEnumerable).IsAssignableFrom(type);
+
     private static bool Scalar(Type type) => type.IsEnum || Type.GetTypeCode(type) != TypeCode.Object ||
-        type == typeof(DateTimeOffset) || type == typeof(TimeSpan) || typeof(IConvertible).IsAssignableFrom(type) || typeof(IFormattable).IsAssignableFrom(type);
+        type == typeof(DateTimeOffset) || type == typeof(TimeSpan) || typeof(IConvertible).IsAssignableFrom(type) ||
+        typeof(IFormattable).IsAssignableFrom(type);
 }

@@ -20,6 +20,7 @@ public sealed class SwitchInlineCompositionTests
                 .Output(d => d.Text).To(c => c.WorkflowData.Text))
             .Step<Echo>(s => s.Input(a => a.Text).From(c => c.PreviousStep.Previous)
                 .Output(a => a.Text).To(c => c.WorkflowData.Previous)).Build();
+
         await using var services = Services();
         var client = services.GetRequiredService<IWorkflowClient>();
         var idle = await client.RunAsync(definition, new Data { Route = route });
@@ -44,11 +45,13 @@ public sealed class SwitchInlineCompositionTests
                 .Output(d => d.Text).To(c => c.WorkflowData.Text))
             .Step<Echo>(s => s.Input(a => a.Text).From(c => c.PreviousStep.Text)
                 .Output(a => a.Text).To(c => c.WorkflowData.InlinePrevious));
+
         var definition = Workflow.Create<Data>("SwitchWithInline")
             .Step<Echo>(s => s.Input(a => a.Text).From(c => "outer-entry"))
             .Switch(c => c.WorkflowData.Route, cases => cases.Case(1, Call).Default(Call))
             .Step<Echo>(s => s.Input(a => a.Text).From(c => c.PreviousStep.Text)
                 .Output(a => a.Text).To(c => c.WorkflowData.Previous)).Build();
+
         await using var services = Services();
         var client = services.GetRequiredService<IWorkflowClient>();
         var idle = await client.RunAsync(definition, new Data { Route = route });
@@ -72,6 +75,7 @@ public sealed class SwitchInlineCompositionTests
             .Switch(c => c.WorkflowData.Route, cases => cases.Case(1, body => body
                 .Use<WaitingCall, Data>(u => u.Input(d => d.Route).From(c => c.WorkflowData.Route)
                     .Output(d => d.Text).To(c => c.WorkflowData.Text)))).Build();
+
         var contract = WorkflowDefinitionValidator.GetContract(definition);
         Assert.Equal([nameof(Data.Route)], contract.Inputs.Select(m => m.Name));
         Assert.Equal([nameof(Data.Text)], contract.Outputs.Select(m => m.Name));
@@ -82,15 +86,23 @@ public sealed class SwitchInlineCompositionTests
         var trace = await services.GetRequiredService<IWorkflowOperations>().GetTraceAsync(instanceId);
         Assert.Single(trace, t => t.Entry.EntryType == TraceEntryType.InlineEntered);
         Assert.Single(trace, t => t.Entry.EntryType == TraceEntryType.InlineExited);
+
         var selected = Assert.IsType<SwitchTrace>(Assert.Single(trace,
             t => t.Entry.EntryType == TraceEntryType.SwitchSelected).Entry.Payload);
+
         Assert.Equal(expected == "case" ? SwitchPath.Case : SwitchPath.Default, selected.Path);
     }
 
     private static ServiceProvider Services()
     {
         var services = new ServiceCollection().AddLogging();
-        services.AddIxIFlow(o => { o.Debugging = true; o.VerifyCheckpointParts = true; });
+
+        services.AddIxIFlow(o =>
+        {
+            o.Debugging = true;
+            o.VerifyCheckpointParts = true;
+        });
+
         return services.BuildServiceProvider();
     }
 
@@ -101,7 +113,9 @@ public sealed class SwitchInlineCompositionTests
         public string Previous { get; set; } = "";
         public string InlinePrevious { get; set; } = "";
     }
+
     public sealed class Signal;
+
     public sealed class Echo : IAsyncActivity
     {
         public string Text { get; set; } = "";

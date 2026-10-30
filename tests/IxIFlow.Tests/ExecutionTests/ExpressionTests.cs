@@ -30,6 +30,7 @@ public class ExpressionTests
         var definition = Workflow
             .Create<ExpressionTestData>("ExpressionTestWorkflow")
             .Step<ExpressionTestActivity>(setup => setup
+
                 // Input mappings with various expressions
                 .Input(act => act.StringInput).From(ctx => ctx.WorkflowData.StringValue)
                 .Input(act => act.IntInput).From(ctx => ctx.WorkflowData.IntValue)
@@ -82,6 +83,7 @@ public class ExpressionTests
         var definition = Workflow
             .Create<ExpressionTestData>("ComplexExpressionWorkflow")
             .Step<ExpressionTestActivity>(setup => setup
+
                 // Complex input expressions
                 .Input(act => act.StringInput)
                 .From(ctx => $"{ctx.WorkflowData.StringValue}-{ctx.WorkflowData.IntValue}")
@@ -120,6 +122,7 @@ public class ExpressionTests
         Assert.Equal("Test-42-184", finalData.Result); // StringInput = "Test-42", IntInput = 184 (42*2+100)
         Assert.Equal(368, finalData.CalculatedValue); // CalculatedOutput = IntInput * 2 = 184 * 2
         Assert.True(finalData.ComparisonResult); // DecimalInput = 123.45 * 2 = 246.9 > 100
+
         Assert.Equal("True Result",
             finalData.ConditionalResult); // BoolInput = true (42 > 40 && "Test".StartsWith("T"))
     }

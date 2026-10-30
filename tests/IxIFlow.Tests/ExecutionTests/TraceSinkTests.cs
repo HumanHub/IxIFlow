@@ -7,7 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// The trace is not part of the checkpoint (G-01): each commit carries the entries recorded since the last one,
+/// The trace is not part of the checkpoint: each commit carries the entries recorded since the last one,
 /// and the store appends them, in order, to the instance's trace in the commit's own transaction.
 /// </summary>
 [Trait("Feature", "tracing")]
@@ -26,18 +26,26 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
 
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         var trace = await engine.GetTraceAsync(started.InstanceId);
-        Assert.Equal([TraceEntryType.ReplayOrigin, TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition,
-            TraceEntryType.ActivityCompleted, TraceEntryType.StepEntered, TraceEntryType.ThreadPosition,
-            TraceEntryType.ThreadPosition, TraceEntryType.EventReceived, TraceEntryType.ThreadPosition,
-            TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition, TraceEntryType.ActivityCompleted,
-            TraceEntryType.ThreadPosition],
+
+        Assert.Equal([
+                TraceEntryType.ReplayOrigin, TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition,
+                TraceEntryType.ActivityCompleted, TraceEntryType.StepEntered, TraceEntryType.ThreadPosition,
+                TraceEntryType.ThreadPosition, TraceEntryType.EventReceived, TraceEntryType.ThreadPosition,
+                TraceEntryType.ActivityStarted, TraceEntryType.ThreadPosition, TraceEntryType.ActivityCompleted,
+                TraceEntryType.ThreadPosition
+            ],
             trace.Select(entry => entry.EntryType));
-        Assert.Equal(Enumerable.Range(1, 13).Select(n => (long)n), (await repository.GetTraceAsync(started.InstanceId)).Select(entry => entry.Sequence));
+
+        Assert.Equal(Enumerable.Range(1, 13).Select(n => (long)n),
+            (await repository.GetTraceAsync(started.InstanceId)).Select(entry => entry.Sequence));
+
         Assert.DoesNotContain("ExecutionHistory",
             System.Text.Json.JsonSerializer.Serialize(await repository.GetWorkflowInstanceAsync(started.InstanceId)));
+
         // A result carries what its own run recorded.
         Assert.Equal(6, started.TraceEntries.Count);
         Assert.Equal(7, resumed.TraceEntries.Count);
+
         Assert.Equal(started.TraceEntries.Select(entry => entry.TraceId).Concat(resumed.TraceEntries.Select(entry => entry.TraceId)),
             trace.Select(entry => entry.TraceId));
     }
@@ -47,12 +55,16 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
     public async Task AResentCommitAppendsItsTraceOnce()
     {
         var repository = new InMemoryWorkflowStateRepository();
-        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Resent" };
-        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, traceEntries:
-        [
-            new ExecutionTraceEntry { EntryType = TraceEntryType.ActivityStarted, ActivityName = "First" },
-            new ExecutionTraceEntry { EntryType = TraceEntryType.ActivityCompleted, ActivityName = "First" }
-        ]);
+
+        var instance = new WorkflowInstance
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Resent" };
+
+        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0,
+            traceEntries:
+            [
+                new ExecutionTraceEntry { EntryType = TraceEntryType.ActivityStarted, ActivityName = "First" },
+                new ExecutionTraceEntry { EntryType = TraceEntryType.ActivityCompleted, ActivityName = "First" }
+            ]);
 
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
         Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
@@ -71,6 +83,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository, maxCheckpointBytes: 8_000);
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<TraceData>("TraceOverLimit")
             .Step<Grow>(step => step.Output(activity => activity.Text).To(ctx => ctx.WorkflowData.Text))
             .Build();
@@ -91,12 +104,15 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
     {
         var store = new FaultInjectingRepository();
         var instanceId = Guid.NewGuid().ToString("N");
+
         // The host dies as it saves the first step's end; the step is recovered on another host.
         store.FailCommit = instance => instance.WorkflowDataJson.InlineText.Contains("\"Value\":7");
+
         using (var first = Services(store))
             await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(Recoverable("UntracedRecovery"), new TraceData(),
                     new WorkflowOptions { InstanceId = instanceId, EnableTracing = false }));
+
         store.FailCommit = _ => false;
         using var second = Services(store);
         await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(Recoverable("UntracedRecovery"));
@@ -115,14 +131,17 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<TraceData>("UntracedChild").Step<Noop>().Build());
+
         var parent = Workflow.Create<TraceData>("UntracedParent")
             .Step<Noop>()
             .Invoke<TraceData>("UntracedChild", 1)
             .Build();
 
         var started = await engine.RunAsync(parent, new TraceData(), new WorkflowOptions { EnableTracing = false });
+
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -148,12 +167,14 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
     [SqlServerFact]
     [Trait("Spec", "G-01")]
     [Trait("Category", "SqlIntegration")]
-    public Task SqlServerStoresTheTraceInOrderOncePerCommit() => VerifyTraceOrderOncePerCommit(new SqlWorkflowStateRepository(SqlTestDatabase<TraceSinkTests>.ConnectionString));
+    public Task SqlServerStoresTheTraceInOrderOncePerCommit() =>
+        VerifyTraceOrderOncePerCommit(new SqlServerWorkflowStateRepository(SqlTestDatabase<TraceSinkTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Spec", "G-01")]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task PostgreSqlStoresTheTraceInOrderOncePerCommit() => VerifyTraceOrderOncePerCommit(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<TraceSinkTests>.ConnectionString));
+    public Task PostgreSqlStoresTheTraceInOrderOncePerCommit() =>
+        VerifyTraceOrderOncePerCommit(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<TraceSinkTests>.ConnectionString));
 
     private static WorkflowDefinition TwoSteps(string name) =>
         Workflow.Create<TraceData>(name).Step<Noop>().WaitFor<Go>("go").Step<Noop>().Build();
@@ -169,11 +190,13 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(repository);
+
         services.AddIxIFlow(options =>
         {
             if (maxCheckpointBytes is { } limit)
                 options.MaxCheckpointBytes = limit;
         });
+
         return services.BuildServiceProvider();
     }
 
@@ -199,6 +222,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Text = new string('x', 20_000);
+
             return Task.CompletedTask;
         }
     }
@@ -211,6 +235,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Value = 7;
+
             return Task.CompletedTask;
         }
 
@@ -220,6 +245,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
             CancellationToken cancellationToken = default) =>
             Task.FromResult<ActivityRecoveryResult<bool>>(new ActivityRecoveryResult<bool>.Execute());
     }
+
     [Fact]
     [Trait("Category", "SqliteIntegration")]
     [Trait("Spec", "C-11")]
@@ -232,17 +258,27 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
 
     private static async Task VerifyTraceOrderOncePerCommit(IWorkflowStateRepository repository)
     {
-        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SqlTrace", Status = WorkflowStatus.Running };
+        var instance = new WorkflowInstance
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "SqlTrace",
+            Status = WorkflowStatus.Running
+        };
+
         try
         {
-            var first = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0, traceEntries:
+            var first = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0,
+                traceEntries:
                 Enumerable.Range(0, 1_500).Select(index => new ExecutionTraceEntry { ActivityName = $"step-{index}" })
                     .ToArray());
+
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await repository.CommitWorkflowInstanceAsync(first)).Status);
             instance.Revision = 1;
-            var second = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 1, traceEntries:
+
+            var second = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 1,
+                traceEntries:
                 [new ExecutionTraceEntry { ActivityName = "last" }]);
+
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(second)).Status);
 
             var page = await repository.GetTraceAsync(instance.InstanceId, afterSequence: 1_498, limit: 10);
@@ -253,8 +289,7 @@ public sealed class TraceSinkTests : IClassFixture<SqliteTestDatabase<TraceSinkT
         {
             await repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
         }
+
         Assert.Empty(await repository.GetTraceAsync(instance.InstanceId));
     }
-
-
 }

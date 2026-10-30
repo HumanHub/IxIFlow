@@ -18,6 +18,7 @@ public static class RecipeServices
         services.AddTransient<ReserveStock>();
         services.AddTransient<Ship>();
         services.AddTransient<CancelFlaggedOrder>();
+
         return services;
     }
 }

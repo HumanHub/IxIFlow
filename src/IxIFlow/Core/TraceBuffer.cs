@@ -38,24 +38,29 @@ internal sealed partial class TraceBuffer
         _enabled = instance.TracingEnabled;
         _detail = limits.TraceDetail;
         _budget = limits.MaxTraceEntriesPerInstance;
+
         if (!ReferenceEquals(_checkpoint, checkpoint))
         {
             _acknowledgedCount = checkpoint.TraceEntriesRecorded;
             _acknowledgedBudget = checkpoint.TraceBudgetExhausted;
             _acknowledgedReplayInitialized = checkpoint.TraceReplayInitialized;
             _acknowledgedDebug = checkpoint.Debug;
+
             if (scopes != null && !_origin && checkpoint.TraceReplayInitialized && checkpoint.StructureHash == scopes.StructureHash &&
                 _enabled && _detail == TraceDetail.Full && !checkpoint.TraceBudgetExhausted)
             {
                 // Establish the saved baseline before recovery reactivates continuations.
                 _positions = InspectionProjection.Threads(instance, checkpoint, scopes,
                     (time ?? _time).GetUtcNow().UtcDateTime).ToDictionary(t => t.ContinuationId, StringComparer.Ordinal);
+
                 _acknowledgedPositions = new(_positions, StringComparer.Ordinal);
                 _origin = _acknowledgedOrigin = true;
             }
         }
+
         _checkpoint = checkpoint;
         _scopes = scopes;
+
         if (time != null)
             _time = time;
     }
@@ -69,13 +74,16 @@ internal sealed partial class TraceBuffer
         if (!_enabled || (_detail == TraceDetail.Activities || _checkpoint?.TraceBudgetExhausted == true) &&
             IsControlFlow(kind))
             return false;
+
         if (_budget is { } budget && _checkpoint is { } checkpoint)
         {
             if (!checkpoint.TraceBudgetExhausted && checkpoint.TraceEntriesRecorded >= budget)
                 ReachedBudget(budget, timestamp);
+
             if (checkpoint.TraceBudgetExhausted && IsControlFlow(kind))
                 return false;
         }
+
         return HasCapacity();
     }
 
@@ -83,10 +91,12 @@ internal sealed partial class TraceBuffer
     {
         _checkpoint!.TraceBudgetExhausted = true;
         _budgetMarker = new TraceBudget(budget);
+
         var marker = new ExecutionTraceEntry
         {
             Timestamp = timestamp, EntryType = TraceEntryType.TraceBudgetReached, Payload = _budgetMarker
         };
+
         if (_pending.Count == _limit)
         {
             _budgetMarker.DroppedCount = _truncated?.DroppedCount ?? 1;
@@ -102,20 +112,27 @@ internal sealed partial class TraceBuffer
         if (_truncated != null)
         {
             _truncated.DroppedCount++;
+
             return false;
         }
+
         if (_pending.Count < _limit)
             return true;
+
         if (_budgetMarker != null)
         {
             _budgetMarker.DroppedCount++;
+
             return false;
         }
+
         _truncated = new TraceTruncation(2);
+
         _pending[^1] = new ExecutionTraceEntry
         {
             Timestamp = _pending[^1].Timestamp, EntryType = TraceEntryType.Truncated, Payload = _truncated
         };
+
         return false;
     }
 
@@ -128,6 +145,7 @@ internal sealed partial class TraceBuffer
     public void Add(ExecutionTraceEntry entry)
     {
         CapturePositions(entry.Timestamp);
+
         var (stepId, continuationId) = entry.Payload switch
         {
             InlineTrace p => (p.StepId, p.ContinuationId),
@@ -144,16 +162,21 @@ internal sealed partial class TraceBuffer
             InvocationTrace p => (p.StepId, p.ContinuationId),
             _ => (entry.StepId, entry.ContinuationId)
         };
+
         entry.StepId ??= stepId;
         entry.ContinuationId ??= continuationId;
+
         entry.FrameActivationId ??= _checkpoint?.Continuations.FirstOrDefault(c => c.Id == continuationId)
             ?.Stack.LastOrDefault()?.ActivationId;
+
         if (Accepts(entry.EntryType, entry.Timestamp))
         {
             _pending.Add(entry);
+
             if (_budget is { } budget && _checkpoint != null && !_checkpoint.TraceBudgetExhausted)
             {
                 _checkpoint.TraceEntriesRecorded++;
+
                 if (_checkpoint.TraceEntriesRecorded >= budget)
                     ReachedBudget(budget, entry.Timestamp);
             }
@@ -161,7 +184,9 @@ internal sealed partial class TraceBuffer
     }
 
     public static bool IsControlFlow(TraceEntryType kind) => kind is
-        TraceEntryType.CancellationHandlerEntered or TraceEntryType.CancellationHandlerCompleted or TraceEntryType.InlineEntered or TraceEntryType.InlineExited or TraceEntryType.SwitchSelected or TraceEntryType.DataAssigned or TraceEntryType.FaultRaised or TraceEntryType.FaultRethrown or TraceEntryType.StepEntered or TraceEntryType.ConditionTaken or TraceEntryType.LoopIteration or
+        TraceEntryType.CancellationHandlerEntered or TraceEntryType.CancellationHandlerCompleted or TraceEntryType.InlineEntered
+        or TraceEntryType.InlineExited or TraceEntryType.SwitchSelected or TraceEntryType.DataAssigned or TraceEntryType.FaultRaised
+        or TraceEntryType.FaultRethrown or TraceEntryType.StepEntered or TraceEntryType.ConditionTaken or TraceEntryType.LoopIteration or
         TraceEntryType.LoopCompleted or TraceEntryType.BranchStarted or TraceEntryType.JoinCompleted or
         TraceEntryType.CatchEntered or TraceEntryType.FinallyEntered or TraceEntryType.ForEachItemStarted or
         TraceEntryType.ForEachItemEnded or TraceEntryType.CompensationStarted or TraceEntryType.CompensationCompleted or
@@ -181,6 +206,7 @@ internal sealed partial class TraceBuffer
             _acknowledgedReplayInitialized = _checkpoint.TraceReplayInitialized;
             _acknowledgedDebug = _checkpoint.Debug;
         }
+
         _pending.Clear();
         _audits.Clear();
         _truncated = null;
@@ -193,6 +219,7 @@ internal sealed partial class TraceBuffer
     {
         _positions = new(_acknowledgedPositions, StringComparer.Ordinal);
         _origin = _acknowledgedOrigin;
+
         if (_checkpoint != null)
         {
             _checkpoint.TraceEntriesRecorded = _acknowledgedCount;
@@ -200,6 +227,7 @@ internal sealed partial class TraceBuffer
             _checkpoint.TraceReplayInitialized = _acknowledgedReplayInitialized;
             _checkpoint.Debug = _acknowledgedDebug;
         }
+
         _pending.Clear();
         _audits.Clear();
         _truncated = null;

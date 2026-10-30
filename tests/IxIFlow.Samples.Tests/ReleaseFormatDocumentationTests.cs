@@ -20,7 +20,9 @@ public sealed class ReleaseFormatDocumentationTests
     private static string RepositoryRoot()
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory != null; directory = directory.Parent)
-            if (File.Exists(Path.Combine(directory.FullName, "IxIFlow.sln"))) return directory.FullName;
+            if (File.Exists(Path.Combine(directory.FullName, "IxIFlow.sln")))
+                return directory.FullName;
+
         throw new DirectoryNotFoundException("Cannot find the repository containing persistence documentation");
     }
 }

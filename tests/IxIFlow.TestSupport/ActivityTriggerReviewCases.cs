@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace IxIFlow.Tests.Infrastructure;
 
-/// <summary>The same review regressions at the engine and profile-store boundaries.</summary>
+/// <summary>Shared activity-trigger regression scenarios at the engine and profile-store boundaries.</summary>
 public static class ActivityTriggerReviewCases
 {
     public const long HydrationBudget = 192 * 1024;
@@ -16,6 +16,7 @@ public static class ActivityTriggerReviewCases
         IWorkflowStateRepository repository)
     {
         var probe = host.GetRequiredService<Probe>();
+
         var definition = new WorkflowBuilder<Data, object>([], "ActivityTriggerReplyIntakeHydration")
             .StateMachine(m => m.Start("a").State("a", s => s.Entry(e => e.Request<AskForAnswer>("answer"))
                 .OnActivity<Work>(t => t.Output(x => x.Number).To(c => c.WorkflowData.Number)
@@ -24,23 +25,31 @@ public static class ActivityTriggerReviewCases
                             .Output(x => x.Number).To(c => c.WorkflowData.Action))))
                 .OnActivity<Work>("end")
                 .OnReply<Answer>("answer", "end"))).Build();
+
         var (instance, checkpoint, scopes, transitions) = New(definition, host);
         var parent = checkpoint.Continuations[0];
+
         while (true)
         {
             var position = parent.Stack[^1];
             var next = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
-            if (next?.StepType == WorkflowStepType.Arm) break;
+
+            if (next?.StepType == WorkflowStepType.Arm)
+                break;
+
             if (next?.RequestName != null)
                 position.NextStepIndex++; // Seed the completed entry request and its original wait below.
-            else Advance(transitions, scopes, checkpoint, parent);
+            else
+                Advance(transitions, scopes, checkpoint, parent);
         }
+
         var wait = new WaitState
         {
             ContinuationId = parent.Id, IsReply = true, InvocationId = "entry-request", Subject = "review",
             ScopeActivationId = parent.Stack[^1].ActivationId, StepId = parent.Stack[^1].ScopeId + "/on/2/0",
             EventType = WorkflowTypeIdentity.SavedName(typeof(Answer)), RegisteredAtUtc = DateTime.UtcNow
         };
+
         checkpoint.AddWait(wait);
         Advance(transitions, scopes, checkpoint, parent);
         var join = Assert.Single(checkpoint.Joins);
@@ -75,9 +84,11 @@ public static class ActivityTriggerReviewCases
         Assert.Equal(wait.Id, Assert.Single(recovered.Waits).Id);
 
         var answer = SerializedValue.From(new Answer { Number = 22, Text = new string('b', LargeLength) })!;
+
         Assert.Equal(EventAppendStatus.Stored, (await repository.AppendEventAsync(new(instance.InstanceId,
-            "answer", answer.Type, answer.Json.InlineText, TargetWaitId: wait.Id, Subject: wait.Subject)
+                "answer", answer.Type, answer.Json.InlineText, TargetWaitId: wait.Id, Subject: wait.Subject)
             { PayloadThresholdBytes = 1024 })).Status);
+
         var storedAnswer = Assert.Single((await repository.GetPendingEventsAsync(instance.InstanceId, 0, 100)).Events);
         Assert.NotNull(storedAnswer.PayloadJson.Reference);
         Assert.True(fire.Json.Bytes < HydrationBudget);
@@ -110,6 +121,7 @@ public static class ActivityTriggerReviewCases
 
         var result = await client.ResolveAsync(instance.InstanceId, invocation.Id,
             ActivityResolution.Completed(new Dictionary<string, object?> { ["Number"] = 99 }));
+
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var data = Assert.IsType<Data>(result.WorkflowData);
         Assert.Equal(11, data.Number);
@@ -125,17 +137,24 @@ public static class ActivityTriggerReviewCases
     public static async Task CancellationPreservesCleanupWinner(IServiceProvider host, IWorkflowStateRepository repository)
     {
         var probe = host.GetRequiredService<Probe>();
+
         var definition = new WorkflowBuilder<Data, object>([], "ActivityTriggerFinallyWinner")
-            .Try(_ => { }).Finally(b => b.StateMachine(m => m.Start("a").State("a", s => s
+            .Try(_ =>
+            {
+            }).Finally(b => b.StateMachine(m => m.Start("a").State("a", s => s
                 .OnActivity<Work>(t => t.Input(x => x.Number).From(c => 11)
                     .Output(x => x.Number).To(c => c.WorkflowData.Number)
                     .When(c => c.PreviousStep.Number == 11, "end", a => a.Step<Mark>(w => w
                         .Input(x => x.Number).From(c => c.PreviousStep.Number)
                         .Output(x => x.Number).To(c => c.WorkflowData.Action))))
                 .OnActivity<Work>("end")))).Build();
+
         var (instance, checkpoint, scopes, transitions) = New(definition, host);
         var parent = checkpoint.Continuations[0];
-        while (checkpoint.Joins.Count == 0) Advance(transitions, scopes, checkpoint, parent);
+
+        while (checkpoint.Joins.Count == 0)
+            Advance(transitions, scopes, checkpoint, parent);
+
         Assert.True(TryScopeTransitions.IsInsideFinally(parent));
         var join = Assert.Single(checkpoint.Joins);
         var loser = checkpoint.BranchesOf(join)[1];
@@ -164,6 +183,7 @@ public static class ActivityTriggerReviewCases
 
         var result = await client.ResolveAsync(instance.InstanceId, invocation.Id,
             ActivityResolution.Completed(new Dictionary<string, object?> { ["Number"] = 99 }));
+
         Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
         var data = Assert.IsType<Data>(result.WorkflowData);
         Assert.Equal(11, data.Number);
@@ -180,23 +200,32 @@ public static class ActivityTriggerReviewCases
     {
         var held = shape == "held";
         var builder = new WorkflowBuilder<Data, object>([], "ActivityTriggerHydration" + shape);
+
         void Machine(StateMachineBuilder<Data, object> m) => m.Start("a").State("a", s =>
         {
-            if (shape == "receipt") s.Entry(e => e.Request<Ask>("answer"));
+            if (shape == "receipt")
+                s.Entry(e => e.Request<Ask>("answer"));
+
             s.OnActivity<Work>(t => t.Output(x => x.Number).To(c => c.WorkflowData.Number)
                 .Output(x => x.Text).To(c => c.WorkflowData.Payload).Otherwise("end"));
-            if (shape == "receipt") s.OnReply<Work>("answer", t => t.Output(x => x.Number)
-                .To(c => c.WorkflowData.Number).Otherwise("end"));
-            else s.OnActivity<Work>(t => t.Output(x => x.Number).To(c => c.WorkflowData.Number)
-                .Output(x => x.Text).To(c => c.WorkflowData.Payload).Otherwise("end"));
+
+            if (shape == "receipt")
+                s.OnReply<Work>("answer", t => t.Output(x => x.Number)
+                    .To(c => c.WorkflowData.Number).Otherwise("end"));
+            else
+                s.OnActivity<Work>(t => t.Output(x => x.Number).To(c => c.WorkflowData.Number)
+                    .Output(x => x.Text).To(c => c.WorkflowData.Payload).Otherwise("end"));
         });
+
         var definition = held
             ? builder.Parallel(p => p.Do(b => b.StateMachine(Machine)).Do(b => b.Step<Mark>().Delay(TimeSpan.FromMinutes(1)))).Build()
             : builder.StateMachine(Machine).Build();
+
         var (instance, checkpoint, scopes, transitions) = New(definition, host);
         var root = checkpoint.Continuations[0];
         ContinuationState parent = root;
         ContinuationState? independent = null;
+
         if (held)
         {
             Advance(transitions, scopes, checkpoint, root);
@@ -204,32 +233,41 @@ public static class ActivityTriggerReviewCases
             parent = checkpoint.BranchesOf(outer)[0];
             independent = checkpoint.BranchesOf(outer)[1];
         }
+
         while (!checkpoint.Joins.Any(j => j.ParentContinuationId == parent.Id))
         {
             var position = parent.Stack[^1];
+
             if (scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex)?.RequestName != null)
                 position.NextStepIndex++; // The receipt fixture represents an already answered entry request.
-            else Advance(transitions, scopes, checkpoint, parent);
+            else
+                Advance(transitions, scopes, checkpoint, parent);
         }
+
         var join = checkpoint.Joins.Single(j => j.ParentContinuationId == parent.Id);
         var children = checkpoint.BranchesOf(join);
         var references = new List<PayloadReference>();
+
         for (var index = 0; index < children.Count; index++)
         {
             var child = children[index];
             var number = index == 0 ? 11 : 22;
             var text = new string(index == 0 ? 'a' : 'b', LargeLength);
+
             var fire = SerializedValue.From(new Work(host.GetRequiredService<Probe>())
                 { Number = number, Text = shape == "data" ? "" : text })!;
+
             if (shape != "data")
             {
                 fire.Json = await Reference(repository, fire.Json);
                 references.Add(fire.Json.Reference!);
             }
+
             var data = Assert.IsType<Data>(child.Data);
             data.Number = number;
             data.Payload = shape == "data" ? text : "";
             child.DataChanges = BranchData.Changes(BranchData.Node(checkpoint.DataOf(parent)), data, typeof(Data));
+
             if (shape == "data")
             {
                 foreach (var change in child.DataChanges.Where(c => c.Value != null && c.Value.Bytes > LargeLength))
@@ -238,16 +276,20 @@ public static class ActivityTriggerReviewCases
                     references.Add(change.Value.Reference!);
                 }
             }
+
             child.Data = null;
             child.DataChanged = false;
             var frame = child.Stack[0];
             frame.NextStepIndex = 2;
+
             frame.Fired = new GraphFired
             {
-                Trigger = frame.Kind == FrameKind.Listen ? parent.Stack[^1].ScopeId + "/on/1/0"
+                Trigger = frame.Kind == FrameKind.Listen
+                    ? parent.Stack[^1].ScopeId + "/on/1/0"
                     : frame.ScopeId[..^"/run".Length] + "/0",
                 Event = fire
             };
+
             if (frame.Kind == FrameKind.Listen)
                 frame.Fired.Reply = new BoundReplyState
                 {
@@ -255,23 +297,28 @@ public static class ActivityTriggerReviewCases
                     StepId = frame.Fired.Trigger, WaitId = "answered", EventId = "answer", InvocationId = "request",
                     Event = fire
                 };
+
             child.PendingJoinFrame = frame;
             child.Stack.Clear();
             child.Status = ContinuationStatus.Completed;
         }
+
         Assert.Equal(2, references.Count);
         Assert.All(references, r => Assert.True(r.Bytes < HydrationBudget));
         Assert.True(references.Sum(r => r.Bytes) > HydrationBudget);
         Assert.NotEqual(references[0], references[1]);
+
         if (independent != null)
             checkpoint.Debug = checkpoint.Debug with
             {
                 Stepping = new(independent.Id, DebugStepKind.Into, SteppingPolicy.Position(independent.Stack[0]),
                     [independent.Stack[0].ActivationId], [independent.Id], "independent", "review")
             };
+
         await Seed(host, repository, definition, instance, checkpoint, scopes);
         var client = host.GetRequiredService<IWorkflowClient>();
         var result = await client.RecoverAsync(instance.InstanceId);
+
         if (held)
         {
             Assert.True(result.Status == WorkflowExecutionStatus.Paused, result.ErrorMessage);
@@ -288,6 +335,7 @@ public static class ActivityTriggerReviewCases
             Assert.Equal(shape == "data" ? new string('a', LargeLength) : "", data.Payload);
             Assert.Empty((await Read(repository, instance.InstanceId)).Joins);
         }
+
         Assert.Equal(0, host.GetRequiredService<Probe>().WorkCalls);
     }
 
@@ -297,6 +345,7 @@ public static class ActivityTriggerReviewCases
         var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, new Data(), new(), DateTime.UtcNow);
         checkpoint.RootData = new Data();
         checkpoint.Trace.Configure(instance, checkpoint, ExecutionLimits.Default, null, scopes);
+
         return (instance, checkpoint, scopes, new(services, TimeProvider.System));
     }
 
@@ -313,9 +362,11 @@ public static class ActivityTriggerReviewCases
         await host.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         ExecutionCheckpointWriter.Prepare(instance, checkpoint, checkpoint.RootData, scopes, DateTime.UtcNow);
         var lease = await StoreTestSupport.LeaseAsync(repository, instance.InstanceId);
+
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(instance, lease.Epoch, 0,
                 openedWaits: checkpoint.Inbox.WaitChanges(checkpoint).Opened))).Status);
+
         await StoreTestSupport.ReleaseAsync(repository, instance.InstanceId);
     }
 
@@ -339,15 +390,25 @@ public static class ActivityTriggerReviewCases
     {
         public int Number { get; set; }
         public string Text { get; set; } = "";
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Interlocked.Increment(ref probe.WorkCalls); return Task.CompletedTask; }
+        {
+            Interlocked.Increment(ref probe.WorkCalls);
+
+            return Task.CompletedTask;
+        }
     }
 
     public sealed class Mark(Probe probe) : IAsyncActivity
     {
         public int Number { get; set; }
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Interlocked.Increment(ref probe.MarkCalls); return Task.CompletedTask; }
+        {
+            Interlocked.Increment(ref probe.MarkCalls);
+
+            return Task.CompletedTask;
+        }
     }
 
     public sealed class Ask : IRequestActivity<Work>

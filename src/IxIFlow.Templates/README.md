@@ -33,15 +33,15 @@ Published workflow documents use the built-in `renderTemplate` step:
 
 <!-- snippet: samples/IxIFlow.Samples/CatalogExamples.cs#render-yaml -->
 ```yaml
-        workflow: {name: CatalogRenderSample, dataType: IxIFlow.Samples.MessageData}
-        definitions:
-          - kind: renderTemplate
-            id: render
-            template: quote@1
-            modelType: IxIFlow.Samples.QuoteData
-            model: {path: workflow.Quote}
-            culture: {kind: constant, value: fr-CA}
-            output: [{source: Rendered, to: {path: workflow.Body}}]
+workflow: {name: CatalogRenderSample, dataType: IxIFlow.Samples.MessageData}
+definitions:
+  - kind: renderTemplate
+    id: render
+    template: quote@1
+    modelType: IxIFlow.Samples.QuoteData
+    model: {path: workflow.Quote}
+    culture: {kind: constant, value: fr-CA}
+    output: [{source: Rendered, to: {path: workflow.Body}}]
 ```
 
 Publishing resolves an omitted version to the highest published template version and infers its declared model type. The canonical YAML records both the exact version and `modelType`. A build-time generator without a publishing catalog requires an explicit version and `modelType`. The generated activity is `RenderTemplate<TModel>`, with the same mappings and structure as fluent authoring. Rendering can use saga error policies; it has no compensation.

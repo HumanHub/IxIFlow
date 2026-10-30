@@ -20,25 +20,34 @@ internal static class LiquidModel
         var found = new List<Type>();
         var seen = new HashSet<Type>();
         var pending = new Queue<Type>([model]);
+
         while (pending.Count > 0)
         {
             var type = Unwrap(pending.Dequeue());
+
             // Seen before a collection is opened, so a collection of itself is opened once.
             if (IsScalar(type) || type == typeof(object) || !seen.Add(type))
                 continue;
+
             if (DictionaryValue(type) is { } value)
             {
                 pending.Enqueue(value);
+
                 continue;
             }
+
             if (Element(type) is { } element)
             {
                 pending.Enqueue(element);
+
                 continue;
             }
+
             found.Add(type);
+
             foreach (var member in Members(type).Where(member => member.Readable))
                 pending.Enqueue(member.Type);
+
             // An interface's own properties do not include those of the interfaces it extends.
             if (type.IsInterface)
             {
@@ -46,6 +55,7 @@ internal static class LiquidModel
                     pending.Enqueue(inherited);
             }
         }
+
         return found;
     }
 
@@ -53,23 +63,28 @@ internal static class LiquidModel
     public static IEnumerable<ModelMember> Members(Type type)
     {
         var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance).AsEnumerable();
+
         if (type.IsInterface)
         {
             properties = properties.Concat(type.GetInterfaces()
                 .SelectMany(inherited => inherited.GetProperties(BindingFlags.Public | BindingFlags.Instance)));
         }
+
         foreach (var property in properties)
         {
             if (property.GetIndexParameters().Length == 0 && property.GetMethod is { IsPublic: true })
             {
                 var declared = Unwrap(property.PropertyType);
+
                 yield return new ModelMember(property.Name, declared, target => AsDeclared(declared,
                     property.GetValue(target)));
             }
         }
+
         foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Instance))
         {
             var declared = Unwrap(field.FieldType);
+
             yield return new ModelMember(field.Name, declared, target => AsDeclared(declared, field.GetValue(target)));
         }
     }
@@ -80,9 +95,11 @@ internal static class LiquidModel
     {
         if (value is not IDictionary || DictionaryValue(declared) != null || Element(declared) is not { } element)
             return value;
+
         var items = ((IEnumerable)value).Cast<object>().Where(element.IsInstanceOfType).ToArray();
         var pairs = Array.CreateInstance(element, items.Length);
         Array.Copy(items, pairs, items.Length);
+
         return pairs;
     }
 
@@ -94,10 +111,13 @@ internal static class LiquidModel
     {
         if (IsScalar(type))
             return true;
+
         if (typeof(IDictionary).IsAssignableFrom(type) || DictionaryValue(type) != null)
             return DictionaryValue(type) is { } value && value != typeof(object) && Readable(value);
+
         if (Element(type) is { } element)
             return typeof(FluidValue).IsAssignableFrom(element) || Readable(element);
+
         return true;
     }
 
@@ -120,12 +140,15 @@ internal static class LiquidModel
     {
         // A collection of itself, such as a tree node enumerating its children, is as readable as its members.
         var seen = new HashSet<Type>();
+
         for (type = Unwrap(type); seen.Add(type); type = Unwrap(type))
         {
             if (type == typeof(object))
                 return false;
+
             if (IsScalar(type))
                 return true;
+
             if (DictionaryValue(type) is { } value)
                 type = value;
             else if (Element(type) is { } element)
@@ -133,6 +156,7 @@ internal static class LiquidModel
             else
                 return true;
         }
+
         return true;
     }
 
@@ -143,9 +167,10 @@ internal static class LiquidModel
     public static bool IsScalar(Type type)
     {
         type = Unwrap(type);
+
         return type.IsEnum || Type.GetTypeCode(type) != TypeCode.Object || type == typeof(DateTimeOffset) ||
-               type == typeof(TimeSpan) || typeof(IConvertible).IsAssignableFrom(type) ||
-               typeof(IFormattable).IsAssignableFrom(type);
+            type == typeof(TimeSpan) || typeof(IConvertible).IsAssignableFrom(type) ||
+            typeof(IFormattable).IsAssignableFrom(type);
     }
 
     /// <summary>
@@ -157,11 +182,14 @@ internal static class LiquidModel
     {
         if (IsScalar(type))
             return null;
+
         var generic = Implementations(type)
             .FirstOrDefault(candidate => candidate.IsGenericType &&
-                                         candidate.GetGenericTypeDefinition() == typeof(IDictionary<,>));
+                candidate.GetGenericTypeDefinition() == typeof(IDictionary<,>));
+
         if (generic != null)
             return generic.GetGenericArguments()[0] == typeof(string) ? generic.GetGenericArguments()[1] : typeof(object);
+
         return typeof(IDictionary).IsAssignableFrom(type) ? typeof(object) : null;
     }
 
@@ -170,13 +198,16 @@ internal static class LiquidModel
     {
         if (IsScalar(type) || DictionaryValue(type) != null)
             return null;
+
         if (type.IsArray)
             return type.GetElementType();
+
         var generic = Implementations(type)
             .Where(candidate => candidate.IsGenericType &&
-                                candidate.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+                candidate.GetGenericTypeDefinition() == typeof(IEnumerable<>))
             .Select(candidate => candidate.GetGenericArguments()[0])
             .FirstOrDefault();
+
         return generic ?? (typeof(IEnumerable).IsAssignableFrom(type) ? typeof(object) : null);
     }
 

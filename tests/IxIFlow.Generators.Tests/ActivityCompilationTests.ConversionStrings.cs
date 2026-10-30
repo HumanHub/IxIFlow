@@ -33,17 +33,23 @@ public sealed partial class ActivityCompilationTests
         [InlineData("TimeSpan", "'00:00:05'", typeof(TimeSpan))]
         public void ScalarDefaultsEmitTypedMetadata(string typeName, string literal, Type expectedType)
         {
-            var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: " + typeName + ", default: " + literal + "}}\nbody: |\n  await Task.Yield();";
+            var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: " + typeName + ", default: " + literal +
+                "}}\nbody: |\n  await Task.Yield();";
+
             var result = ActivityCompilation.Compile(yaml);
             Assert.True(result.Success, string.Join("\n", result.Diagnostics));
             var context = new AssemblyLoadContext("activity-default", isCollectible: true);
+
             try
             {
                 var assembly = context.LoadFromStream(new MemoryStream(result.Assembly));
                 var property = assembly.GetType("IxIFlow.Activities.Acme.Defaults")!.GetProperty("Value")!;
                 Assert.IsType(expectedType, property.GetCustomAttribute<DefaultValueAttribute>()!.Value);
             }
-            finally { context.Unload(); }
+            finally
+            {
+                context.Unload();
+            }
         }
 
         [Theory]
@@ -59,11 +65,13 @@ public sealed partial class ActivityCompilationTests
         {
             var previous = CultureInfo.CurrentCulture;
             CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+
             try
             {
                 var minimum = runtime.GetField("MinValue")!.GetValue(null)!;
                 var maximum = runtime.GetField("MaxValue")!.GetValue(null)!;
                 var hundred = Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture);
+
                 foreach (var type in new[] { alias, "System . Nullable /* conversion string */ < @System . @" + runtime.Name + " >" })
                     AssertCompiledDefaults(type,
                     [
@@ -74,12 +82,14 @@ public sealed partial class ActivityCompilationTests
                         ("1e2", hundred), ("100.0", hundred)
                     ]);
             }
-            finally { CultureInfo.CurrentCulture = previous; }
+            finally
+            {
+                CultureInfo.CurrentCulture = previous;
+            }
         }
 
         [Fact]
         public void SignedHexadecimalStringsKeepTheConvertersTwosComplementValue() => AssertCompiledDefaults("int?",
             [("\"0xFFFFFFFF\"", -1), ("\"0x80000000\"", int.MinValue), ("\"0x7fffffff\"", int.MaxValue)]);
-
     }
 }

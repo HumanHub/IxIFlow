@@ -37,20 +37,25 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
     public List<(IOperation Use, string Member)> Uses(IOperation code, bool destination, CancellationToken cancellation)
     {
         var uses = new List<(IOperation, string)>();
+
         var assigned = destination && code is IAnonymousFunctionOperation { Body.Operations.Length: 1 } lambda &&
-                       lambda.Body.Operations[0] is IReturnOperation { ReturnedValue: { } returned }
-            ? EngineSymbols.Unwrapped(returned)
-            : null;
+            lambda.Body.Operations[0] is IReturnOperation { ReturnedValue: { } returned }
+                ? EngineSymbols.Unwrapped(returned)
+                : null;
+
         Walk(code, assigned, new HashSet<ISymbol>(SymbolEqualityComparer.Default), (use, member) =>
         {
             // Lowered operations lack source parents and a semantic model. Keep the
             // authored operation for diagnostics whose fixes need the lexical context.
             var source = use.SemanticModel == null ? Model(use.Syntax.SyntaxTree).GetOperation(use.Syntax, cancellation) : use;
+
             // Compiler-generated references can share syntax with an initializer or
             // statement; retain those references for the caller's member rules.
             uses.Add((source != null && source.Kind == use.Kind ? source : use, member));
+
             return false;
         }, cancellation, out _);
+
         return uses;
     }
 
@@ -58,6 +63,7 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
     public string? Leads(ISymbol target, CancellationToken cancellation)
     {
         var truncated = false;
+
         return Through(target, new HashSet<ISymbol>(SymbolEqualityComparer.Default), cancellation, ref truncated);
     }
 
@@ -69,32 +75,48 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
     {
         truncated = false;
         var pending = new Stack<(IOperation Operation, ControlFlowGraph? Graph)>();
-        if (assigned == null && MutationGraph(operation, cancellation) is { } lowered) PushGraph(lowered);
-        else pending.Push((operation, null));
+
+        if (assigned == null && MutationGraph(operation, cancellation) is { } lowered)
+            PushGraph(lowered);
+        else
+            pending.Push((operation, null));
+
         while (pending.Count > 0)
         {
             cancellation.ThrowIfCancellationRequested();
             var (each, graph) = pending.Pop();
+
             if (each is IFlowAnonymousFunctionOperation anonymous && graph != null)
             {
                 PushGraph(graph.GetAnonymousFunctionControlFlowGraph(anonymous, cancellation));
+
                 continue;
             }
+
             if (each is INameOfOperation or ITypeOfOperation || each is ILocalFunctionOperation && each != operation)
                 continue;
+
             string? member = null;
+
             foreach (var target in Targets(each, assigned))
-                if ((member = additionalImpurity?.Invoke(target) ?? ImpureMembers.Named(target) ?? Through(target, path, cancellation, ref truncated)) != null)
+                if ((member = additionalImpurity?.Invoke(target) ??
+                        ImpureMembers.Named(target) ?? Through(target, path, cancellation, ref truncated)) != null)
                     break;
+
             if (member != null)
             {
                 if (note(each, member))
                     return;
+
                 continue;
             }
-            if (each is IObjectCreationOperation { Initializer: { } initializer }) pending.Push((initializer, graph));
+
+            if (each is IObjectCreationOperation { Initializer: { } initializer })
+                pending.Push((initializer, graph));
+
             foreach (var step in AllSteps(MethodSteps(each)).Reverse())
-                if (step.Value != null) pending.Push((step.Value, graph));
+                if (step.Value != null)
+                    pending.Push((step.Value, graph));
         }
 
         void PushGraph(ControlFlowGraph graph)
@@ -103,8 +125,11 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
             // including the true/false calls of conditional logical operators.
             foreach (var block in graph.Blocks.Reverse())
             {
-                if (block.BranchValue != null) pending.Push((block.BranchValue, graph));
-                foreach (var statement in block.Operations.Reverse()) pending.Push((statement, graph));
+                if (block.BranchValue != null)
+                    pending.Push((block.BranchValue, graph));
+
+                foreach (var statement in block.Operations.Reverse())
+                    pending.Push((statement, graph));
             }
         }
     }
@@ -114,26 +139,38 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
     {
         if (operation is IMemberReferenceOperation member)
             yield return member.Member is IMethodSymbol method ? ResolveImplementation(method, member.Instance) : member.Member;
+
         if (operation is IPropertyReferenceOperation property && assigned != null && DestinationWrites(assigned).Contains(operation) &&
             !property.Property.ReturnsByRef && !property.Property.ReturnsByRefReadonly)
         {
-            if (property.Property.SetMethod != null) yield return ResolveImplementation(property.Property.SetMethod, property.Instance);
-            if (operation == assigned) yield break;
+            if (property.Property.SetMethod != null)
+                yield return ResolveImplementation(property.Property.SetMethod, property.Instance);
+
+            if (operation == assigned)
+                yield break;
         }
+
         foreach (var step in AllSteps(MethodSteps(operation)))
-            if (step.Method != null) yield return step.Method;
+            if (step.Method != null)
+                yield return step.Method;
     }
 
     private static IEnumerable<IOperation> DestinationWrites(IOperation target)
     {
         var links = new List<IOperation>();
-        for (IOperation? link = EngineSymbols.Unwrapped(target); link != null; link = link switch
-        {
-            IPropertyReferenceOperation property => property.Instance == null ? null : EngineSymbols.Unwrapped(property.Instance),
-            IArrayElementReferenceOperation array => EngineSymbols.Unwrapped(array.ArrayReference),
-            _ => null
-        }) links.Add(link);
+
+        for (IOperation? link = EngineSymbols.Unwrapped(target);
+             link != null;
+             link = link switch
+             {
+                 IPropertyReferenceOperation property => property.Instance == null ? null : EngineSymbols.Unwrapped(property.Instance),
+                 IArrayElementReferenceOperation array => EngineSymbols.Unwrapped(array.ArrayReference),
+                 _ => null
+             })
+            links.Add(link);
+
         links.Reverse();
+
         return AssignmentLocationChain.WrittenLinks(links, link => link.Type?.IsValueType == true).Select(index => links[index]);
     }
 
@@ -141,34 +178,48 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
     private string? Through(ISymbol target, HashSet<ISymbol> path, CancellationToken cancellation, ref bool truncated)
     {
         var key = Key(target);
+
         if (key == null)
             return null;
+
         if (_found.TryGetValue(key, out var known))
             return Named(key, known.Member);
+
         if (path.Count >= MaxDepth || !path.Add(key))
         {
             truncated = true;
+
             return null;
         }
+
         string? first = null;
         var incomplete = false;
+
         foreach (var body in Runs(key, cancellation))
         {
             Walk(body, null, path, (_, member) =>
             {
                 first = member;
+
                 return true;
             }, cancellation, out var cut);
+
             incomplete |= cut;
+
             if (first != null)
                 break;
         }
+
         if (first == null && key is IMethodSymbol method && ImplicitBase(method, cancellation) is { } constructor)
             first = Through(constructor, path, cancellation, ref incomplete);
+
         path.Remove(key);
+
         if (first != null || !incomplete)
             _found.TryAdd(key, new Found(first));
+
         truncated |= incomplete && first == null;
+
         return Named(key, first);
     }
 
@@ -180,13 +231,16 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
         {
             case IMethodSymbol method:
                 method = (method.PartialImplementationPart ?? method).OriginalDefinition;
+
                 // An implicit constructor has no syntax of its own but runs its type's initializers.
                 var declared = method is { MethodKind: MethodKind.Constructor, IsImplicitlyDeclared: true }
                     ? method.ContainingType.DeclaringSyntaxReferences
                     : method.DeclaringSyntaxReferences;
+
                 return method.IsAbstract || method.IsExtern || !InCompilation(declared) ? null : method;
             case IFieldSymbol { IsReadOnly: true } field:
                 field = field.OriginalDefinition;
+
                 return InCompilation(field.DeclaringSyntaxReferences) ? field : null;
             default:
                 return null;
@@ -219,6 +273,7 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
         foreach (var reference in method.DeclaringSyntaxReferences)
         {
             var syntax = reference.GetSyntax(cancellation);
+
             // A constructor declared on its type is a primary constructor, which runs the arguments it gives its base;
             // the rest of the type's code is not the constructor's.
             if (syntax is TypeDeclarationSyntax type)
@@ -227,13 +282,17 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
                     foreach (var call in type.BaseList.Types.OfType<PrimaryConstructorBaseTypeSyntax>())
                         if (Model(reference.SyntaxTree).GetOperation(call, cancellation) is { } arguments)
                             yield return arguments;
+
                 continue;
             }
+
             if (Model(reference.SyntaxTree).GetOperation(syntax, cancellation) is { } body)
                 yield return body;
         }
+
         if (!withInitializers || method.MethodKind is not (MethodKind.Constructor or MethodKind.StaticConstructor))
             yield break;
+
         // A constructor that chains to another of its type with this(...) leaves the initializers to that one, which
         // is walked through the call.
         if (method.DeclaringSyntaxReferences.Any(reference =>
@@ -242,6 +301,7 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
                     Initializer.ThisOrBaseKeyword.Text: "this"
                 }))
             yield break;
+
         foreach (var initializer in Initializers(method.ContainingType, method.IsStatic, cancellation))
             yield return initializer;
     }
@@ -250,18 +310,19 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
     public IEnumerable<IOperation> Initializers(INamedTypeSymbol type, bool isStatic, CancellationToken cancellation)
     {
         foreach (var member in type.GetMembers().Where(member => member.IsStatic == isStatic))
-            foreach (var reference in member.DeclaringSyntaxReferences)
+        foreach (var reference in member.DeclaringSyntaxReferences)
+        {
+            var initializer = reference.GetSyntax(cancellation) switch
             {
-                var initializer = reference.GetSyntax(cancellation) switch
-                {
-                    VariableDeclaratorSyntax variable => (SyntaxNode?)variable.Initializer,
-                    PropertyDeclarationSyntax property => property.Initializer,
-                    _ => null
-                };
-                if (initializer != null &&
-                    Model(reference.SyntaxTree).GetOperation(initializer, cancellation) is { } value)
-                    yield return value;
-            }
+                VariableDeclaratorSyntax variable => (SyntaxNode?)variable.Initializer,
+                PropertyDeclarationSyntax property => property.Initializer,
+                _ => null
+            };
+
+            if (initializer != null &&
+                Model(reference.SyntaxTree).GetOperation(initializer, cancellation) is { } value)
+                yield return value;
+        }
     }
 
     /// <summary>
@@ -280,12 +341,16 @@ internal sealed partial class WorkflowCode(Compilation compilation, System.Func<
                     _ => false
                 }))
             return null;
+
         var candidates = constructor.ContainingType.BaseType?.InstanceConstructors ?? [];
+
         if (candidates.FirstOrDefault(each => each.Parameters.Length == 0) is { } parameterless)
             return parameterless;
+
         var optional = candidates
             .Where(each => each.Parameters.All(parameter => parameter.IsOptional || parameter.IsParams))
             .ToList();
+
         return optional.Count == 1 ? optional[0] : null;
     }
 

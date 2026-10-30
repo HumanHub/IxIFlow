@@ -14,13 +14,16 @@ internal static class ActivityDefaultValue
     {
         if (boundType != null)
             return ConversionSymbol(boundType).ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
         var type = ConversionSyntax(SyntaxFactory.ParseTypeName(declaredType));
+
         return NumericType(type) ?? type.WithoutTrivia().ToString();
     }
 
     private static ITypeSymbol ConversionSymbol(ITypeSymbol type) =>
         type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable
-            ? nullable.TypeArguments[0] : type;
+            ? nullable.TypeArguments[0]
+            : type;
 
     private static TypeSyntax ConversionSyntax(TypeSyntax type) => type switch
     {
@@ -80,11 +83,13 @@ internal static class ActivityDefaultValue
     private static bool TryIntegerString(string literal, TypeConverter converter, out string text)
     {
         text = literal;
+
         try
         {
             // These known framework converters retain their whitespace, radix and
             // signed-hex semantics, and enforce the target type's range exactly.
             text = ((IFormattable)converter.ConvertFromInvariantString(literal)!).ToString(null, CultureInfo.InvariantCulture);
+
             return true;
         }
         catch (Exception error) when (error is ArgumentException or FormatException or OverflowException or NotSupportedException)
@@ -96,11 +101,17 @@ internal static class ActivityDefaultValue
     internal static bool TryGetText(ActivityMemberDocument member, out string text, ITypeSymbol? boundType = null)
     {
         text = Convert.ToString(member.Default, CultureInfo.InvariantCulture) ?? "";
-        if (member.Default == null) return true;
+
+        if (member.Default == null)
+            return true;
+
         var type = boundType == null
-            ? NumericType(ConversionSyntax(SyntaxFactory.ParseTypeName(member.Type))) : NumericType(boundType);
+            ? NumericType(ConversionSyntax(SyntaxFactory.ParseTypeName(member.Type)))
+            : NumericType(boundType);
+
         if (member.Default is string literal && IntegerConverter(type) is { } converter)
             return TryIntegerString(literal, converter, out text);
+
         var bounds = type switch
         {
             "sbyte" => ((BigInteger)sbyte.MinValue, (BigInteger)sbyte.MaxValue),
@@ -113,51 +124,81 @@ internal static class ActivityDefaultValue
             "ulong" => ((BigInteger)ulong.MinValue, (BigInteger)ulong.MaxValue),
             _ => ((BigInteger)0, (BigInteger)0)
         };
+
         if (bounds.Item2 != 0)
             return TryInteger(text, bounds.Item1, bounds.Item2, out text);
+
         if (type == "double")
         {
             if (!double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) ||
-                double.IsNaN(number) || double.IsInfinity(number)) return false;
+                double.IsNaN(number) || double.IsInfinity(number))
+                return false;
+
             text = number.ToString("R", CultureInfo.InvariantCulture);
         }
         else if (type == "float")
         {
             if (!float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) ||
-                float.IsNaN(number) || float.IsInfinity(number)) return false;
+                float.IsNaN(number) || float.IsInfinity(number))
+                return false;
+
             text = number.ToString("R", CultureInfo.InvariantCulture);
         }
-        else if (type == "decimal") return TryDecimal(text, out text);
+        else if (type == "decimal")
+            return TryDecimal(text, out text);
+
         return true;
     }
 
     private static bool TryInteger(string literal, BigInteger minimum, BigInteger maximum, out string text)
     {
         text = literal;
-        if (!TryParts(literal, out var negative, out var significant, out var scale)) return false;
+
+        if (!TryParts(literal, out var negative, out var significant, out var scale))
+            return false;
+
         // Bound the digit count before allocating zeros, including arbitrarily large exponents.
-        if (scale < 0 || significant.Length + scale > 20) return false;
+        if (scale < 0 || significant.Length + scale > 20)
+            return false;
+
         var integer = BigInteger.Parse(significant + new string('0', (int)scale), CultureInfo.InvariantCulture);
-        if (negative) integer = -integer;
-        if (integer < minimum || integer > maximum) return false;
+
+        if (negative)
+            integer = -integer;
+
+        if (integer < minimum || integer > maximum)
+            return false;
+
         text = integer.ToString(CultureInfo.InvariantCulture);
+
         return true;
     }
 
     private static bool TryDecimal(string literal, out string text)
     {
         text = literal;
+
         if (!TryParts(literal.Trim(), out var negative, out var significant, out var scale) ||
-            scale < -28 || significant.Length + BigInteger.Max(scale, 0) > 29) return false;
+            scale < -28 || significant.Length + BigInteger.Max(scale, 0) > 29)
+            return false;
+
         var coefficient = BigInteger.Parse(significant, CultureInfo.InvariantCulture);
-        if (scale > 0) coefficient *= BigInteger.Pow(10, (int)scale);
-        if (coefficient > (BigInteger)decimal.MaxValue) return false;
+
+        if (scale > 0)
+            coefficient *= BigInteger.Pow(10, (int)scale);
+
+        if (coefficient > (BigInteger)decimal.MaxValue)
+            return false;
+
         // Construct the exact 96-bit coefficient and scale; no parser rounding or underflow.
         var mask = (BigInteger)uint.MaxValue;
+
         var number = new decimal(unchecked((int)(uint)(coefficient & mask)),
             unchecked((int)(uint)((coefficient >> 32) & mask)), unchecked((int)(uint)(coefficient >> 64)),
             negative, scale < 0 ? (byte)-scale : (byte)0);
+
         text = number.ToString(CultureInfo.InvariantCulture);
+
         return true;
     }
 
@@ -166,18 +207,29 @@ internal static class ActivityDefaultValue
         negative = false;
         significant = "0";
         scale = BigInteger.Zero;
-        if (!DocumentNumber.IsLiteral(literal)) return false;
+
+        if (!DocumentNumber.IsLiteral(literal))
+            return false;
+
         negative = literal[0] == '-';
         var unsigned = literal.TrimStart('+', '-');
         var exponentIndex = unsigned.IndexOfAny(new[] { 'e', 'E' });
         var mantissa = exponentIndex < 0 ? unsigned : unsigned.Substring(0, exponentIndex);
-        var exponent = exponentIndex < 0 ? BigInteger.Zero : BigInteger.Parse(unsigned.Substring(exponentIndex + 1), CultureInfo.InvariantCulture);
+
+        var exponent = exponentIndex < 0
+            ? BigInteger.Zero
+            : BigInteger.Parse(unsigned.Substring(exponentIndex + 1), CultureInfo.InvariantCulture);
+
         var point = mantissa.IndexOf('.');
         var digits = mantissa.Replace(".", "").TrimStart('0');
-        if (digits.Length == 0) return true;
+
+        if (digits.Length == 0)
+            return true;
+
         scale = exponent - (point < 0 ? 0 : mantissa.Length - point - 1);
         significant = digits.TrimEnd('0');
         scale += digits.Length - significant.Length;
+
         return true;
     }
 }

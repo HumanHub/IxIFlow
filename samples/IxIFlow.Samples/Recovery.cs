@@ -20,8 +20,7 @@ public sealed class ReservationData
 [WorkflowActivity("samples.reserve-quote")]
 public sealed class ReserveQuote(IQuoteReservations reservations) : IRecoverableActivity<string>
 {
-    [ActivityOutput]
-    public string Reference { get; set; } = "";
+    [ActivityOutput] public string Reference { get; set; } = "";
 
     public string CaptureRecoveryState(IActivityContext context) => context.InvocationId;
 
@@ -32,9 +31,12 @@ public sealed class ReserveQuote(IQuoteReservations reservations) : IRecoverable
         CancellationToken cancellationToken = default)
     {
         var reference = await reservations.FindAsync(invocationId, cancellationToken);
+
         if (reference == null)
             return new ActivityRecoveryResult<string>.Unresolved("Check the reservation with the provider");
+
         Reference = reference;
+
         return new ActivityRecoveryResult<string>.Completed();
     }
 }
@@ -52,6 +54,7 @@ public static class Recovery
         string observedReference)
     {
         var pending = (await client.GetPendingActivitiesAsync(instanceId)).Single();
+
         return await client.ResolveAsync(instanceId, pending.InvocationId,
             ActivityResolution.Completed(new Dictionary<string, object?> { [nameof(ReserveQuote.Reference)] = observedReference },
                 note: "Confirmed with reservation provider", decidedBy: "operator"));

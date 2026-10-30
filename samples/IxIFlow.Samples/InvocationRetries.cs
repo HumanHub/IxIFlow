@@ -22,12 +22,14 @@ public static class InvocationRetries
 {
     public static WorkflowDefinition Definition() =>
         new WorkflowBuilder<LookupRequest, object>([], "RetryLookup")
+
             // snippet: invocation-retries
             .Invoke<LookupData>("RetryLookupChild", 1, setup => setup
                 .Input(child => child.Query).From(ctx => ctx.WorkflowData.Query!)
                 .OnError<InvalidOperationException>(error => error.ThenRetry(new RetryPolicy(
                     TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), 2, 2)))
                 .Output(child => child.Response).To(ctx => ctx.WorkflowData.Response))
+
             // end-snippet: invocation-retries
             .WithId("lookup").Build();
 
@@ -45,6 +47,7 @@ public sealed class FetchLookup(ILookup lookup) : IAsyncActivity
 {
     public string Query { get; set; } = "";
     public string? Response { get; set; }
+
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
         Response = await lookup.FetchAsync(Query, cancellationToken);
 }

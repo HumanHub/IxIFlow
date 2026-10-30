@@ -21,7 +21,7 @@ public class SagaExecutionTests
     public SagaExecutionTests(ITestOutputHelper output)
     {
         _output = output;
-        
+
         var services = new ServiceCollection();
 
         // Register mock implementations for persistence dependencies
@@ -55,8 +55,9 @@ public class SagaExecutionTests
                 .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                 .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
             .Saga(saga =>
-            { saga
-                .Step<SagaReserveInventoryAsyncActivity>(setup => setup
+            {
+                saga
+                    .Step<SagaReserveInventoryAsyncActivity>(setup => setup
                         .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
                         .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                         .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId)
@@ -66,17 +67,17 @@ public class SagaExecutionTests
                             comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
                             comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
                         }))
-                .Step<SagaCalculatePricingAsyncActivity>(setup => setup
-                                .Input(act => act.ReservationId).From(ctx => ctx.PreviousStep.ReservationId)
-                                .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
-                                .Output(act => act.FinalPrice).To(ctx => ctx.WorkflowData.FinalPrice)
-                                .Output(act => act.Step2Completed).To(ctx => ctx.WorkflowData.Step2Completed)
-                                .CompensateWith<RevertPricingCompensationAsyncActivity>(comp =>
-                                {
-                                    comp.Input(act => act.FinalPrice).From(ctx => ctx.CurrentStep.FinalPrice);
-                                    comp.Output(act => act.Step2Compensated).To(ctx => ctx.WorkflowData.Step2Compensated);
-                                }))
-                .Step<SagaProcessPaymentAsyncActivity>(setup => setup
+                    .Step<SagaCalculatePricingAsyncActivity>(setup => setup
+                        .Input(act => act.ReservationId).From(ctx => ctx.PreviousStep.ReservationId)
+                        .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
+                        .Output(act => act.FinalPrice).To(ctx => ctx.WorkflowData.FinalPrice)
+                        .Output(act => act.Step2Completed).To(ctx => ctx.WorkflowData.Step2Completed)
+                        .CompensateWith<RevertPricingCompensationAsyncActivity>(comp =>
+                        {
+                            comp.Input(act => act.FinalPrice).From(ctx => ctx.CurrentStep.FinalPrice);
+                            comp.Output(act => act.Step2Compensated).To(ctx => ctx.WorkflowData.Step2Compensated);
+                        }))
+                    .Step<SagaProcessPaymentAsyncActivity>(setup => setup
                         .Input(act => act.FinalPrice).From(ctx => ctx.PreviousStep.FinalPrice)
                         .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
                         .Input(act => act.ShouldFail).From(ctx => false) // Don't fail - happy path
@@ -148,6 +149,7 @@ public class SagaExecutionTests
                                 .CompensateWith<ReleaseInventoryCompensationAsyncActivity>(comp =>
                                 {
                                     comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
+
                                     comp.Output(act => act.Step1Compensated)
                                         .To(ctx => ctx.WorkflowData.Step1Compensated);
                                 }))
@@ -159,6 +161,7 @@ public class SagaExecutionTests
                                 .CompensateWith<RevertPricingCompensationAsyncActivity>(comp =>
                                 {
                                     comp.Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.FinalPrice);
+
                                     comp.Output(act => act.Step2Compensated)
                                         .To(ctx => ctx.WorkflowData.Step2Compensated);
                                 }))
@@ -172,6 +175,7 @@ public class SagaExecutionTests
                                 {
                                     comp.Input(act => act.TransactionId).From(ctx => ctx.WorkflowData.TransactionId);
                                     comp.Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.FinalPrice);
+
                                     comp.Output(act => act.Step3Compensated)
                                         .To(ctx => ctx.WorkflowData.Step3Compensated);
                                 }));
@@ -402,7 +406,9 @@ public class SagaExecutionTests
                             .Output(act => act.Step1Completed).To(ctx => ctx.WorkflowData.Step1Completed)
                             .CompensateWith<ReleaseInventoryCompensationAsyncActivity>(comp =>
                             {
-                                comp.Input(act => act.ReservationId).From(ctx => ctx.CurrentStep.ProductId.ToString()); //just to test access to current step
+                                comp.Input(act => act.ReservationId)
+                                    .From(ctx => ctx.CurrentStep.ProductId.ToString()); //just to test access to current step
+
                                 comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
                                 comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
                             }))
@@ -410,6 +416,7 @@ public class SagaExecutionTests
                             .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                             .Output(act => act.Step2Completed).To(ctx => ctx.WorkflowData.Step2Completed));
                 });
+
                 // NO explicit error handler - should use default behavior (Compensate + Terminate)
             })
             .Catch<InvalidOperationException, MessageFault>(catchBlock =>
@@ -476,9 +483,11 @@ public class SagaExecutionTests
                                 .CompensateWith<ReleaseInventoryCompensationAsyncActivity>(comp =>
                                 {
                                     comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
+
                                     comp.Output(act => act.Step1Compensated)
                                         .To(ctx => ctx.WorkflowData.Step1Compensated);
                                 }))
+
                             // Step2: CalculatePricing (should be compensated - after target)
                             .Step<SagaCalculatePricingAsyncActivity>(setup => setup
                                 .Input(act => act.ReservationId).From(ctx => ctx.PreviousStep.ReservationId)
@@ -488,9 +497,11 @@ public class SagaExecutionTests
                                 .CompensateWith<RevertPricingCompensationAsyncActivity>(comp =>
                                 {
                                     comp.Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.FinalPrice);
+
                                     comp.Output(act => act.Step2Compensated)
                                         .To(ctx => ctx.WorkflowData.Step2Compensated);
                                 }))
+
                             // Step3: ProcessPayment (FAILS - should not be compensated)
                             .Step<SagaProcessPaymentAsyncActivity>(setup => setup
                                 .Input(act => act.FinalPrice).From(ctx => ctx.PreviousStep.FinalPrice)
@@ -502,6 +513,7 @@ public class SagaExecutionTests
                                 {
                                     comp.Input(act => act.TransactionId).From(ctx => ctx.WorkflowData.TransactionId);
                                     comp.Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.FinalPrice);
+
                                     comp.Output(act => act.Step3Compensated)
                                         .To(ctx => ctx.WorkflowData.Step3Compensated);
                                 }));
@@ -534,8 +546,8 @@ public class SagaExecutionTests
 
         // CORRECT EXPECTATIONS based on INCLUSIVE CompensateUpTo<Step1> semantics:
         // CompensateUpTo<Step1> should compensate: Step2, Step1 (INCLUSIVE target)
-        Assert.True(finished.Step1Compensated);  // Should be compensated (INCLUSIVE target step)
-        Assert.True(finished.Step2Compensated);  // Should be compensated (after target step, successful)
+        Assert.True(finished.Step1Compensated); // Should be compensated (INCLUSIVE target step)
+        Assert.True(finished.Step2Compensated); // Should be compensated (after target step, successful)
         Assert.False(finished.Step3Compensated); // Should NOT be compensated (failed step)
 
         // Error handler should have executed
@@ -618,6 +630,7 @@ public class SagaExecutionTests
             .Saga(saga =>
             {
                 saga
+
                     //.Suspend()
                     //.If(x=>x.SuspendNeededToCorrectData, then=> //allow user to select another model
                     //    then
@@ -651,7 +664,7 @@ public class SagaExecutionTests
                         .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                         .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId)
                         .Output(act => act.Step1Completed).To(ctx => ctx.WorkflowData.Step1Completed)
-                        .OnError(x=>x.ThenRetry(1))
+                        .OnError(x => x.ThenRetry(1))
                         .CompensateWith<ReleaseInventoryCompensationAsyncActivity>(comp =>
                         {
                             comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
@@ -701,8 +714,12 @@ public class SagaExecutionTests
             ConfirmedBy = "TestManager",
             Notes = "Order confirmed for testing"
         };
+
         var resumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, confirmationEvent);
-        Assert.True(resumeResult.Status == WorkflowExecutionStatus.Success, $"Resume returned {resumeResult.Status}: {resumeResult.ErrorMessage}"); // Should succeed after resume
+
+        Assert.True(resumeResult.Status == WorkflowExecutionStatus.Success,
+            $"Resume returned {resumeResult.Status}: {resumeResult.ErrorMessage}"); // Should succeed after resume
+
         // Use the resumed workflow data, not the original
         var finalWorkflowData = (SagaTestData)resumeResult.WorkflowData!;
         Assert.Equal(workflowData.ProductId, finalWorkflowData.SuspensionMessage); // Should contain the confirmed product ID
@@ -732,24 +749,24 @@ public class SagaExecutionTests
             {
                 // Step 1: Always succeeds, has compensation
                 saga.Step<SagaReserveInventoryAsyncActivity>(setup => setup
-                    .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId)
-                    .Output(act => act.Step1Completed).To(ctx => ctx.WorkflowData.Step1Completed)
-                    .CompensateWith<ReleaseInventoryCompensationAsyncActivity>(comp =>
-                    {
-                        comp.Input(act => act.UselessProperty).From(ctx => ctx.CurrentStep.ProductId);
-                        comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
-                        comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
-                    }))
-                
-                // Step 2: Always fails to trigger compensation
-                .Step<SagaProcessPaymentAsyncActivity>(setup => setup
-                    .Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.Amount)
-                    .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
-                    .Input(act => act.ShouldFail).From(ctx => true) // FORCE FAILURE
-                    .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
-                    .Output(act => act.Step3Completed).To(ctx => ctx.WorkflowData.Step3Completed));
+                        .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId)
+                        .Output(act => act.Step1Completed).To(ctx => ctx.WorkflowData.Step1Completed)
+                        .CompensateWith<ReleaseInventoryCompensationAsyncActivity>(comp =>
+                        {
+                            comp.Input(act => act.UselessProperty).From(ctx => ctx.CurrentStep.ProductId);
+                            comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
+                            comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
+                        }))
+
+                    // Step 2: Always fails to trigger compensation
+                    .Step<SagaProcessPaymentAsyncActivity>(setup => setup
+                        .Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.Amount)
+                        .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
+                        .Input(act => act.ShouldFail).From(ctx => true) // FORCE FAILURE
+                        .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
+                        .Output(act => act.Step3Completed).To(ctx => ctx.WorkflowData.Step3Completed));
             })
             .OnError<PaymentProcessingException>(error =>
                 error.Compensate().ThenTerminate()) // Should compensate all and terminate
@@ -758,16 +775,19 @@ public class SagaExecutionTests
         // ACT
         _output.WriteLine("DEBUG: Executing simple compensation test...");
         _output.WriteLine($"BEFORE: Step1Completed = {workflowData.Step1Completed}, Step1Compensated = {workflowData.Step1Compensated}");
-        
+
         // DEBUG: Print workflow structure  
-_output.WriteLine("WORKFLOW STRUCTURE:");
+        _output.WriteLine("WORKFLOW STRUCTURE:");
+
         for (int i = 0; i < workflow.Steps.Count; i++)
         {
             var step = workflow.Steps[i];
             _output.WriteLine($"  Step {i}: {step.Name} (Type: {step.StepType})");
+
             if (step.StepType == WorkflowStepType.Saga)
             {
                 _output.WriteLine($"    SequenceSteps Count: {step.SequenceSteps?.Count ?? 0}");
+
                 if (step.SequenceSteps != null)
                 {
                     for (int j = 0; j < step.SequenceSteps.Count; j++)
@@ -778,7 +798,7 @@ _output.WriteLine("WORKFLOW STRUCTURE:");
                 }
             }
         }
-        
+
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
         var finished = Assert.IsType<SagaTestData>(result.WorkflowData);
 
@@ -791,18 +811,18 @@ _output.WriteLine("WORKFLOW STRUCTURE:");
         // ASSERT
         Assert.True(finished.Step1Completed, "Step 1 should have completed successfully");
         Assert.False(finished.Step3Completed, "Step 3 should have failed");
-        
+
         // THE KEY TEST: Is compensation working?
         if (!finished.Step1Compensated)
         {
-        _output.WriteLine("COMPENSATION DID NOT EXECUTE - This is the bug we need to fix!");
+            _output.WriteLine("COMPENSATION DID NOT EXECUTE - This is the bug we need to fix!");
             _output.WriteLine("Expected: Step1Compensated = true");
             _output.WriteLine($"Actual: Step1Compensated = {finished.Step1Compensated}");
             Assert.Fail("Fail on purpose to show output");
         }
         else
         {
-        _output.WriteLine("COMPENSATION EXECUTED SUCCESSFULLY");
+            _output.WriteLine("COMPENSATION EXECUTED SUCCESSFULLY");
         }
 
         // For now, just document the failure - we'll fix this
@@ -854,7 +874,7 @@ _output.WriteLine("WORKFLOW STRUCTURE:");
             .Build();
 
         // Act
-_output.WriteLine("DEBUG: Executing saga suspend test...");
+        _output.WriteLine("DEBUG: Executing saga suspend test...");
         _output.WriteLine($"BEFORE: Step1Completed = {workflowData.Step1Completed}");
 
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
@@ -875,6 +895,7 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
         Assert.False(workflowData.AnalyticsUpdated, "Analytics should not run - workflow is suspended");
 
         _output.WriteLine("SUSPEND TEST PASSED - Workflow properly suspended");
+
         //Assert.Fail(); // Fail on purpose to show output
     }
 
@@ -899,40 +920,37 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
             .Saga(saga =>
             {
                 saga.Step<SagaSmartReserveInventoryAsyncActivity>(setup => setup
-                    .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
-                    .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId)
-                    .Output(act => act.Step1Completed).To(ctx => ctx.WorkflowData.Step1Completed)
-                    .CompensateWith<ReleaseInventoryCompensationAsyncActivity>(comp =>
-                    {
-                        comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
-                        comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
-                    }))
-
-                .Switch(ctx => ctx.PreviousStep.ReservationId.Substring(0, 4), outcomes => outcomes // Use reservation prefix for branching
-                    .Case("CARD", cardPath => cardPath
-                        .Step<SagaProcessPaymentAsyncActivity>(setup => setup
-                            .Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.Amount)
-                            .Input(act => act.PaymentMethod).From(ctx => "CreditCard")
-                            .Input(act => act.ShouldFail).From(ctx => false)
-                            .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
-                            .Output(act => act.Step3Completed).To(ctx => ctx.WorkflowData.Step3Completed)))
-                    
-                    .Case("CASH", cashPath => cashPath
-                        .Step<SagaCashPaymentAsyncActivity>(setup => setup
-                            .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                            .Output(act => act.CashReceived).To(ctx => ctx.WorkflowData.CashReceived)
-                            .Output(act => act.Step2Completed).To(ctx => ctx.WorkflowData.Step2Completed)))
-                    
-                    .Case("CHCK", checkPath => checkPath
-                        .Suspend<OrderConfirmationEvent>("Waiting for check clearance"))
-                    
-                    .Default(defaultPath => defaultPath
-                        .Step<SagaLogUnknownPaymentAsyncActivity>(setup => setup
-                            .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
-                            .Output(act => act.LoggedUnknown).To(ctx => ctx.WorkflowData.LoggedUnknown))));
+                        .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
+                        .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId)
+                        .Output(act => act.Step1Completed).To(ctx => ctx.WorkflowData.Step1Completed)
+                        .CompensateWith<ReleaseInventoryCompensationAsyncActivity>(comp =>
+                        {
+                            comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
+                            comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
+                        }))
+                    .Switch(ctx => ctx.PreviousStep.ReservationId.Substring(0, 4), outcomes =>
+                        outcomes // Use reservation prefix for branching
+                            .Case("CARD", cardPath => cardPath
+                                .Step<SagaProcessPaymentAsyncActivity>(setup => setup
+                                    .Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.Amount)
+                                    .Input(act => act.PaymentMethod).From(ctx => "CreditCard")
+                                    .Input(act => act.ShouldFail).From(ctx => false)
+                                    .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
+                                    .Output(act => act.Step3Completed).To(ctx => ctx.WorkflowData.Step3Completed)))
+                            .Case("CASH", cashPath => cashPath
+                                .Step<SagaCashPaymentAsyncActivity>(setup => setup
+                                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
+                                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                                    .Output(act => act.CashReceived).To(ctx => ctx.WorkflowData.CashReceived)
+                                    .Output(act => act.Step2Completed).To(ctx => ctx.WorkflowData.Step2Completed)))
+                            .Case("CHCK", checkPath => checkPath
+                                .Suspend<OrderConfirmationEvent>("Waiting for check clearance"))
+                            .Default(defaultPath => defaultPath
+                                .Step<SagaLogUnknownPaymentAsyncActivity>(setup => setup
+                                    .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
+                                    .Output(act => act.LoggedUnknown).To(ctx => ctx.WorkflowData.LoggedUnknown))));
             })
             .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
@@ -989,44 +1007,41 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
             .Saga(saga =>
             {
                 saga.Step<SagaSmartReserveInventoryAsyncActivity>(setup => setup
-                    .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
-                    .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId)
-                    .Output(act => act.Step1Completed).To(ctx => ctx.WorkflowData.Step1Completed)
-                    .CompensateWith<ReleaseInventoryCompensationAsyncActivity>(comp =>
-                    {
-                        comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
-                        comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
-                    }))
-
-                .Switch(ctx => ctx.PreviousStep.ReservationId.Substring(0, 4), outcomes => outcomes // Use reservation prefix for branching
-                    .Case("CARD", cardPath => cardPath
-                        .Step<SagaProcessPaymentAsyncActivity>(setup => setup
-                            .Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.Amount)
-                            .Input(act => act.PaymentMethod).From(ctx => "CreditCard")
-                            .Input(act => act.ShouldFail).From(ctx => false)
-                            .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
-                            .Output(act => act.Step3Completed).To(ctx => ctx.WorkflowData.Step3Completed)))
-                    
-                    .Case("CASH", cashPath => cashPath
-                        .Step<SagaCashPaymentAsyncActivity>(setup => setup
-                            .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                            .Output(act => act.CashReceived).To(ctx => ctx.WorkflowData.CashReceived)
-                            .Output(act => act.Step2Completed).To(ctx => ctx.WorkflowData.Step2Completed)))
-                    
-                    .Case("CHCK", checkPath => checkPath
-                        .Suspend<OrderConfirmationEvent>("Waiting for check clearance",
-                            (evt, ctx) => evt.IsConfirmed,
-                            setup => setup
-                                .Input(act => act.ConfirmedProductId).From(ctx => ctx.WorkflowData.ProductId)
-                                .Output(act => act.ConfirmedProductId).To(ctx => ctx.WorkflowData.SuspensionMessage)))
-                    
-                    .Default(defaultPath => defaultPath
-                        .Step<SagaLogUnknownPaymentAsyncActivity>(setup => setup
-                            .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
-                            .Output(act => act.LoggedUnknown).To(ctx => ctx.WorkflowData.LoggedUnknown))));
+                        .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
+                        .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId)
+                        .Output(act => act.Step1Completed).To(ctx => ctx.WorkflowData.Step1Completed)
+                        .CompensateWith<ReleaseInventoryCompensationAsyncActivity>(comp =>
+                        {
+                            comp.Input(act => act.ReservationId).From(ctx => ctx.WorkflowData.ReservationId);
+                            comp.Output(act => act.Step1Compensated).To(ctx => ctx.WorkflowData.Step1Compensated);
+                        }))
+                    .Switch(ctx => ctx.PreviousStep.ReservationId.Substring(0, 4), outcomes =>
+                        outcomes // Use reservation prefix for branching
+                            .Case("CARD", cardPath => cardPath
+                                .Step<SagaProcessPaymentAsyncActivity>(setup => setup
+                                    .Input(act => act.FinalPrice).From(ctx => ctx.WorkflowData.Amount)
+                                    .Input(act => act.PaymentMethod).From(ctx => "CreditCard")
+                                    .Input(act => act.ShouldFail).From(ctx => false)
+                                    .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
+                                    .Output(act => act.Step3Completed).To(ctx => ctx.WorkflowData.Step3Completed)))
+                            .Case("CASH", cashPath => cashPath
+                                .Step<SagaCashPaymentAsyncActivity>(setup => setup
+                                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
+                                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                                    .Output(act => act.CashReceived).To(ctx => ctx.WorkflowData.CashReceived)
+                                    .Output(act => act.Step2Completed).To(ctx => ctx.WorkflowData.Step2Completed)))
+                            .Case("CHCK", checkPath => checkPath
+                                .Suspend<OrderConfirmationEvent>("Waiting for check clearance",
+                                    (evt, ctx) => evt.IsConfirmed,
+                                    setup => setup
+                                        .Input(act => act.ConfirmedProductId).From(ctx => ctx.WorkflowData.ProductId)
+                                        .Output(act => act.ConfirmedProductId).To(ctx => ctx.WorkflowData.SuspensionMessage)))
+                            .Default(defaultPath => defaultPath
+                                .Step<SagaLogUnknownPaymentAsyncActivity>(setup => setup
+                                    .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
+                                    .Output(act => act.LoggedUnknown).To(ctx => ctx.WorkflowData.LoggedUnknown))));
             })
             .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
@@ -1035,7 +1050,7 @@ _output.WriteLine("DEBUG: Executing saga suspend test...");
             .Build();
 
         // Act
-_output.WriteLine("TESTING: Switch pattern with CHECK payment (should suspend)...");
+        _output.WriteLine("TESTING: Switch pattern with CHECK payment (should suspend)...");
         _output.WriteLine($"PaymentMethod: {workflowData.PaymentMethod}");
 
         var result = await _workflowEngine.RunAsync(workflow, workflowData);
@@ -1054,7 +1069,7 @@ _output.WriteLine("TESTING: Switch pattern with CHECK payment (should suspend)..
 
         // The ReservationId should start with "CHCK" (based on CHECK payment method)
         Assert.StartsWith("CHCK", finished.ReservationId);
-        
+
         // None of the other payment paths should have executed
         Assert.False(finished.Step3Completed, "Card payment should NOT have executed");
         Assert.False(finished.Step2Completed, "Cash payment should NOT have executed");
@@ -1065,18 +1080,19 @@ _output.WriteLine("TESTING: Switch pattern with CHECK payment (should suspend)..
         Assert.False(finished.AnalyticsUpdated, "Analytics should NOT run - workflow is suspended");
 
         _output.WriteLine("Switch pattern suspended successfully - Check clearance branch selected");
-        
+
         // TEST INPUT MAPPING: Verify that input mapping worked during suspend
         // The suspend should have received the ProductId from workflow data as ConfirmedProductId
         var suspendedWorkflowData = (SagaTestData)result.WorkflowData!;
         _output.WriteLine($"TESTING INPUT MAPPING: Expected ProductId '{finished.ProductId}' should be available to suspend step");
+
         // Note: We can't directly access the suspend step's input since it's internal to the engine,
         // but we'll verify the workflow data is intact and ready for the suspend step
         Assert.Equal(workflowData.ProductId, suspendedWorkflowData.ProductId); // Input source should be preserved
-        
+
         // Test resume functionality
         _output.WriteLine("TESTING: Resuming workflow with check confirmation...");
-        
+
         var confirmationEvent = new OrderConfirmationEvent
         {
             OrderId = workflowData.OrderId,
@@ -1086,30 +1102,38 @@ _output.WriteLine("TESTING: Switch pattern with CHECK payment (should suspend)..
             ConfirmedBy = "CheckClearanceManager",
             Notes = "Check cleared successfully"
         };
-        
+
         _output.WriteLine($"RESUME EVENT: ConfirmedProductId = '{confirmationEvent.ConfirmedProductId}'");
 
         var resumeResult = await _workflowEngine.ResumeAsync(result.InstanceId, confirmationEvent);
-        
+
         // Assert resume success
         _output.WriteLine($"Resume Status: {resumeResult.Status}");
         _output.WriteLine($"Resume Result.Status: {resumeResult.Status}");
-        
+
         Assert.True(resumeResult.Status == WorkflowExecutionStatus.Success, "Workflow should complete successfully after resume");
         Assert.Equal(WorkflowExecutionStatus.Success, resumeResult.Status);
-        
+
         // TEST OUTPUT MAPPING: Use the resumed workflow data
         var finalWorkflowData = (SagaTestData)resumeResult.WorkflowData!;
-        _output.WriteLine($"OUTPUT MAPPING: Expected '{confirmationEvent.ConfirmedProductId}', Actual '{finalWorkflowData.SuspensionMessage}'");
-        Assert.Equal(confirmationEvent.ConfirmedProductId, finalWorkflowData.SuspensionMessage); // Should contain the confirmed product ID from resume event
+
+        _output.WriteLine(
+            $"OUTPUT MAPPING: Expected '{confirmationEvent.ConfirmedProductId}', Actual '{finalWorkflowData.SuspensionMessage}'");
+
+        Assert.Equal(confirmationEvent.ConfirmedProductId,
+            finalWorkflowData.SuspensionMessage); // Should contain the confirmed product ID from resume event
+
         Assert.True(finalWorkflowData.AnalyticsUpdated, "Analytics should run after resume");
 
         _output.WriteLine("SUSPEND/RESUME MAPPING TEST PASSED:");
         _output.WriteLine($"  - Input Mapping: ProductId '{finished.ProductId}' available to suspend step");
-        _output.WriteLine($"  - Output Mapping: Event ConfirmedProductId '{confirmationEvent.ConfirmedProductId}' -> SuspensionMessage '{finalWorkflowData.SuspensionMessage}'");
+
+        _output.WriteLine(
+            $"  - Output Mapping: Event ConfirmedProductId '{confirmationEvent.ConfirmedProductId}' -> SuspensionMessage '{finalWorkflowData.SuspensionMessage}'");
+
         _output.WriteLine("Switch pattern resumed and completed successfully");
     }
-    
+
     public void Dispose()
     {
         _serviceProvider?.Dispose();
@@ -1118,11 +1142,15 @@ _output.WriteLine("TESTING: Switch pattern with CHECK payment (should suspend)..
     /// <summary>
     ///     Mock implementation of IWorkflowStateRepository for testing
     /// </summary>
-    public class MockWorkflowStateRepository : InMemoryWorkflowStateRepository
+    public class MockWorkflowStateRepository : TestWorkflowStateRepository
     {
         public async Task<List<WorkflowInstance>> GetWorkflowInstancesAsync(string workflowName, int? version = null)
         {
-            var instances = await Task.WhenAll((await QueryInstancesAsync(new InstanceQuery(WorkflowName: workflowName, Limit: int.MaxValue))).Items.Select(async row => (await GetWorkflowInstanceAsync(row.InstanceId))!));
+            var instances =
+                await Task.WhenAll(
+                    (await QueryInstancesAsync(new InstanceQuery(WorkflowName: workflowName, Limit: int.MaxValue))).Items.Select(async
+                        row => (await GetWorkflowInstanceAsync(row.InstanceId))!));
+
             return instances.Where(instance => !version.HasValue || instance.WorkflowVersion == version.Value).ToList();
         }
     }
@@ -1130,6 +1158,7 @@ _output.WriteLine("TESTING: Switch pattern with CHECK payment (should suspend)..
     public class SagaCheckInventoryAsyncActivity : IAsyncActivity
     {
         public bool SuspendNeededToCorrectData { get; set; }
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             throw new NotImplementedException();

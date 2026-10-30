@@ -14,10 +14,12 @@ internal static class WorkflowExpressionSignature
         ArgumentNullException.ThrowIfNull(expression);
         var shape = new Shape(handles);
         shape.Visit(expression);
+
         return JsonSerializer.Serialize(shape.Parts);
     }
 
     private static bool Generated(Type? type) => type?.IsDefined(typeof(CompilerGeneratedAttribute), false) == true;
+
     private static bool Anonymous(Type? type) => Generated(type) && type!.IsSealed &&
         type.BaseType == typeof(object) && type.GetConstructors().Length == 1 &&
         type.GetProperties().Length > 0 && type.GetProperties().All(property => property.SetMethod == null) &&
@@ -26,16 +28,25 @@ internal static class WorkflowExpressionSignature
 
     private static string TypeName(Type? type)
     {
-        if (type == null) return "";
+        if (type == null)
+            return "";
+
         if (Anonymous(type))
             return "anonymous:" + JsonSerializer.Serialize(type.GetProperties()
                 .Select(property => new { property.Name, Type = TypeName(property.PropertyType) }));
+
         if (type.GetCustomAttribute<WorkflowAttribute>(inherit: false) is { } identity)
             return "workflow:" + JsonSerializer.Serialize(new { identity.Name, identity.Version });
-        if (Generated(type)) return "closure";
-        if (type.IsArray) return TypeName(type.GetElementType()) + "[" + type.GetArrayRank() + "]";
+
+        if (Generated(type))
+            return "closure";
+
+        if (type.IsArray)
+            return TypeName(type.GetElementType()) + "[" + type.GetArrayRank() + "]";
+
         if (type.IsConstructedGenericType)
             return TypeName(type.GetGenericTypeDefinition()) + "<" + string.Join(',', type.GetGenericArguments().Select(TypeName)) + ">";
+
         return WorkflowTypeIdentity.StableName(type);
     }
 
@@ -51,6 +62,7 @@ internal static class WorkflowExpressionSignature
             Parts.Add(TypeName(node?.Type));
             var result = base.Visit(node);
             Parts.Add("end");
+
             return result;
         }
 
@@ -58,7 +70,9 @@ internal static class WorkflowExpressionSignature
         {
             if (!_parameters.TryGetValue(node, out var index))
                 _parameters.Add(node, index = _parameters.Count);
+
             Parts.Add(index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
             return node;
         }
 
@@ -75,6 +89,7 @@ internal static class WorkflowExpressionSignature
                 ItemScope item => Item(item),
                 _ => "object"
             });
+
             return node;
         }
 
@@ -88,15 +103,19 @@ internal static class WorkflowExpressionSignature
                     Parts.Add(Item(item));
                 else
                     Parts.Add("capture");
+
                 return node;
             }
+
             Member(node.Member);
+
             return base.VisitMember(node);
         }
 
         protected override Expression VisitMethodCall(MethodCallExpression node)
         {
             Member(node.Method);
+
             return base.VisitMethodCall(node);
         }
 
@@ -105,32 +124,39 @@ internal static class WorkflowExpressionSignature
             Member(node.Method);
             Parts.Add(node.IsLifted.ToString());
             Parts.Add(node.IsLiftedToNull.ToString());
+
             return base.VisitBinary(node);
         }
 
         protected override Expression VisitUnary(UnaryExpression node)
         {
             Member(node.Method);
+
             return base.VisitUnary(node);
         }
 
         protected override Expression VisitNew(NewExpression node)
         {
             Member(node.Constructor);
+
             if (node.Members != null)
-                foreach (var member in node.Members) Member(member);
+                foreach (var member in node.Members)
+                    Member(member);
+
             return base.VisitNew(node);
         }
 
         protected override Expression VisitIndex(IndexExpression node)
         {
             Member(node.Indexer);
+
             return base.VisitIndex(node);
         }
 
         protected override Expression VisitTypeBinary(TypeBinaryExpression node)
         {
             Parts.Add(TypeName(node.TypeOperand));
+
             return base.VisitTypeBinary(node);
         }
 
@@ -138,42 +164,51 @@ internal static class WorkflowExpressionSignature
         {
             Parts.Add(node.BindingType.ToString());
             Member(node.Member);
+
             return base.VisitMemberBinding(node);
         }
 
         protected override ElementInit VisitElementInit(ElementInit node)
         {
             Member(node.AddMethod);
+
             return base.VisitElementInit(node);
         }
 
         protected override Expression VisitSwitch(SwitchExpression node)
         {
             Member(node.Comparison);
+
             return base.VisitSwitch(node);
         }
 
         protected override CatchBlock VisitCatchBlock(CatchBlock node)
         {
             Parts.Add(TypeName(node.Test));
+
             return base.VisitCatchBlock(node);
         }
 
         protected override Expression VisitGoto(GotoExpression node)
         {
             Parts.Add(node.Kind.ToString());
+
             return base.VisitGoto(node);
         }
 
         protected override LabelTarget? VisitLabelTarget(LabelTarget? node)
         {
-            if (node == null) Parts.Add(null);
+            if (node == null)
+                Parts.Add(null);
             else
             {
-                if (!_labels.TryGetValue(node, out var index)) _labels.Add(node, index = _labels.Count);
+                if (!_labels.TryGetValue(node, out var index))
+                    _labels.Add(node, index = _labels.Count);
+
                 Parts.Add(index.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 Parts.Add(TypeName(node.Type));
             }
+
             return node;
         }
 
@@ -181,19 +216,24 @@ internal static class WorkflowExpressionSignature
         {
             Parts.Add(member?.MemberType.ToString());
             Parts.Add(TypeName(member?.DeclaringType));
+
             Parts.Add(!Anonymous(member?.DeclaringType) && (Generated(member?.DeclaringType) ||
                 member?.IsDefined(typeof(CompilerGeneratedAttribute), false) == true)
-                ? "generated" : member?.Name);
+                ? "generated"
+                : member?.Name);
+
             if (member is MethodBase method)
             {
                 Parts.Add(string.Join(";", method.GetParameters().Select(parameter => TypeName(parameter.ParameterType))));
+
                 if (method.IsGenericMethod)
                     Parts.Add(string.Join(";", method.GetGenericArguments().Select(TypeName)));
             }
         }
 
         private string Item(ItemScope item) => handles?.TryGetValue(item, out var id) == true
-            ? "item:" + id : "item:" + TypeName(item.ItemType);
+            ? "item:" + id
+            : "item:" + TypeName(item.ItemType);
 
         private static ItemScope? ReadHandle(MemberExpression expression) => ReadClosureField(expression) as ItemScope;
 

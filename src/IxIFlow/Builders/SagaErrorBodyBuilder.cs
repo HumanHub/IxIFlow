@@ -7,7 +7,7 @@ using IxIFlow.Core;
 namespace IxIFlow.Builders;
 
 /// <summary>Appends saga error activities to their own checkpointed handler scope.</summary>
-public sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>(
+internal sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>(
     List<WorkflowStep> steps)
     : ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>
     where TWorkflowData : class
@@ -20,6 +20,7 @@ public sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepDat
     {
         new CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>(steps, typeof(Exception))
             .CancellationScope(body, onCancelled, sourcePath, sourceLine);
+
         return this;
     }
 
@@ -29,12 +30,16 @@ public sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepDat
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
-        steps.Add(AssignmentRules.Step<TWorkflowData, TPreviousStepData>(target, value, typeof(TValue), sourcePath, sourceLine, steps.Count));
+        steps.Add(
+            AssignmentRules.Step<TWorkflowData, TPreviousStepData>(target, value, typeof(TValue), sourcePath, sourceLine, steps.Count));
+
         CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>.CaptureFaults(steps[^1]);
+
         return this;
     }
 
-    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Throw<TException>(Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TException>> value,
+    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Throw<TException>(
+        Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TException>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception
     {
         ArgumentNullException.ThrowIfNull(value);
@@ -46,11 +51,15 @@ public sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepDat
         step.ExceptionFactory = context => evaluate((FaultContext<TWorkflowData, TFault, TPreviousStepData>)context);
         CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>.CaptureFaults(step);
         steps.Add(step);
+
         return this;
     }
-    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+
+    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "",
+        [CallerLineNumber] int sourceLine = 0)
     {
         steps.Add(Core.Runtime.ThrowConstruction.Leaf<TWorkflowData, TPreviousStepData>(WorkflowStepType.Rethrow, sourcePath, sourceLine));
+
         return this;
     }
 
@@ -60,27 +69,35 @@ public sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepDat
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         var evaluate = selector.Compile();
+
         var step = new WorkflowStep
         {
             Name = "Switch", StepType = WorkflowStepType.Switch,
             WorkflowDataType = typeof(TWorkflowData), PreviousStepDataType = typeof(TPreviousStepData),
             Runtime = WorkflowStepDelegates.Create<TWorkflowData, TPreviousStepData>(), SourceLocation = sourcePath + ":" + sourceLine,
-            OutcomeExpression = selector, OutcomeSelector = context => evaluate((FaultContext<TWorkflowData, TFault, TPreviousStepData>)context),
-            SwitchValueType = typeof(TValue), SwitchEquals = (left, right) => EqualityComparer<TValue>.Default.Equals((TValue)left!, (TValue)right!)
+            OutcomeExpression = selector,
+            OutcomeSelector = context => evaluate((FaultContext<TWorkflowData, TFault, TPreviousStepData>)context),
+            SwitchValueType = typeof(TValue),
+            SwitchEquals = (left, right) => EqualityComparer<TValue>.Default.Equals((TValue)left!, (TValue)right!)
         };
+
         configure(new(step, body => new SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>(body)));
         CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>.CaptureFaults(step);
         steps.Add(step);
+
         return this;
     }
 
-    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "",
+        [CallerLineNumber] int sourceLine = 0)
     {
         Core.Runtime.WorkflowStepIdentity.Assign(steps, id, sourcePath, sourceLine);
+
         return this;
     }
 
-    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Step<TActivity>([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    public ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Step<TActivity>([CallerFilePath] string sourcePath = "",
+        [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity
     {
         steps.Add(new WorkflowStep
@@ -95,11 +112,13 @@ public sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepDat
             PreviousStepDataType = typeof(TPreviousStepData),
             Order = steps.Count
         });
+
         return this;
     }
 
     public ISagaErrorBodyBuilder<TWorkflowData, TFault, TActivity> Step<TActivity>(
-        Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity
     {
         var step = new WorkflowStep
@@ -115,8 +134,10 @@ public sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepDat
             FaultType = typeof(TFault),
             Order = steps.Count
         };
+
         configure(new CatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>(step));
         steps.Add(step);
+
         return new SagaErrorBodyBuilder<TWorkflowData, TFault, TActivity>(steps);
     }
 
@@ -125,28 +146,41 @@ public sealed class SagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepDat
     public ISagaErrorBodyBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
         string key,
         Expression<Func<TEvent, FaultContext<TWorkflowData, TFault, TPreviousStepData>, bool>>? matchesExpression = null,
-        Action<IFaultSuspendSetupBuilder<TWorkflowData, TFault, TEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<IFaultSuspendSetupBuilder<TWorkflowData, TFault, TEvent, TPreviousStepData>>? configure = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TEvent : class
     {
         var result = WaitFor<TEvent>(key, matchesExpression?.Compile(), configure, sourcePath: sourcePath, sourceLine: sourceLine);
         steps[^1].ConditionExpression = matchesExpression;
+
         return result;
     }
 
     public ISagaErrorBodyBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
         string key,
         Func<TEvent, FaultContext<TWorkflowData, TFault, TPreviousStepData>, bool>? matches = null,
-        Action<IFaultSuspendSetupBuilder<TWorkflowData, TFault, TEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<IFaultSuspendSetupBuilder<TWorkflowData, TFault, TEvent, TPreviousStepData>>? configure = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TEvent : class
     {
-        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty).WaitFor<TEvent>(key, matches: null, configure: configure == null ? null : setup => configure(new FaultSuspendSetupBuilder<TWorkflowData, TFault, TEvent, TPreviousStepData>(((SuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>)setup).Step)), sourcePath: sourcePath, sourceLine: sourceLine);
+        new WorkflowBuilder<TWorkflowData, TPreviousStepData>(steps, string.Empty).WaitFor<TEvent>(key, matches: null,
+            configure: configure == null
+                ? null
+                : setup => configure(
+                    new FaultSuspendSetupBuilder<TWorkflowData, TFault, TEvent, TPreviousStepData>(
+                        ((SuspendSetupBuilder<TWorkflowData, TEvent, TPreviousStepData>)setup).Step)), sourcePath: sourcePath,
+            sourceLine: sourceLine);
+
         CatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>.CaptureFaults(steps[^1]);
-        if (matches != null) steps[^1].CompiledCondition = context =>
-        {
-            var value = (FaultEventValue<TEvent>)context;
-            return matches(value.Event, (FaultContext<TWorkflowData, TFault, TPreviousStepData>)value.Context);
-        };
+
+        if (matches != null)
+            steps[^1].CompiledCondition = context =>
+            {
+                var value = (FaultEventValue<TEvent>)context;
+
+                return matches(value.Event, (FaultContext<TWorkflowData, TFault, TPreviousStepData>)value.Context);
+            };
+
         return new SagaErrorBodyBuilder<TWorkflowData, TFault, TEvent>(steps);
     }
-
 }

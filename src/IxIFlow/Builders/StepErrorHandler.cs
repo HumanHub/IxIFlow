@@ -6,7 +6,7 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Implementation of an ordered step error handler
 /// </summary>
-public class StepErrorHandler : IStepErrorHandler
+internal class StepErrorHandler : IStepErrorHandler
 {
     internal static void Add<TException>(WorkflowStep step, Action<IStepErrorHandler<TException>> configure)
         where TException : Exception
@@ -14,20 +14,26 @@ public class StepErrorHandler : IStepErrorHandler
         ArgumentNullException.ThrowIfNull(configure);
         var policy = new StepErrorHandlerInfo { ExceptionType = typeof(TException), HandlerAction = StepErrorAction.Terminate };
         configure(new StepErrorHandler<TException>(policy));
+
         if (!step.StepMetadata.TryGetValue("StepErrorHandlers", out var value))
             step.StepMetadata["StepErrorHandlers"] = value = new List<StepErrorHandlerInfo>();
+
         ((List<StepErrorHandlerInfo>)value).Add(policy);
     }
 
     private readonly StepErrorHandlerInfo _handlerInfo;
 
-    public StepErrorHandler(StepErrorHandlerInfo handlerInfo)
+    internal StepErrorHandler(StepErrorHandlerInfo handlerInfo)
     {
         _handlerInfo = handlerInfo ?? throw new ArgumentNullException(nameof(handlerInfo));
     }
 
     public void ThenRetry(int maxRetries = 3)
     {
+        if (maxRetries < 0)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                "The additional retry count cannot be negative");
+
         ThenRetry(RetryPolicy.CreateDefault(maxRetries));
     }
 
@@ -54,6 +60,6 @@ public class StepErrorHandler : IStepErrorHandler
 /// <summary>
 ///     Typed configuration of an ordered step error policy.
 /// </summary>
-public class StepErrorHandler<TException>(StepErrorHandlerInfo handlerInfo)
+internal class StepErrorHandler<TException>(StepErrorHandlerInfo handlerInfo)
     : StepErrorHandler(handlerInfo), IStepErrorHandler<TException>
     where TException : Exception;

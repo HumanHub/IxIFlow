@@ -11,8 +11,7 @@ public sealed class ReadJsonActivity : IAsyncActivity
     [ActivityInput, Required, DefaultValue("orders/incoming.json"), Display(Name = "File path")]
     public string Path { get; set; } = string.Empty;
 
-    [ActivityOutput]
-    public string Content { get; private set; } = string.Empty;
+    [ActivityOutput] public string Content { get; private set; } = string.Empty;
 
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {

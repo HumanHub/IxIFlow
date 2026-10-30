@@ -30,7 +30,7 @@ public interface ICompensationActivityBuilder<TWorkflowData, TCompensationActivi
 /// Configures compensation activities for saga steps with access to current step data
 /// </summary>
 public interface ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TCurrentStepData>
-    where TCompensationActivity : IAsyncActivity 
+    where TCompensationActivity : IAsyncActivity
     where TCurrentStepData : class
 {
     /// <summary>

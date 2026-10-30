@@ -11,6 +11,7 @@ public static class WaitReference
     {
         ArgumentNullException.ThrowIfNull(instanceId);
         ArgumentNullException.ThrowIfNull(waitId);
+
         // Refused events can target invalid IDs; preserve their diagnostic text without normalizing it.
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(instanceId + ":" + waitId)))[..16];
     }

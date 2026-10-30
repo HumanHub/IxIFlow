@@ -23,21 +23,28 @@ internal static class ForEachTransitions
     {
         var handle = step.ForEachItem ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
             $"ForEach step '{step.Name}' has no item handle");
+
         var state = position.ForEach;
         var saved = state != null;
+
         if (state == null)
         {
             checkpoint.Trace.Record(TraceEntryType.StepEntered, step, continuation);
+
             var list = step.ForEachItems!(Context(scopes, checkpoint, continuation, step, workflowData, services))
                 ?? throw new InvalidOperationException($"ForEach step '{step.Name}' was given no list");
+
             var items = new List<StoredJson>();
+
             foreach (var item in list)
             {
                 // The list is read up to one item past the limit, so a longer one is never read whole.
                 if (items.Count == maxItems)
                     throw new ForEachLimitExceededException(maxItems);
+
                 items.Add(RoundTrip(item, handle.ItemType, "item"));
             }
+
             state = new ForEachState
             {
                 Items = items,
@@ -46,6 +53,7 @@ internal static class ForEachTransitions
                 Finished = step.ForEachParallel ? [] : null
             };
         }
+
         if (step.ForEachParallel)
         {
             if (state.Joined || state.Items.Count == 0)
@@ -56,13 +64,17 @@ internal static class ForEachTransitions
                 ContinuationTransitions.EnsureBranchesFit(checkpoint,
                     Math.Min(state.Items.Count, step.ForEachMaxConcurrency ?? state.Items.Count), maxActiveBranches,
                     leaving: continuation);
+
                 position.ForEach = state;
                 Fork(scopes, checkpoint, continuation, step, state);
             }
+
             return;
         }
+
         if (!saved)
             position.ForEach = state;
+
         if (state.Next < state.Items.Count)
         {
             continuation.Stack.Add(new ScopePosition
@@ -73,19 +85,25 @@ internal static class ForEachTransitions
                 RuntimeEntryPrevious = continuation.RuntimePrevious,
                 RestorePreviousOnExit = true
             });
+
             checkpoint.Trace.ItemStarted(step, continuation, continuation.Stack[^1]);
             state.Next++;
+
             return;
         }
+
         if (step.ForEachInto != null)
         {
             var results = state.Results ?? throw NoResult(step);
+
             if (results.Count != state.Items.Count || results.Any(result => result == null))
                 throw NoResult(step);
+
             step.ForEachInto(Context(scopes, checkpoint, continuation, step, workflowData, services),
                 results.Select(result => (ItemStatus.Completed, Deserialize(result!, step.ResultType!, "result")))
                     .ToList());
         }
+
         position.ForEach = null;
         position.NextStepIndex++;
     }
@@ -99,6 +117,7 @@ internal static class ForEachTransitions
         WorkflowStep step, ForEachState state)
     {
         var batch = Math.Min(state.Items.Count, step.ForEachMaxConcurrency ?? state.Items.Count);
+
         var join = new ParallelJoinState
         {
             StepId = scopes.Id(step),
@@ -106,9 +125,11 @@ internal static class ForEachTransitions
             DataFrameId = checkpoint.DataFrameId(parent),
             Mode = step.ParallelJoinMode
         };
+
         checkpoint.Joins.Add(join);
         parent.Status = ContinuationStatus.Joining;
         var snapshot = BranchData.Snapshot(checkpoint.DataOf(parent));
+
         for (var started = 0; started < batch; started++)
             StartItem(scopes, checkpoint, parent, join, step, state, snapshot);
     }
@@ -126,6 +147,7 @@ internal static class ForEachTransitions
         var index = state.Next++;
         var inherited = Inherited(scopes, parent) ?? [];
         inherited.Add(new InheritedItem { StepId = scopes.Id(step), Index = index, Item = state.Items[index] });
+
         var child = new ContinuationState
         {
             ParentJoinId = join.Id,
@@ -136,6 +158,7 @@ internal static class ForEachTransitions
             Previous = parent.RuntimePrevious != null ? SerializedValue.From(parent.RuntimePrevious) : parent.Previous,
             Stack = [new ScopePosition { ScopeId = scopes.ForEachScope(step), Kind = FrameKind.Item, ForEachIndex = index }]
         };
+
         SteppingPolicy.Forked(checkpoint, parent, child);
         join.ChildContinuationIds.Add(child.Id);
         checkpoint.Continuations.Add(child);
@@ -154,11 +177,14 @@ internal static class ForEachTransitions
             checkpoint.Joins.SingleOrDefault(item => item.Id == branch.ParentJoinId) is not { } join ||
             scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
             return;
+
         var state = StateOf(checkpoint, join, step);
+
         // The finished items and the results are on the parent's frame.
         checkpoint.TouchOwner(join.ParentContinuationId);
         state.Finished ??= [];
         state.Finished.Add(index);
+
         if (state.Results != null)
             state.Results[index] = finished.ForEachResult ?? throw NoResult(step);
     }
@@ -173,24 +199,32 @@ internal static class ForEachTransitions
     public static bool Admit(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint, int maxActiveBranches)
     {
         var admitted = false;
+
         foreach (var join in checkpoint.Joins.Where(item => !item.IsCompleting && SteppingPolicy.AllowsJoin(checkpoint, item)).ToList())
         {
             if (scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
                 continue;
+
             var state = StateOf(checkpoint, join, step);
+
             var running = checkpoint.Continuations.Count(item => item.ParentJoinId == join.Id &&
                 item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled));
+
             var cap = step.ForEachMaxConcurrency ?? state.Items.Count;
             string? snapshot = null;
+
             for (; running < cap && state.Next < state.Items.Count; running++)
             {
                 ContinuationTransitions.EnsureBranchesFit(checkpoint, 1, maxActiveBranches);
                 var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
+
                 StartItem(scopes, checkpoint, parent, join, step, state,
                     snapshot ??= BranchData.Snapshot(checkpoint.DataOf(parent)));
+
                 admitted = true;
             }
         }
+
         return admitted;
     }
 
@@ -203,9 +237,12 @@ internal static class ForEachTransitions
         {
             if (scopes.Step(join.StepId) is not { StepType: WorkflowStepType.ForEach } step)
                 return false;
+
             var state = StateOf(checkpoint, join, step);
+
             var running = checkpoint.Continuations.Count(item => item.ParentJoinId == join.Id &&
                 item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled));
+
             return state.Next < state.Items.Count && running < (step.ForEachMaxConcurrency ?? state.Items.Count);
         });
 
@@ -213,6 +250,7 @@ internal static class ForEachTransitions
     public static ForEachState StateOf(ExecutionCheckpoint checkpoint, ParallelJoinState join, WorkflowStep step)
     {
         var parent = checkpoint.Continuations.Single(item => item.Id == join.ParentContinuationId);
+
         return parent.Stack[^1].ForEach ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
             $"ForEach step '{step.Name}' has a join but no saved list");
     }
@@ -232,6 +270,7 @@ internal static class ForEachTransitions
         if (step.ForEachInto != null)
         {
             var finished = state.Finished ?? [];
+
             step.ForEachInto(Context(scopes, checkpoint, continuation, step, workflowData, services),
                 Enumerable.Range(0, state.Items.Count).Select(index =>
                         finished.Contains(index)
@@ -240,6 +279,7 @@ internal static class ForEachTransitions
                             : (index < state.Next ? ItemStatus.Cancelled : ItemStatus.NotStarted, (object?)null))
                     .ToList());
         }
+
         position.ForEach = null;
         position.NextStepIndex++;
     }
@@ -254,6 +294,7 @@ internal static class ForEachTransitions
     {
         var value = step.ResultSelector!(Context(scopes, checkpoint, continuation, step, workflowData, services));
         var frame = continuation.Stack.FindLastIndex(item => item.ForEachIndex != null);
+
         // An item of a parallel ForEach is its branch's first frame; the step it belongs to is the join's.
         var owner = frame >= 1
             ? scopes.Steps(continuation.Stack[frame - 1].ScopeId)[continuation.Stack[frame - 1].NextStepIndex]
@@ -261,8 +302,10 @@ internal static class ForEachTransitions
                 ? scopes.Step(checkpoint.Joins.Single(join => join.Id == continuation.ParentJoinId).StepId)
                 : throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"ForEach result step '{step.Name}' runs outside an item's frame");
+
         if (StoresResults(owner))
             continuation.Stack[frame].ForEachResult = RoundTrip(value, step.ResultType!, "result");
+
         position.NextStepIndex++;
     }
 
@@ -276,14 +319,20 @@ internal static class ForEachTransitions
         if (current.StepType != WorkflowStepType.ForEach || finished.ScopeId != scopes.ForEachScope(current) ||
             finished.ForEachIndex is not { } index)
             return false;
+
         var state = parent.ForEach ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
             $"ForEach step '{current.Name}' finished an item but has no saved list");
+
         if (current.ForEachInto == null)
             return true;
+
         var results = state.Results ?? throw NoResult(current);
+
         if (finished.ForEachResult == null || index != results.Count)
             throw NoResult(current);
+
         results.Add(finished.ForEachResult);
+
         return true;
     }
 
@@ -295,11 +344,15 @@ internal static class ForEachTransitions
         ContinuationState continuation)
     {
         var bound = Bound(scopes, continuation);
+
         if (bound.Count == 0)
             return ItemValues.None;
+
         var values = new Dictionary<ItemScope, (int, StoredJson)>(ReferenceEqualityComparer.Instance);
+
         foreach (var item in bound)
             values[scopes.Step(item.StepId).ForEachItem!] = (item.Index, item.Item);
+
         return new ItemValues(values);
     }
 
@@ -313,23 +366,29 @@ internal static class ForEachTransitions
     private static List<InheritedItem> Bound(WorkflowScopeCatalog scopes, ContinuationState continuation)
     {
         var bound = new List<InheritedItem>(continuation.InheritedItems ?? []);
+
         for (var index = 1; index < continuation.Stack.Count; index++)
         {
             if (continuation.Stack[index].ForEachIndex is not { } item)
                 continue;
+
             var owner = continuation.Stack[index - 1];
             var step = scopes.Steps(owner.ScopeId)[owner.NextStepIndex];
+
             var state = owner.ForEach ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"ForEach step '{step.Name}' has an item frame but no saved list");
+
             bound.Add(new InheritedItem { StepId = scopes.Id(step), Index = item, Item = state.Items[item] });
         }
+
         return bound;
     }
 
     private static object Context(WorkflowScopeCatalog scopes, ExecutionCheckpoint checkpoint,
         ContinuationState continuation, WorkflowStep step, object workflowData, IServiceProvider services) =>
         WorkflowValueBinding.EvaluationContext(step, workflowData,
-            continuation.GetPrevious(services), ItemsOf(scopes, checkpoint, continuation), TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes));
+            continuation.GetPrevious(services), ItemsOf(scopes, checkpoint, continuation),
+            TryScopeTransitions.CatchFault(checkpoint, continuation, services, step, scopes));
 
     private static WorkflowEngineException NoResult(WorkflowStep step) =>
         new(WorkflowErrorKind.InvalidState, $"ForEach step '{step.Name}' has an item that gave no result");
@@ -339,6 +398,7 @@ internal static class ForEachTransitions
     private static StoredJson RoundTrip(object? value, Type type, string what)
     {
         string json;
+
         try
         {
             json = JsonSerializer.Serialize(value, type);
@@ -348,7 +408,9 @@ internal static class ForEachTransitions
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"A ForEach {what} of type '{type.Name}' cannot be saved in a checkpoint: {error.Message}", error);
         }
+
         Deserialize(StoredJson.Inline(json), type, what);
+
         return StoredJson.Inline(json);
     }
 

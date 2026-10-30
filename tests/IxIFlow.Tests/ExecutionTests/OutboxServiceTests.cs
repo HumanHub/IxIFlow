@@ -16,6 +16,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public sealed class OutboxServiceTests
 {
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private static WorkflowOutboxService Service(IWorkflowStateRepository store, FakeTimeProvider time,
         TestLogger log, int concurrency, params IOutboxPublisher[] publishers) => new(store, publishers,
         new HostSettings(4, TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(1), "outbox-service"),
@@ -33,19 +34,27 @@ public sealed class OutboxServiceTests
         await OutboxStoreContract.CompleteAsync(inner);
         var claim = Assert.Single(await inner.ClaimDeliveriesAsync(publisher.Name, "owner", TimeSpan.FromSeconds(30), 1));
         var probe = Probe.Wrap(inner);
+
         probe.OnCall = (method, _) => method.Name == nameof(IWorkflowOutbox.SettleDeliveryAsync)
-            ? throws ? Task.FromException<bool>(new IOException("lost acknowledgement")) : Task.FromResult(false) : null;
+            ? throws ? Task.FromException<bool>(new IOException("lost acknowledgement")) : Task.FromResult(false)
+            : null;
+
         var count = 0L;
         using var listener = new MeterListener();
+
         listener.InstrumentPublished = (instrument, l) =>
         {
-            if (instrument.Name == "ixiflow.outbox.settle_failure") l.EnableMeasurementEvents(instrument);
+            if (instrument.Name == "ixiflow.outbox.settle_failure")
+                l.EnableMeasurementEvents(instrument);
         };
+
         listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
         {
             foreach (var tag in tags)
-                if (tag.Key == Telemetry.PublisherName && Equals(tag.Value, publisher.Name)) Interlocked.Add(ref count, value);
+                if (tag.Key == Telemetry.PublisherName && Equals(tag.Value, publisher.Name))
+                    Interlocked.Add(ref count, value);
         });
+
         listener.Start();
         var log = new TestLogger();
         using var service = Service(probe.Store, time, log, 1, publisher);
@@ -61,12 +70,15 @@ public sealed class OutboxServiceTests
         var time = new FakeTimeProvider();
         var inner = new InMemoryWorkflowStateRepository(time);
         var entered = Signal();
+
         var publisher = new Publisher("lost", async (_, token) =>
         {
             entered.SetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, token);
+
             return OutboxPublishResult.Delivered();
         });
+
         await inner.RegisterPublisherAsync(publisher.Name, publisher.EventTypes);
         await OutboxStoreContract.CompleteAsync(inner);
         var claim = Assert.Single(await inner.ClaimDeliveriesAsync(publisher.Name, "owner", TimeSpan.FromSeconds(30), 1));
@@ -93,12 +105,18 @@ public sealed class OutboxServiceTests
         var claim = Assert.Single(await inner.ClaimDeliveriesAsync(publisher.Name, "owner", TimeSpan.FromSeconds(30), 1));
         var renewals = 0;
         var probe = Probe.Wrap(inner);
+
         probe.OnCall = (method, _) =>
         {
-            if (method.Name == nameof(IWorkflowOutbox.SettleDeliveryAsync)) time.Advance(TimeSpan.FromSeconds(10));
-            if (method.Name == nameof(IWorkflowOutbox.RenewDeliveryLeaseAsync)) Interlocked.Increment(ref renewals);
+            if (method.Name == nameof(IWorkflowOutbox.SettleDeliveryAsync))
+                time.Advance(TimeSpan.FromSeconds(10));
+
+            if (method.Name == nameof(IWorkflowOutbox.RenewDeliveryLeaseAsync))
+                Interlocked.Increment(ref renewals);
+
             return null;
         };
+
         var log = new TestLogger();
         using var service = Service(probe.Store, time, log, 1, publisher);
         await service.DeliverAsync(publisher, claim, default);
@@ -113,15 +131,20 @@ public sealed class OutboxServiceTests
         var probe = Probe.Wrap(new InMemoryWorkflowStateRepository(time));
         var claims = new ConcurrentQueue<(string Name, int Limit)>();
         var secondPoll = Signal();
+
         probe.OnCall = (method, args) =>
         {
             if (method.Name == nameof(IWorkflowOutbox.ClaimDeliveriesAsync))
             {
                 claims.Enqueue(((string)args![0]!, (int)args[3]!));
-                if (claims.Count == 4) secondPoll.TrySetResult();
+
+                if (claims.Count == 4)
+                    secondPoll.TrySetResult();
             }
+
             return null;
         };
+
         var first = new Publisher("first", (_, _) => Task.FromResult(OutboxPublishResult.Delivered()));
         var second = new Publisher("second", (_, _) => Task.FromResult(OutboxPublishResult.Delivered()));
         using var service = Service(probe.Store, time, new TestLogger(), 8, first, second);
@@ -141,23 +164,35 @@ public sealed class OutboxServiceTests
         var time = new FakeTimeProvider();
         var inner = new InMemoryWorkflowStateRepository(time);
         await inner.RegisterPublisherAsync("batch", [OutboxEvent.WorkflowCompleted]);
-        for (var i = 0; i < 6; i++) await OutboxStoreContract.CompleteAsync(inner);
+
+        for (var i = 0; i < 6; i++)
+            await OutboxStoreContract.CompleteAsync(inner);
+
         var entered = Signal();
         var release = Signal();
         var calls = 0;
+
         var publisher = new Publisher("batch", async (_, token) =>
         {
-            if (Interlocked.Increment(ref calls) == 4) entered.TrySetResult();
+            if (Interlocked.Increment(ref calls) == 4)
+                entered.TrySetResult();
+
             await release.Task.WaitAsync(token);
+
             return OutboxPublishResult.Delivered();
         });
+
         var probe = Probe.Wrap(inner);
         var limits = new List<int>();
+
         probe.OnCall = (method, args) =>
         {
-            if (method.Name == nameof(IWorkflowOutbox.ClaimDeliveriesAsync)) limits.Add((int)args![3]!);
+            if (method.Name == nameof(IWorkflowOutbox.ClaimDeliveriesAsync))
+                limits.Add((int)args![3]!);
+
             return null;
         };
+
         using var service = Service(probe.Store, time, new TestLogger(), 4, publisher);
         await service.StartAsync(default);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -177,13 +212,17 @@ public sealed class OutboxServiceTests
         services.AddLogging();
         services.AddSingleton<TimeProvider>(time);
         var published = Signal();
+
         var publisher = new Publisher("replay-builder", (_, _) =>
         {
             published.TrySetResult();
+
             return Task.FromResult(OutboxPublishResult.Delivered());
         });
+
         services.AddIxIFlow().AddOutboxPublisher(_ => publisher)
             .ReplayRetainedOutboxEvents(publisher.Name).UnregisterOutboxPublisher("retired");
+
         await using var provider = services.BuildServiceProvider();
         var store = provider.GetRequiredService<IWorkflowStateRepository>();
         await store.RegisterPublisherAsync("retired", [OutboxEvent.WorkflowCompleted]);
@@ -199,11 +238,14 @@ public sealed class OutboxServiceTests
         Assert.Equal(OutboxDeliveryStatus.GivenUp, (await store.GetDeliveryAsync(pending.Event.Id, "retired"))!.Status);
     }
 
-    private sealed class Publisher(string name, Func<OutboxPublishContext, CancellationToken, Task<OutboxPublishResult>> publish) : IOutboxPublisher
+    private sealed class Publisher(string name, Func<OutboxPublishContext, CancellationToken, Task<OutboxPublishResult>> publish)
+        : IOutboxPublisher
     {
         public string Name => name;
         public IReadOnlyCollection<string> EventTypes => [OutboxEvent.WorkflowCompleted];
-        public Task<OutboxPublishResult> PublishAsync(OutboxPublishContext delivery, CancellationToken cancellationToken) => publish(delivery, cancellationToken);
+
+        public Task<OutboxPublishResult> PublishAsync(OutboxPublishContext delivery, CancellationToken cancellationToken) =>
+            publish(delivery, cancellationToken);
     }
 
     private sealed class TestLogger : ILogger<WorkflowOutboxService>
@@ -211,7 +253,9 @@ public sealed class OutboxServiceTests
         public ConcurrentQueue<(LogLevel Level, string Text)> Entries { get; } = new();
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter) =>
             Entries.Enqueue((logLevel, formatter(state, exception)));
     }
 
@@ -220,14 +264,17 @@ public sealed class OutboxServiceTests
         private IWorkflowStateRepository _inner = null!;
         public IWorkflowStateRepository Store { get; private set; } = null!;
         public Func<MethodInfo, object?[]?, object?>? OnCall { get; set; }
+
         public static Probe Wrap(IWorkflowStateRepository inner)
         {
             var store = Create<IWorkflowStateRepository, Probe>();
             var probe = (Probe)store;
             probe._inner = inner;
             probe.Store = store;
+
             return probe;
         }
+
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) =>
             OnCall?.Invoke(targetMethod!, args) ?? targetMethod!.Invoke(_inner, args);
     }

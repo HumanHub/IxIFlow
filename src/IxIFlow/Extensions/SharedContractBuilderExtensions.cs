@@ -11,9 +11,16 @@ public static class SharedContractBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(assemblies);
-        var registration = builder.Services.LastOrDefault(item => item.ServiceType == typeof(SharedContractRegistration))?.ImplementationInstance as SharedContractRegistration;
-        if (registration == null) builder.Services.AddSingleton(registration = new SharedContractRegistration());
+
+        var registration =
+            builder.Services.LastOrDefault(item => item.ServiceType == typeof(SharedContractRegistration))?.ImplementationInstance as
+                SharedContractRegistration;
+
+        if (registration == null)
+            builder.Services.AddSingleton(registration = new SharedContractRegistration());
+
         registration.Add(assemblies);
+
         return builder;
     }
 }

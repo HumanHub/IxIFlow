@@ -7,7 +7,8 @@ public sealed partial class AssignScenarios
     public sealed class BoundariesPart1
     {
         [Theory, MemberData(nameof(Boundaries))]
-        public Task AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(string profile, string shape, string fault, string authoring) =>
+        public Task AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(string profile, string shape, string fault,
+            string authoring) =>
             AssignScenarios.AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(profile, shape, fault, authoring);
 
         public static IEnumerable<object[]> Boundaries =>
@@ -19,7 +20,8 @@ public sealed partial class AssignScenarios
     public sealed class BoundariesPart2
     {
         [Theory, MemberData(nameof(Boundaries))]
-        public Task AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(string profile, string shape, string fault, string authoring) =>
+        public Task AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(string profile, string shape, string fault,
+            string authoring) =>
             AssignScenarios.AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(profile, shape, fault, authoring);
 
         public static IEnumerable<object[]> Boundaries =>
@@ -31,7 +33,8 @@ public sealed partial class AssignScenarios
     public sealed class BoundariesPart3
     {
         [Theory, MemberData(nameof(Boundaries))]
-        public Task AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(string profile, string shape, string fault, string authoring) =>
+        public Task AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(string profile, string shape, string fault,
+            string authoring) =>
             AssignScenarios.AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(profile, shape, fault, authoring);
 
         public static IEnumerable<object[]> Boundaries =>
@@ -43,7 +46,8 @@ public sealed partial class AssignScenarios
     public sealed class BoundariesPart4
     {
         [Theory, MemberData(nameof(Boundaries))]
-        public Task AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(string profile, string shape, string fault, string authoring) =>
+        public Task AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(string profile, string shape, string fault,
+            string authoring) =>
             AssignScenarios.AssignmentsRecoverAtTheirOrdinaryBoundaryWithBranchIsolation(profile, shape, fault, authoring);
 
         public static IEnumerable<object[]> Boundaries =>

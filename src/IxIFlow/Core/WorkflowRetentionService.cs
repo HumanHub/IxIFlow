@@ -5,32 +5,44 @@ using Microsoft.Extensions.Logging;
 namespace IxIFlow.Core;
 
 /// <summary>One bounded pass per interval; the store serializes retention writers across hosts.</summary>
-internal sealed class WorkflowRetentionService(IWorkflowStateRepository repository, RetentionSettings settings,
-    TimeProvider time, ILogger<WorkflowRetentionService> logger, IArtifactStore? artifacts = null, ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
+internal sealed class WorkflowRetentionService(
+    IWorkflowStateRepository repository,
+    RetentionSettings settings,
+    TimeProvider time,
+    ILogger<WorkflowRetentionService> logger,
+    IArtifactStore? artifacts = null,
+    ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
     InspectionRedactionPolicy? inspectionPolicy = null) : BackgroundService
 {
     internal async Task<RetentionResult> PurgeOnceAsync(CancellationToken cancellationToken)
     {
         var result = await repository.PurgeAsync(settings.FinishedRetention, settings.TombstoneRetention,
             settings.BatchSize, cancellationToken);
+
         await repository.PurgePublicationsAsync(settings.PublicationRetention, settings.BatchSize, cancellationToken);
         await repository.PurgeArtifactsAsync(artifacts ?? repository, settings.ArtifactRetention, settings.BatchSize, cancellationToken);
+
         foreach (var reference in await repository.PayloadStore.FindCollectionCandidatesAsync(settings.BatchSize,
                      settings.FinishedRetention, cancellationToken))
             await repository.PayloadStore.CollectAsync(reference, settings.FinishedRetention, cancellationToken);
+
         foreach (var (publisher, count) in result.SkippedUnattemptedByPublisher)
         {
             Telemetry.RetentionSkippedUnattempted.Add(count,
                 new KeyValuePair<string, object?>(Telemetry.PublisherName, publisher));
-            logger.LogWarning("Retention skipped {InstanceCount} finished candidates because publisher {PublisherName} has pending deliveries that were never attempted",
+
+            logger.LogWarning(
+                "Retention skipped {InstanceCount} finished candidates because publisher {PublisherName} has pending deliveries that were never attempted",
                 count, publisher);
         }
+
         return result;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         using var timer = new PeriodicTimer(settings.ScanInterval, time);
+
         try
         {
             do
@@ -45,7 +57,8 @@ internal sealed class WorkflowRetentionService(IWorkflowStateRepository reposito
                 }
                 catch (Exception error)
                 {
-                    (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error, "Could not purge retained workflows");
+                    (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Error, error,
+                        "Could not purge retained workflows");
                 }
             } while (await timer.WaitForNextTickAsync(stoppingToken));
         }

@@ -125,6 +125,7 @@ public class FluentApiTests
     {
         // Arrange
         var builder = Workflow.Create<OrderWorkflowData>("ExecutionTestWorkflow");
+
         var definition = builder
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
@@ -168,6 +169,7 @@ public class FluentApiTests
     {
         // Arrange
         var builder = Workflow.Create<OrderWorkflowData>("ExecutionTestWorkflow");
+
         var definition = builder
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)

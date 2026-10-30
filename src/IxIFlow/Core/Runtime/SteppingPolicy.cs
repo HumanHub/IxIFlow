@@ -17,18 +17,24 @@ internal static class SteppingPolicy
     public static DebugStepping Start(ExecutionCheckpoint checkpoint, DebugCommand command)
     {
         var branch = checkpoint.Continuations.SingleOrDefault(c => c.Id == command.ContinuationId);
+
         if (branch == null || branch.Stack.Count == 0 ||
             branch.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "The selected continuation is not live");
+
         // Out leaves the nearest resource, inline, node or state activation, including nested body frames.
         var origin = command.StepKind == DebugStepKind.Out
-            ? branch.Stack.LastOrDefault(frame => frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.State or FrameKind.Inline or FrameKind.SwitchCase) ?? branch.Stack[^1]
+            ? branch.Stack.LastOrDefault(frame =>
+                frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.State or FrameKind.Inline or FrameKind.SwitchCase) ??
+            branch.Stack[^1]
             : branch.Stack[^1];
+
         return new(branch.Id, command.StepKind!.Value, Position(origin),
             branch.Stack.Select(f => f.ActivationId).ToArray(), [branch.Id], command.Id, command.Actor)
         {
             OriginGraph = branch.Stack.LastOrDefault(frame => frame.Graph != null) is { } owner
-                ? owner.ScopeId + "/" + owner.NextStepIndex : null
+                ? owner.ScopeId + "/" + owner.NextStepIndex
+                : null
         };
     }
 
@@ -46,9 +52,15 @@ internal static class SteppingPolicy
     public static void Forked(ExecutionCheckpoint checkpoint, ContinuationState parent, ContinuationState child)
     {
         child.ForkActivationId = parent.Stack[^1].ActivationId;
+
         if (checkpoint.Debug.Stepping is { } step && Allows(checkpoint, parent.Id))
-            checkpoint.Debug = checkpoint.Debug with { Stepping = step with
-                { EligibleContinuations = step.EligibleContinuations.Append(child.Id).ToArray() } };
+            checkpoint.Debug = checkpoint.Debug with
+            {
+                Stepping = step with
+                {
+                    EligibleContinuations = step.EligibleContinuations.Append(child.Id).ToArray()
+                }
+            };
     }
 
     public static void Dispatched(ExecutionCheckpoint checkpoint)
@@ -60,29 +72,44 @@ internal static class SteppingPolicy
     public static bool StopAtPick(ExecutionCheckpoint checkpoint, ContinuationState branch, string stepId, DateTime now)
     {
         if (checkpoint.CancellationRequested || checkpoint.Debug.Stepping is not { } step ||
-            branch.PendingActivity != null) return false;
+            branch.PendingActivity != null)
+            return false;
+
         var position = branch.Stack[^1];
+
         // Catch/Finally entry changes phase at the owner; it is not another executable pick.
         if (position.TryState?.Phase is TryPhase.Catch or TryPhase.Finally ||
-            position.CancellationState?.Phase == CancellationScopePhase.Handler) return false;
+            position.CancellationState?.Phase == CancellationScopePhase.Handler)
+            return false;
+
         var selected = branch.Id == step.ContinuationId;
         var sameOccurrence = selected && Position(position) == step.Origin;
+
         var stop = step.Kind switch
         {
             DebugStepKind.Into => !sameOccurrence,
             DebugStepKind.Over => selected && (position.ActivationId != step.Origin.ActivationId ||
-                position.NextStepIndex != step.Origin.StepIndex || position.ArmOccurrence != step.Origin.ArmOccurrence) && (step.OriginScopes.Contains(position.ActivationId) || branch.Stack.All(f => f.ActivationId != step.Origin.ActivationId)),
+                    position.NextStepIndex != step.Origin.StepIndex || position.ArmOccurrence != step.Origin.ArmOccurrence) &&
+                (step.OriginScopes.Contains(position.ActivationId) || branch.Stack.All(f => f.ActivationId != step.Origin.ActivationId)),
             DebugStepKind.Out => selected && branch.Stack.All(f => f.ActivationId != step.Origin.ActivationId),
             _ => false
         };
-        if (stop) Pause(checkpoint, branch, stepId, "Step", now);
+
+        if (stop)
+            Pause(checkpoint, branch, stepId, "Step", now);
+
         return stop;
     }
 
     public static void Pause(ExecutionCheckpoint checkpoint, ContinuationState branch, string stepId, string reason, DateTime now)
     {
         var position = branch.Stack.LastOrDefault();
-        checkpoint.Debug = checkpoint.Debug with { Stop = new(branch.Id, stepId, "",
-            position?.ActivationId ?? "", position?.LoopIterationCount ?? 0, 0, now) { Reason = reason, ArmOccurrence = position?.ArmOccurrence ?? 0 } };
+
+        checkpoint.Debug = checkpoint.Debug with
+        {
+            Stop = new(branch.Id, stepId, "",
+                    position?.ActivationId ?? "", position?.LoopIterationCount ?? 0, 0, now)
+                { Reason = reason, ArmOccurrence = position?.ArmOccurrence ?? 0 }
+        };
     }
 }

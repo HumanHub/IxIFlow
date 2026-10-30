@@ -4,8 +4,12 @@ namespace IxIFlow.Core;
 public sealed record BreakpointConditionDiagnostic(string Code, string Message, int Start, int Length, int Line, int Column);
 
 /// <summary>The typed inputs available at a breakpoint. This is a local compiler request, not an execution message.</summary>
-public sealed record BreakpointConditionRequest(string StructureHash, string Text, Type DataType,
-    Type? PreviousType = null, Type? ItemType = null);
+public sealed record BreakpointConditionRequest(
+    string StructureHash,
+    string Text,
+    Type DataType,
+    Type? PreviousType = null,
+    Type? ItemType = null);
 
 /// <summary>A local compiled predicate, or positioned diagnostics when compilation was refused.</summary>
 public sealed record BreakpointConditionCompilation(
@@ -19,8 +23,12 @@ public interface IBreakpointConditionCompiler
 }
 
 /// <summary>Read-only condition inputs. Item and Index name the innermost ForEach body.</summary>
-public sealed class BreakpointConditionContext<TData, TPrevious, TItem>(TData data, TPrevious previous,
-    TItem item, int? index, DateTimeOffset utcNow)
+public sealed class BreakpointConditionContext<TData, TPrevious, TItem>(
+    TData data,
+    TPrevious previous,
+    TItem item,
+    int? index,
+    DateTimeOffset utcNow)
 {
     public TData WorkflowData { get; } = data;
     public TPrevious PreviousStep { get; } = previous;

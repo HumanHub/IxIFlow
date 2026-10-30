@@ -50,8 +50,10 @@ public sealed class OperationsHttpTests
         using var http = factory.Operator();
         var id = (await factory.Engine.RunAsync(Waiting(), new Data())).InstanceId;
         factory.DenyInstance = id;
+
         foreach (var suffix in new[] { "", "/waits", "/waits?tokens=true", "/pending-activities", "/trace", "/snapshot" })
             Assert.Equal(HttpStatusCode.Forbidden, (await http.GetAsync("/ops/instances/" + id + suffix)).StatusCode);
+
         factory.DenyInstance = null;
         using var inspectOnly = factory.Operator("inspect");
         Assert.Equal(HttpStatusCode.Forbidden, (await inspectOnly.GetAsync($"/ops/instances/{id}/trace")).StatusCode);
@@ -67,29 +69,43 @@ public sealed class OperationsHttpTests
         await using var factory = new OperationsHttpFactory(new InMemoryWorkflowStateRepository());
         using var http = factory.Operator();
         var allowed = new List<string>();
+
         for (var i = 0; i < 6; i++)
         {
-            var result = await factory.Engine.RunAsync(Waiting(), new Data(), new WorkflowOptions { CorrelationId = i % 2 == 0 ? "allowed" : "hidden" });
-            if (i % 2 == 0) allowed.Add(result.InstanceId);
+            var result = await factory.Engine.RunAsync(Waiting(), new Data(),
+                new WorkflowOptions { CorrelationId = i % 2 == 0 ? "allowed" : "hidden" });
+
+            if (i % 2 == 0)
+                allowed.Add(result.InstanceId);
         }
+
         factory.Scope.Instances = query => query with { CorrelationId = "allowed" };
         factory.Scope.Waits = query => query with { InstanceIds = allowed };
         var found = new List<string>();
         string? after = null;
+
         do
         {
-            var page = await http.GetFromJsonAsync<InstancePage>("/ops/instances?limit=1" + (after == null ? "" : "&after=" + Uri.EscapeDataString(after)));
+            var page = await http.GetFromJsonAsync<InstancePage>("/ops/instances?limit=1" +
+                (after == null ? "" : "&after=" + Uri.EscapeDataString(after)));
+
             found.Add(Assert.Single(page!.Items).InstanceId);
             after = page.NextCursor;
         } while (after != null);
+
         Assert.Equal(allowed.Order(), found.Order());
-        found.Clear(); after = null;
+        found.Clear();
+        after = null;
+
         do
         {
-            var page = await http.GetFromJsonAsync<WorkflowWaitPage>("/ops/waits?limit=1" + (after == null ? "" : "&after=" + Uri.EscapeDataString(after)));
+            var page = await http.GetFromJsonAsync<WorkflowWaitPage>("/ops/waits?limit=1" +
+                (after == null ? "" : "&after=" + Uri.EscapeDataString(after)));
+
             found.Add(Assert.Single(page!.Items).InstanceId);
             after = page.NextAfter;
         } while (after != null);
+
         Assert.Equal(allowed.Order(), found.Order());
     }
 
@@ -103,21 +119,31 @@ public sealed class OperationsHttpTests
         await using var factory = new OperationsHttpFactory(store) { ConfigureOptions = o => o.ActForPolicy = actFor ? "act-for" : null };
         using var http = factory.Operator();
         var id = (await factory.Engine.RunAsync(Waiting(), new Data())).InstanceId;
-        if (header) http.DefaultRequestHeaders.Add("X-IxIFlow-Actor", "delegated");
+
+        if (header)
+            http.DefaultRequestHeaders.Add("X-IxIFlow-Actor", "delegated");
+
         using var response = await http.PostAsJsonAsync($"/ops/instances/{id}/terminate", new { reasonCode = "test" });
         Assert.Equal(expected == null ? HttpStatusCode.Forbidden : HttpStatusCode.OK, response.StatusCode);
         var trace = await store.GetTraceAsync(id, 0, 100);
-        if (expected == null) Assert.DoesNotContain(trace, t => t.Entry.EntryType == TraceEntryType.WorkflowTerminated);
-        else Assert.Contains(trace, t => t.Entry.Payload is CancellationTrace cancellation && cancellation.Actor == expected);
+
+        if (expected == null)
+            Assert.DoesNotContain(trace, t => t.Entry.EntryType == TraceEntryType.WorkflowTerminated);
+        else
+            Assert.Contains(trace, t => t.Entry.Payload is CancellationTrace cancellation && cancellation.Actor == expected);
     }
 
     [Fact]
     public async Task AConfiguredActForPolicyMustAlsoSucceed()
     {
-        await using var factory = new OperationsHttpFactory(new InMemoryWorkflowStateRepository()) { ConfigureOptions = o => o.ActForPolicy = "act-for" };
+        await using var factory = new OperationsHttpFactory(new InMemoryWorkflowStateRepository())
+            { ConfigureOptions = o => o.ActForPolicy = "act-for" };
+
         using var http = factory.Operator("write");
         http.DefaultRequestHeaders.Add("X-IxIFlow-Actor", "delegated");
-        Assert.Equal(HttpStatusCode.Forbidden, (await http.PostAsJsonAsync("/ops/instances/id/terminate", new { reasonCode = "test" })).StatusCode);
+
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await http.PostAsJsonAsync("/ops/instances/id/terminate", new { reasonCode = "test" })).StatusCode);
     }
 
     [Fact]
@@ -126,51 +152,72 @@ public sealed class OperationsHttpTests
         var store = new InMemoryWorkflowStateRepository();
         await using var factory = new OperationsHttpFactory(store);
         using var http = factory.Operator();
+
         var definition = Workflow.Create<Data>("HttpResolution")
             .Step<Uncertain>(step => step.Output(activity => activity.Number).To(context => context.WorkflowData.Number))
             .Step<Block>().Build();
+
         await factory.Services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
+
         var pending = new ActivityInvocationState
         {
             StepId = scopes.Id(definition.Steps[0]), StartedAtUtc = DateTime.UtcNow,
             Attempts = [new ActivityAttemptState { StartedAtUtc = DateTime.UtcNow }], ResolutionReason = "unknown external outcome"
         };
+
         var checkpoint = new ExecutionCheckpoint
         {
             StructureHash = scopes.StructureHash,
-            Continuations = [new ContinuationState
-            {
-                Status = ContinuationStatus.WaitingResolution, PendingActivity = pending,
-                Stack = [new ScopePosition { ScopeId = "root" }]
-            }]
+            Continuations =
+            [
+                new ContinuationState
+                {
+                    Status = ContinuationStatus.WaitingResolution, PendingActivity = pending,
+                    Stack = [new ScopePosition { ScopeId = "root" }]
+                }
+            ]
         };
+
         await store.SeedAsync(new WorkflowInstance
         {
             InstanceId = "resolution", WorkflowName = definition.Name, WorkflowVersion = definition.Version,
             CreatedAt = DateTime.UtcNow, StartedAt = DateTime.UtcNow, Status = WorkflowStatus.NeedsResolution,
-            WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data())), WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
+            WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data())),
+            WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
             ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
         });
+
         var activities = await http.GetFromJsonAsync<PendingActivityInfo[]>("/ops/instances/resolution/pending-activities");
         Assert.Equal(pending.Id, Assert.Single(activities!).InvocationId);
+
         using var invalid = await http.PostAsJsonAsync("/ops/instances/resolution/resolutions", new
-        { invocationId = pending.Id, kind = "Completed", outputs = new { Number = "invalid number" }, note = "observed" });
+            { invocationId = pending.Id, kind = "Completed", outputs = new { Number = "invalid number" }, note = "observed" });
+
         Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
         Assert.False(factory.ActivityProbe.Entered.Task.IsCompleted);
+
         try
         {
             using var response = await http.PostAsJsonAsync("/ops/instances/resolution/resolutions", new
-            { invocationId = pending.Id, kind = "Completed", outputs = new { Number = 42 }, note = "observed", decidedBy = "forged" });
+                { invocationId = pending.Id, kind = "Completed", outputs = new { Number = 42 }, note = "observed", decidedBy = "forged" });
+
             Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
             Assert.Equal("/ops/instances/resolution", response.Headers.Location!.OriginalString);
             await factory.ActivityProbe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             var saved = (await store.GetWorkflowInstanceAsync("resolution"))!;
             Assert.Equal(42, JsonSerializer.Deserialize<Data>(saved.WorkflowDataJson.InlineText)!.Number);
-            Assert.Contains(await store.GetTraceAsync("resolution"), entry => entry.Entry.Payload is ActivityResolutionTrace { DecidedBy: "operator" });
+
+            Assert.Contains(await store.GetTraceAsync("resolution"),
+                entry => entry.Entry.Payload is ActivityResolutionTrace { DecidedBy: "operator" });
         }
-        finally { factory.ActivityProbe.Exit.TrySetResult(); }
-        Assert.Equal(WorkflowExecutionStatus.Success, (await factory.Engine.AwaitAsync("resolution", WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10))).Status);
+        finally
+        {
+            factory.ActivityProbe.Exit.TrySetResult();
+        }
+
+        Assert.Equal(WorkflowExecutionStatus.Success,
+            (await factory.Engine.AwaitAsync("resolution", WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10))).Status);
     }
 
     [Fact]
@@ -180,8 +227,10 @@ public sealed class OperationsHttpTests
         await using var factory = new OperationsHttpFactory(store);
         using var http = factory.Operator();
         await SeedQuarantine(factory, store, Workflow.Create<Data>("BusyRelease").Step<Noop>().Build(), "busy");
+
         Assert.NotNull(await store.TryAcquireExecutionLeaseAsync("busy", "other-owner", TimeSpan.FromMinutes(1),
             await StoreTestSupport.ClaimAsync(factory.Services), ExecutionClaimKind.Operator));
+
         try
         {
             using var response = await http.PostAsync("/ops/instances/busy/release", null);
@@ -189,7 +238,10 @@ public sealed class OperationsHttpTests
             Assert.Null(response.Headers.Location);
             Assert.Equal("application/problem+json", response.Content.Headers.ContentType!.MediaType);
         }
-        finally { await store.ReleaseExecutionLeaseAsync("busy", "other-owner"); }
+        finally
+        {
+            await store.ReleaseExecutionLeaseAsync("busy", "other-owner");
+        }
     }
 
     [Fact]
@@ -200,19 +252,29 @@ public sealed class OperationsHttpTests
         using var http = factory.Operator();
         await SeedQuarantine(factory, store, Workflow.Create<Data>("QueuedRelease").Step<Noop>().Build(), "queued");
         var blocker = factory.Engine.RunAsync(Workflow.Create<Data>("OccupySlot").Step<Block>().Build(), new Data());
+
         try
         {
             await factory.ActivityProbe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             var response = http.PostAsync("/ops/instances/queued/release", null);
             await Task.Delay(factory.Wait + TimeSpan.FromMilliseconds(100));
             Assert.False(response.IsCompleted);
-            Assert.Equal(WorkflowStopKind.Quarantine, (await factory.Services.GetRequiredService<IWorkflowOperations>().GetAsync("queued"))!.StopKind);
+
+            Assert.Equal(WorkflowStopKind.Quarantine,
+                (await factory.Services.GetRequiredService<IWorkflowOperations>().GetAsync("queued"))!.StopKind);
+
             factory.ActivityProbe.Exit.TrySetResult();
             using var accepted = await response.WaitAsync(TimeSpan.FromSeconds(10));
             Assert.Contains(accepted.StatusCode, new[] { HttpStatusCode.OK, HttpStatusCode.Accepted });
-            Assert.Equal(WorkflowExecutionStatus.Success, (await factory.Engine.AwaitAsync("queued", WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10))).Status);
+
+            Assert.Equal(WorkflowExecutionStatus.Success,
+                (await factory.Engine.AwaitAsync("queued", WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10))).Status);
         }
-        finally { factory.ActivityProbe.Exit.TrySetResult(); await blocker; }
+        finally
+        {
+            factory.ActivityProbe.Exit.TrySetResult();
+            await blocker;
+        }
     }
 
     [Fact]
@@ -221,34 +283,46 @@ public sealed class OperationsHttpTests
         var store = new InMemoryWorkflowStateRepository();
         await using var factory = new OperationsHttpFactory(store) { Wait = TimeSpan.FromSeconds(10) };
         using var http = factory.Operator();
+
         // The fixture makes the row due for a trace-only checkpoint. Keep the background scanner
         // from consuming that setup transition before its explicit owner has acquired the lease.
         foreach (var scanner in factory.Services.GetServices<IHostedService>().OfType<WorkflowRecoveryService>())
             await scanner.StopAsync(default);
+
         var id = (await factory.Engine.RunAsync(Waiting(), new Data())).InstanceId;
         var saved = (await store.GetWorkflowInstanceAsync(id))!;
         await store.RequestCancellationAsync(id, new CancellationReason { ReasonCode = "test" });
         var grant = await StoreTestSupport.LeaseAsync(store, id, await StoreTestSupport.ClaimAsync(factory.Services));
+
         await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, grant.Epoch, saved.Revision,
-            traceEntries: [new ExecutionTraceEntry { StackTrace = "private-stack", Metadata = new() { ["secret"] = "private-metadata" } }]));
+            traceEntries:
+            [
+                new ExecutionTraceEntry { StackTrace = "private-stack", Metadata = new() { ["secret"] = "private-metadata" } }
+            ]));
+
         await StoreTestSupport.ReleaseAsync(store, id);
         await store.RegisterPublisherAsync("lease-test", [OutboxEvent.WorkflowCompleted]);
         await factory.Engine.RunAsync(Workflow.Create<Data>("HttpCompleted").Step<Noop>().Build(), new Data());
         Assert.Single(await store.ClaimDeliveriesAsync("lease-test", "private-lease-token", TimeSpan.FromMinutes(1), 10));
+
         foreach (var path in new[]
-        {
-            "/instances", "/instances/" + id, $"/instances/{id}/waits", $"/instances/{id}/waits?tokens=true", "/waits",
-            $"/instances/{id}/pending-activities", $"/instances/{id}/trace", $"/instances/{id}/snapshot", "/outbox/publishers", "/outbox/deliveries"
-        })
+                 {
+                     "/instances", "/instances/" + id, $"/instances/{id}/waits", $"/instances/{id}/waits?tokens=true", "/waits",
+                     $"/instances/{id}/pending-activities", $"/instances/{id}/trace", $"/instances/{id}/snapshot", "/outbox/publishers",
+                     "/outbox/deliveries"
+                 })
         {
             using var response = await http.GetAsync("/ops" + path);
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             var json = await response.Content.ReadAsStringAsync();
+
             foreach (var secret in new[] { "private-workflow-data", "private-stack", "private-metadata", "private-lease-token" })
                 Assert.DoesNotContain(secret, json);
+
             using var document = JsonDocument.Parse(json);
             AssertSafe(document.RootElement);
         }
+
         using var stopped = await http.PostAsJsonAsync($"/ops/instances/{id}/cancel", new { reasonCode = "test" });
         Assert.Equal(HttpStatusCode.OK, stopped.StatusCode);
         AssertSafe(JsonDocument.Parse(await stopped.Content.ReadAsStringAsync()).RootElement);
@@ -256,11 +330,21 @@ public sealed class OperationsHttpTests
         static void AssertSafe(JsonElement element)
         {
             if (element.ValueKind == JsonValueKind.Array)
-                foreach (var child in element.EnumerateArray()) AssertSafe(child);
-            if (element.ValueKind != JsonValueKind.Object) return;
+                foreach (var child in element.EnumerateArray())
+                    AssertSafe(child);
+
+            if (element.ValueKind != JsonValueKind.Object)
+                return;
+
             foreach (var property in element.EnumerateObject())
             {
-                Assert.DoesNotContain(property.Name.ToLowerInvariant(), new[] { "workflowdata", "workflowdatajson", "errorstacktrace", "stacktrace", "leasetoken", "datajson", "values", "state", "metadata", "runtimevalues" });
+                Assert.DoesNotContain(property.Name.ToLowerInvariant(),
+                    new[]
+                    {
+                        "workflowdata", "workflowdatajson", "errorstacktrace", "stacktrace", "leasetoken", "datajson", "values", "state",
+                        "metadata", "runtimevalues"
+                    });
+
                 AssertSafe(property.Value);
             }
         }
@@ -274,6 +358,7 @@ public sealed class OperationsHttpTests
         using var http = factory.Operator();
         var definition = Workflow.Create<Data>("BoundedRelease").Step<Block>().Build();
         await SeedQuarantine(factory, store, definition, "blocked");
+
         try
         {
             var watch = Stopwatch.StartNew();
@@ -286,9 +371,14 @@ public sealed class OperationsHttpTests
             var current = (await store.GetWorkflowInstanceAsync("blocked"))!;
             Assert.Null(ExecutionCheckpoint.Read(current.ExecutionStateJson).OperatorStop);
             factory.ActivityProbe.Exit.TrySetResult();
-            Assert.Equal(WorkflowExecutionStatus.Success, (await factory.Engine.AwaitAsync("blocked", WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10))).Status);
+
+            Assert.Equal(WorkflowExecutionStatus.Success,
+                (await factory.Engine.AwaitAsync("blocked", WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10))).Status);
         }
-        finally { factory.ActivityProbe.Exit.TrySetResult(); }
+        finally
+        {
+            factory.ActivityProbe.Exit.TrySetResult();
+        }
 
         await using var disconnected = new OperationsHttpFactory(new InMemoryWorkflowStateRepository());
         using var requestHttp = disconnected.Operator();
@@ -296,15 +386,30 @@ public sealed class OperationsHttpTests
         await SeedQuarantine(disconnected, repo, definition, "disconnect");
         using var cancellation = new CancellationTokenSource();
         var request = requestHttp.PostAsync("/ops/instances/disconnect/release", null, cancellation.Token);
+
         try
         {
             await disconnected.ActivityProbe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             cancellation.Cancel();
-            try { using var response = await request; } catch (OperationCanceledException) { }
+
+            try
+            {
+                using var response = await request;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
             Assert.False(disconnected.ActivityProbe.RunToken.IsCancellationRequested);
         }
-        finally { disconnected.ActivityProbe.Exit.TrySetResult(); }
-        Assert.Equal(WorkflowExecutionStatus.Success, (await disconnected.Engine.AwaitAsync("disconnect", WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10))).Status);
+        finally
+        {
+            disconnected.ActivityProbe.Exit.TrySetResult();
+        }
+
+        Assert.Equal(WorkflowExecutionStatus.Success,
+            (await disconnected.Engine.AwaitAsync("disconnect", WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10)))
+            .Status);
     }
 
     [Theory]
@@ -330,7 +435,10 @@ public sealed class OperationsHttpTests
     {
         var time = new FakeTimeProvider();
         var store = new InMemoryWorkflowStateRepository(time);
-        await using var factory = new OperationsHttpFactory(store) { ConfigureServices = services => services.AddSingleton<TimeProvider>(time) };
+
+        await using var factory = new OperationsHttpFactory(store)
+            { ConfigureServices = services => services.AddSingleton<TimeProvider>(time) };
+
         using var http = factory.Operator();
         Assert.Equal(HttpStatusCode.NotFound, (await http.GetAsync("/ops/instances/unknown")).StatusCode);
         var id = (await factory.Engine.RunAsync(Waiting(), new Data())).InstanceId;
@@ -339,8 +447,11 @@ public sealed class OperationsHttpTests
         time.Advance(TimeSpan.FromMinutes(2));
         await store.PurgeAsync(TimeSpan.FromMinutes(1), TimeSpan.FromDays(1), 100);
         Assert.Equal(HttpStatusCode.Gone, (await http.GetAsync($"/ops/instances/{id}")).StatusCode);
-        foreach (var query in new[] { "limit=0", "status=unknown", "after=garbage", "version=bad", "createdFrom=bad", "limit=1001", "limit=1&limit=2" })
+
+        foreach (var query in new[]
+                     { "limit=0", "status=unknown", "after=garbage", "version=bad", "createdFrom=bad", "limit=1001", "limit=1&limit=2" })
             Assert.Equal(HttpStatusCode.BadRequest, (await http.GetAsync("/ops/instances?" + query)).StatusCode);
+
         Assert.Equal(HttpStatusCode.NotFound, (await http.PostAsync("/ops/outbox/deliveries/unknown/publisher/retry", null)).StatusCode);
     }
 
@@ -367,7 +478,10 @@ public sealed class OperationsHttpTests
         await store.RegisterPublisherAsync("managed", [OutboxEvent.WorkflowCompleted]);
         await factory.Engine.RunAsync(Workflow.Create<Data>("PublisherEndpoints").Step<Noop>().Build(), new Data());
         var delivery = Assert.Single(await store.ClaimDeliveriesAsync("managed", "owner", TimeSpan.FromMinutes(1), 1));
-        Assert.True(await store.SettleDeliveryAsync(delivery.Event.Id, "managed", "owner", OutboxPublishResult.GiveUp(disablePublisher: true)));
+
+        Assert.True(await store.SettleDeliveryAsync(delivery.Event.Id, "managed", "owner",
+            OutboxPublishResult.GiveUp(disablePublisher: true)));
+
         using var enabled = await http.PostAsync("/ops/outbox/publishers/managed/enable", null);
         Assert.Equal(HttpStatusCode.OK, enabled.StatusCode);
         Assert.Equal("operator", (await enabled.Content.ReadFromJsonAsync<OutboxPublisherState>())!.EnabledBy);
@@ -383,42 +497,52 @@ public sealed class OperationsHttpTests
     }
 
     [Theory]
-    [InlineData("ReadPolicy"), InlineData("ReplyPolicy"), InlineData("InspectPolicy"), InlineData("WritePolicy"), InlineData("OutboxPolicy")]
+    [InlineData("ReadPolicy"), InlineData("ReplyPolicy"), InlineData("InspectPolicy"), InlineData("WritePolicy"),
+     InlineData("OutboxPolicy")]
     public async Task StartupRefusesAnyUncoveredPolicyGroup(string property)
     {
         await using var factory = new OperationsHttpFactory(new InMemoryWorkflowStateRepository())
-        { ConfigureOptions = options => typeof(WorkflowOperationsOptions).GetProperty(property)!.SetValue(options, null) };
+            { ConfigureOptions = options => typeof(WorkflowOperationsOptions).GetProperty(property)!.SetValue(options, null) };
+
         Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
     }
 
     [Fact]
     public async Task StartupRefusesUnknownPoliciesMissingScopeAndRouteConflicts()
     {
-        await using var unknown = new OperationsHttpFactory(new InMemoryWorkflowStateRepository()) { ConfigureOptions = o => o.ReadPolicy = "missing" };
-        Assert.Throws<InvalidOperationException>(() => unknown.CreateClient());
+        await using var unknown = new OperationsHttpFactory(new InMemoryWorkflowStateRepository())
+            { ConfigureOptions = o => o.ReadPolicy = "missing" };
+
+        Assert.Equal(WorkflowErrorKind.InvalidRequest, Assert.Throws<WorkflowEngineException>(() => unknown.CreateClient()).Kind);
         await using var noScope = new OperationsHttpFactory(new InMemoryWorkflowStateRepository()) { RegisterScope = false };
         Assert.Throws<InvalidOperationException>(() => noScope.CreateClient());
+
         await using var conflicting = new OperationsHttpFactory(new InMemoryWorkflowStateRepository())
-        { ConfigureEndpoints = endpoints => endpoints.MapGet("/ops/instances/{other}", () => "conflict") };
+            { ConfigureEndpoints = endpoints => endpoints.MapGet("/ops/instances/{other}", () => "conflict") };
+
         Assert.Throws<InvalidOperationException>(() => conflicting.CreateClient());
     }
 
-    internal static async Task SeedQuarantine(OperationsHttpFactory factory, IWorkflowStateRepository store, WorkflowDefinition definition, string id)
+    internal static async Task SeedQuarantine(OperationsHttpFactory factory, IWorkflowStateRepository store, WorkflowDefinition definition,
+        string id)
     {
         await factory.Services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
+
         var checkpoint = new ExecutionCheckpoint
         {
             StructureHash = scopes.StructureHash,
             OperatorStop = new OperatorStopState { Kind = OperatorStopKind.Quarantine, Reason = "lost owners", CrashCount = 3 },
             Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
         };
+
         await store.SeedAsync(new WorkflowInstance
         {
             InstanceId = id, WorkflowName = definition.Name, WorkflowVersion = definition.Version,
             CreatedAt = DateTime.UtcNow, StartedAt = DateTime.UtcNow,
             Status = WorkflowStatus.NeedsResolution, WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data())),
-            WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)), ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
+            WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
+            ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
         });
     }
 }

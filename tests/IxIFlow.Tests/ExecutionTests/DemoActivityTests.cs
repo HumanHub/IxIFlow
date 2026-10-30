@@ -33,6 +33,7 @@ public sealed class DemoActivityTests
     {
         var source = Path.GetTempFileName();
         var destination = Path.GetTempFileName();
+
         try
         {
             await File.WriteAllTextAsync(source, "{\"value\":42}");

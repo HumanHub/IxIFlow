@@ -217,7 +217,7 @@ Generated calls embed the catalog's immutable workflow contract. Mapping a membe
 
 The caller bundle includes the union of its packages and its callees' digest-pinned package closures, preserving reference assemblies and runtime assets per RID. This makes package-owned callee data types available to compile and load the caller. Callee workflow assemblies are resolved independently when the child runs. An incompatible callee engine version, checkpoint contract version, target framework or shared assembly profile reports PUB009 and requires republishing the callee. Conflicting package versions, digests or asset selections report PUB010, as do incompatible private DTO assemblies or their private dependencies (including different bytes with the same assembly identity).
 
-Call input precedence is explicit mapping, then `[DefaultValue]`, then constructor or initializer. A required null or empty input fails the invocation step as `InvalidInput`, catchable with `try`/`catches`. Invocation steps have no retry policy yet. Client root starts validate required inputs without applying attribute defaults. Invoked workflows run as independent child instances; their contracts are checked again at child start. Published and Deprecated callers, and unfinished parent instances of retired callers, continue to prevent retirement of their child dependencies.
+Call input precedence is explicit mapping, then `[DefaultValue]`, then constructor or initializer. A required null or empty input fails the invocation step as `InvalidInput`, catchable with `try`/`catches`. Invocation steps support ordered typed and general `onError` policies, including retry and ignore; see [invocation retry policies](fluent-api.md#faults-and-recovery). Client root starts validate required inputs without applying attribute defaults. Invoked workflows run as independent child instances; their contracts are checked again at child start. Published and Deprecated callers, and unfinished parent instances of retired callers, continue to prevent retirement of their child dependencies.
 
 ## Publishing and boundaries
 
@@ -260,7 +260,6 @@ Case labels are constant expressions or named `csharp-expression` assets evaluat
 <!-- snippet: samples/IxIFlow.Samples/Definitions/assign-totals.workflow.yaml -->
 ```yaml
 workflow: {name: AssignTotals, dataType: IxIFlow.Samples.AssignmentTotalsData}
-
 definitions:
   - kind: assign
     id: total

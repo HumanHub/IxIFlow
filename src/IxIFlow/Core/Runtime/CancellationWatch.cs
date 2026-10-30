@@ -26,7 +26,9 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly Dictionary<Task, string> _reads = [];
     private bool _disposed;
+
     private Task? _loop;
+
     // A read past its deadline keeps running in the store; the next pass waits for it again instead
     // of queuing another call behind it.
     private (Task<WorkflowControlRequests> Task, string[] InstanceIds, DateTime SentAtUtc)?
@@ -53,20 +55,26 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     /// failed read never outlasts a lease renewal.
     /// </summary>
     public IDisposable Watch(string instanceId, TaskCompletionSource<CancellationReason> cancellation,
-        Action<Exception> lost, TimeSpan tolerance, TimeSpan interval, Action<long>? arrivals = null, Action<WorkflowDebugState>? debug = null)
+        Action<Exception> lost, TimeSpan tolerance, TimeSpan interval, Action<long>? arrivals = null,
+        Action<WorkflowDebugState>? debug = null)
     {
         var subscriber = new Subscriber(this, instanceId, cancellation, lost, tolerance,
             interval < MaximumInterval ? interval : MaximumInterval, Now, arrivals, debug);
+
         lock (_lock)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+
             if (!_watched.TryGetValue(instanceId, out var subscribers))
                 _watched[instanceId] = subscribers = [];
+
             subscribers.Add(subscriber);
+
             if (_loop == null || _loop.IsCompleted)
                 using (ExecutionContextFlow.SuppressIfNeeded())
                     _loop = Task.Run(RunAsync);
         }
+
         return subscriber;
     }
 
@@ -87,17 +95,21 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
         {
             string[] instanceIds;
             TimeSpan interval;
+
             lock (_lock)
             {
                 if (_watched.Count == 0)
                 {
                     _loop = null;
                     _read = null;
+
                     return;
                 }
+
                 instanceIds = _watched.Keys.ToArray();
                 interval = _watched.Values.SelectMany(items => items).Min(item => item.Interval);
             }
+
             try
             {
                 await ReadAsync(instanceIds);
@@ -111,6 +123,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
                 // Keep watching: a fault here must not leave leases without cancellation or loss.
                 _inspectionPolicy.Log(_logger, _sensitiveDiagnostics, LogLevel.Error, error, "The cancellation watch failed");
             }
+
             try
             {
                 await Task.Delay(interval, _time, _stop.Token);
@@ -126,12 +139,21 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     {
         _read ??= (TrackRead(_store.GetControlRequestsAsync(watchedIds),
             $"cancellation requests for {string.Join(", ", watchedIds)}"), watchedIds, Now);
+
         var (read, instanceIds, readAt) = _read.Value;
         IReadOnlyDictionary<string, CancellationReason> requests;
         IReadOnlyDictionary<string, WorkflowDebugState> debug;
+
         try
         {
-            (requests, debug) = await read.WaitAsync(ReadTimeout, _time, _stop.Token);
+            var snapshot = await read.WaitAsync(ReadTimeout, _time, _stop.Token);
+            (requests, debug) = snapshot;
+
+            if (snapshot.ReadFailures.Count > 0)
+                _inspectionPolicy.Log(_logger, _sensitiveDiagnostics, LogLevel.Warning,
+                    new AggregateException("Some execution controls could not be read", snapshot.ReadFailures),
+                    "Could not read some cancellation requests for {Count} workflow instances", instanceIds.Length);
+
             _read = null;
         }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested)
@@ -144,18 +166,25 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
             // wait; then a fresh read may succeed where it did not.
             if (error is not TimeoutException || Now - readAt >= LongestTolerance())
                 _read = null;
-            _inspectionPolicy.Log(_logger, _sensitiveDiagnostics, LogLevel.Warning, error, "Could not read cancellation requests for {Count} workflow instances",
+
+            _inspectionPolicy.Log(_logger, _sensitiveDiagnostics, LogLevel.Warning, error,
+                "Could not read cancellation requests for {Count} workflow instances",
                 instanceIds.Length);
+
             // Each lease has its own outage clock, counted from its last confirmed read. Every lease
             // watched now is judged, including ones added while the read was out.
             foreach (var subscriber in Subscribers(WatchedIds()).Where(item =>
                          !item.Cancellation.Task.IsCompleted && Now - item.ConfirmedAtUtc >= item.Tolerance))
                 subscriber.Lost(error);
+
             return;
         }
+
         foreach (var subscriber in Subscribers(instanceIds))
         {
-            if (debug.TryGetValue(subscriber.InstanceId, out var state)) subscriber.Debug?.Invoke(state);
+            if (debug.TryGetValue(subscriber.InstanceId, out var state))
+                subscriber.Debug?.Invoke(state);
+
             if (requests.TryGetValue(subscriber.InstanceId, out var reason))
             {
                 // A delivered request ends the watch; a later outage must not end ownership.
@@ -165,6 +194,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
             else if (readAt > subscriber.ConfirmedAtUtc)
                 subscriber.ConfirmedAtUtc = readAt;
         }
+
         await ReadArrivalsAsync(instanceIds);
     }
 
@@ -173,14 +203,17 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     private async Task ReadArrivalsAsync(string[] instanceIds)
     {
         var listening = Subscribers(instanceIds).Where(item => item.Arrivals != null).ToArray();
+
         if (listening.Length == 0)
             return;
+
         try
         {
             var sequences = await TrackRead(_store.GetInboxSequencesAsync(
-                    listening.Select(item => item.InstanceId).Distinct(StringComparer.Ordinal).ToArray()),
+                        listening.Select(item => item.InstanceId).Distinct(StringComparer.Ordinal).ToArray()),
                     $"inbox sequences for {string.Join(", ", listening.Select(item => item.InstanceId))}")
                 .WaitAsync(ReadTimeout, _time, _stop.Token);
+
             foreach (var subscriber in listening)
                 if (sequences.TryGetValue(subscriber.InstanceId, out var sequence))
                     subscriber.Arrivals!(sequence);
@@ -191,7 +224,8 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
         }
         catch (Exception error)
         {
-            _inspectionPolicy.Log(_logger, _sensitiveDiagnostics, LogLevel.Debug, error, "Could not read inbox sequences for {Count} workflow instances",
+            _inspectionPolicy.Log(_logger, _sensitiveDiagnostics, LogLevel.Debug, error,
+                "Could not read inbox sequences for {Count} workflow instances",
                 listening.Length);
         }
     }
@@ -223,13 +257,16 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     {
         lock (_lock)
             _reads[read] = description;
+
         using (ExecutionContextFlow.SuppressIfNeeded())
             _ = read.ContinueWith(finished =>
             {
                 lock (_lock)
                     _reads.Remove(finished);
+
                 _ = finished.Exception; // Observe failures even if shutdown had to abandon the read.
             }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
         return read;
     }
 
@@ -237,6 +274,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     {
         lock (_lock)
             _disposed = true;
+
         _stop.Cancel();
     }
 
@@ -244,13 +282,18 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
     {
         Dispose();
         Task? loop;
+
         lock (_lock)
             loop = _loop;
+
         if (loop != null)
             await loop;
+
         KeyValuePair<Task, string>[] reads;
+
         lock (_lock)
             reads = _reads.ToArray();
+
         try
         {
             await Task.WhenAll(reads.Select(read => read.Key)).WaitAsync(ReadTimeout, _time);
@@ -258,6 +301,7 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
         catch (TimeoutException) when (reads.Any(read => !read.Key.IsCompleted))
         {
             var abandoned = reads.Where(read => !read.Key.IsCompleted).Select(read => read.Value).ToArray();
+
             _logger.LogWarning("Abandoned {Count} outstanding cancellation watch store reads after {Timeout}: {Reads}",
                 abandoned.Length, ReadTimeout, string.Join("; ", abandoned));
         }
@@ -267,9 +311,16 @@ internal sealed class CancellationWatch : IDisposable, IAsyncDisposable
         }
     }
 
-    private sealed class Subscriber(CancellationWatch watch, string instanceId,
-        TaskCompletionSource<CancellationReason> cancellation, Action<Exception> lost, TimeSpan tolerance,
-        TimeSpan interval, DateTime subscribedAtUtc, Action<long>? arrivals, Action<WorkflowDebugState>? debug) : IDisposable
+    private sealed class Subscriber(
+        CancellationWatch watch,
+        string instanceId,
+        TaskCompletionSource<CancellationReason> cancellation,
+        Action<Exception> lost,
+        TimeSpan tolerance,
+        TimeSpan interval,
+        DateTime subscribedAtUtc,
+        Action<long>? arrivals,
+        Action<WorkflowDebugState>? debug) : IDisposable
     {
         public Action<WorkflowDebugState>? Debug { get; } = debug;
         public Action<long>? Arrivals { get; } = arrivals;

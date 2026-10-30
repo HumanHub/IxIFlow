@@ -2,7 +2,7 @@
 
 IxIFlow is a durable workflow engine for .NET 10 and C#. Define activities and control flow with a typed fluent API or supported YAML documents, then run instances through `IWorkflowClient`. A durable store lets instances survive process restarts, wait for external answers and resume from their saved position.
 
-This repository is being built toward 1.0. Features described below are implemented. The [status and roadmap](#status-and-roadmap) separates the remaining 1.0 work from what you can use today.
+IxIFlow 1.0 provides the features described below. See [release scope and roadmap](https://github.com/HumanHub/IxIFlow/blob/main/README.md#status-and-roadmap) for runtime boundaries and features after 1.0.
 
 ## Features
 
@@ -21,7 +21,7 @@ This repository is being built toward 1.0. Features described below are implemen
 - Committed trace history outside checkpoints, snapshots, structured logging scopes, and an `ActivitySource` and `Meter` both named `IxIFlow` for OpenTelemetry integration.
 - Immutable, versioned Liquid templates with culture fallback, typed model validation, rendering and message sending through an application-supplied sender.
 
-See the [sample feature map](samples/README.md) for runnable examples and the [YAML guide](docs/yaml-authoring.md) for every document construct.
+See the [sample feature map](https://github.com/HumanHub/IxIFlow/blob/main/samples/README.md) for runnable examples and the [YAML guide](https://github.com/HumanHub/IxIFlow/blob/main/docs/yaml-authoring.md) for every document construct.
 
 ## Packages
 
@@ -39,10 +39,12 @@ These are the package projects in `src/`. All runtime packages target .NET 10.
 | `IxIFlow.Coordinator` | Stateless matching, host discovery and authenticated coordinator links |
 | `IxIFlow.AspNetCore` | Authorized incoming HTTP triggers, CloudEvents and management endpoints |
 | `IxIFlow.Webhooks` | Outgoing signed webhook delivery of outbox events |
-| `IxIFlow.Templates` | [Durable template publishing, rendering and message activities](src/IxIFlow.Templates/README.md) using the selected workflow store |
+| `IxIFlow.Templates` | [Durable template publishing, rendering and message activities](https://github.com/HumanHub/IxIFlow/blob/main/src/IxIFlow.Templates/README.md) using the selected workflow store |
 | `IxIFlow.Templates.Liquid` | Liquid engine using Fluid |
+| `IxIFlow.Debugging` | Optional breakpoint conditions and a hosted Debug Adapter Protocol endpoint |
+| `IxIFlow.Generators` | YAML document models, validation, translation and source generation; also used by Authoring |
 
-`IxIFlow.Generators`, `IxIFlow.Analyzers` and `IxIFlow.Analyzers.CodeFixes` are build-time projects targeting `netstandard2.0`, bundled in `IxIFlow`; they are not separate packable projects.
+The generator, analyzers and code fixes target `netstandard2.0` and are bundled as build-time assets in `IxIFlow`. `IxIFlow.Generators` also ships as a library package with its dependencies for Authoring consumers. `IxIFlow.Analyzers` and `IxIFlow.Analyzers.CodeFixes` are not separate packages.
 
 ## Installation
 
@@ -58,7 +60,7 @@ Activity libraries can reference only `IxIFlow.Abstractions`. Register installed
 
 ## Quick start
 
-The complete activity and data types are in [Quote.cs](samples/IxIFlow.Samples/Quote.cs); copy them into your application or run the sample project. `AddFee` declares a required customer input, an in-out amount and a typed decimal default of 2.50 for its fee. The same amount is mapped into and out of the activity:
+The complete activity and data types are in [Quote.cs](https://github.com/HumanHub/IxIFlow/blob/main/samples/IxIFlow.Samples/Quote.cs); copy them into your application or run the sample project. `AddFee` declares a required customer input, an in-out amount and a typed decimal default of 2.50 for its fee. The same amount is mapped into and out of the activity:
 
 <!-- snippet: tests/IxIFlow.Samples.Tests/ReadmeExamples.cs -->
 ```csharp
@@ -80,21 +82,30 @@ var definition = Workflow.Create<QuoteData>("QuickStart")
         .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
         .Output(activity => activity.Amount).To(ctx => ctx.WorkflowData.Amount))
     .Build();
+
 WorkflowDefinitionValidator.Validate(definition);
 
 var result = await client.RunAsync(definition, new QuoteData());
+
 if (result.Status != WorkflowExecutionStatus.Success)
     throw new InvalidOperationException(result.ErrorMessage);
+
 Console.WriteLine(((QuoteData)result.WorkflowData!).Amount); // 12.50
 ```
 
-This snippet is compiled and exercised in [ReadmeExamples.cs](tests/IxIFlow.Samples.Tests/ReadmeExamples.cs). Parameterless activities can be constructed by the executor; register activities with constructor dependencies in DI.
+This snippet is compiled and exercised in [ReadmeExamples.cs](https://github.com/HumanHub/IxIFlow/blob/main/tests/IxIFlow.Samples.Tests/ReadmeExamples.cs). Parameterless activities can be constructed by the executor; register activities with constructor dependencies in DI.
 
 `RunAsync` returns when the instance is idle, including at a wait or when operator resolution is needed. Check `Status` and read the returned `WorkflowData`. `StartAsync` normally returns an instance ID after saving the start; inside a host slot it runs inline until the nested run ends. `AwaitAsync` waits for idle or terminal state. A caller's cancellation token can interrupt the current run while leaving saved state recoverable; `CancelAsync` requests durable workflow cancellation. For a queued `StartAsync`, the host owns the run and the token only stops waiting for acceptance.
 
+## Workflow identity and scopes
+
+Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in `IxIFlow.Core`. `RegisterWorkflow<TWorkflow,TData>()` and `Invoke<TWorkflow,TData>(setup)` read it from the type without constructing the class to discover identity; missing attributes are refused. Typed YAML children need only `workflowType`, with no duplicate name/version field.
+
+Resource scope activities share a named connection, mailbox or thread-affine session with a nested body. See [scope authoring](https://github.com/HumanHub/IxIFlow/blob/main/docs/fluent-api.md#scope-activities) and [the connection, mailbox and workbook samples](https://github.com/HumanHub/IxIFlow/blob/main/samples/IxIFlow.Samples/ScopeExamples.cs), each with a compiled YAML twin.
+
 ## YAML authoring
 
-The engine package includes `*.workflow.yaml` and `*.workflow.yml` as compiler additional files automatically. This delay example is [reminder.workflow.yaml](samples/IxIFlow.Samples/Definitions/reminder.workflow.yaml), compiled in the sample project and compared with its C# twin:
+The engine package includes `*.workflow.yaml` and `*.workflow.yml` as compiler additional files automatically. This delay example is [reminder.workflow.yaml](https://github.com/HumanHub/IxIFlow/blob/main/samples/IxIFlow.Samples/Definitions/reminder.workflow.yaml), compiled in the sample project and compared with its C# twin:
 
 <!-- snippet: samples/IxIFlow.Samples/Definitions/reminder.workflow.yaml -->
 ```yaml
@@ -123,13 +134,13 @@ The generator emits a static `Build()` method under `<RootNamespace>.Generated`;
 
 YAML covers every fluent control-flow construct: activities and references, sequences, conditions, `WhileDo`/`DoWhile`, general parallel branches and combiners, sequential or parallel `forEach` with results, typed catch/finally blocks, typed switches, sagas with switch cases, compensation and retry, delays, requests with replies and timeouts, event waits and both named and typed child invocations. Waits can include `defaultPayload` as a discovery UI suggestion; the engine never answers it automatically. Local templates accept parameters and defaults; expression assets use `language: csharp-expression`. YAML number literals with a fraction are doubles; decimal expressions can use a C# expression asset, while activity attribute defaults retain their declared types.
 
-Hosting, store selection, telemetry, template publication and client operations use application C# APIs. Any nonempty catalog or workflow import list fails the source-generator build with `IXIYAML001` at `imports`; the generator does not resolve imports. Named `invokeWorkflow` steps require an explicit `version`, because the generator registers only `name@version` references. See the [generator guide](src/IxIFlow.Generators/README.md) for custom filenames, MSBuild settings and project-reference setup, and [samples](samples/README.md) for tested pairs.
+Hosting, store selection, telemetry, template publication and client operations use application C# APIs. Any nonempty catalog or workflow import list fails the source-generator build with `IXIYAML001` at `imports`; the generator does not resolve imports. Named `invokeWorkflow` steps require an explicit `version`, because the generator registers only `name@version` references. See the [generator guide](https://github.com/HumanHub/IxIFlow/blob/main/src/IxIFlow.Generators/README.md) for custom filenames, MSBuild settings and project-reference setup, and [samples](https://github.com/HumanHub/IxIFlow/blob/main/samples/README.md) for tested pairs.
 
-The reader is strict: an unknown or wrongly cased key fails the build with IXIYAML001 at that key. The package ships a JSON Schema for workflow YAML at `schemas/workflow.schema.json`, so editors complete and check documents as you type; [editor support](src/IxIFlow.Generators/README.md#editor-support) shows how to bind it. The [YAML guide](docs/yaml-authoring.md) documents every step kind, mapping and expression, including scopes, code activities, templates and published inline calls.
+The reader is strict: an unknown or wrongly cased key fails the build with IXIYAML001 at that key. The package ships a JSON Schema for workflow YAML at `schemas/workflow.schema.json`, so editors complete and check documents as you type; [editor support](https://github.com/HumanHub/IxIFlow/blob/main/src/IxIFlow.Generators/README.md#editor-support) shows how to bind it. The [YAML guide](https://github.com/HumanHub/IxIFlow/blob/main/docs/yaml-authoring.md) documents every step kind, mapping and expression, including scopes, code activities, templates and published inline calls.
 
 ## Stores
 
-A [reply token](docs/reply-tokens.md) is a capability: holding it is the right to answer its wait. Share it only with the intended replier and keep it out of logs.
+A [reply token](https://github.com/HumanHub/IxIFlow/blob/main/docs/reply-tokens.md) is a capability: holding it is the right to answer its wait. Share it only with the intended replier and keep it out of logs.
 
 Choose one store through the builder returned by `AddIxIFlow()`. All provider extensions use `IxIFlow.Extensions`; install the corresponding package.
 
@@ -140,17 +151,17 @@ Choose one store through the builder returned by `AddIxIFlow()`. All provider ex
 | SQL Server | `services.AddIxIFlow().UseSqlServer(connectionString)` | Shared durable state, inbox, waits, traces, leases, outbox and tombstones |
 | PostgreSQL | `services.AddIxIFlow().UsePostgreSql(connectionString)` | Shared durable state with the same contract and notification wake-ups alongside polling |
 
-[Hosting.cs](samples/IxIFlow.Samples/Hosting.cs) compiles all four registrations. Provider schemas are created on first use. SQLite requires a file connection string and exclusive ownership; asynchronously dispose its service provider before reopening the file. SQL Server and PostgreSQL use database time for deadlines; memory and SQLite use the registered `TimeProvider`.
+[Hosting.cs](https://github.com/HumanHub/IxIFlow/blob/main/samples/IxIFlow.Samples/Hosting.cs) compiles all four registrations. Provider schemas are created on first use. SQLite requires a file connection string and exclusive ownership; asynchronously dispose its service provider before reopening the file. SQL Server and PostgreSQL use database time for deadlines; memory and SQLite use the registered `TimeProvider`.
 
-Before 1.0, any store schema change requires a fresh database. Schema creation supplies whole tables and their indexes; it does not upgrade existing tables or repair their missing indexes. Recreate databases from an earlier schema build. SQL Server IDs use `Latin1_General_100_BIN2` to preserve case distinctions; see [stores](docs/stores.md) for the affected columns.
+The 1.0 providers require a matching database schema. Schema creation supplies whole tables and their indexes; it does not upgrade existing tables or repair their missing indexes. Recreate databases from an earlier schema build. SQL Server IDs use `Latin1_General_100_BIN2` to preserve case distinctions; see [stores](https://github.com/HumanHub/IxIFlow/blob/main/docs/stores.md) for the affected columns.
 
-Workflow versions and draft definitions are stored in the selected repository. Code-defined executable definitions are registered locally on each host that may run them. Published versions are fetched by their immutable bundle digest when bundle hosting is enabled. Workflow identity is the declared `(name, version)`; names are required. A compiler-free `StructureHash` checks checkpoint compatibility and refuses changed structure at registration, start, resume, recovery and child resolution. It includes ordered steps, types, waits, joins, combiners, loops, handlers, children and expression shapes; it ignores delegate bodies, captured values and presentation metadata. Change the version when changing behavior. See [identity and expressions](docs/fluent-api.md#identity-and-expressions). Checkpoint schema 1 (`ixiflow-1`) is a one-time break: older saved instances are refused without migration; reset development state and restart hosts together.
+Workflow versions and draft definitions are stored in the selected repository. Code-defined executable definitions are registered locally on each host that may run them. Published versions are fetched by their immutable bundle digest when bundle hosting is enabled. Workflow identity is the declared `(name, version)`; names are required. A compiler-free `StructureHash` checks checkpoint compatibility and refuses changed structure at registration, start, resume, recovery and child resolution. It includes ordered steps, types, waits, joins, combiners, loops, handlers, children and expression shapes; it ignores delegate bodies, captured values and presentation metadata. Change the version when changing behavior. See [identity and expressions](https://github.com/HumanHub/IxIFlow/blob/main/docs/fluent-api.md#identity-and-expressions). Checkpoint schema 1 (`ixiflow-1`) is a one-time break: older saved instances are refused without migration; reset development state and restart hosts together.
 
 Enable published workflows by calling `UseWorkflowBundles(cacheDirectory, maxCachedBundles: 16)` on the builder returned by `AddIxIFlow()`. The selected repository's artifact table is used by default; `UseFileSystemArtifacts` can replace it. Start a published version with `client.StartAsync("Approval", version: 1, workflowData: data)`.
 
 A configured bundle host advertises `bundle-host` and compatible catalog workflow/version structure hashes. Capabilities refresh on heartbeats and local catalog changes. An unmet workflow demand also triggers a refresh, at most once per heartbeat interval; a failed refresh leaves the demand unmet and hands execution off. A published start saves both demands and its `BundleDigest`; recovery and child instances use their own saved pins. Downloads and cached archives are verified before loading, and shared assembly identities/versions must match the manifest's compatibility profile. The runtime set comes from framework deps files in `APP_CONTEXT_DEPS_FILES`, or only `runtimepack.*` libraries in the application's deps file for self-contained deployments, including ASP.NET. Application assemblies remain private even beside runtime DLLs or under a directory named `shared`. Unreadable runtime metadata disables bundle compatibility without failing host startup. Self-contained single-file processes expose no runtime manifest, so they can neither host nor publish bundles: such a host logs a warning and does not advertise `bundle-host`, and publishing from one fails with `PUB008`. The profile declares only runtime/SDK assemblies referenced by the workflow and its private closure, plus CoreLib and the runtime facade. Private dependencies come only from verified archive entries.
 
-`WorkflowPublisher.UploadPackageAsync(stream)` accepts a `.nupkg` and registers its immutable identity, digest and extracted activity descriptors. It returns the audited `PackageRegistration` (`Stored`, `Activities`, `Created`). The typed publisher, full no-write validation and durable attempt service are documented in [Authoring](src/IxIFlow.Authoring/README.md). `PackageIngestion` also exposes bounded candidate verification and audited storage independently of workflow publishing. Offline uploads can arrive before their dependencies and remain Pending until indexing completes. See the [activity and package catalog](docs/activity-catalog.md) for receipts, scopes, Local providers and the indexing service. Set `WorkflowPublisherOptions.NuGetConfigPath` to a standard `NuGet.Config` for feeds; NuGet handles its source credentials, and the catalog stores no feed secrets. Publishing resolves `imports.catalogs` and their transitive closure for `TargetFramework` (default `net10.0`), compiles against NuGet-selected reference assemblies, validates activity markers and mappings, and pins exact package identities, digests, entry hashes and runtime assets. Unversioned imports select the highest stable version and are rewritten as exact imports. Packages remain separate artifacts and are retained while any published version or saved instance needs them.
+`WorkflowPublisher.UploadPackageAsync(stream)` accepts a `.nupkg` and registers its immutable identity, digest and extracted activity descriptors. It returns the audited `PackageRegistration` (`Stored`, `Activities`, `Created`). The typed publisher, full no-write validation and durable attempt service are documented in [Authoring](https://github.com/HumanHub/IxIFlow/blob/main/src/IxIFlow.Authoring/README.md). `WorkflowPublisher.ReadPackageAsync` and `StorePackageAsync` expose bounded candidate verification and audited storage as separate calls. Offline uploads can arrive before their dependencies and remain Pending until indexing completes. See the [activity and package catalog](https://github.com/HumanHub/IxIFlow/blob/main/docs/activity-catalog.md) for receipts, scopes, Local providers and the indexing service. Set `WorkflowPublisherOptions.NuGetConfigPath` to a standard `NuGet.Config` for feeds; NuGet handles its source credentials, and the catalog stores no feed secrets. Publishing resolves `imports.catalogs` and their transitive closure for `TargetFramework` (default `net10.0`), compiles against NuGet-selected reference assemblies, validates activity markers and mappings, and pins exact package identities, digests, entry hashes and runtime assets. Unversioned imports select the highest stable version and are rewritten as exact imports. Packages remain separate artifacts and are retained while any published version or saved instance needs them.
 
 Hosts fetch package artifacts only by their published digests and load managed assemblies into the bundle's own context. Native assets are selected at publish using NuGet's portable RID graph and package runtime graphs; each host loads its recorded RID set. A host without a compatible set omits that workflow version from its capabilities. Hosts require no feed configuration or NuGet client libraries.
 
@@ -167,17 +178,17 @@ Each digest has its own collectible load context. `maxCachedBundles` bounds the 
 
 The `UseWorkflowBundles(WorkflowBundleOptions)` overload configures `FetchTimeout` and `CacheLockTimeout` (each 30 seconds by default) and `ReadLimits`: maximum archive bytes (64 MiB), manifest bytes (1 MiB), entry count (1,024, including the manifest), bytes per other entry (32 MiB), and total expanded bytes (256 MiB). Reads enforce these bounds while streaming and before expanding entries. Caller cancellation propagates as cancellation. Cache-lock waiting has its own cancellable deadline; on expiry the host bypasses the cache and downloads verified bytes. Only downloading and verification consume the fetch budget. Fetch timeouts and independent artifact-store cancellation are `ArtifactUnavailable` interruptions and preserve the checkpoint. Archive limits report `ResourceExhausted` and leave digest-valid cached archives intact. An inspection GET that hits a bundle read limit returns HTTP 503 naming the bundle limit.
 
-Unloading is cooperative: a static field, event handler, delegate, `Type`, or returned data object holding a bundle type keeps that context loaded. Runtime serializer caches can also delay collection briefly. Engine reflection caches use weak ownership and serializer profiles are scoped to their load context. Saved data/event/value type names now use the recursive `ixi-type:1:` format; recreate earlier development databases and republish earlier bundles rather than migrating their type names.
+Unloading is cooperative: a static field, event handler, delegate, `Type`, or returned data object holding a bundle type keeps that context loaded. Runtime serializer caches can also delay collection briefly. Engine reflection caches use weak ownership and serializer profiles are scoped to their load context. Saved data/event/value type names use the recursive `ixi-type:1:` format; recreate earlier development databases and republish earlier bundles rather than migrating their type names.
 
-All four stores implement inbox, trace, outbox and retention semantics; memory records last only for the process lifetime. See [stores](docs/stores.md) for deployment details.
+All four stores implement inbox, trace, outbox and retention semantics; memory records last only for the process lifetime. See [stores](https://github.com/HumanHub/IxIFlow/blob/main/docs/stores.md) for deployment details.
 
 ## Publishers and retention
 
 A terminal checkpoint atomically writes an immutable `OutboxEvent.WorkflowCompleted` envelope. Register singleton `IOutboxPublisher` implementations with `AddOutboxPublisher`; each stable publisher name has its own leased, at-least-once delivery state. New names receive future events unless `ReplayRetainedOutboxEvents(name)` is requested. Explicitly retire durable subscriptions with `UnregisterOutboxPublisher(name)`. Consumers deduplicate by event ID.
 
-`IxIFlow.Webhooks` adds outgoing HTTP delivery through `AddWebhook(WebhookEndpoint)`, with structured CloudEvents JSON and Standard Webhooks v1 HMAC signatures. It retries independently per endpoint; HTTP 410 disables an endpoint durably. The completion summary excludes workflow data and exception text. `IxIFlow.AspNetCore` supplies [incoming HTTP triggers](docs/incoming-webhooks.md) with authorized, atomic idempotent admission. See [outbox and publishers](docs/outbox-and-publishers.md).
+`IxIFlow.Webhooks` adds outgoing HTTP delivery through `AddWebhook(WebhookEndpoint)`, with structured CloudEvents JSON and Standard Webhooks v1 HMAC signatures. It retries independently per endpoint; HTTP 410 disables an endpoint durably. The completion summary excludes workflow data and exception text. `IxIFlow.AspNetCore` supplies [incoming HTTP triggers](https://github.com/HumanHub/IxIFlow/blob/main/docs/incoming-webhooks.md) with authorized, atomic idempotent admission. See [outbox and publishers](https://github.com/HumanHub/IxIFlow/blob/main/docs/outbox-and-publishers.md).
 
-Terminal results remain readable for `FinishedInstanceRetention` (30 days by default). Hosted cleanup runs bounded passes every hour by default, skipping pending outbox deliveries and instances with any remaining child row, so subtrees are removed from leaves to parents. Removal deletes operational history and reserves the ID for `TombstoneRetention` (90 days from removal by default). During that period client reads distinguish `Removed`, and writes reject the reserved ID. See [retention and tombstones](docs/retention-and-tombstones.md).
+Terminal results remain readable for `FinishedInstanceRetention` (30 days by default). Hosted cleanup runs bounded passes every hour by default, skipping pending outbox deliveries and instances with any remaining child row, so subtrees are removed from leaves to parents. Removal deletes operational history and reserves the ID for `TombstoneRetention` (90 days from removal by default). During that period client reads distinguish `Removed`, and writes reject the reserved ID. See [retention and tombstones](https://github.com/HumanHub/IxIFlow/blob/main/docs/retention-and-tombstones.md).
 
 ## Hosting
 
@@ -195,10 +206,12 @@ var builder = Host.CreateApplicationBuilder();
 builder.Services.AddIxIFlow(options => options.Slots = 8);
 using var host = builder.Build();
 await host.StartAsync();
+WorkflowExecutionResult result;
+
 try
 {
     var client = host.Services.GetRequiredService<IWorkflowClient>();
-    var result = await client.RunAsync(Quote.Definition(), new QuoteData());
+    result = await client.RunAsync(Quote.Definition(), new QuoteData());
     Console.WriteLine(result.Status);
 }
 finally
@@ -207,28 +220,20 @@ finally
 }
 ```
 
-This host lifecycle is compiled in [DocumentationExamples.cs](samples/IxIFlow.Samples/DocumentationExamples.cs) and exercised by [DocumentationTests.cs](tests/IxIFlow.Samples.Tests/DocumentationTests.cs). `Slots` limits host work slots; nested calls can run inline in their parent's slot. Due work is recovered through local timers and store polling, with optional [coordinators](docs/coordinators.md) for prompt cross-host wakes. Long retry backoffs park the instance and release the slot. Shutdown drains work before its configured timeout. Workflows run in the host process in 1.0; process isolation is after 1.0.
+This host lifecycle is compiled in [DocumentationExamples.cs](https://github.com/HumanHub/IxIFlow/blob/main/samples/IxIFlow.Samples/DocumentationExamples.cs) and exercised by [DocumentationTests.cs](https://github.com/HumanHub/IxIFlow/blob/main/tests/IxIFlow.Samples.Tests/DocumentationTests.cs). `Slots` limits host work slots; nested calls can run inline in their parent's slot. Due work is recovered through local timers and store polling, with optional [coordinators](https://github.com/HumanHub/IxIFlow/blob/main/docs/coordinators.md) for prompt cross-host wakes. Long retry backoffs park the instance and release the slot. Shutdown drains work before its configured timeout. Workflows run in the host process in 1.0; process isolation is after 1.0.
 
-For time-dependent mappings and conditions, use `ctx.UtcNow`. Tests can register a `FakeTimeProvider`, as in [the sample tests](tests/IxIFlow.Samples.Tests/SampleTests.cs). Attach OpenTelemetry to source/meter `IxIFlow`, or use the standard .NET listeners shown in [Observability.cs](samples/IxIFlow.Samples/Observability.cs).
+For time-dependent mappings and conditions, use `ctx.UtcNow`. Tests can register a `FakeTimeProvider`, as in [the sample tests](https://github.com/HumanHub/IxIFlow/blob/main/tests/IxIFlow.Samples.Tests/SampleTests.cs). Attach OpenTelemetry to source/meter `IxIFlow`, or use the standard .NET listeners shown in [Observability.cs](https://github.com/HumanHub/IxIFlow/blob/main/samples/IxIFlow.Samples/Observability.cs).
 
 ## Status and roadmap
 
-Available foundations include the public executor/host message contract, [demands, pins, affinity and unschedulable-work inspection](docs/coordinator-and-hosts.md), coordinator discovery and secured links, incoming webhooks, and [redaction](docs/redaction.md). The debugger (breakpoints, all-stop pause, stepping, audited data edits, the Debug Adapter Protocol, inspection and replay) and opt-in [large-payload](docs/large-payloads.md) storage by reference are available; see [debugging](docs/debugging.md). The persistent catalog, digest-addressed artifacts, verified immutable YAML bundles, draft publishing, version lifecycle and unreferenced artifact retention are implemented. Hosts configured with `UseWorkflowBundles` fetch, verify and load published bundles by digest. See the [roadmap](docs/roadmap.md) for the available subset and [residency](docs/coordinator-and-hosts.md#placement-and-data-residency) for regional deployment.
+IxIFlow 1.0 executes workflows in the host process. It provides persistent catalogs, verified YAML bundles, bundled templates, published inline calls and YAML code activities, scoped catalog and HTTP publishing APIs, coordinator placement, debugger controls, inspection and replay, redaction, large-payload references, outbox administration and telemetry. See the [capability guide](https://github.com/HumanHub/IxIFlow/blob/main/docs/engine-capabilities.md) and [published-artifact samples](https://github.com/HumanHub/IxIFlow/blob/main/samples/README.md#published-artifacts).
 
-Breakpoints, all-stop pause, stepping, audited data edits, Debug Adapter Protocol and inspection/replay tooling are implemented. Timers keep running while paused; edits record actor, time, revision and paths. Opt-in payload claim checks keep bodies, transactional references and collection in the state store. HTTP management, redacted inspection, reply capabilities, retention, outbox administration and telemetry are available.
+The checkpoint contract and structure-hash format are 1, with runtime marker `ixiflow-1`; pre-release checkpoints are refused. Bundle manifests use format 6 and host/executor messages use contract 14. Database and process-based integration tests have explicit prerequisites in [CONTRIBUTING.md](https://github.com/HumanHub/IxIFlow/blob/main/CONTRIBUTING.md). Regional deployments require a [separate cluster and store per region](https://github.com/HumanHub/IxIFlow/blob/main/docs/coordinator-and-hosts.md#placement-and-data-residency).
 
-Published workflows can embed templates, inline published or typed workflows, and import published YAML code activities. The [unified catalog](docs/workflow-catalog.md) provides scoped workflow, activity, package, template and step metadata. The [publishing HTTP surface](docs/publishing-http.md) supports drafts, validation, publication history, preview, upload, withdrawal and authorized downloads, including the NuGet V3 read subset. [Samples](samples/README.md#published-artifacts) exercise these paths.
-
-The 1.0 checkpoint contract and structure-hash format are 1, with the `ixiflow-1` marker; pre-release checkpoints and hashes are refused. Integration verification also requires the SQL Server/PostgreSQL and coordinator environments and process-based package consumer tests. Local tests do not prove those deployment profiles.
-
-After 1.0: process isolation (process slots, executor programs, pipe transport, liveness, hard timeouts and process resource accounting), Native AOT for compiled-in workflows, broker publisher/consumer samples for RabbitMQ or Azure Service Bus, and a distributed map that pages external input, runs bounded child work and stores results outside the parent checkpoint. Process memory limits belong to the deployment. SQLite single-host durability is implemented.
+See [after 1.0](https://github.com/HumanHub/IxIFlow/blob/main/docs/roadmap.md#after-10) for process isolation, Native AOT, broker examples, distributed maps and composed workflow triggers.
 
 ## Documentation
 
-Start with [getting started](docs/getting-started.md) or [samples and their feature map](samples/README.md). The [docs index](docs/index.md) links every guide, including the [fluent API](docs/fluent-api.md), [YAML](docs/yaml-authoring.md), [execution model](docs/execution-model.md), [activity SDK](docs/activity-sdk.md), [hosting](docs/coordinator-and-hosts.md), [publishers](docs/outbox-and-publishers.md) and [roadmap](docs/roadmap.md).
+Start with [getting started](https://github.com/HumanHub/IxIFlow/blob/main/docs/getting-started.md) or [samples and their feature map](https://github.com/HumanHub/IxIFlow/blob/main/samples/README.md). The [docs index](https://github.com/HumanHub/IxIFlow/blob/main/docs/index.md) links every guide, including the [fluent API](https://github.com/HumanHub/IxIFlow/blob/main/docs/fluent-api.md), [YAML](https://github.com/HumanHub/IxIFlow/blob/main/docs/yaml-authoring.md), [execution model](https://github.com/HumanHub/IxIFlow/blob/main/docs/execution-model.md), [activity SDK](https://github.com/HumanHub/IxIFlow/blob/main/docs/activity-sdk.md), [hosting](https://github.com/HumanHub/IxIFlow/blob/main/docs/coordinator-and-hosts.md), [publishers](https://github.com/HumanHub/IxIFlow/blob/main/docs/outbox-and-publishers.md) and [roadmap](https://github.com/HumanHub/IxIFlow/blob/main/docs/roadmap.md).
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). IxIFlow is licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE).
-
-Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in `IxIFlow.Core`. `RegisterWorkflow<TWorkflow,TData>()` and `Invoke<TWorkflow,TData>(setup)` read it from the type without constructing the class to discover identity; missing attributes are refused. Typed YAML children need only `workflowType`, with no duplicate name/version field.
-
-Resource scope activities share a named connection, mailbox or thread-affine session with a nested body. See [scope authoring](docs/fluent-api.md#scope-activities) and [the connection, mailbox and workbook samples](samples/IxIFlow.Samples/ScopeExamples.cs), each with a compiled YAML twin.
+See [CONTRIBUTING.md](https://github.com/HumanHub/IxIFlow/blob/main/CONTRIBUTING.md). IxIFlow is licensed under the [Apache License 2.0](https://github.com/HumanHub/IxIFlow/blob/main/LICENSE); see [NOTICE](https://github.com/HumanHub/IxIFlow/blob/main/NOTICE).

@@ -8,7 +8,7 @@ namespace IxIFlow.Core;
 public class WorkflowExecutionResult
 {
     public string InstanceId { get; set; } = "";
-    
+
     /// <summary>
     /// The execution status of the workflow
     /// </summary>
@@ -20,14 +20,21 @@ public class WorkflowExecutionResult
     /// finished first. <see cref="Status"/> is always the instance's own status.
     /// </summary>
     public EventReceipt? Event { get; set; }
-    
+
     public string? ErrorMessage { get; set; }
     public string? ErrorType { get; set; }
-    /// <summary>The engine failure kind, when applicable. Inspection still uses the safe diagnostic identity.</summary>
+
+    /// <summary>
+    /// The engine failure or request-refusal kind, when applicable. A Faulted result can describe a
+    /// refused request without changing the stored instance's status. Inspection uses the safe diagnostic identity.
+    /// </summary>
     public WorkflowErrorKind? ErrorKind { get; set; }
+
     public string? ErrorStackTrace { get; set; }
+
     /// <summary>Safe identity for correlating this error with inspection and diagnostics.</summary>
     public InspectionError? Diagnostic { get; set; }
+
     public TimeSpan ExecutionTime { get; set; }
     public List<ExecutionTraceEntry> TraceEntries { get; set; } = new();
     public object? WorkflowData { get; set; }

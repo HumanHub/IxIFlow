@@ -34,21 +34,30 @@ public sealed class PausedTimerStoreTests
         var continued = await ops.ContinueAsync(id, "continue");
         Assert.True(continued.Status == WorkflowExecutionStatus.Suspended, continued.ErrorMessage + "\n" + continued.ErrorStackTrace);
         Assert.Equal(original.DeadlineUtc, (await store.GetWaitAsync(id, original.WaitId))!.DeadlineUtc);
-        Assert.Equal((await store.GetWaitAsync(id, original.WaitId))!.DeadlineUtc, (await store.GetWorkflowInstanceAsync(id))!.RunnableAtUtc);
+
+        Assert.Equal((await store.GetWaitAsync(id, original.WaitId))!.DeadlineUtc,
+            (await store.GetWorkflowInstanceAsync(id))!.RunnableAtUtc);
     }
 
     private static async Task Advance(string profile, ManualTime time)
     {
-        if (profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite) time.Advance(TimeSpan.FromSeconds(3));
-        else await Task.Delay(30);
+        if (profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite)
+            time.Advance(TimeSpan.FromSeconds(3));
+        else
+            await Task.Delay(30);
     }
+
     private sealed class ManualTime : TimeProvider
     {
         private DateTimeOffset _now = DateTimeOffset.UtcNow;
         public override DateTimeOffset GetUtcNow() => _now;
         public void Advance(TimeSpan duration) => _now += duration;
     }
+
     public sealed class Go;
+
     public sealed class Noop : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask; }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
 }

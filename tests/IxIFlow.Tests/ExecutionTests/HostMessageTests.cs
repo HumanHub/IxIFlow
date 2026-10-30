@@ -23,8 +23,10 @@ public sealed class HostMessageTests
         using var run = new Harness();
         var running = run.Start(Cancellable());
         await run.Probe.Started.Task.WaitAsync(Patience);
+
         run.Executor.Deliver(new Cancel(run.Signals.AssignmentId, CancelKind.Workflow,
             new CancellationReason { ReasonCode = "withdrawn" }));
+
         var outcome = await running.WaitAsync(Patience);
         Assert.Equal(AssignmentOutcomeKind.Idle, outcome.Kind);
         Assert.Equal(WorkflowStatus.Cancelled, run.Host.Commits.Last().ReadTrunk().Status);
@@ -81,8 +83,10 @@ public sealed class HostMessageTests
         run.Probe.HoldCleanup = true;
         var running = run.Start(Cancellable());
         await run.Probe.Started.Task.WaitAsync(Patience);
+
         run.Executor.Deliver(new Cancel(run.Signals.AssignmentId, CancelKind.Workflow,
             new CancellationReason { ReasonCode = "withdrawn" }));
+
         await run.Probe.CleanupStarted.Task.WaitAsync(Patience);
         var before = run.Host.Commits.Count;
         run.Executor.Deliver(new Cancel(run.Signals.AssignmentId, CancelKind.Ownership));
@@ -95,8 +99,10 @@ public sealed class HostMessageTests
     public async Task RecycleWaitsForTheActivityCommitAndStartsNoNextStep()
     {
         using var run = new Harness();
+
         var running = run.Start(Workflow.Create<Data>("RecycleBoundary")
             .Step<Block>().Step<Cleanup>().Build());
+
         await run.Probe.Started.Task.WaitAsync(Patience);
         var before = run.Host.Commits.Count;
         run.Executor.Deliver(new Recycle(run.Signals.AssignmentId));
@@ -114,11 +120,13 @@ public sealed class HostMessageTests
     public async Task CompletionCanWinTheRaceWithRecycle()
     {
         using var run = new Harness();
+
         run.Host.OnCommit = commit =>
         {
             if (commit.ReadTrunk().Status == WorkflowStatus.Completed)
                 run.Executor.Deliver(new Recycle(run.Signals.AssignmentId));
         };
+
         var outcome = await run.Start(Workflow.Create<Data>("RecycleCompleted").Step<Cleanup>().Build());
         Assert.Equal(AssignmentOutcomeKind.Idle, outcome.Kind);
         Assert.Equal(WorkflowStatus.Completed, run.Instance!.Status);
@@ -128,9 +136,11 @@ public sealed class HostMessageTests
     public async Task ArrivalsWakeAnInboxReadButCannotInventAnEventOrForceAnEndlessRead()
     {
         using var run = new Harness();
+
         var running = run.Start(Workflow.Create<Data>("ArrivalHint").Step<Cleanup>()
             .Parallel(parallel => parallel.Do(branch => branch.Step<Block>())
                 .Do(branch => branch.WaitFor<Event>("go"))).Build());
+
         await run.Probe.Started.Task.WaitAsync(Patience);
         run.Host.NextRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
         run.Executor.Deliver(new Arrivals(run.Signals.AssignmentId, 100));
@@ -155,8 +165,10 @@ public sealed class HostMessageTests
         run.Signals = run.Executor.PrepareAssignment(Guid.NewGuid());
         var running = run.Start(Cancellable());
         await run.Probe.Started.Task.WaitAsync(Patience);
+
         foreach (var kind in Enum.GetValues<CancelKind>())
             run.Executor.Deliver(new Cancel(oldId, kind, new CancellationReason { ReasonCode = "late" }));
+
         run.Executor.Deliver(new Recycle(oldId));
         run.Executor.Deliver(new Arrivals(oldId, long.MaxValue));
         Assert.Null(run.Signals.Cancellation);
@@ -172,8 +184,10 @@ public sealed class HostMessageTests
     public async Task ConcurrentDeliveriesCoalesceMonotonically()
     {
         using var run = new Harness();
+
         await Task.WhenAll(Enumerable.Range(1, 128).Select(sequence => Task.Run(() =>
             run.Executor.Deliver(new Arrivals(run.Signals.AssignmentId, sequence)))));
+
         Assert.Equal(128, run.Signals.InboxSequence);
     }
 
@@ -216,8 +230,10 @@ public sealed class HostMessageTests
     {
         var time = new TimerRecordingClock();
         using var services = Services(time, new SchedulingStore(time));
+
         var definition = Workflow.Create<Data>("StoreReceiptTimer").Step<Cleanup>()
             .Delay(TimeSpan.FromHours(1)).Build();
+
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
         await time.WaitForTimerDueAtAsync(time.GetUtcNow() + TimeSpan.FromSeconds(17));
@@ -228,10 +244,13 @@ public sealed class HostMessageTests
     {
         var store = new LostAcknowledgementStore();
         using var services = Services(store: store);
+
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(
             Workflow.Create<Data>("LostTraceAck").Step<Cleanup>().Build(), new Data());
+
         var trace = (await services.GetRequiredService<IWorkflowClient>().GetTraceAsync(result.InstanceId));
         Assert.NotEmpty(result.TraceEntries);
+
         Assert.Equal(trace.Select(WorkflowStoreRules.SerializeTrace),
             result.TraceEntries.Select(WorkflowStoreRules.SerializeTrace));
     }
@@ -242,13 +261,19 @@ public sealed class HostMessageTests
     private static ServiceProvider Services(TimeProvider? time = null, IWorkflowStateRepository? store = null)
     {
         var services = new ServiceCollection().AddLogging();
-        if (time != null) services.AddSingleton(time);
-        if (store != null) services.AddSingleton(store);
+
+        if (time != null)
+            services.AddSingleton(time);
+
+        if (store != null)
+            services.AddSingleton(store);
+
         services.AddIxIFlow();
         services.AddSingleton<Probe>();
         services.AddTransient<Noop>();
         services.AddTransient<Block>();
         services.AddTransient<Cleanup>();
+
         return services.BuildServiceProvider();
     }
 
@@ -270,51 +295,68 @@ public sealed class HostMessageTests
         public async Task<AssignmentOutcome> Start(WorkflowDefinition definition)
         {
             var data = new Data();
+
             var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition, data,
                 new WorkflowOptions(), DateTime.UtcNow);
+
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
             await _services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+
             var ready = await Executor.ExecuteAsync(new(Signals.AssignmentId, instance, null,
                 checkpoint.StructureHash, 1, 0, ExecutionLimits.Default, false, []), CancellationToken.None);
+
             return ready.Outcome;
         }
 
-        public void Dispose() { Signals.Dispose(); _services.Dispose(); }
+        public void Dispose()
+        {
+            Signals.Dispose();
+            _services.Dispose();
+        }
     }
 
     private sealed class MessageHost : IExecutionHost
     {
         public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
             Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
+
         public ConcurrentQueue<CheckpointCommit> Commits { get; } = new();
         public WorkflowInstance? Saved { get; private set; }
         public Action<CheckpointCommit>? OnCommit { get; set; }
         public TaskCompletionSource? NextRead { get; set; }
         public int Reads;
+
         public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
             var commit = request.Commit;
             Saved = commit.ReadInstance(Saved);
             Commits.Enqueue(commit);
             OnCommit?.Invoke(commit);
+
             return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Ack, commit.ExpectedRevision + 1));
         }
+
         public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request)
         {
             Interlocked.Increment(ref Reads);
             NextRead?.TrySetResult();
-            return Task.FromResult(new ReadInboxReply(request.AssignmentId, new InboxPage([], request.AfterSequence, new Dictionary<string, long>())));
+
+            return Task.FromResult(new ReadInboxReply(request.AssignmentId,
+                new InboxPage([], request.AfterSequence, new Dictionary<string, long>())));
         }
+
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => Task.FromResult(new ReadWaitReply(request.AssignmentId));
         public Task<StartChildReply> StartChildAsync(StartChild request) => throw new NotSupportedException();
     }
 
     private sealed class SchedulingStore(TimeProvider time) : FaultInjectingRepository(time)
     {
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
-            var result = await base.CommitWorkflowInstanceAsync(commit);
+            var result = await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
             var storeNow = time.GetUtcNow().UtcDateTime.AddDays(3);
+
             return result with { StoreTimeUtc = storeNow, RunnableAtUtc = storeNow.AddSeconds(17) };
         }
     }
@@ -322,14 +364,19 @@ public sealed class HostMessageTests
     private sealed class LostAcknowledgementStore : FaultInjectingRepository
     {
         private bool _lost;
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
-            var result = await base.CommitWorkflowInstanceAsync(commit);
+            var result = await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
+
             if (!_lost && commit.TraceEntries.Count > 0)
             {
                 _lost = true;
+
                 throw new IOException("The store applied this commit but its reply was lost");
             }
+
             return result;
         }
     }
@@ -340,7 +387,9 @@ public sealed class HostMessageTests
         public List<string> Values { get; set; } = [];
         [JsonIgnore] public string? Unsaved { get; set; }
     }
+
     public sealed class Event;
+
     public sealed class Probe
     {
         public readonly TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -351,10 +400,12 @@ public sealed class HostMessageTests
         public bool HoldCleanup;
         public int Cleanups;
     }
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     public sealed class Block(Probe probe) : IAsyncActivity
     {
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
@@ -365,6 +416,7 @@ public sealed class HostMessageTests
             ((Data)context.WorkflowData).Value = "finished";
         }
     }
+
     public sealed class Cleanup(Probe probe) : IAsyncActivity
     {
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)

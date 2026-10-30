@@ -25,10 +25,12 @@ public sealed class SqliteHostDisposalTests
         var services = registrations.BuildServiceProvider();
         Task? read = null;
         Task? disposing = null;
+
         try
         {
             await store.GetWorkflowVersionsAsync();
             var host = services.GetRequiredService<WorkflowHost>();
+
             var running = host.RunAsync("paused-read", async (_, _, _) =>
             {
                 if (lingering)
@@ -38,16 +40,21 @@ public sealed class SqliteHostDisposalTests
                         Assert.True(host.TryRunInline((_, _, _) => ReadAsync(), CancellationToken.None, out var inline));
                         await inline!;
                     });
+
                     await time.Entered.Task.WaitAsync(Patience);
                 }
                 else
                     await ReadAsync();
+
                 return true;
             }, CancellationToken.None);
 
             await time.Entered.Task.WaitAsync(Patience);
-            if (lingering) await running.WaitAsync(Patience);
-            else read = running;
+
+            if (lingering)
+                await running.WaitAsync(Patience);
+            else
+                read = running;
 
             // The clock pauses after the repository has opened its connection and read transaction.
             // Dispose the host before its stores; container disposal does not order them.
@@ -64,17 +71,25 @@ public sealed class SqliteHostDisposalTests
             {
                 time.PauseNextRead();
                 await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.NewGuid(), new Dictionary<string, string>()));
+
                 return true;
             }
         }
         finally
         {
             time.Resume.Set();
-            if (read != null) await read.WaitAsync(Patience);
-            if (disposing != null) await disposing.WaitAsync(Patience);
+
+            if (read != null)
+                await read.WaitAsync(Patience);
+
+            if (disposing != null)
+                await disposing.WaitAsync(Patience);
+
             await services.DisposeAsync();
             await store.DisposeAsync();
-            if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+
+            if (Directory.Exists(folder))
+                Directory.Delete(folder, recursive: true);
         }
     }
 
@@ -90,8 +105,11 @@ public sealed class SqliteHostDisposalTests
             if (Interlocked.Exchange(ref _pause, 0) == 1)
             {
                 Entered.TrySetResult();
-                if (!Resume.Wait(Patience)) throw new TimeoutException("The SQLite read was not released");
+
+                if (!Resume.Wait(Patience))
+                    throw new TimeoutException("The SQLite read was not released");
             }
+
             return base.GetUtcNow();
         }
 

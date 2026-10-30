@@ -14,6 +14,7 @@ public sealed class TerminationRenewalRefusalTests
 {
     private static readonly ExecutionLeaseSettings Settings =
         new(TimeSpan.FromMilliseconds(400), TimeSpan.FromMilliseconds(100));
+
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(5);
     private static readonly ClaimQuery Claim = new(Guid.Empty, new Dictionary<string, string>());
 
@@ -35,8 +36,10 @@ public sealed class TerminationRenewalRefusalTests
         await using var host = services.BuildServiceProvider();
         var definition = Workflow.Create<OperationsTests.Data>("RefusedTerminationRenewal").Step<Block>().Build();
         const string id = "refused-termination-renewal";
+
         var running = host.GetRequiredService<IWorkflowClient>().RunAsync(definition, new OperationsTests.Data(),
             new WorkflowOptions { InstanceId = id });
+
         try
         {
             await probe.Started.Task.WaitAsync(Patience);
@@ -46,6 +49,7 @@ public sealed class TerminationRenewalRefusalTests
 
             time.Advance(Settings.RenewalInterval);
             await store.RenewalRefused.Task.WaitAsync(Patience);
+
             // Both ownership loss and the termination path cancel the in-flight activity before
             // awaiting it. Wait for that signal so the refusal is handled before releasing it.
             await probe.Cancelled.Task.WaitAsync(Patience);
@@ -77,14 +81,21 @@ public sealed class TerminationRenewalRefusalTests
         var lost = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancelled = new TaskCompletionSource<CancellationReason>(TaskCreationOptions.RunContinuationsAsynchronously);
         var expiresAt = time.GetUtcNow() + Settings.Duration;
+
         await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, renewer, Claim,
-            error => lost.TrySetResult(error), reason => cancelled.TrySetResult(reason), _ => { }, time);
+            error => lost.TrySetResult(error), reason => cancelled.TrySetResult(reason), _ =>
+            {
+            }, time);
+
         Assert.NotNull(lease);
+
         try
         {
             await store.WatchStarted.Task.WaitAsync(Patience);
+
             Assert.True((await store.RequestTerminationAsync(instance.InstanceId,
                 new CancellationReason { ReasonCode = "stop" })).Accepted);
+
             var request = await store.GetCancellationRequestAsync(instance.InstanceId);
             time.Advance(Settings.RenewalInterval);
 
@@ -95,19 +106,25 @@ public sealed class TerminationRenewalRefusalTests
             time.Advance(expiresAt - time.GetUtcNow() - TimeSpan.FromTicks(1));
             lease.ThrowIfLost();
             Assert.False(lost.Task.IsCompleted);
+
             Assert.Null(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "fallback", Settings.Duration,
                 Claim, ExecutionClaimKind.Termination));
 
             time.Advance(TimeSpan.FromTicks(1));
             Assert.Throws<ExecutionOwnershipLostException>(lease.ThrowIfLost);
             Assert.IsType<TimeoutException>(await lost.Task.WaitAsync(Patience));
+
             var fallback = await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "fallback", Settings.Duration,
                 Claim, ExecutionClaimKind.Termination);
+
             Assert.NotNull(fallback);
             Assert.True(fallback.Epoch > lease.Epoch);
             Assert.Equal(1, store.RenewalCalls);
         }
-        finally { store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason>()); }
+        finally
+        {
+            store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason>());
+        }
     }
 
     [Theory]
@@ -123,15 +140,22 @@ public sealed class TerminationRenewalRefusalTests
         using var watch = new CancellationWatch(store, time);
         var lost = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancelled = new TaskCompletionSource<CancellationReason>(TaskCreationOptions.RunContinuationsAsynchronously);
+
         await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, renewer, Claim,
-            error => lost.TrySetResult(error), reason => cancelled.TrySetResult(reason), _ => { }, time);
+            error => lost.TrySetResult(error), reason => cancelled.TrySetResult(reason), _ =>
+            {
+            }, time);
+
         Assert.NotNull(lease);
+
         try
         {
             await store.WatchStarted.Task.WaitAsync(Patience);
+
             if (gracefulCancellation)
                 Assert.True((await store.RequestCancellationAsync(instance.InstanceId,
                     new CancellationReason { ReasonCode = "graceful" })).Accepted);
+
             time.Advance(Settings.RenewalInterval);
 
             var error = await lost.Task.WaitAsync(Patience);
@@ -140,7 +164,10 @@ public sealed class TerminationRenewalRefusalTests
             Assert.False(cancelled.Task.IsCompleted);
             Assert.Equal(time.Start + Settings.RenewalInterval, time.GetUtcNow());
         }
-        finally { store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason>()); }
+        finally
+        {
+            store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason>());
+        }
     }
 
     [Fact]
@@ -153,9 +180,14 @@ public sealed class TerminationRenewalRefusalTests
         using var watch = new CancellationWatch(store, time);
         var lost = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancelled = new TaskCompletionSource<CancellationReason>(TaskCreationOptions.RunContinuationsAsynchronously);
+
         await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, renewer, Claim,
-            error => lost.TrySetResult(error), reason => cancelled.TrySetResult(reason), _ => { }, time);
+            error => lost.TrySetResult(error), reason => cancelled.TrySetResult(reason), _ =>
+            {
+            }, time);
+
         Assert.NotNull(lease);
+
         try
         {
             await store.WatchStarted.Task.WaitAsync(Patience);
@@ -167,7 +199,10 @@ public sealed class TerminationRenewalRefusalTests
             Assert.False(cancelled.Task.IsCompleted);
             Assert.Equal(time.Start + Settings.RenewalInterval, time.GetUtcNow());
         }
-        finally { store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason>()); }
+        finally
+        {
+            store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason>());
+        }
     }
 
     [Fact]
@@ -182,13 +217,18 @@ public sealed class TerminationRenewalRefusalTests
         var reasons = new ConcurrentQueue<CancellationReason>();
         var graceful = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var terminated = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         await using var lease = await WorkflowExecutionLease.TryAcquireAsync(store, instance, Settings, watch, renewer, Claim,
             error => lost.TrySetResult(error), reason =>
             {
                 reasons.Enqueue(reason);
                 (reason.Mode == WorkflowControlMode.Terminate ? terminated : graceful).TrySetResult();
-            }, _ => { }, time);
+            }, _ =>
+            {
+            }, time);
+
         Assert.NotNull(lease);
+
         try
         {
             await store.WatchStarted.Task.WaitAsync(Patience);
@@ -200,6 +240,7 @@ public sealed class TerminationRenewalRefusalTests
             // The operator escalates while the owner runs its graceful cleanup; the watch no longer reads for it.
             Assert.True((await store.RequestTerminationAsync(instance.InstanceId,
                 new CancellationReason { ReasonCode = "stop" })).Accepted);
+
             time.Advance(Settings.RenewalInterval);
 
             await terminated.Task.WaitAsync(Patience);
@@ -207,14 +248,21 @@ public sealed class TerminationRenewalRefusalTests
             Assert.False(lost.Task.IsCompleted);
             lease.ThrowIfLost();
         }
-        finally { store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason>()); }
+        finally
+        {
+            store.WatchReply.TrySetResult(new Dictionary<string, CancellationReason>());
+        }
     }
 
     [Fact]
     public void ATerminationReplacesAGracefulRequestButNothingReplacesATermination()
     {
         var id = Guid.NewGuid();
-        using var signals = new ExecutionSignals(id, _ => { });
+
+        using var signals = new ExecutionSignals(id, _ =>
+        {
+        });
+
         var graceful = new CancellationReason { ReasonCode = "graceful" };
         var terminate = new CancellationReason { ReasonCode = "stop", Mode = WorkflowControlMode.Terminate };
 
@@ -260,8 +308,10 @@ public sealed class TerminationRenewalRefusalTests
     private sealed class DelayedWatchStore(TimeProvider time) : FaultInjectingRepository(time)
     {
         public TaskCompletionSource WatchStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource<IReadOnlyDictionary<string, CancellationReason>> WatchReply { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource RenewalRefused { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ConcurrentQueue<CheckpointCommit> AppliedCommits { get; } = new();
         public bool RefuseRenewal { get; init; }
@@ -274,34 +324,48 @@ public sealed class TerminationRenewalRefusalTests
             IReadOnlyCollection<string> instanceIds)
         {
             WatchStarted.TrySetResult();
+
             return new(await WatchReply.Task, new Dictionary<string, WorkflowDebugState>());
         }
 
-        public override Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
+        public override Task<CancellationReason?> GetCancellationRequestAsync(string instanceId,
+            CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref CancellationReads);
-            return base.GetCancellationRequestAsync(instanceId);
+
+            return base.GetCancellationRequestAsync(instanceId, cancellationToken: cancellationToken);
         }
 
         public override async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
-            IReadOnlyList<ExecutionLeaseRenewal> leases)
+            IReadOnlyList<ExecutionLeaseRenewal> leases, CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref _renewalCalls);
+
             if (!RefuseRenewal)
             {
-                var results = await base.RenewExecutionLeasesAsync(leases);
-                if (results.Any(result => result.Status != ExecutionLeaseRenewalStatus.Renewed)) RenewalRefused.TrySetResult();
+                var results = await base.RenewExecutionLeasesAsync(leases, cancellationToken: cancellationToken);
+
+                if (results.Any(result => result.Status != ExecutionLeaseRenewalStatus.Renewed))
+                    RenewalRefused.TrySetResult();
+
                 return results;
             }
+
             RenewalRefused.TrySetResult();
+
             return leases.Select(_ => new ExecutionLeaseRenewalResult(TerminationWithoutReason
-                ? ExecutionLeaseRenewalStatus.TerminationRequested : ExecutionLeaseRenewalStatus.Refused)).ToArray();
+                ? ExecutionLeaseRenewalStatus.TerminationRequested
+                : ExecutionLeaseRenewalStatus.Refused)).ToArray();
         }
 
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
-            var result = await base.CommitWorkflowInstanceAsync(commit);
-            if (result.Status == WorkflowCommitStatus.Applied) AppliedCommits.Enqueue(commit);
+            var result = await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
+
+            if (result.Status == WorkflowCommitStatus.Applied)
+                AppliedCommits.Enqueue(commit);
+
             return result;
         }
     }

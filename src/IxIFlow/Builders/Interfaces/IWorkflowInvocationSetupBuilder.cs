@@ -68,7 +68,8 @@ public interface IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TP
     new IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> CancelWithParent(bool cancel);
 
     /// <summary>Appends an ordered policy for an invocation failure.</summary>
-    new IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> OnError<TException>(Action<IStepErrorHandler<TException>> handler)
+    new IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> OnError<TException>(
+        Action<IStepErrorHandler<TException>> handler)
         where TException : Exception;
 
     /// <summary>Appends a policy matching any invocation failure.</summary>
@@ -82,8 +83,10 @@ public interface IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedDat
     : IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>
     where TInvokedData : class
 {
-    new IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty> OnError<TException>(Action<IStepErrorHandler<TException>> handler)
+    new IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty> OnError<TException>(
+        Action<IStepErrorHandler<TException>> handler)
         where TException : Exception;
+
     new IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty> OnError(Action<IStepErrorHandler> handler);
 
     /// <summary>
@@ -102,9 +105,12 @@ public interface IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedDat
     where TInvokedData : class
     where TPreviousStepData : class
 {
-    new IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError<TException>(Action<IStepErrorHandler<TException>> handler)
+    new IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError<TException>(
+        Action<IStepErrorHandler<TException>> handler)
         where TException : Exception;
-    new IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError(Action<IStepErrorHandler> handler);
+
+    new IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError(
+        Action<IStepErrorHandler> handler);
 
     /// <summary>
     ///     Specifies the source of the input value for the invoked workflow with access to previous step data
@@ -121,8 +127,10 @@ public interface IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedDa
     : IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>
     where TInvokedData : class
 {
-    new IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty> OnError<TException>(Action<IStepErrorHandler<TException>> handler)
+    new IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty> OnError<TException>(
+        Action<IStepErrorHandler<TException>> handler)
         where TException : Exception;
+
     new IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty> OnError(Action<IStepErrorHandler> handler);
 
     /// <summary>
@@ -132,15 +140,19 @@ public interface IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedDa
     IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> To(
         Expression<Func<WorkflowContext<TWorkflowData>, TProperty>> destination);
 }
+
 /// <summary>Output mapping that retains the invoking frame's previous-value context.</summary>
 public interface IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData>
     : IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>
     where TInvokedData : class
     where TPreviousStepData : class
 {
-    new IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError<TException>(Action<IStepErrorHandler<TException>> handler)
+    new IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError<TException>(
+        Action<IStepErrorHandler<TException>> handler)
         where TException : Exception;
-    new IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError(Action<IStepErrorHandler> handler);
+
+    new IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError(
+        Action<IStepErrorHandler> handler);
 
     IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> To(
         Expression<Func<WorkflowContext<TWorkflowData>, TProperty>> destination);

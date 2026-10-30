@@ -24,15 +24,20 @@ public sealed class WorkflowDataTypeRegistrationTests
                 case "code":
                     using (var catalog = new WorkflowCatalog(store.Object))
                         await catalog.RegisterWorkflowAsync(definition);
+
                     break;
                 case "catalog":
-                    using (var catalog = new WorkflowCatalog(store.Object, [definition])) { }
+                    using (var catalog = new WorkflowCatalog(store.Object, [definition]))
+                    {
+                    }
+
                     break;
                 case "startup":
                     using (var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services
-                        .AddSingleton<IWorkflowStateRepository>(store.Object).AddSingleton(definition)
-                        .BuildServiceProvider())
+                               .AddSingleton<IWorkflowStateRepository>(store.Object).AddSingleton(definition)
+                               .BuildServiceProvider())
                         _ = provider.GetRequiredService<IWorkflowCatalog>();
+
                     break;
             }
         });

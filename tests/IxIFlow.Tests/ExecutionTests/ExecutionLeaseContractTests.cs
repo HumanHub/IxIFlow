@@ -23,6 +23,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public Task MemoryExpiredLeaseCanBeReclaimed()
     {
         var time = new FakeTimeProvider();
+
         return VerifyExpiredLease(new InMemoryWorkflowStateRepository(time), time);
     }
 
@@ -30,6 +31,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public Task MemoryRenewalKeepsTheOwner()
     {
         var time = new FakeTimeProvider();
+
         return VerifyRenewal(new InMemoryWorkflowStateRepository(time), TimeSpan.FromSeconds(1),
             TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(750), time);
     }
@@ -38,6 +40,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public Task MemoryFormerOwnerCannotCommitAfterTakeover()
     {
         var time = new FakeTimeProvider();
+
         return VerifyFencing(new InMemoryWorkflowStateRepository(time), TimeSpan.FromMilliseconds(100),
             TimeSpan.FromMilliseconds(300), time);
     }
@@ -46,6 +49,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public Task MemoryFormerOwnerCannotReplayReceiptAfterTakeover()
     {
         var time = new FakeTimeProvider();
+
         return VerifyReceiptFencing(new InMemoryWorkflowStateRepository(time), time);
     }
 
@@ -61,6 +65,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public Task MemoryRecoveryQueryExcludesLiveOwnersAndFindsExpiredLeases()
     {
         var time = new FakeTimeProvider();
+
         return VerifyRecoveryQuery(new InMemoryWorkflowStateRepository(time), time);
     }
 
@@ -107,7 +112,10 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task SqliteExpiredLeaseCanBeReclaimed()
     {
         var time = new FakeTimeProvider();
-        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+
+        await using var repository =
+            new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+
         await VerifyExpiredLease(repository, time);
     }
 
@@ -128,7 +136,10 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task SqliteRenewalKeepsTheOwner()
     {
         var time = new FakeTimeProvider();
-        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+
+        await using var repository =
+            new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+
         await VerifyRenewal(repository, TimeSpan.FromSeconds(1),
             TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(750), time);
     }
@@ -150,7 +161,10 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task SqliteFormerOwnerCannotCommitAfterTakeover()
     {
         var time = new FakeTimeProvider();
-        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+
+        await using var repository =
+            new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+
         await VerifyFencing(repository, TimeSpan.FromMilliseconds(100),
             TimeSpan.FromMilliseconds(300), time);
     }
@@ -171,7 +185,10 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task SqliteFormerOwnerCannotReplayReceiptAfterTakeover()
     {
         var time = new FakeTimeProvider();
-        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+
+        await using var repository =
+            new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+
         await VerifyReceiptFencing(repository, time);
     }
 
@@ -225,7 +242,10 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task SqliteRecoveryQueryExcludesLiveOwnersAndFindsExpiredLeases()
     {
         var time = new FakeTimeProvider();
-        await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+
+        await using var repository =
+            new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString, time);
+
         await VerifyRecoveryQuery(repository, time);
     }
 
@@ -237,6 +257,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(repository, registry, probe);
+
         var definition = Workflow.Create<LeaseData>("CrossHostWait")
             .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("reply")
@@ -245,6 +266,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
         var started = await firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         var resumed = await secondHost.GetRequiredService<IWorkflowClient>()
@@ -262,13 +284,16 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(repository, registry, probe);
+
         var definition = Workflow.Create<LeaseData>("CancelWait")
             .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("approval")
             .Step<RecordActivity>()
             .Build();
+
         var started = await firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         var result = await secondHost.GetRequiredService<IWorkflowClient>()
@@ -282,8 +307,10 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         Assert.Equal(WorkflowStatus.Cancelled, saved.Status);
         Assert.Equal("withdrawn", saved.CancellationReason?.ReasonCode);
         Assert.Equal(1, probe.Recorded);
+
         var resumed = await firstHost.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(started.InstanceId, "approval", new LeaseEvent());
+
         EventAssert.Closed(resumed);
     }
 
@@ -295,20 +322,27 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe, shortLease: true);
         using var secondHost = CreateHost(repository, registry, probe, shortLease: true);
+
         var definition = Workflow.Create<LeaseData>("CancelRunning")
             .Step<CancellableBlockingActivity>()
             .Step<RecordActivity>()
             .Build();
+
         var executing = firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        var saved = Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
 
         var requested = await secondHost.GetRequiredService<IWorkflowClient>()
             .CancelAsync(saved.InstanceId, new CancellationReason
             {
                 ReasonCode = "operator", Description = "Stopped by operator"
             });
+
         Assert.Equal(WorkflowExecutionStatus.Running, requested.Status);
 
         var result = await executing.WaitAsync(TimeSpan.FromSeconds(5));
@@ -325,27 +359,32 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var inner = new InMemoryWorkflowStateRepository();
         var instanceId = Guid.NewGuid().ToString("N");
         ClaimQuery completionClaim;
+
         using (var setup = CreateHost(inner, new WorkflowCatalog(), new ActivityProbe()))
         {
             var started = await setup.GetRequiredService<IWorkflowClient>().RunAsync(
                 Workflow.Create<LeaseData>("CompletionRace").Step<NoopActivity>()
                     .Suspend<LeaseEvent>("completion").Build(), new LeaseData(),
                 new WorkflowOptions { InstanceId = instanceId });
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             completionClaim = await StoreTestSupport.ClaimAsync(setup);
         }
+
         var repository = new PausedReadRepository(inner)
         {
             PauseFirstRead = false,
             CompleteOnCancellationRequest = true,
             CompletionClaim = completionClaim
         };
+
         using var host = CreateHost(repository, new WorkflowCatalog(), new ActivityProbe());
 
         var result = await host.GetRequiredService<IWorkflowClient>()
             .CancelAsync(instanceId, new CancellationReason { ReasonCode = "late" });
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+
         Assert.Equal(WorkflowStatus.Completed,
             (await inner.GetWorkflowInstanceAsync(instanceId))!.Status);
     }
@@ -358,6 +397,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var repository = new InMemoryWorkflowStateRepository();
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowCatalog(), probe);
+
         var definition = Workflow.Create<LeaseData>("CancelDuringBranch")
             .Step<RecordActivity>()
             .If(_ => CancelAndTrue(),
@@ -366,6 +406,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
         var engine = host.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
@@ -379,9 +420,12 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
         Assert.Equal(WorkflowStatus.Running,
             (await repository.GetWorkflowInstanceAsync(instanceId))!.Status);
+
         Assert.Equal(1, probe.Recorded);
+
         Assert.Equal(WorkflowExecutionStatus.Success,
             (await engine.RecoverAsync(instanceId)).Status);
+
         Assert.Equal(2, probe.Recorded);
     }
 
@@ -390,6 +434,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     private static bool CancelAndTrue()
     {
         CurrentCancellation.Value?.Cancel();
+
         return true;
     }
 
@@ -399,13 +444,16 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var repository = new InMemoryWorkflowStateRepository();
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowCatalog(), probe);
+
         var definition = Workflow.Create<LeaseData>("CancelBeforeResume")
             .Step<NoopActivity>()
             .WaitFor<LeaseEvent>("approval")
             .Step<RecordActivity>()
             .Build();
+
         var engine = host.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(definition, new LeaseData());
+
         Assert.True((await repository.RequestCancellationAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" })).Accepted);
 
@@ -413,6 +461,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, resumed.Status);
         Assert.Equal(0, probe.Recorded);
+
         Assert.Equal(WorkflowStatus.Cancelled,
             (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
     }
@@ -426,11 +475,13 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task SqlCompletionWinsCancellationArrivingAfterWorkFinished() => VerifyTerminalCommitWinsLateCancellation(SqlRepository(), WorkflowStatus.Completed);
+    public Task SqlCompletionWinsCancellationArrivingAfterWorkFinished() =>
+        VerifyTerminalCommitWinsLateCancellation(SqlRepository(), WorkflowStatus.Completed);
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task PostgreSqlCompletionWinsCancellationArrivingAfterWorkFinished() => VerifyTerminalCommitWinsLateCancellation(PostgreSqlRepository(), WorkflowStatus.Completed);
+    public Task PostgreSqlCompletionWinsCancellationArrivingAfterWorkFinished() =>
+        VerifyTerminalCommitWinsLateCancellation(PostgreSqlRepository(), WorkflowStatus.Completed);
 
     [Fact]
     [Trait("Spec", "C-11")]
@@ -470,23 +521,30 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var instanceId = Guid.NewGuid().ToString("N");
         var owner = Guid.NewGuid().ToString("N");
+
         try
         {
             await repository.SeedAsync(new WorkflowInstance
-            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+            {
+                ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 WorkflowName = "CancellationCommitFence",
                 Status = WorkflowStatus.Running
             });
+
             var epoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, owner,
                 TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+
             Assert.NotNull(epoch);
             var active = (await repository.GetWorkflowInstanceAsync(instanceId))!;
+
             Assert.Equal(WorkflowCommitStatus.Applied,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(active, epoch.Epoch, active.Revision,
                     Guid.NewGuid().ToString("N")))).Status);
+
             Assert.True((await repository.RequestCancellationAsync(instanceId,
                 new CancellationReason { ReasonCode = "operator" })).Accepted);
+
             var terminal = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             terminal.Status = terminalStatus;
 
@@ -495,6 +553,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 Guid.NewGuid().ToString("N")));
 
             Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
+
             Assert.Equal(terminalStatus,
                 (await repository.GetWorkflowInstanceAsync(instanceId))!.Status);
         }
@@ -508,15 +567,19 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task CancellationArrivingAtTerminalCommitDoesNotRelabelCompletedWork()
     {
         var inner = new InMemoryWorkflowStateRepository();
+
         var repository = new PausedReadRepository(inner)
         {
             PauseFirstRead = false,
             CancelBeforeTerminalCommit = 1
         };
+
         using var host = CreateHost(repository, new WorkflowCatalog(), new ActivityProbe());
+
         var definition = Workflow.Create<LeaseData>("CancelAtTerminalCommit")
             .Step<NoopActivity>()
             .Build();
+
         var engine = host.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
 
@@ -524,6 +587,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             new WorkflowOptions { InstanceId = instanceId });
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+
         Assert.Equal(WorkflowStatus.Completed,
             (await inner.GetWorkflowInstanceAsync(instanceId))!.Status);
     }
@@ -532,12 +596,15 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task CancellationAtFailureCommitDoesNotStrandLocalInstance()
     {
         var inner = new InMemoryWorkflowStateRepository();
+
         var repository = new PausedReadRepository(inner)
         {
             PauseFirstRead = false,
             CancelBeforeFailedCommit = 1
         };
+
         using var host = CreateHost(repository, new WorkflowCatalog(), new ActivityProbe());
+
         var definition = Workflow.Create<LeaseData>("CancelAtFailureCommit")
             .Step<FailingActivity>()
             .Build();
@@ -546,6 +613,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             .RunAsync(definition, new LeaseData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+
         Assert.Equal(WorkflowStatus.Failed,
             (await inner.GetWorkflowInstanceAsync(result.InstanceId))!.Status);
     }
@@ -554,15 +622,19 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task CancellationSignalAfterRootCompletionDoesNotSpinTheRunner()
     {
         var inner = new InMemoryWorkflowStateRepository();
+
         var repository = new PausedReadRepository(inner)
         {
             PauseFirstRead = false,
             CancelWhenRootCompletedOnRead = 1
         };
+
         using var host = CreateHost(repository, new WorkflowCatalog(), new ActivityProbe());
+
         var definition = Workflow.Create<LeaseData>("CancelAfterRootFinished")
             .Step<NoopActivity>()
             .Build();
+
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
 
         var result = await host.GetRequiredService<IWorkflowClient>()
@@ -575,15 +647,19 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task CancellationStoreReadFailureDoesNotInterruptLocalExecution()
     {
         var inner = new InMemoryWorkflowStateRepository();
+
         var repository = new PausedReadRepository(inner)
         {
             PauseFirstRead = false,
             FailAllCancellationReads = true
         };
+
         using var host = CreateHost(repository, new WorkflowCatalog(), new ActivityProbe());
+
         var definition = Workflow.Create<LeaseData>("CancellationReadFailure")
             .Step<NoopActivity>()
             .Build();
+
         var engine = host.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
 
@@ -591,6 +667,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             new WorkflowOptions { InstanceId = instanceId });
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+
         Assert.Equal(WorkflowStatus.Completed,
             (await inner.GetWorkflowInstanceAsync(instanceId))!.Status);
     }
@@ -602,14 +679,18 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         {
             PauseFirstRead = false
         };
+
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowCatalog(), probe);
+
         var definition = Workflow.Create<LeaseData>("CancellationReadDuringActivity")
             .Step<BlockingActivity>()
             .Step<RecordActivity>()
             .Build();
+
         var executing = host.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.FailAllCancellationReads = true;
         probe.Release.TrySetResult();
@@ -622,11 +703,13 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task SqlCancellationRequestReachesRunningOwnerOnAnotherHost() => VerifyCancellationRequestReachesRunningOwnerOnAnotherHost(SqlRepository);
+    public Task SqlCancellationRequestReachesRunningOwnerOnAnotherHost() =>
+        VerifyCancellationRequestReachesRunningOwnerOnAnotherHost(SqlRepository);
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task PostgreSqlCancellationRequestReachesRunningOwnerOnAnotherHost() => VerifyCancellationRequestReachesRunningOwnerOnAnotherHost(PostgreSqlRepository);
+    public Task PostgreSqlCancellationRequestReachesRunningOwnerOnAnotherHost() =>
+        VerifyCancellationRequestReachesRunningOwnerOnAnotherHost(PostgreSqlRepository);
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
@@ -634,23 +717,28 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task PostgreSqlSuspendedWaitCanBeCancelledByAnotherHost() => VerifySuspendedWaitCanBeCancelledByAnotherHost(PostgreSqlRepository);
+    public Task PostgreSqlSuspendedWaitCanBeCancelledByAnotherHost() =>
+        VerifySuspendedWaitCanBeCancelledByAnotherHost(PostgreSqlRepository);
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task SqlScannerCompletesCancellationAfterRequestingHostStops() => VerifyScannerCompletesCancellationAfterRequestingHostStops(SqlRepository);
+    public Task SqlScannerCompletesCancellationAfterRequestingHostStops() =>
+        VerifyScannerCompletesCancellationAfterRequestingHostStops(SqlRepository);
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task PostgreSqlScannerCompletesCancellationAfterRequestingHostStops() => VerifyScannerCompletesCancellationAfterRequestingHostStops(PostgreSqlRepository);
+    public Task PostgreSqlScannerCompletesCancellationAfterRequestingHostStops() =>
+        VerifyScannerCompletesCancellationAfterRequestingHostStops(PostgreSqlRepository);
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task SqlScannerDoesNotRepeatCancellationWhileFinallyWaits() => VerifyScannerDoesNotRepeatCancellationWhileFinallyWaits(SqlRepository());
+    public Task SqlScannerDoesNotRepeatCancellationWhileFinallyWaits() =>
+        VerifyScannerDoesNotRepeatCancellationWhileFinallyWaits(SqlRepository());
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task PostgreSqlScannerDoesNotRepeatCancellationWhileFinallyWaits() => VerifyScannerDoesNotRepeatCancellationWhileFinallyWaits(PostgreSqlRepository());
+    public Task PostgreSqlScannerDoesNotRepeatCancellationWhileFinallyWaits() =>
+        VerifyScannerDoesNotRepeatCancellationWhileFinallyWaits(PostgreSqlRepository());
 
     [Fact]
     public async Task LiveOwnerCannotBeRecoveredByAnotherHost()
@@ -660,6 +748,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(repository, registry, probe);
+
         var definition = Workflow.Create<LeaseData>("LiveOwner")
             .Step<BlockingActivity>()
             .Step<RecordActivity>()
@@ -667,14 +756,20 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
         var executing = firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        var saved = Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
 
         try
         {
             var attempted = await secondHost.GetRequiredService<IWorkflowClient>()
                 .RecoverAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
+
             Assert.Equal(WorkflowExecutionStatus.Running, attempted.Status);
+
             Assert.Equal(WorkflowStatus.Running,
                 (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
         }
@@ -697,6 +792,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe, shortLease: true, time);
         using var secondHost = CreateHost(repository, registry, probe, shortLease: true, time);
+
         var definition = Workflow.Create<LeaseData>("LongOwner")
             .Step<BlockingActivity>()
             .Step<RecordActivity>()
@@ -704,22 +800,31 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
         var executing = firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        var saved = Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
         try
         {
             // Three lease lengths: a lease that was not renewed would have expired.
             await AdvanceInStepsAsync(time, TimeSpan.FromMilliseconds(600));
+
             var attempted = await secondHost.GetRequiredService<IWorkflowClient>()
                 .RecoverAsync(saved.InstanceId).WaitAsync(TimeSpan.FromSeconds(5));
+
             Assert.Equal(WorkflowExecutionStatus.Running, attempted.Status);
         }
         finally
         {
             probe.Release.TrySetResult();
         }
+
         Assert.Equal(WorkflowExecutionStatus.Success,
             (await executing.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+
         Assert.Equal(1, probe.Recorded);
     }
 
@@ -727,17 +832,22 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task OneCancellationReadErrorDoesNotForfeitAnActiveLease()
     {
         var time = new TimerRecordingClock();
+
         var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository(time))
         {
             PauseFirstRead = false
         };
+
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowCatalog(), probe, shortLease: true, time);
+
         var definition = Workflow.Create<LeaseData>("TransientCancellationRead")
             .Step<BlockingActivity>()
             .Build();
+
         var executing = host.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.FailNextCancellationReads = 1;
         await AdvanceUntilAsync(time, repository.CancellationReadFailed.Task);
@@ -755,17 +865,26 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             PauseFirstRead = false,
             FailAfterObservedCancellation = true
         };
+
         var probe = new ActivityProbe();
+
         using var host = CreateHost(repository, new WorkflowCatalog(), probe,
             shortLease: true);
+
         var definition = Workflow.Create<LeaseData>("ObservedCancellationWithStoreOutage")
             .Step<CancellableBlockingActivity>().Build();
+
         var engine = host.GetRequiredService<IWorkflowClient>();
         var executing = engine.RunAsync(definition, new LeaseData());
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var instance = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        var instance = Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
         await engine.CancelAsync(instance.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
+
         await repository.CancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         try
@@ -784,17 +903,22 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task OneRenewalErrorDoesNotForfeitAnActiveLease()
     {
         var time = new TimerRecordingClock();
+
         var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository(time))
         {
             PauseFirstRead = false
         };
+
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowCatalog(), probe, shortLease: true, time);
+
         var definition = Workflow.Create<LeaseData>("TransientRenewal")
             .Step<BlockingActivity>()
             .Build();
+
         var executing = host.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.FailNextRenewals = 1;
         await AdvanceUntilAsync(time, repository.RenewalFailed.Task);
@@ -808,20 +932,26 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     public async Task LostLeaseWaitsForAnInFlightActivityToStop()
     {
         var time = new TimerRecordingClock();
+
         var repository = new PausedReadRepository(new InMemoryWorkflowStateRepository(time))
         {
             PauseFirstRead = false
         };
+
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowCatalog(), probe, shortLease: true, time);
+
         var definition = Workflow.Create<LeaseData>("LostLeaseActivity")
             .Step<BlockingActivity>()
             .Build();
+
         var executing = host.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         repository.LoseNextRenewal = 1;
         await AdvanceUntilAsync(time, repository.LeaseLost.Task);
+
         try
         {
             await Task.Delay(150);
@@ -845,22 +975,28 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(staleReader, registry, probe);
+
         var definition = Workflow.Create<LeaseData>("StaleResume")
             .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("reply")
             .Step<RecordActivity>()
             .Build();
+
         var started = await firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         var staleResume = secondHost.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
+
         await staleReader.ReadCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
         // The stale host stored its event first, so the run on the first host takes that one and
-        // refuses its own, which arrived after the wait was answered (D-33).
+        // refuses its own, which arrived after the wait was answered.
         var later = await firstHost.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
+
         Assert.Equal(WorkflowExecutionStatus.Success, later.Status);
         EventAssert.Rejected(later, EventRejection.NoOpenWait);
         staleReader.Continue.TrySetResult();
@@ -868,8 +1004,10 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var earlier = await staleResume.WaitAsync(TimeSpan.FromSeconds(5));
         EventAssert.Consumed(earlier);
         Assert.Equal(WorkflowExecutionStatus.Success, earlier.Status);
+
         Assert.Equal(WorkflowStatus.Completed,
             (await repository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+
         Assert.Equal(2, probe.Recorded);
     }
 
@@ -882,22 +1020,28 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(repository, registry, probe);
         using var secondHost = CreateHost(staleReader, registry, probe);
+
         var definition = Workflow.Create<LeaseData>("ConcurrentWaits")
             .Step<RecordActivity>()
             .Parallel(parallel => parallel
                 .Do(branch => branch.WaitFor<LeaseEvent>("first"))
                 .Do(branch => branch.WaitFor<LeaseEvent>("second")))
             .Build();
+
         var started = await firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         var secondResume = secondHost.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(started.InstanceId, "second", new LeaseEvent());
+
         await staleReader.ReadCompleted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
         // The first host's run takes both events: the second was stored before it ran.
         var first = await firstHost.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(started.InstanceId, "first", new LeaseEvent());
+
         EventAssert.Consumed(first);
         staleReader.Continue.TrySetResult();
 
@@ -913,6 +1057,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var releaseFault = new PausedReadRepository(repository) { FailRelease = true };
         var probe = new ActivityProbe();
         using var host = CreateHost(releaseFault, new WorkflowCatalog(), probe);
+
         var definition = Workflow.Create<LeaseData>("ReleaseFault")
             .Step<RecordActivity>()
             .Build();
@@ -921,6 +1066,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             .RunAsync(definition, new LeaseData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
+
         Assert.Equal(WorkflowStatus.Completed,
             (await repository.GetWorkflowInstanceAsync(completed.InstanceId))!.Status);
     }
@@ -943,11 +1089,13 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task SqlRecoveryScannerReclaimsAnExpiredWorker() => VerifyRecoveryScannerReclaimsAnExpiredWorker(SqlRepository, () => new SqlConnection(SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString));
+    public Task SqlRecoveryScannerReclaimsAnExpiredWorker() => VerifyRecoveryScannerReclaimsAnExpiredWorker(SqlRepository,
+        () => new SqlConnection(SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task PostgreSqlRecoveryScannerReclaimsAnExpiredWorker() => VerifyRecoveryScannerReclaimsAnExpiredWorker(PostgreSqlRepository, () => new NpgsqlConnection(PostgreSqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString));
+    public Task PostgreSqlRecoveryScannerReclaimsAnExpiredWorker() => VerifyRecoveryScannerReclaimsAnExpiredWorker(PostgreSqlRepository,
+        () => new NpgsqlConnection(PostgreSqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString));
 
     private static ServiceProvider CreateHost(IWorkflowStateRepository repository,
         IWorkflowCatalog registry, ActivityProbe probe, bool shortLease = false, TimeProvider? time = null)
@@ -956,22 +1104,27 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         services.AddLogging();
         services.AddIxIFlow();
         services.Replace(ServiceDescriptor.Singleton(repository));
+
         if (time != null)
             services.Replace(ServiceDescriptor.Singleton(time));
+
         services.Replace(ServiceDescriptor.Singleton(registry));
         services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
+
         if (shortLease)
             services.AddSingleton(new ExecutionLeaseSettings(
                 TimeSpan.FromMilliseconds(200), TimeSpan.FromMilliseconds(50)));
+
         services.AddSingleton(probe);
         services.AddTransient<BlockingActivity>();
         services.AddTransient<CancellableBlockingActivity>();
         services.AddTransient<RecordActivity>();
         services.AddTransient<NoopActivity>();
+
         return services.BuildServiceProvider();
     }
 
-    private static SqlWorkflowStateRepository SqlRepository() => new(
+    private static SqlServerWorkflowStateRepository SqlRepository() => new(
         SqlTestDatabase<ExecutionLeaseContractTests>.ConnectionString);
 
     private static PostgreSqlWorkflowStateRepository PostgreSqlRepository() => new(
@@ -982,7 +1135,9 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         if (time == null)
             return Task.Delay(by);
+
         time.Advance(by);
+
         return Task.CompletedTask;
     }
 
@@ -1002,23 +1157,30 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             await ShortLeaseTimersSetAsync(time);
             time.Advance(ShortLeaseStep);
         }
+
         await ShortLeaseTimersSetAsync(time);
     }
 
     // Moves the clock in the same steps until the run has done what the test waits for, within five short leases.
     private static async Task AdvanceUntilAsync(TimerRecordingClock time, Task happened)
     {
-        for (var moved = TimeSpan.Zero; ; moved += ShortLeaseStep)
+        for (var moved = TimeSpan.Zero;; moved += ShortLeaseStep)
         {
             using var stop = new CancellationTokenSource();
             var timersSet = ShortLeaseTimersSetAsync(time, stop.Token);
             await Task.WhenAny(happened, timersSet);
+
             if (happened.IsCompleted)
             {
                 stop.Cancel();
-                await timersSet.ContinueWith(_ => { }, TaskScheduler.Default);
+
+                await timersSet.ContinueWith(_ =>
+                {
+                }, TaskScheduler.Default);
+
                 return;
             }
+
             await timersSet;
             Assert.True(moved < TimeSpan.FromSeconds(1), "It did not happen within five leases");
             time.Advance(ShortLeaseStep);
@@ -1028,10 +1190,12 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     private static async Task VerifyExclusiveLease(IWorkflowStateRepository repository)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+
             Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         }
@@ -1044,15 +1208,21 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     private static async Task VerifyExpiredLease(IWorkflowStateRepository repository, FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromMilliseconds(100), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+
             await PassAsync(time, TimeSpan.FromMilliseconds(300));
+
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
-            Assert.False((await repository.RenewExecutionLeasesAsync([new(instanceId, "first",
-                TimeSpan.FromSeconds(5))]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
+
+            Assert.False((await repository.RenewExecutionLeasesAsync([
+                new(instanceId, "first",
+                    TimeSpan.FromSeconds(5))
+            ]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
         }
         finally
         {
@@ -1066,13 +1236,21 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         TimeSpan renewAfter, TimeSpan checkAfter, FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
-            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+            Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease,
+                new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+
             await PassAsync(time, renewAfter);
-            Assert.True((await repository.RenewExecutionLeasesAsync([new(instanceId, "first", lease)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
+
+            Assert.True((await repository.RenewExecutionLeasesAsync([new(instanceId, "first", lease)]))[0].Status ==
+                ExecutionLeaseRenewalStatus.Renewed);
+
             await PassAsync(time, checkAfter);
-            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+
+            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", lease,
+                new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         }
         finally
         {
@@ -1085,33 +1263,47 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         TimeSpan takeoverAfter, FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
-            var firstEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+            var firstEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", lease,
+                new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+
             Assert.NotNull(firstEpoch);
+
             var oldOwner = new WorkflowInstance
-            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+            {
+                ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 WorkflowName = "LeaseFencing",
                 Status = WorkflowStatus.Running,
                 WorkflowDataJson = StoredJson.Inline("{}")
             };
+
             var initial = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 0, "initial"));
+
             Assert.Equal(WorkflowCommitStatus.Applied, initial.Status);
             await PassAsync(time, takeoverAfter);
+
             var secondEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+
             Assert.NotNull(secondEpoch);
             oldOwner.WorkflowDataJson = StoredJson.Inline("\"stale\"");
+
             var stale = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(oldOwner, firstEpoch.Epoch, 1, "stale"));
+
             Assert.Equal(WorkflowCommitStatus.StaleEpoch, stale.Status);
             var newOwner = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             newOwner.WorkflowDataJson = StoredJson.Inline("\"current\"");
+
             var current = await repository.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(newOwner, secondEpoch.Epoch, 1, "current"));
+
             Assert.Equal(WorkflowCommitStatus.Applied, current.Status);
+
             Assert.Equal("\"current\"",
                 (await repository.GetWorkflowInstanceAsync(instanceId))!.WorkflowDataJson.InlineText);
         }
@@ -1124,14 +1316,19 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     private static async Task VerifyRelease(IWorkflowStateRepository repository)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+
             Assert.False((await repository.ReleaseExecutionLeaseAsync(instanceId, "second")).Released);
+
             Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+
             Assert.True((await repository.ReleaseExecutionLeaseAsync(instanceId, "first")).Released);
+
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
         }
@@ -1145,22 +1342,28 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
             // Long enough for the first commit on a cold store connection; the takeover waits it out.
             var formerEpoch = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first",
                 TimeSpan.FromSeconds(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+
             Assert.NotNull(formerEpoch);
+
             var formerOwner = new WorkflowInstance
-            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+            {
+                ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 WorkflowName = "ReceiptFencing",
                 Status = WorkflowStatus.Running,
                 WorkflowDataJson = StoredJson.Inline("{}")
             };
+
             var start = CheckpointCommit.Create(formerOwner, formerEpoch.Epoch, 0, "start");
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(start)).Status);
             await PassAsync(time, TimeSpan.FromMilliseconds(1_200));
+
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "second",
                 TimeSpan.FromSeconds(5), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
 
@@ -1178,13 +1381,16 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var instanceId = Guid.NewGuid().ToString("N");
         var probe = new ActivityProbe();
         using var host = CreateHost(repository, new WorkflowCatalog(), probe);
+
         var definition = Workflow.Create<LeaseData>("IdempotentStart")
             .Step<RecordActivity>()
             .Build();
+
         try
         {
             var first = await host.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new LeaseData(), new WorkflowOptions { InstanceId = instanceId });
+
             var replay = await host.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new LeaseData(), new WorkflowOptions { InstanceId = instanceId });
 
@@ -1202,33 +1408,45 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     private static async Task VerifyRecoveryQuery(IWorkflowStateRepository repository, FakeTimeProvider? time = null)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
             await repository.SeedAsync(new WorkflowInstance
-            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+            {
+                ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId,
                 WorkflowName = "RecoveryQuery",
                 Status = WorkflowStatus.Running
             });
+
             Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 instance => instance.InstanceId == instanceId);
+
             // Long enough for the next query on a slow store; the expiry is then polled for, and must come within
             // the lease's length, with three seconds more for a slow store.
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2) + TimeSpan.FromSeconds(3);
+
             Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(instanceId, "worker",
                 TimeSpan.FromSeconds(2), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
-            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
+
+            Assert.DoesNotContain(
+                await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 instance => instance.InstanceId == instanceId);
+
             if (time != null)
             {
                 // On a fake clock the lease has expired once the clock has moved its length.
                 time.Advance(TimeSpan.FromSeconds(2));
-                Assert.Contains(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
+
+                Assert.Contains(
+                    await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                     instance => instance.InstanceId == instanceId);
+
                 return;
             }
-            while (!(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100))).Any(
-                       instance => instance.InstanceId == instanceId))
+
+            while (!(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)))
+                   .Any(instance => instance.InstanceId == instanceId))
             {
                 Assert.True(DateTime.UtcNow < deadline, "The expired lease was not found on time");
                 await Task.Delay(50);
@@ -1241,6 +1459,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     }
 
     public sealed class LeaseData;
+
     public sealed class LeaseEvent;
 
     public sealed class NoopActivity : IAsyncActivity
@@ -1260,8 +1479,10 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         public TaskCompletionSource Started { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource Release { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public int Recorded;
     }
 
@@ -1281,6 +1502,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref probe.Recorded);
+
             return Task.CompletedTask;
         }
     }
@@ -1297,88 +1519,231 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
 
     private sealed class PausedReadRepository(InMemoryWorkflowStateRepository inner) : IWorkflowStateRepository
     {
-        public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => inner.ListWorkflowsAsync(query);
-        public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => inner.ListWorkflowVersionsAsync(name, query);
-        public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => inner.GetWorkflowVersionDetailAsync(name, version, scope);
-        public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query) => inner.ListTemplatesAsync(query);
-        public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query) => inner.ListTemplateVersionsAsync(key, query);
-        public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope) => inner.GetTemplateDetailAsync(key, version, scope);
-        public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope) => inner.ListStepDescriptorsAsync(scope);
-        public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => inner.ListActivitiesAsync(query);
-    public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => inner.ListActivityVersionsAsync(key, query);
-    public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => inner.GetActivityAsync(key, version, provider, scope);
-    public Task<CatalogPage<CatalogPackage>> ListPackagesAsync(CatalogPackageQuery query) => inner.ListPackagesAsync(query);
-    public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query) => inner.ListPackageVersionsAsync(id, query);
-    public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => inner.GetPackageDetailAsync(id, version, scope);
-    public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => inner.GetPackageActivitiesAsync(id, version, query);
-    public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => inner.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit);
-    public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => inner.RegisterTemplateVersionAsync(version, artifacts, actor);
-    public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version) => inner.GetTemplateVersionAsync(key, version);
-    public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => inner.GetTemplateVersionsAsync(key);
-    public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
-    public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => inner.GetPackageHoldersAsync(id, version, scope);
-    public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor);
-    public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected, string? actor = null) => inner.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor);
-    public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.RegisterPackageAsync(package, activities, artifacts, actor);
-    public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
-    public IArtifactStore? CatalogArtifacts { get => inner.CatalogArtifacts; set => inner.CatalogArtifacts = value; }
-    public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity, int limit) => inner.GetPackageExtractionPageAsync(extraction, afterIdentity, limit);
-        public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) => inner.GetInstalledPackagesAsync(id);
-        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => inner.GetPackagesAsync(id);
-        public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => inner.GetPackageAsync(id, version);
-        public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => inner.GetPackagePageAsync(id, afterVersion, limit);
+        public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query,
+            CancellationToken cancellationToken = default) => inner.ListWorkflowsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.ListWorkflowVersionsAsync(name, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            inner.GetWorkflowVersionDetailAsync(name, version, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query,
+            CancellationToken cancellationToken = default) => inner.ListTemplatesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.ListTemplateVersionsAsync(key, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            inner.GetTemplateDetailAsync(key, version, scope, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope,
+            CancellationToken cancellationToken = default) => inner.ListStepDescriptorsAsync(scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query,
+            CancellationToken cancellationToken = default) => inner.ListActivitiesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.ListActivityVersionsAsync(key, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider,
+            CatalogScope scope, CancellationToken cancellationToken = default) =>
+            inner.GetActivityAsync(key, version, provider, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogPackage>>
+            ListPackagesAsync(CatalogPackageQuery query, CancellationToken cancellationToken = default) =>
+            inner.ListPackagesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.ListPackageVersionsAsync(id, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            inner.GetPackageDetailAsync(id, version, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.GetPackageActivitiesAsync(id, version, query, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity,
+            int limit, CancellationToken cancellationToken = default) =>
+            inner.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version,
+            IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.RegisterTemplateVersionAsync(version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version,
+            CancellationToken cancellationToken = default) =>
+            inner.GetTemplateVersionAsync(key, version, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null,
+            CancellationToken cancellationToken = default) => inner.GetTemplateVersionsAsync(key, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId,
+            IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null,
+            CancellationToken cancellationToken = default) =>
+            inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            inner.GetPackageHoldersAsync(id, version, scope, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package,
+            PackageActivities activities, IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected,
+            string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities,
+            IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.RegisterPackageAsync(package, activities, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest,
+            PackageActivities activities, IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor,
+                cancellationToken: cancellationToken);
+
+        public IArtifactStore? CatalogArtifacts
+        {
+            get => inner.CatalogArtifacts;
+            set => inner.CatalogArtifacts = value;
+        }
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity,
+            int limit, CancellationToken cancellationToken = default) =>
+            inner.GetPackageExtractionPageAsync(extraction, afterIdentity, limit, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null,
+            CancellationToken cancellationToken = default) => inner.GetInstalledPackagesAsync(id, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null, CancellationToken cancellationToken = default) =>
+            inner.GetPackagesAsync(id, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPackage?> GetPackageAsync(string id, string version, CancellationToken cancellationToken = default) =>
+            inner.GetPackageAsync(id, version, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit,
+            CancellationToken cancellationToken = default) =>
+            inner.GetPackagePageAsync(id, afterVersion, limit, cancellationToken: cancellationToken);
+
         public IPayloadStore PayloadStore => inner.PayloadStore;
-        public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected) => inner.DeleteDefinitionAsync(expected);
-        public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query) => inner.GetDefinitionsAsync(query);
-        public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope) => inner.GetRetirementBlockersAsync(name, version, scope);
-        public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter) => inner.BeginPublicationAsync(draftId, hostId, actor, staleAfter);
-        public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId) => inner.HeartbeatPublicationAsync(id, hostId);
-        public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome) => inner.CompletePublicationAsync(id, hostId, outcome);
-        public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope) => inner.GetPublicationAsync(id, scope);
-        public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query) => inner.GetPublicationsAsync(query);
-        public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => inner.PurgePublicationsAsync(retention, batchSize, cancellationToken);
-        public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version) =>
-            inner.GetDefinitionAsync(kind, name, version);
-        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null) =>
-            inner.SaveDefinitionAsync(definition, expected, actor);
-        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
-            inner.RegisterWorkflowVersionAsync(version, artifacts);
-        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
-            inner.GetWorkflowVersionAsync(name, version);
-        public Task<long> GetCatalogRevisionAsync() => inner.GetCatalogRevisionAsync();
-        public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => inner.GetWorkflowVersionChangesAsync(afterRevision);
-        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
-            inner.GetWorkflowVersionsAsync(name);
-        public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null) =>
-            inner.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts, actor);
-        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null) =>
-            inner.PublishDefinitionAsync(draftId, version, artifacts, actor);
-        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+
+        public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected, CancellationToken cancellationToken = default) =>
+            inner.DeleteDefinitionAsync(expected, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query,
+            CancellationToken cancellationToken = default) => inner.GetDefinitionsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            inner.GetRetirementBlockersAsync(name, version, scope, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter,
+            CancellationToken cancellationToken = default) =>
+            inner.BeginPublicationAsync(draftId, hostId, actor, staleAfter, cancellationToken: cancellationToken);
+
+        public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId, CancellationToken cancellationToken = default) =>
+            inner.HeartbeatPublicationAsync(id, hostId, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome,
+            CancellationToken cancellationToken = default) =>
+            inner.CompletePublicationAsync(id, hostId, outcome, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope, CancellationToken cancellationToken = default) =>
+            inner.GetPublicationAsync(id, scope, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication?> GetLatestPublicationAsync(string kind, string name, int version, Guid generation,
+            CatalogScope scope, CancellationToken cancellationToken = default) =>
+            inner.GetLatestPublicationAsync(kind, name, version, generation, scope, cancellationToken);
+
+        public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query,
+            CancellationToken cancellationToken = default) => inner.GetPublicationsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+            inner.PurgePublicationsAsync(retention, batchSize, cancellationToken);
+
+        public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version,
+            CancellationToken cancellationToken = default) =>
+            inner.GetDefinitionAsync(kind, name, version, cancellationToken: cancellationToken);
+
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null,
+            CancellationToken cancellationToken = default) =>
+            inner.SaveDefinitionAsync(definition, expected, actor, cancellationToken: cancellationToken);
+
+        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null,
+            CancellationToken cancellationToken = default) =>
+            inner.RegisterWorkflowVersionAsync(version, artifacts, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version, CancellationToken cancellationToken = default) =>
+            inner.GetWorkflowVersionAsync(name, version, cancellationToken: cancellationToken);
+
+        public Task<long> GetCatalogRevisionAsync(CancellationToken cancellationToken = default) =>
+            inner.GetCatalogRevisionAsync(cancellationToken: cancellationToken);
+
+        public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision,
+            CancellationToken cancellationToken = default) =>
+            inner.GetWorkflowVersionChangesAsync(afterRevision, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null,
+            CancellationToken cancellationToken = default) =>
+            inner.GetWorkflowVersionsAsync(name, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state,
+            CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null,
+            CancellationToken cancellationToken = default) =>
+            inner.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts,
+            string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.PublishDefinitionAsync(draftId, version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
+            CancellationToken cancellationToken = default) =>
             inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
+
         public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
             inner.PutAsync(kind, content, cancellationToken);
+
         public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
             inner.OpenAsync(digest, cancellationToken);
+
         public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
             inner.ExistsAsync(digest, cancellationToken);
-        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) =>
+
+        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize,
+            CancellationToken cancellationToken = default) =>
             inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
+
         public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
             inner.DeleteAsync(digest, cancellationToken);
 
         public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
             inner.RegisterMemberAsync(member, cancellationToken);
+
         public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
             CancellationToken cancellationToken = default) =>
             inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
+
         public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
             inner.UnregisterMemberAsync(memberId, cancellationToken);
-        public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
-            inner.GetWorkflowDemandsAsync(instanceId);
+
+        public Task<IReadOnlyList<WorkflowDemand>>
+            GetWorkflowDemandsAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            inner.GetWorkflowDemandsAsync(instanceId, cancellationToken: cancellationToken);
 
         public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
             CancellationToken cancellationToken = default) =>
             inner.GetUnschedulableAsync(limit, cursor, cancellationToken);
+
         public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
             inner.CanScheduleAsync(demands, cancellationToken);
 
@@ -1388,46 +1753,77 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
             CancellationToken cancellationToken = default) =>
             inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);
-        public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
-            inner.GetTombstoneAsync(instanceId);
+
+        public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            inner.GetTombstoneAsync(instanceId, cancellationToken: cancellationToken);
+
         public Task<WorkflowCommitResult> AdmitWorkflowInstanceAsync(CheckpointCommit commit, WorkflowAdmission admission) =>
             inner.AdmitWorkflowInstanceAsync(commit, admission);
+
         public Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId) =>
             inner.GetWorkflowOwnershipAsync(instanceId);
+
         public Task<WorkflowAdmissionRecord?> GetWorkflowAdmissionAsync(string sender, string trigger, string key) =>
             inner.GetWorkflowAdmissionAsync(sender, trigger, key);
 
-        public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
-            inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
-        public Task UnregisterPublisherAsync(string name, string actor = "host") => inner.UnregisterPublisherAsync(name, actor);
-        public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) => inner.ListDeliveriesAsync(query);
-        public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => inner.RetryDeliveryAsync(eventId, publisherName, actor);
-        public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() => inner.ListPublishersAsync();
-        public Task<bool> EnablePublisherAsync(string publisherName, string actor) => inner.EnablePublisherAsync(publisherName, actor);
-        public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
-            inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
-        public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
-            inner.RenewDeliveryLeaseAsync(eventId, publisherName, token, leaseDuration);
-        public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result) =>
-            inner.SettleDeliveryAsync(eventId, publisherName, token, result);
-        public Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName) =>
-            inner.GetDeliveryAsync(eventId, publisherName);
-        public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
-            inner.GetPublisherAsync(publisherName);
+        public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false,
+            CancellationToken cancellationToken = default) =>
+            inner.RegisterPublisherAsync(name, eventTypes, replayRetained, cancellationToken: cancellationToken);
 
-        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
-            inner.AppendEventAsync(workflowEvent);
-        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
-            inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
-        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
-            inner.GetEventAsync(instanceId, eventId);
-        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
-            inner.GetWaitAsync(instanceId, waitId);
+        public Task UnregisterPublisherAsync(string name, string actor = "host", CancellationToken cancellationToken = default) =>
+            inner.UnregisterPublisherAsync(name, actor, cancellationToken: cancellationToken);
+
+        public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query, CancellationToken cancellationToken = default) =>
+            inner.ListDeliveriesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor,
+            CancellationToken cancellationToken = default) =>
+            inner.RetryDeliveryAsync(eventId, publisherName, actor, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync(CancellationToken cancellationToken = default) =>
+            inner.ListPublishersAsync(cancellationToken: cancellationToken);
+
+        public Task<bool> EnablePublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default) =>
+            inner.EnablePublisherAsync(publisherName, actor, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration,
+            int limit, CancellationToken cancellationToken = default) =>
+            inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
+
+        public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration,
+            CancellationToken cancellationToken = default) =>
+            inner.RenewDeliveryLeaseAsync(eventId, publisherName, token, leaseDuration);
+
+        public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result,
+            CancellationToken cancellationToken = default) =>
+            inner.SettleDeliveryAsync(eventId, publisherName, token, result);
+
+        public Task<OutboxDelivery?>
+            GetDeliveryAsync(string eventId, string publisherName, CancellationToken cancellationToken = default) =>
+            inner.GetDeliveryAsync(eventId, publisherName, cancellationToken: cancellationToken);
+
+        public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName, CancellationToken cancellationToken = default) =>
+            inner.GetPublisherAsync(publisherName, cancellationToken: cancellationToken);
+
+        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent, CancellationToken cancellationToken = default) =>
+            inner.AppendEventAsync(workflowEvent, cancellationToken: cancellationToken);
+
+        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit,
+            CancellationToken cancellationToken = default) =>
+            inner.GetPendingEventsAsync(instanceId, afterSequence, limit, cancellationToken: cancellationToken);
+
+        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId, CancellationToken cancellationToken = default) =>
+            inner.GetEventAsync(instanceId, eventId, cancellationToken: cancellationToken);
+
+        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId, CancellationToken cancellationToken = default) =>
+            inner.GetWaitAsync(instanceId, waitId, cancellationToken: cancellationToken);
+
         public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(
-            IReadOnlyCollection<string> instanceIds) =>
-            inner.GetInboxSequencesAsync(instanceIds);
-        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
-            inner.GetOpenWaitsAsync(query);
+            IReadOnlyCollection<string> instanceIds, CancellationToken cancellationToken = default) =>
+            inner.GetInboxSequencesAsync(instanceIds, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default) =>
+            inner.GetOpenWaitsAsync(query, cancellationToken: cancellationToken);
 
         public int FailNextCancellationReads;
         public int FailNextRenewals;
@@ -1435,36 +1831,49 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         public bool FailAllCancellationReads;
         public bool FailAfterObservedCancellation;
         private int _cancellationObserved;
+
         public TaskCompletionSource CancellationObserved { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public int CancelBeforeTerminalCommit;
         public int CancelBeforeFailedCommit;
         public int CancelWhenRootCompletedOnRead;
+
         public TaskCompletionSource CancellationReadFailed { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource RenewalFailed { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource LeaseLost { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public bool CompleteOnCancellationRequest { get; set; }
         public ClaimQuery? CompletionClaim { get; set; }
         public bool PauseFirstRead { get; set; } = true;
-        public async Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null)
+
+        public async Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason,
+            Guid? expectedIncarnation = null, CancellationToken cancellationToken = default)
         {
-            var accepted = await inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
+            var accepted =
+                await inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation, cancellationToken: cancellationToken);
+
             if (accepted.Accepted && CompleteOnCancellationRequest)
             {
-                var instance = (await inner.GetWorkflowInstanceAsync(instanceId))!;
+                var instance = (await inner.GetWorkflowInstanceAsync(instanceId, cancellationToken: cancellationToken))!;
                 instance.Status = WorkflowStatus.Completed;
                 await inner.SeedAsync(instance, query: CompletionClaim);
             }
+
             return accepted;
         }
-        public async Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
+
+        public async Task<CancellationReason?> GetCancellationRequestAsync(string instanceId, CancellationToken cancellationToken = default)
         {
             await BeforeCancellationReadAsync(instanceId);
-            var reason = await inner.GetCancellationRequestAsync(instanceId);
+            var reason = await inner.GetCancellationRequestAsync(instanceId, cancellationToken: cancellationToken);
             ObserveCancellation(reason);
+
             return reason;
         }
 
@@ -1472,20 +1881,25 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         {
             if (FailAfterObservedCancellation && Volatile.Read(ref _cancellationObserved) != 0)
                 throw new IOException("Cancellation store unavailable after observation");
+
             if (FailAllCancellationReads)
                 throw new IOException("Cancellation store unavailable");
+
             if (Interlocked.Exchange(ref FailNextCancellationReads, 0) > 0)
             {
                 CancellationReadFailed.TrySetResult();
+
                 throw new IOException("Cancellation read unavailable");
             }
+
             if (Volatile.Read(ref CancelWhenRootCompletedOnRead) > 0)
             {
                 var saved = await inner.GetWorkflowInstanceAsync(instanceId);
+
                 if (saved?.Status == WorkflowStatus.Running &&
                     ExecutionCheckpoint.IsStructured(saved.ExecutionStateJson) &&
                     ExecutionCheckpoint.Read(saved.ExecutionStateJson).Continuations[0].Status ==
-                        ContinuationStatus.Completed &&
+                    ContinuationStatus.Completed &&
                     Interlocked.Exchange(ref CancelWhenRootCompletedOnRead, 0) > 0)
                     await inner.RequestCancellationAsync(instanceId,
                         new CancellationReason { ReasonCode = "late" });
@@ -1500,89 +1914,125 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 CancellationObserved.TrySetResult();
             }
         }
-        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
-            inner.GetRunnableInstancesAsync(query);
+
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.GetRunnableInstancesAsync(query, cancellationToken: cancellationToken);
+
         private int _reads;
         public bool FailRelease { get; set; }
+
         public TaskCompletionSource ReadCompleted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource Continue { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
-            inner.GetWorkflowInstanceSummaryAsync(instanceId);
+        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            inner.GetWorkflowInstanceSummaryAsync(instanceId, cancellationToken: cancellationToken);
+
         public async Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds)
         {
             foreach (var instanceId in instanceIds.Distinct(StringComparer.Ordinal))
                 await BeforeCancellationReadAsync(instanceId);
+
             var controls = await inner.GetControlRequestsAsync(instanceIds);
+
             foreach (var reason in controls.Cancellations.Values)
                 ObserveCancellation(reason);
+
             return controls;
         }
+
         public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
             inner.RequestDebugCommandAsync(instanceId, command);
+
         public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
             inner.GetDebugStatesAsync(instanceIds);
 
-        public async Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId)
+        public async Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId, CancellationToken cancellationToken = default)
         {
-            var snapshot = await inner.GetWorkflowInstanceAsync(instanceId);
+            var snapshot = await inner.GetWorkflowInstanceAsync(instanceId, cancellationToken: cancellationToken);
+
             if (PauseFirstRead && Interlocked.Increment(ref _reads) == 1)
             {
                 ReadCompleted.TrySetResult();
                 await Continue.Task;
             }
+
             return snapshot;
         }
 
-        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string id, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string id, string token, TimeSpan duration, ClaimQuery query,
+            ExecutionClaimKind kind = ExecutionClaimKind.Runnable, CancellationToken cancellationToken = default) =>
             inner.TryAcquireExecutionLeaseAsync(id, token, duration, query, kind);
-        public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
+
+        public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases,
+            CancellationToken cancellationToken = default)
         {
             if (Interlocked.Exchange(ref LoseNextRenewal, 0) > 0)
             {
                 LeaseLost.TrySetResult();
-                return Task.FromResult<IReadOnlyList<ExecutionLeaseRenewalResult>>(leases.Select(_ => new ExecutionLeaseRenewalResult(ExecutionLeaseRenewalStatus.Refused)).ToArray());
+
+                return Task.FromResult<IReadOnlyList<ExecutionLeaseRenewalResult>>(leases
+                    .Select(_ => new ExecutionLeaseRenewalResult(ExecutionLeaseRenewalStatus.Refused)).ToArray());
             }
+
             if (Interlocked.Exchange(ref FailNextRenewals, 0) > 0)
             {
                 RenewalFailed.TrySetResult();
+
                 throw new IOException("Lease renewal unavailable");
             }
-            return inner.RenewExecutionLeasesAsync(leases);
+
+            return inner.RenewExecutionLeasesAsync(leases, cancellationToken: cancellationToken);
         }
-        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string id, string token) =>
-            FailRelease ? throw new IOException("Release acknowledgment unavailable") :
-                inner.ReleaseExecutionLeaseAsync(id, token);
-        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+
+        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string id, string token,
+            CancellationToken cancellationToken = default) =>
+            FailRelease ? throw new IOException("Release acknowledgment unavailable") : inner.ReleaseExecutionLeaseAsync(id, token);
+
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
             var instance = commit.ReadTrunk();
+
             if (instance.Status == WorkflowStatus.Completed &&
                 Interlocked.Exchange(ref CancelBeforeTerminalCommit, 0) > 0)
                 await inner.RequestCancellationAsync(instance.InstanceId,
-                    new CancellationReason { ReasonCode = "operator" });
+                    new CancellationReason { ReasonCode = "operator" }, cancellationToken: cancellationToken);
+
             if (instance.Status == WorkflowStatus.Failed &&
                 Interlocked.Exchange(ref CancelBeforeFailedCommit, 0) > 0)
                 await inner.RequestCancellationAsync(instance.InstanceId,
-                    new CancellationReason { ReasonCode = "operator" });
-            return await inner.CommitWorkflowInstanceAsync(commit);
+                    new CancellationReason { ReasonCode = "operator" }, cancellationToken: cancellationToken);
+
+            return await inner.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
         }
 
-        public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
-            inner.QueryInstancesAsync(query);
+        public Task<InstancePage> QueryInstancesAsync(InstanceQuery query, CancellationToken cancellationToken = default) =>
+            inner.QueryInstancesAsync(query, cancellationToken: cancellationToken);
 
-        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
-            inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason,
+            Guid? expectedIncarnation = null, CancellationToken cancellationToken = default) =>
+            inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation, cancellationToken: cancellationToken);
+
         public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId) =>
             inner.GetDiagnosticsAsync(instanceId);
-        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation) =>
-            inner.GetDiagnosticsForIncarnationAsync(instanceId, incarnation);
+
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation,
+            CancellationToken cancellationToken = default) =>
+            inner.GetDiagnosticsForIncarnationAsync(instanceId, incarnation, cancellationToken: cancellationToken);
+
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
-            int limit = 1000) =>
-            inner.GetTraceAsync(instanceId, afterSequence, limit);
-        public Task DeleteWorkflowInstanceAsync(string id, TimeSpan? tombstoneRetention = null) => inner.DeleteWorkflowInstanceAsync(id, tombstoneRetention);
+            int limit = 1000, CancellationToken cancellationToken = default) =>
+            inner.GetTraceAsync(instanceId, afterSequence, limit, cancellationToken: cancellationToken);
+
+        public Task DeleteWorkflowInstanceAsync(string id, TimeSpan? tombstoneRetention = null,
+            CancellationToken cancellationToken = default) =>
+            inner.DeleteWorkflowInstanceAsync(id, tombstoneRetention, cancellationToken: cancellationToken);
     }
+
     [Fact]
     [Trait("Category", "SqliteIntegration")]
     [Trait("Spec", "C-11")]
@@ -1597,14 +2047,17 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var instanceId = Guid.NewGuid().ToString("N");
         var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var repositories = Enumerable.Range(0, 8).Select(_ => newRepository()).ToArray();
+
         try
         {
             var attempts = repositories.Select(async (repository, index) =>
             {
                 await start.Task;
+
                 return await repository.TryAcquireExecutionLeaseAsync(instanceId,
                     $"host-{index}", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
             }).ToArray();
+
             start.SetResult();
 
             Assert.Single((await Task.WhenAll(attempts)).Where(epoch => epoch != null));
@@ -1624,17 +2077,23 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(firstRepository, registry, probe);
         using var secondHost = CreateHost(secondRepository, registry, probe);
+
         var definition = Workflow.Create<LeaseData>("SqlCancelRunning")
             .Step<CancellableBlockingActivity>()
             .Step<RecordActivity>()
             .Build();
+
         var instanceId = Guid.NewGuid().ToString("N");
+
         var executing = firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData(),
                 new WorkflowOptions { InstanceId = instanceId });
+
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
         Assert.Equal(WorkflowStatus.Running,
             (await firstRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
+
         try
         {
             var requested = await secondHost.GetRequiredService<IWorkflowClient>()
@@ -1642,9 +2101,12 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
                 {
                     ReasonCode = "operator", Description = "Stopped by operator"
                 });
+
             Assert.Equal(WorkflowExecutionStatus.Running, requested.Status);
+
             Assert.Equal(WorkflowExecutionStatus.Cancelled,
                 (await executing.WaitAsync(TimeSpan.FromSeconds(30))).Status);
+
             var cancelled = (await secondRepository.GetWorkflowInstanceAsync(instanceId))!;
             Assert.Equal(WorkflowStatus.Cancelled, cancelled.Status);
             Assert.Equal("operator", cancelled.CancellationReason?.ReasonCode);
@@ -1665,24 +2127,31 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(firstRepository, registry, probe);
         using var secondHost = CreateHost(secondRepository, registry, probe);
+
         var definition = Workflow.Create<LeaseData>("SqlCancelWait")
             .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("approval")
             .Step<RecordActivity>()
             .Build();
+
         var started = await firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         try
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
             var result = await secondHost.GetRequiredService<IWorkflowClient>()
                 .CancelAsync(started.InstanceId, new CancellationReason
                 {
                     ReasonCode = "withdrawn", Description = "Request withdrawn"
                 });
+
             Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+
             Assert.Equal(WorkflowStatus.Cancelled,
                 (await firstRepository.GetWorkflowInstanceAsync(started.InstanceId))!.Status);
+
             Assert.Equal(1, probe.Recorded);
         }
         finally
@@ -1698,12 +2167,15 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var firstRegistry = new WorkflowCatalog();
         var secondRegistry = new WorkflowCatalog();
         var probe = new ActivityProbe();
+
         var definition = Workflow.Create<LeaseData>("SqlCancelAfterHostStop")
             .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("approval")
             .Build();
+
         await secondRegistry.RegisterWorkflowAsync(definition);
         WorkflowExecutionResult started;
+
         try
         {
             await using (var firstHost = CreateHost(firstRepository, firstRegistry, probe))
@@ -1717,12 +2189,16 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
             if (firstRepository is IAsyncDisposable firstOwner)
                 await firstOwner.DisposeAsync();
         }
+
         var secondRepository = newRepository();
+
         try
         {
             Assert.True((await secondRepository.RequestCancellationAsync(started.InstanceId,
                 new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
+
             await using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
+
             using var scanner = new WorkflowRecoveryService(
                 secondHost.GetRequiredService<IServiceScopeFactory>(), secondRepository,
                 NullLogger<WorkflowRecoveryService>.Instance);
@@ -1756,19 +2232,25 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
         using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
+
         var definition = Workflow.Create<LeaseData>("SqlCrossHostWait")
             .Step<RecordActivity>()
             .WaitFor<LeaseEvent>("reply")
             .Step<RecordActivity>()
             .Build();
+
         await secondRegistry.RegisterWorkflowAsync(definition);
+
         var started = await firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         try
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
             var resumed = await secondHost.GetRequiredService<IWorkflowClient>()
                 .ResumeAsync(started.InstanceId, "reply", new LeaseEvent());
+
             Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
             Assert.Equal(2, probe.Recorded);
         }
@@ -1788,18 +2270,27 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
         using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
+
         var definition = Workflow.Create<LeaseData>("SqlLiveOwner")
             .Step<BlockingActivity>()
             .Step<RecordActivity>()
             .Build();
+
         await secondRegistry.RegisterWorkflowAsync(definition);
         var correlationId = Guid.NewGuid().ToString("N");
+
         var executing = firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData(),
                 new WorkflowOptions { CorrelationId = correlationId });
+
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await Task.WhenAll((await firstRepository.QueryInstancesAsync(new InstanceQuery(CorrelationId: correlationId, Limit: int.MaxValue))).Items.Select(async row => (await firstRepository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        var saved = Assert.Single(await Task.WhenAll(
+            (await firstRepository.QueryInstancesAsync(new InstanceQuery(CorrelationId: correlationId, Limit: int.MaxValue))).Items
+            .Select(async row => (await firstRepository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
         WorkflowExecutionResult attempted;
+
         try
         {
             attempted = await secondHost.GetRequiredService<IWorkflowClient>()
@@ -1809,8 +2300,10 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         {
             probe.Release.TrySetResult();
         }
+
         WorkflowExecutionResult? completed = null;
         Exception? ownerError = null;
+
         try
         {
             completed = await executing.WaitAsync(TimeSpan.FromSeconds(5));
@@ -1819,6 +2312,7 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         {
             ownerError = error;
         }
+
         var finalStatus = (await firstRepository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status;
         await firstRepository.DeleteWorkflowInstanceAsync(saved.InstanceId);
         Assert.Equal(WorkflowExecutionStatus.Running, attempted.Status);
@@ -1843,24 +2337,31 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     {
         var probe = new ActivityProbe();
         await using var host = CreateHost(repository, new WorkflowCatalog(), probe);
+
         var definition = Workflow.Create<LeaseData>("SqlCancelFinallyWait")
             .Step<RecordActivity>()
             .Try(body => body.WaitFor<LeaseEvent>("approval"))
             .Finally(body => body.WaitFor<LeaseEvent>("cleanup"))
             .Build();
+
         var started = await host.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData());
+
         try
         {
             Assert.True((await repository.RequestCancellationAsync(started.InstanceId,
                 new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
+
             using var scanner = new WorkflowRecoveryService(
                 host.GetRequiredService<IServiceScopeFactory>(), repository,
                 NullLogger<WorkflowRecoveryService>.Instance);
+
             await scanner.RecoverOnceAsync(CancellationToken.None);
             var waiting = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
             Assert.Equal(WorkflowStatus.Suspended, waiting.Status);
-            Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
+
+            Assert.DoesNotContain(
+                await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
                 item => item.InstanceId == started.InstanceId);
         }
         finally
@@ -1873,10 +2374,13 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
     [Fact]
     [Trait("Category", "SqliteIntegration")]
     [Trait("Spec", "C-11")]
-    public Task SqliteScannerCompletesCancellationAfterRequestingHostStops() => VerifyScannerCompletesCancellationAfterRequestingHostStops(() => new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString));
+    public Task SqliteScannerCompletesCancellationAfterRequestingHostStops() =>
+        VerifyScannerCompletesCancellationAfterRequestingHostStops(() =>
+            new SqliteWorkflowStateRepository(SqliteTestDatabase<ExecutionLeaseContractTests>.ConnectionString));
 
 
-    private static async Task VerifyRecoveryScannerReclaimsAnExpiredWorker(Func<IWorkflowStateRepository> newRepository, Func<System.Data.Common.DbConnection> newConnection)
+    private static async Task VerifyRecoveryScannerReclaimsAnExpiredWorker(Func<IWorkflowStateRepository> newRepository,
+        Func<System.Data.Common.DbConnection> newConnection)
     {
         var firstRepository = newRepository();
         var secondRepository = newRepository();
@@ -1885,30 +2389,41 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         var probe = new ActivityProbe();
         using var firstHost = CreateHost(firstRepository, firstRegistry, probe);
         using var secondHost = CreateHost(secondRepository, secondRegistry, probe);
+
         var definition = Workflow.Create<LeaseData>("ExpiredWorker")
             .Step<BlockingActivity>()
             .Step<RecordActivity>()
             .Build();
+
         await secondRegistry.RegisterWorkflowAsync(definition);
         var correlationId = Guid.NewGuid().ToString("N");
+
         var executing = firstHost.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new LeaseData(),
                 new WorkflowOptions { CorrelationId = correlationId });
+
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        var saved = Assert.Single(await Task.WhenAll((await firstRepository.QueryInstancesAsync(new InstanceQuery(CorrelationId: correlationId, Limit: int.MaxValue))).Items.Select(async row => (await firstRepository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        var saved = Assert.Single(await Task.WhenAll(
+            (await firstRepository.QueryInstancesAsync(new InstanceQuery(CorrelationId: correlationId, Limit: int.MaxValue))).Items
+            .Select(async row => (await firstRepository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
         try
         {
             await using (var connection = newConnection())
             {
                 await connection.OpenAsync();
+
                 await connection.ExecuteAsync(connection is SqlConnection
-                    ? "UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = DATEADD(SECOND, -1, SYSUTCDATETIME()) WHERE InstanceId = @InstanceId"
-                    : "UPDATE ixiflow_workflow_leases SET expires_at_utc = clock_timestamp() - INTERVAL '1 second' WHERE instance_id = @InstanceId",
+                        ? "UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc = DATEADD(SECOND, -1, SYSUTCDATETIME()) WHERE InstanceId = @InstanceId"
+                        : "UPDATE ixiflow_workflow_leases SET expires_at_utc = clock_timestamp() - INTERVAL '1 second' WHERE instance_id = @InstanceId",
                     new { saved.InstanceId });
             }
+
             using var scanner = new WorkflowRecoveryService(
                 secondHost.GetRequiredService<IServiceScopeFactory>(), secondRepository,
                 NullLogger<WorkflowRecoveryService>.Instance);
+
             await scanner.RecoverOnceAsync(CancellationToken.None);
 
             Assert.Equal(WorkflowStatus.NeedsResolution,
@@ -1917,17 +2432,14 @@ public sealed class ExecutionLeaseContractTests : IClassFixture<SqliteTestDataba
         finally
         {
             probe.Release.TrySetResult();
-            try
-            {
-                await executing.WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch (InvalidOperationException)
-            {
-                // The former owner is fenced after the scanner takes over.
-            }
+
+            var former = await executing.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(WorkflowExecutionStatus.Running, former.Status);
+
+            Assert.Equal(WorkflowStatus.NeedsResolution,
+                (await secondRepository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
+
             await firstRepository.DeleteWorkflowInstanceAsync(saved.InstanceId);
         }
     }
-
-
 }

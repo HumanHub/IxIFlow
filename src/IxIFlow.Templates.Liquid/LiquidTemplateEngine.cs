@@ -35,10 +35,13 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
     public LiquidTemplateEngine(LiquidEngineOptions settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
+
         if (settings.MaxSteps < 1)
             throw new ArgumentOutOfRangeException(nameof(settings), "MaxSteps must be at least 1");
+
         if (settings.MaxRecursion < 1)
             throw new ArgumentOutOfRangeException(nameof(settings), "MaxRecursion must be at least 1");
+
         _settings = settings;
     }
 
@@ -49,19 +52,30 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
     {
         ArgumentNullException.ThrowIfNull(template);
         ArgumentNullException.ThrowIfNull(modelType);
-        try { TemplateModelTypes.Validate(modelType); }
-        catch (ArgumentException error) { return ValueTask.FromResult<IReadOnlyList<TemplateDiagnostic>>([new(error.Message + "; wrap it in a model type")]); }
+
+        try
+        {
+            TemplateModelTypes.Validate(modelType);
+        }
+        catch (ArgumentException error)
+        {
+            return ValueTask.FromResult<IReadOnlyList<TemplateDiagnostic>>([new(error.Message + "; wrap it in a model type")]);
+        }
+
         // Fluid 2.40 parses a {% liquid %} block into no statements at all, losing the rest of the template.
         if (LiquidTagPattern().IsMatch(template.Content))
         {
             return ValueTask.FromResult<IReadOnlyList<TemplateDiagnostic>>(
                 [new TemplateDiagnostic("The {% liquid %} tag is not available; write each tag in its own {% %}")]);
         }
+
         // Drafts are parsed afresh, so validating them keeps nothing; only what is rendered is kept.
         var parsed = ParseOnce(template);
+
         IReadOnlyList<TemplateDiagnostic> diagnostics = parsed.Template is IStatementList statements
             ? LiquidModelChecker.Check(statements, modelType, OptionsFor(modelType), template.Content)
             : [parsed.Error!];
+
         return ValueTask.FromResult(diagnostics);
     }
 
@@ -75,19 +89,26 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
         ArgumentNullException.ThrowIfNull(culture);
         ArgumentNullException.ThrowIfNull(model);
         TemplateModelTypes.Validate(modelType);
-        if (!modelType.IsInstanceOfType(model)) throw new ArgumentException("Model does not implement its declared read surface", nameof(model));
+
+        if (!modelType.IsInstanceOfType(model))
+            throw new ArgumentException("Model does not implement its declared read surface", nameof(model));
+
         var parsed = Parse(template);
+
         if (parsed.Template == null)
             throw new TemplateRenderException(template, parsed.Error!.ToString());
+
         cancellationToken.ThrowIfCancellationRequested();
         var context = new TemplateContext(model, OptionsFor(modelType), allowModelMembers: false) { CultureInfo = culture };
         var outer = LiquidValues.Culture.Value;
         LiquidValues.Culture.Value = culture;
+
         // Fluid compares and formats some values with the current culture, sort by a member among them.
         var current = CultureInfo.CurrentCulture;
         var currentUi = CultureInfo.CurrentUICulture;
         CultureInfo.CurrentCulture = culture;
         CultureInfo.CurrentUICulture = culture;
+
         try
         {
             // The model's own members come through the member access strategy, like every other type's, so a model
@@ -95,17 +116,22 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
             return await parsed.Template.RenderAsync(context,
                 template.Format == TemplateFormat.Html ? HtmlEncoder.Default : NullEncoder.Default);
         }
+
         // Fluid 2.40 uses these non-inlined guard methods for both configured budgets.
         // Identify the vendor throw site, including recursion after scopes unwind,
         // without classifying arbitrary model exceptions by their text.
         catch (InvalidOperationException error) when (error.TargetSite?.DeclaringType?.Assembly == typeof(TemplateContext).Assembly &&
-            error.TargetSite.DeclaringType.FullName == "Fluid.ExceptionHelper" &&
-            error.TargetSite.Name is "ThrowMaximumRecursionException" or "ThrowMaximumStatementsException")
+                                                      error.TargetSite.DeclaringType.FullName == "Fluid.ExceptionHelper" &&
+                                                      error.TargetSite.Name is "ThrowMaximumRecursionException"
+                                                          or "ThrowMaximumStatementsException")
         {
-            var limit = new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "Liquid rendering exceeds the configured execution limit");
+            var limit = new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted,
+                "Liquid rendering exceeds the configured execution limit");
+
             throw new TemplateRenderException(template, limit.Message, limit);
         }
-        catch (Exception error) when (error is WorkflowEngineException { Kind: WorkflowErrorKind.InvalidDefinition } or FluidException or FormatException
+        catch (Exception error) when (error is WorkflowEngineException { Kind: WorkflowErrorKind.InvalidDefinition } or FluidException
+                                          or FormatException
                                           or ArgumentException or InvalidCastException or OverflowException)
         {
             throw new TemplateRenderException(template, error.Message, error);
@@ -138,44 +164,57 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
             FileProvider = new NullFileProvider(),
             TimeZone = TimeZoneInfo.Utc,
             CultureInfo = CultureInfo.InvariantCulture,
+
             // Fluid reads the clock before parsing any date; the date filters take no text it would complete from it.
             Now = () => DateTimeOffset.UnixEpoch,
             MemberAccessStrategy = new DefaultMemberAccessStrategy()
         };
+
         var reachable = LiquidModel.Reachable(type);
+
         foreach (var registered in reachable)
             options.MemberAccessStrategy.Register(registered, LiquidModel.Accessors(registered));
+
         options.ValueConverters.Add(new LiquidValues(reachable).Convert);
+
         // json serializes the object behind a value, every member of its runtime type included.
         options.Filters.Remove("json");
+
         // Fluid's sum reads a member only from its own object values, not from the model's.
         if (options.Filters.TryGetValue("sum", out var sum))
             options.Filters.AddFilter("sum", (input, arguments, context) =>
                 arguments.Count == 0 ? sum(input, arguments, context) : SumOfMember(input, arguments, context));
+
         // Fluid sorts by a member with the comparer of the culture the process started with; these sort by the
         // render's culture.
         foreach (var (name, order) in new[]
-                 { ("sort", CompareOptions.None), ("sort_natural", CompareOptions.IgnoreCase) })
+                     { ("sort", CompareOptions.None), ("sort_natural", CompareOptions.IgnoreCase) })
         {
             if (!options.Filters.TryGetValue(name, out var sort))
                 continue;
+
             options.Filters.AddFilter(name, (input, arguments, context) =>
                 arguments.Count == 0 ? sort(input, arguments, context) : SortByMember(input, arguments, context, order));
         }
+
         foreach (var name in DateFilters)
         {
             if (!options.Filters.TryGetValue(name, out var filter))
                 continue;
+
             options.Filters.AddFilter(name, (input, arguments, context) =>
             {
                 if (input.Type != FluidValues.String)
                     return filter(input, arguments, context);
+
                 var text = input.ToStringValue();
+
                 return TryParseDate(text, out var date)
                     ? filter(new DateTimeValue(date), arguments, context)
                     : throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, NotADate(text));
             });
         }
+
         return options;
     });
 
@@ -184,9 +223,12 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
     {
         var member = arguments.At(0).ToStringValue();
         var keyed = new List<(FluidValue Item, FluidValue Key)>();
+
         foreach (var item in input.Enumerate(context))
             keyed.Add((item, await item.GetValueAsync(member, context)));
+
         var culture = context.CultureInfo.CompareInfo;
+
         // Nil first, then numbers by value, then everything else by its text in the render's culture; a stable sort
         // keeps equal items in their order.
         return new ArrayValue(keyed
@@ -203,6 +245,7 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
     {
         var member = arguments.At(0).ToStringValue();
         var total = 0m;
+
         foreach (var item in input.Enumerate(context))
         {
             total += item switch
@@ -212,6 +255,7 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
                 _ => 0
             };
         }
+
         return NumberValue.Create(total);
     }
 
@@ -238,8 +282,10 @@ public sealed partial class LiquidTemplateEngine : ITemplateEngine
     private static TemplateDiagnostic Diagnostic(string error)
     {
         var position = PositionPattern().Match(error);
+
         // Fluid appends the source text after the position; the message ends at the position.
         var message = position.Success ? error[..(position.Index + position.Length)].Trim() : error.Trim();
+
         return position.Success
             ? new TemplateDiagnostic(message, int.Parse(position.Groups["line"].Value, CultureInfo.InvariantCulture),
                 int.Parse(position.Groups["column"].Value, CultureInfo.InvariantCulture))

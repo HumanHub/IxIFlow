@@ -22,6 +22,7 @@ internal static class MappingRules
     public static List<WorkflowStep> Checked(List<WorkflowStep> steps)
     {
         Validate(steps);
+
         return steps;
     }
 
@@ -35,13 +36,17 @@ internal static class MappingRules
                     (step.ResumeEventType == null || !step.ResumeEventType.IsInstanceOfType(payload)))
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                         $"Wait default payload has type {payload.GetType().Name}, expected {step.ResumeEventType?.Name ?? "an event type"}");
+
                 if (step.ActivityType != null)
                     CheckActivity(step.ActivityType, step.InputMappings, step.OutputMappings);
+
                 if (step.StepType is WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow)
                     CheckWorkflow(step);
+
                 if (step.ResumeEventType != null && step.ActivityType == null &&
                     step.StepType != WorkflowStepType.WorkflowInvocation)
                     CheckEvent(step);
+
                 if (step.StepMetadata.TryGetValue("CompensationActivities", out var value) &&
                     value is List<CompensationActivityInfo> compensations)
                     foreach (var compensation in compensations)
@@ -59,26 +64,35 @@ internal static class MappingRules
     {
         var properties = activity.GetProperties(BindingFlags.Public | BindingFlags.Instance);
         ActivityContract.Check(activity);
+
         var marked = activity.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
             .Any(ActivityContract.IsMarked);
+
         var mappedInputs = new HashSet<string>(StringComparer.Ordinal);
+
         foreach (var mapping in inputs.Where(item => item.Direction == PropertyMappingDirection.Input))
         {
             var property = Property(activity, mapping, "Activity");
             mappedInputs.Add(property.Name);
+
             if (marked && !ActivityContract.IsInput(property, marked))
                 throw Refused("Activity", activity, property, "is not an input: it has no [ActivityInput]");
+
             if (property.SetMethod is not { IsPublic: true })
                 throw Refused("Activity", activity, property, "is not an input: it has no public setter");
         }
+
         foreach (var mapping in outputs.Where(item => item.Direction == PropertyMappingDirection.Output))
         {
             var property = Property(activity, mapping, "Activity");
+
             if (marked && !ActivityContract.IsOutput(property, marked))
                 throw Refused("Activity", activity, property, "is not an output: it has no [ActivityOutput]");
+
             if (property.GetMethod is not { IsPublic: true })
                 throw Refused("Activity", activity, property, "is not an output: it has no public getter");
         }
+
         foreach (var property in properties)
             if (ActivityContract.IsInput(property, marked) && property.IsDefined(typeof(RequiredAttribute)) &&
                 property.GetCustomAttribute<DefaultValueAttribute>() == null &&
@@ -90,31 +104,44 @@ internal static class MappingRules
     {
         var type = step.InvokedDataType ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
             $"Child workflow step '{step.Name}' has no invoked data type");
+
         var contract = step.InvokedContract ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
             $"Child workflow step '{step.Name}' has no invoked contract");
+
         if (step.InvokedContractHash != contract.Hash)
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, $"Child workflow step '{step.Name}' has an invalid invoked contract hash");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                $"Child workflow step '{step.Name}' has an invalid invoked contract hash");
+
         if (step.StepType == WorkflowStepType.WorkflowInvocation && contract.RequiredScopes.Count != 0)
             throw WorkflowBuildError.Invalid(step, "Child invocation cannot provide required scopes");
+
         contract.ValidateType(type);
+
         foreach (var mapping in step.InputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Input))
         {
             var property = WorkflowProperty(type, mapping);
+
             if (property.SetMethod is not { IsPublic: true })
                 throw Refused("Child workflow", type, property, "is not an input: it has no public setter");
+
             if (!contract.Inputs.Any(member => member.Name == mapping.TargetProperty))
                 throw Refused("Child workflow", type, property, "is not an input: it is not in the workflow contract");
         }
+
         foreach (var mapping in step.OutputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Output))
         {
             var property = WorkflowProperty(type, mapping);
+
             if (property.GetMethod is not { IsPublic: true })
                 throw Refused("Child workflow", type, property, "is not an output: it has no public getter");
+
             if (!contract.Outputs.Any(member => member.Name == mapping.TargetProperty))
                 throw Refused("Child workflow", type, property, "is not an output: it is not in the workflow contract");
         }
+
         foreach (var member in contract.Inputs.Where(member => member.Required && !member.HasDefault))
-            if (!step.InputMappings.Any(mapping => mapping.Direction == PropertyMappingDirection.Input && mapping.TargetProperty == member.Name))
+            if (!step.InputMappings.Any(mapping =>
+                    mapping.Direction == PropertyMappingDirection.Input && mapping.TargetProperty == member.Name))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Child workflow property '{type.Name}.{member.Name}' is a required input and is not mapped");
     }
@@ -125,6 +152,7 @@ internal static class MappingRules
         foreach (var mapping in inputs.Where(item => item.Direction == PropertyMappingDirection.Input))
             if (Property(data, mapping, owner).SetMethod is not { IsPublic: true })
                 throw Refused(owner, data, Property(data, mapping, owner), "is not an input: it has no public setter");
+
         foreach (var mapping in outputs.Where(item => item.Direction == PropertyMappingDirection.Output))
             if (Property(data, mapping, owner).GetMethod is not { IsPublic: true })
                 throw Refused(owner, data, Property(data, mapping, owner), "is not an output: it has no public getter");
@@ -134,24 +162,31 @@ internal static class MappingRules
     {
         var type = step.ResumeEventType!;
         CheckData(type, step.InputMappings, step.OutputMappings, "Event");
+
         if (step.DefaultPayload == null && step.InputMappings.Count == 0)
             return;
+
         if (step.DefaultPayload == null && (type.IsAbstract || type.GetConstructor(Type.EmptyTypes) == null))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Event '{type.Name}' needs a public parameterless constructor to create a suggested payload");
+
         foreach (var mapping in step.InputMappings)
         {
             var property = Property(type, mapping, "Event");
+
             if (property.GetIndexParameters().Length != 0)
                 throw Refused("Event", type, property, "is an indexer and cannot be mapped");
+
             if (mapping.Expression is { } expression && !property.PropertyType.IsAssignableFrom(expression.ReturnType))
                 throw Refused("Event", type, property, $"takes {property.PropertyType.Name}, not {expression.ReturnType.Name}");
         }
+
         foreach (var property in type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
                      .Where(property => property.IsDefined(typeof(RequiredAttribute))))
         {
             if (property.GetIndexParameters().Length != 0)
                 throw Refused("Event", type, property, "is an indexer and cannot supply a required input");
+
             if (!step.InputMappings.Any(mapping => mapping.TargetProperty == property.Name) &&
                 (step.DefaultPayload == null || property.GetMethod == null || property.GetValue(step.DefaultPayload) is null or ""))
                 throw Refused("Event", type, property, "is a required input and is not mapped or supplied by the default payload");

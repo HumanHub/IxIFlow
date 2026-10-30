@@ -11,39 +11,49 @@ public sealed class WorkflowSchemaPackageTests
     {
         var temporary = Path.Combine(Path.GetTempPath(), "IxIFlow.SchemaPackage", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temporary);
+
         try
         {
             var packed = await PackageTestFeed.GetAsync();
             var feed = packed.Feed;
             var config = packed.Config;
             var version = packed.Version;
+
             using (var package = ZipFile.OpenRead(Path.Combine(feed, $"IxIFlow.{version}.nupkg")))
             {
                 var schema = Assert.Single(package.Entries, entry => entry.FullName == "schemas/workflow.schema.json");
                 using var bytes = new MemoryStream();
-                await using (var content = schema.Open()) await content.CopyToAsync(bytes);
+
+                await using (var content = schema.Open())
+                    await content.CopyToAsync(bytes);
+
                 Assert.Equal(await File.ReadAllBytesAsync(WorkflowSchemaFiles.SchemaPath), bytes.ToArray());
             }
 
             // A consumer that only references the packed package resolves the property to the restored copy.
             var consumer = Path.Combine(temporary, "consumer");
             Directory.CreateDirectory(consumer);
+
             await File.WriteAllTextAsync(Path.Combine(consumer, "Consumer.csproj"), $$"""
-                <Project Sdk="Microsoft.NET.Sdk">
-                  <PropertyGroup>
-                    <TargetFramework>net10.0</TargetFramework>
-                  </PropertyGroup>
-                  <ItemGroup>
-                    <PackageReference Include="IxIFlow" Version="{{version}}" />
-                  </ItemGroup>
-                </Project>
-                """);
+                                                                                      <Project Sdk="Microsoft.NET.Sdk">
+                                                                                        <PropertyGroup>
+                                                                                          <TargetFramework>net10.0</TargetFramework>
+                                                                                        </PropertyGroup>
+                                                                                        <ItemGroup>
+                                                                                          <PackageReference Include="IxIFlow" Version="{{version}}" />
+                                                                                        </ItemGroup>
+                                                                                      </Project>
+                                                                                      """);
+
             await Dotnet(consumer, "restore", "--configfile", config, "-p:NuGetAudit=false");
             var property = (await Dotnet(consumer, "msbuild", "-getProperty:IxIFlowWorkflowSchema")).Trim();
             Assert.Equal(Path.Combine(temporary, "packages", "ixiflow", version, "schemas", "workflow.schema.json"), property);
             Assert.Equal(await File.ReadAllBytesAsync(WorkflowSchemaFiles.SchemaPath), await File.ReadAllBytesAsync(property));
         }
-        finally { Directory.Delete(temporary, recursive: true); }
+        finally
+        {
+            Directory.Delete(temporary, recursive: true);
+        }
 
         async Task<string> Dotnet(string workingDirectory, params string[] arguments)
         {
@@ -52,17 +62,31 @@ public sealed class WorkflowSchemaPackageTests
                 WorkingDirectory = workingDirectory, RedirectStandardOutput = true, RedirectStandardError = true,
                 UseShellExecute = false, CreateNoWindow = true
             };
-            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+
+            foreach (var argument in arguments)
+                start.ArgumentList.Add(argument);
+
             start.Environment["NUGET_PACKAGES"] = Path.Combine(temporary, "packages");
             start.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
             using var process = Process.Start(start)!;
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
             using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
-            try { await process.WaitForExitAsync(timeout.Token); }
-            catch (OperationCanceledException) { process.Kill(entireProcessTree: true); throw; }
+
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                process.Kill(entireProcessTree: true);
+
+                throw;
+            }
+
             var output = await stdout + await stderr;
             Assert.True(process.ExitCode == 0, $"dotnet {string.Join(' ', arguments)} failed:\n{output}");
+
             return output;
         }
     }

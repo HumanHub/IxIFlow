@@ -37,33 +37,42 @@ public sealed class PublicationDraftRound3Scenarios
         await using var holder = database.NewConnection();
         await holder.OpenAsync();
         await using var transaction = await holder.BeginTransactionAsync();
+
         await holder.ExecuteAsync(profile == StoreProfiles.DistributedSqlServer
             ? "EXEC sys.sp_getapplock @Resource=N'IxIFlow.CatalogContent', @LockMode=N'Exclusive', @LockOwner=N'Transaction', @LockTimeout=5000"
             : "SELECT pg_advisory_xact_lock(hashtext('IxIFlow.CatalogContent'))", transaction: transaction);
+
         var mutation = publication
             ? store.PublishDefinitionAsync(draft.Id, Version(draft.Name) with
-                { ArtifactDigest = digest, PublishedDraft = draft.Id, ManifestJson = "{}" }, store)
+            {
+                ArtifactDigest = digest, PublishedDraft = draft.Id, ManifestJson = "{}"
+            }, store)
             : store.SetWorkflowVersionStateAsync(registered.Name, 1, WorkflowVersionState.Deprecated, new(registered.LifecycleRevision));
+
         try
         {
             // Observe the real lock wait, so neither scheduling nor a preparation read can
             // make the starts race ahead of the queued exclusive mutation.
             await using var probe = database.NewConnection();
             var timeout = Stopwatch.StartNew();
+
             while (await probe.ExecuteScalarAsync<int>(profile == StoreProfiles.DistributedSqlServer
-                ? "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id=DB_ID() AND resource_type='APPLICATION' AND resource_description LIKE '%IxIFlow.CatalogContent%' AND request_status='WAIT'"
-                : "SELECT COUNT(*) FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND locktype='advisory' AND NOT granted AND objid=(hashtext('IxIFlow.CatalogContent')::bigint & 4294967295)") == 0)
+                       ? "SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_database_id=DB_ID() AND resource_type='APPLICATION' AND resource_description LIKE '%IxIFlow.CatalogContent%' AND request_status='WAIT'"
+                       : "SELECT COUNT(*) FROM pg_locks WHERE database=(SELECT oid FROM pg_database WHERE datname=current_database()) AND locktype='advisory' AND NOT granted AND objid=(hashtext('IxIFlow.CatalogContent')::bigint & 4294967295)") ==
+                   0)
             {
                 Assert.False(mutation.IsCompleted);
                 Assert.True(timeout.Elapsed < TimeSpan.FromSeconds(5), "Executable mutation did not queue for content");
                 await Task.Delay(20);
             }
+
             var starts = await Task.WhenAll(
-                store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(root, rootLease.Epoch, 0)),
-                store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, parentLease.Epoch, parent.Revision,
-                    childStarts: [new(child.InstanceId, JsonSerializer.Serialize(child), "child")],
-                    openedWaits: [new("child", WaitKind.Child, "child", ChildCompleted.EventType, null)])))
+                    store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(root, rootLease.Epoch, 0)),
+                    store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(parent, parentLease.Epoch, parent.Revision,
+                        childStarts: [new(child.InstanceId, JsonSerializer.Serialize(child), "child")],
+                        openedWaits: [new("child", WaitKind.Child, "child", ChildCompleted.EventType, null)])))
                 .WaitAsync(TimeSpan.FromSeconds(5));
+
             Assert.All(starts, result => Assert.Equal(WorkflowCommitStatus.Applied, result.Status));
             Assert.False(mutation.IsCompleted);
         }
@@ -72,6 +81,7 @@ public sealed class PublicationDraftRound3Scenarios
             await transaction.RollbackAsync();
             await mutation.WaitAsync(TimeSpan.FromSeconds(10));
         }
+
         Assert.NotNull(await store.GetWorkflowInstanceAsync(root.InstanceId));
         Assert.NotNull(await store.GetWorkflowInstanceAsync(child.InstanceId));
     }
@@ -82,6 +92,7 @@ public sealed class PublicationDraftRound3Scenarios
     {
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
+
         foreach (var name in new[] { "D\ud800", "D\udc00" })
         {
             foreach (var kind in new[] { "workflow", "activity", "template" })
@@ -89,11 +100,17 @@ public sealed class PublicationDraftRound3Scenarios
                 await Assert.ThrowsAnyAsync<ArgumentException>(() => store.SaveDefinitionAsync(new(name, 1, kind, "source"), null));
                 await Assert.ThrowsAnyAsync<ArgumentException>(() => store.GetDefinitionAsync(kind, name, 1));
             }
+
             await Assert.ThrowsAnyAsync<ArgumentException>(() => store.RegisterWorkflowVersionAsync(Version(name)));
             await Assert.ThrowsAnyAsync<ArgumentException>(() => store.GetWorkflowVersionAsync(name, 1));
             await Assert.ThrowsAnyAsync<ArgumentException>(() => store.GetWorkflowVersionsAsync(name));
-            await Assert.ThrowsAnyAsync<ArgumentException>(() => store.GetDefinitionsAsync(new(CatalogScope.Unrestricted, NamePrefix: name, Limit: 1)));
-            await Assert.ThrowsAnyAsync<ArgumentException>(() => store.GetPublicationsAsync(new(CatalogScope.Unrestricted, "workflow", name, 1, Limit: 1)));
+
+            await Assert.ThrowsAnyAsync<ArgumentException>(() =>
+                store.GetDefinitionsAsync(new(CatalogScope.Unrestricted, NamePrefix: name, Limit: 1)));
+
+            await Assert.ThrowsAnyAsync<ArgumentException>(() =>
+                store.GetPublicationsAsync(new(CatalogScope.Unrestricted, "workflow", name, 1, Limit: 1)));
+
             for (var kind = 0; kind < 4; kind++)
             {
                 var selected = kind;
@@ -101,27 +118,34 @@ public sealed class PublicationDraftRound3Scenarios
                 Assert.ThrowsAny<ArgumentException>(() => Scope(selected, new(Prefixes: [name])));
             }
         }
+
         // Literal replacement characters remain exact identities, including in scope hashes
         // and cursors. Check their version tie and their distinction from a supplementary scalar.
         string[] valid = ["D\ufffd", "D\ufffdA", "D\U00010000"];
+
         foreach (var name in valid.Reverse())
-            foreach (var version in new[] { 2, 1 })
-                await store.SaveDefinitionAsync(new(name, version, "workflow", "source"), null);
+        foreach (var version in new[] { 2, 1 })
+            await store.SaveDefinitionAsync(new(name, version, "workflow", "source"), null);
+
         foreach (var scope in new[] { CatalogScope.Unrestricted, Scope(0, new(Prefixes: ["D"])) })
         {
             string? after = null;
+
             foreach (var name in valid)
-                foreach (var version in new[] { 1, 2 })
-                {
-                    var page = await store.GetDefinitionsAsync(new(scope, NamePrefix: "D", After: after, Limit: 1));
-                    var row = Assert.Single(page.Items);
-                    Assert.Equal((name, version), (row.Name, row.Version));
-                    after = page.NextCursor;
-                }
+            foreach (var version in new[] { 1, 2 })
+            {
+                var page = await store.GetDefinitionsAsync(new(scope, NamePrefix: "D", After: after, Limit: 1));
+                var row = Assert.Single(page.Items);
+                Assert.Equal((name, version), (row.Name, row.Version));
+                after = page.NextCursor;
+            }
+
             Assert.Null(after);
         }
+
         foreach (var kind in Enumerable.Range(0, 4))
             Assert.NotEqual(Scope(kind, new(Names: ["D\ufffd"])).Hash, Scope(kind, new(Names: ["D\U00010000"])).Hash);
+
         var exact = await store.GetDefinitionsAsync(new(Scope(0, new(Names: ["D\ufffd"])), NamePrefix: "D\ufffd", Limit: 1));
         Assert.Equal("D\ufffd", Assert.Single(exact.Items).Name);
         await store.RegisterWorkflowVersionAsync(Version("D\ufffd"));
@@ -135,28 +159,52 @@ public sealed class PublicationDraftRound3Scenarios
 
     [Theory]
     [MemberData(nameof(CorruptInventories))]
-    public async Task PublicationProjectionAndInvocationInventoryCorruptionAlwaysRefusesWithArtifactMismatch(string profile, string target, string inventory)
+    public async Task PublicationProjectionAndInvocationInventoryCorruptionAlwaysRefusesWithArtifactMismatch(string profile, string target,
+        string inventory)
     {
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
         WorkflowVersionInvocation[] invocations = [new("Child", 1, "invoke", "source")];
-        var row = Version("Corrupt") with { Invocations = invocations, Dependencies = [new("Child", 1)],
-            ManifestJson = JsonSerializer.Serialize(new { Invocations = invocations }) };
+
+        var row = Version("Corrupt") with
+        {
+            Invocations = invocations, Dependencies = [new("Child", 1)],
+            ManifestJson = JsonSerializer.Serialize(new { Invocations = invocations })
+        };
+
         await store.RegisterWorkflowVersionAsync(row);
         row = (await store.GetWorkflowVersionAsync(row.Name, 1))!;
         var json = JsonSerializer.SerializeToNode(row)!;
         json["StateChangedBy"] = "tampered";
-        if (target != "manifest") json["Invocations"] = JsonNode.Parse(inventory);
-        if (target != "row") json["ManifestJson"] = "{\"Invocations\":" + inventory + "}";
+
+        if (target != "manifest")
+            json["Invocations"] = JsonNode.Parse(inventory);
+
+        if (target != "row")
+            json["ManifestJson"] = "{\"Invocations\":" + inventory + "}";
+
         await using var connection = database.NewConnection();
+
         await connection.ExecuteAsync(database.Profile == StoreProfiles.DistributedSqlServer
-            ? "UPDATE dbo.IxIFlowWorkflowVersions SET MetadataJson=@Json WHERE Name=@Name AND Version=1"
-            : "UPDATE ixiflow_workflow_versions SET metadata_json=@Json WHERE name=@Name AND version=1",
+                ? "UPDATE dbo.IxIFlowWorkflowVersions SET MetadataJson=@Json WHERE Name=@Name AND Version=1"
+                : "UPDATE ixiflow_workflow_versions SET metadata_json=@Json WHERE name=@Name AND version=1",
             new { Json = json.ToJsonString(), row.Name });
-        foreach (var read in new Func<Task>[] {
-            async () => { await store.GetWorkflowVersionAsync(row.Name, 1); },
-            async () => { await store.GetWorkflowVersionsAsync(); },
-            async () => { await store.GetWorkflowVersionChangesAsync(0); } })
+
+        foreach (var read in new Func<Task>[]
+                 {
+                     async () =>
+                     {
+                         await store.GetWorkflowVersionAsync(row.Name, 1);
+                     },
+                     async () =>
+                     {
+                         await store.GetWorkflowVersionsAsync();
+                     },
+                     async () =>
+                     {
+                         await store.GetWorkflowVersionChangesAsync(0);
+                     }
+                 })
         {
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(read);
             Assert.Equal(WorkflowErrorKind.ArtifactMismatch, error.Kind);
@@ -170,7 +218,11 @@ public sealed class PublicationDraftRound3Scenarios
     private static WorkflowVersion Version(string name)
     {
         var contract = WorkflowContract.OfType(typeof(object));
-        return new(name, 1, "hash", contract.ToJson(), contract.Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), []);
+
+        return new(name, 1, "hash", contract.ToJson(), contract.Hash,
+            Descriptor: new WorkflowDescriptor(name, "", [], null, null,
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), []);
     }
 
     private static WorkflowInstance Instance(string id) => new()

@@ -33,7 +33,9 @@ internal sealed class ConformanceCluster : IAsyncDisposable
 
     public static async Task<ConformanceCluster> CreateAsync(string profile,
         Action<IServiceCollection>? configure = null, TimeProvider? time = null) =>
-        new(await StoreProfiles.CreateAsync(profile, time), configure ?? (_ => { }), time);
+        new(await StoreProfiles.CreateAsync(profile, time), configure ?? (_ =>
+        {
+        }), time);
 
     /// <summary>
     /// Starts another host on the shared store and returns its engine. <paramref name="wrap"/> puts
@@ -44,30 +46,38 @@ internal sealed class ConformanceCluster : IAsyncDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
+
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(provider =>
         {
             var repository = _store.NewRepository(provider.GetRequiredService<TimeProvider>());
             _repository ??= repository;
+
             return wrap?.Invoke(repository) ?? repository;
         }));
+
         services.Replace(ServiceDescriptor.Singleton(Registry));
         services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
         _configure(services);
         _store.ConfigureHost(services);
+
         if (_time != null)
             services.AddSingleton(_time);
+
         var host = services.BuildServiceProvider();
+
         try
         {
             host.GetRequiredService<IWorkflowStateRepository>();
             var engine = host.GetRequiredService<IWorkflowClient>();
             _store.StartHostLinksAsync(host).GetAwaiter().GetResult();
             _hosts.Add(host);
+
             return engine;
         }
         catch
         {
             host.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
             throw;
         }
     }
@@ -76,27 +86,29 @@ internal sealed class ConformanceCluster : IAsyncDisposable
     public async Task RecoverOnceAsync()
     {
         var host = _hosts[0];
+
         using var scanner = new WorkflowRecoveryService(host.GetRequiredService<IServiceScopeFactory>(),
             host.GetRequiredService<IWorkflowStateRepository>(), NullLogger<WorkflowRecoveryService>.Instance);
+
         await scanner.RecoverOnceAsync(CancellationToken.None);
     }
 
     /// <summary>SQLite uses its sole owner's repository; other profiles can open another.</summary>
     public IWorkflowStateRepository NewRepository() => Profile == StoreProfiles.LocalSqlite
-        ? _repository ??= _store.NewRepository(_time) : _store.NewRepository(_time);
+        ? _repository ??= _store.NewRepository(_time)
+        : _store.NewRepository(_time);
 
     internal Task ExpireExecutionLeaseAsync(string instanceId) => _store.ExpireExecutionLeaseAsync(instanceId);
 
     /// <summary>Reads an instance directly from the shared store.</summary>
     /// <summary>
     /// Waits until the instance is saved with <paramref name="status"/>: a child runs as an instance of
-    /// its own, when a slot takes it (D-17).
+    /// its own, when a slot takes it.
     /// </summary>
     public async Task UntilAsync(string instanceId, WorkflowStatus status)
     {
-        using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        while ((await GetInstanceAsync(instanceId))?.Status != status)
-            await Task.Delay(20, patience.Token);
+        await IxIFlow.Tests.Infrastructure.TestEventually.UntilAsync(instanceId, status.ToString(),
+            () => GetInstanceAsync(instanceId), instance => instance?.Status == status, TimeSpan.FromSeconds(30));
     }
 
     public Task<WorkflowInstance?> GetInstanceAsync(string instanceId) =>
@@ -110,6 +122,7 @@ internal sealed class ConformanceCluster : IAsyncDisposable
             await host.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
             await host.DisposeAsync();
         }
+
         await _store.DisposeAsync();
     }
 }

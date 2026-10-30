@@ -13,6 +13,7 @@ public sealed class SqliteTestDatabase<TTests> : IAsyncLifetime
     private static string Create()
     {
         Directory.CreateDirectory(Folder);
+
         return new SqliteConnectionStringBuilder
         {
             DataSource = Path.Combine(Folder, "workflows.db"), DefaultTimeout = 1

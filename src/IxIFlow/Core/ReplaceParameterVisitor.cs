@@ -17,6 +17,7 @@ internal class ReplaceParameterVisitor : ExpressionVisitor
         ParameterExpression newParameter)
     {
         var visitor = new ReplaceParameterVisitor(oldParameter, newParameter);
+
         return visitor.Visit(expression);
     }
 

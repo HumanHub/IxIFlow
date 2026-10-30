@@ -15,9 +15,11 @@ public sealed class ScopeDebugTests
         await using var services = Services(probe);
         var client = services.GetRequiredService<IWorkflowClient>();
         var operations = services.GetRequiredService<IWorkflowOperations>();
+
         var definition = ScopeActivityTests.Start("ScopeBreakpoint").WaitFor<ScopeActivityTests.Signal>("start")
             .Scope<ScopeActivityTests.TestScope>(s => s.Threading(affine ? ScopeThreading.ThreadAffine : ScopeThreading.AnyThread),
                 b => b.Step<ScopeActivityTests.Read>().WithId("body")).WithId("container").Build();
+
         var idle = await client.RunAsync(definition, new ScopeActivityTests.Data());
         await operations.SetBreakpointsAsync(idle.InstanceId, [new("inside", "body")], "set");
         var paused = await client.ResumeAsync(idle.InstanceId, "start", new ScopeActivityTests.Signal());
@@ -42,17 +44,25 @@ public sealed class ScopeDebugTests
         await using var services = Services(probe);
         var client = services.GetRequiredService<IWorkflowClient>();
         var operations = services.GetRequiredService<IWorkflowOperations>();
+
         var definition = ScopeActivityTests.Start("ScopeStepping").WaitFor<ScopeActivityTests.Signal>("start")
             .Scope<ScopeActivityTests.TestScope>(s => s.Threading(ScopeThreading.ThreadAffine),
                 b => b.Step<ScopeActivityTests.Read>().WithId("body")).WithId("container")
             .Step<ScopeActivityTests.Copy>().WithId("after").Build();
+
         var idle = await client.RunAsync(definition, new ScopeActivityTests.Data());
         await operations.SetBreakpointsAsync(idle.InstanceId, [new("container", "container")], "set");
-        Assert.Equal(WorkflowExecutionStatus.Paused, (await client.ResumeAsync(idle.InstanceId, "start", new ScopeActivityTests.Signal())).Status);
+
+        Assert.Equal(WorkflowExecutionStatus.Paused,
+            (await client.ResumeAsync(idle.InstanceId, "start", new ScopeActivityTests.Signal())).Status);
+
         Assert.Empty(probe.Invocations);
         await operations.SetBreakpointsAsync(idle.InstanceId, [], "clear");
         var thread = Assert.Single((await operations.InspectAsync(idle.InstanceId))!.Threads);
-        Assert.Equal(WorkflowExecutionStatus.Paused, (await operations.StepAsync(idle.InstanceId, thread.ContinuationId, kind, "step")).Status);
+
+        Assert.Equal(WorkflowExecutionStatus.Paused,
+            (await operations.StepAsync(idle.InstanceId, thread.ContinuationId, kind, "step")).Status);
+
         Assert.Equal(expected, Assert.Single((await operations.InspectAsync(idle.InstanceId))!.Threads).AuthorStepId);
         Assert.Equal(kind == DebugStepKind.Into ? "close:Suspended" : "close:Completed", probe.Events.Last());
     }
@@ -64,24 +74,42 @@ public sealed class ScopeDebugTests
         await using var services = Services(probe);
         var client = services.GetRequiredService<IWorkflowClient>();
         var operations = services.GetRequiredService<IWorkflowOperations>();
+
         var definition = ScopeActivityTests.Start("ScopeHeldParent").WaitFor<ScopeActivityTests.Signal>("start")
             .Scope<ScopeActivityTests.TestScope>(s => s.Threading(ScopeThreading.ThreadAffine), b => b.Parallel(p => p
                 .Do(x => x.Step<ScopeActivityTests.Read>().WithId("selected"))
                 .Do(x => x.WaitFor<ScopeActivityTests.Signal>("held")))).Build();
+
         var idle = await client.RunAsync(definition, new ScopeActivityTests.Data());
         await operations.SetBreakpointsAsync(idle.InstanceId, [new("selected", "selected")], "set");
-        Assert.Equal(WorkflowExecutionStatus.Paused, (await client.ResumeAsync(idle.InstanceId, "start", new ScopeActivityTests.Signal())).Status);
-        var selected = Assert.Single((await operations.InspectAsync(idle.InstanceId))!.Threads, thread => thread.AuthorStepId == "selected");
+
+        Assert.Equal(WorkflowExecutionStatus.Paused,
+            (await client.ResumeAsync(idle.InstanceId, "start", new ScopeActivityTests.Signal())).Status);
+
+        var selected = Assert.Single((await operations.InspectAsync(idle.InstanceId))!.Threads,
+            thread => thread.AuthorStepId == "selected");
+
         await operations.SetBreakpointsAsync(idle.InstanceId, [], "clear");
-        Assert.Equal(WorkflowExecutionStatus.Paused, (await operations.StepAsync(idle.InstanceId, selected.ContinuationId, DebugStepKind.Over, "step")).Status);
+
+        Assert.Equal(WorkflowExecutionStatus.Paused,
+            (await operations.StepAsync(idle.InstanceId, selected.ContinuationId, DebugStepKind.Over, "step")).Status);
+
         Assert.Contains("open:True:1", probe.Events);
         Assert.Contains("read:opened", probe.Events);
     }
 
     private static ServiceProvider Services(ScopeActivityTests.Probe probe)
     {
-        var services = new ServiceCollection(); services.AddSingleton(probe);
-        services.AddIxIFlow(options => { options.Debugging = true; options.MaxActivitiesPerRun = 1; options.VerifyCheckpointParts = true; });
+        var services = new ServiceCollection();
+        services.AddSingleton(probe);
+
+        services.AddIxIFlow(options =>
+        {
+            options.Debugging = true;
+            options.MaxActivitiesPerRun = 1;
+            options.VerifyCheckpointParts = true;
+        });
+
         return services.BuildServiceProvider();
     }
 }

@@ -10,7 +10,7 @@ namespace IxIFlow.Tests.TemplateTests;
 /// <summary>
 /// <c>RenderTemplate&lt;TModel&gt;</c> renders a template against a typed model with no effects, so a render a crash
 /// interrupted runs again on recovery; sending is a separate activity whose message ID, its idempotency key, is the
-/// same for every attempt of the step (spec H-02).
+/// same for every attempt of the step.
 /// </summary>
 [Trait("Feature", "templates")]
 [Trait("Spec", "H-02")]
@@ -21,6 +21,7 @@ public sealed class TemplateActivityTests
     {
         var sender = new RecordingSender();
         using var services = Services(sender: sender);
+
         await services.PublishAsync<Order>("order-confirmation", 1, "liquid", TemplateFormat.Text, Base(
             "Order {{ Number }} for {{ Customer.Name }}: {% for line in Lines %}{{ line.Quantity }} {{ line.Sku }}" +
             "{% unless forloop.last %}, {% endunless %}{% endfor %}"));
@@ -46,19 +47,23 @@ public sealed class TemplateActivityTests
         var engine = new CountingEngine();
         using var services = Services(store, engine: engine);
         await services.PublishAsync<Order>("note", 1, "liquid", TemplateFormat.Text, Base("Note {{ Number }}"));
+
         var definition = Workflow.Create<OrderData>("RenderRecovery")
             .Step<RenderTemplate<Order>>(step => step
                 .Input(activity => activity.Template).From(_ => new TemplateReference("note", 1))
                 .Input(activity => activity.Model).From(ctx => ctx.WorkflowData.Order)
                 .Output(activity => activity.Rendered).To(ctx => ctx.WorkflowData.Body))
             .Build();
+
         var instanceId = Guid.NewGuid().ToString("N");
         var client = services.GetRequiredService<IWorkflowClient>();
 
         // The host dies as it saves the render's end.
         store.FailCommit = _ => engine.Renders == 1;
+
         await Assert.ThrowsAnyAsync<Exception>(() =>
             client.RunAsync(definition, new OrderData(), new WorkflowOptions { InstanceId = instanceId }));
+
         store.FailCommit = _ => false;
         var result = await client.RecoverAsync(instanceId);
 
@@ -74,15 +79,19 @@ public sealed class TemplateActivityTests
         var store = new FaultInjectingRepository();
         var sender = new RecordingSender();
         using var services = Services(store, sender);
+
         await services.PublishAsync<Order>("order-confirmation", 1, "liquid", TemplateFormat.Text,
             Base("Order {{ Number }}"));
+
         var instanceId = Guid.NewGuid().ToString("N");
         var client = services.GetRequiredService<IWorkflowClient>();
 
         // The host dies after the message went out, as it saves the send's end.
         store.FailCommit = _ => sender.Calls.Count == 1;
+
         await Assert.ThrowsAnyAsync<Exception>(() => client.RunAsync(RenderAndSend("order-confirmation"),
             new OrderData(), new WorkflowOptions { InstanceId = instanceId }));
+
         store.FailCommit = _ => false;
         var result = await client.RecoverAsync(instanceId);
 
@@ -98,8 +107,10 @@ public sealed class TemplateActivityTests
     {
         var sender = new RecordingSender { FailAfterDelivery = 1 };
         using var services = Services(sender: sender);
+
         await services.PublishAsync<Order>("order-confirmation", 1, "liquid", TemplateFormat.Text,
             Base("Order {{ Number }}"));
+
         var definition = Workflow.Create<OrderData>("RetriedSend")
             .Step<RenderTemplate<Order>>(step => step
                 .Input(activity => activity.Template).From(_ => new TemplateReference("order-confirmation", 1))
@@ -127,18 +138,20 @@ public sealed class TemplateActivityTests
     {
         var sender = new RecordingSender();
         using var services = Services(sender: sender);
+
         await services.PublishAsync<Order>("order-confirmation", 1, "liquid", TemplateFormat.Html,
             Base("<p>Order {{ Number }}</p>"));
+
         var definition = Workflow.Create<OrderData>("SendPerRecipient")
             .Step<RenderTemplate<Order>>(step => step
                 .Input(activity => activity.Template).From(_ => new TemplateReference("order-confirmation", 1))
                 .Input(activity => activity.Model).From(ctx => ctx.WorkflowData.Order)
                 .Output(activity => activity.Rendered).To(ctx => ctx.WorkflowData.Body))
             .ForEach(ctx => ctx.WorkflowData.Recipients, (body, recipient) => body
-                .Step<SendTemplateMessage>(step => step
-                    .Input(activity => activity.Channel).From(_ => "email")
-                    .Input(activity => activity.Recipients).From(ctx => new List<string> { ctx.Item(recipient) })
-                    .Input(activity => activity.Body).From(ctx => ctx.WorkflowData.Body!)),
+                    .Step<SendTemplateMessage>(step => step
+                        .Input(activity => activity.Channel).From(_ => "email")
+                        .Input(activity => activity.Recipients).From(ctx => new List<string> { ctx.Item(recipient) })
+                        .Input(activity => activity.Body).From(ctx => ctx.WorkflowData.Body!)),
                 setup =>
                 {
                     // In parallel, each item runs as a branch of its own.
@@ -152,8 +165,10 @@ public sealed class TemplateActivityTests
 
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(2, sender.Delivered.Count);
+
         Assert.Equal(["ana@example.com", "dan@example.com"],
             sender.Calls.SelectMany(call => call.Recipients).Order());
+
         Assert.All(sender.Calls, call => Assert.Equal("<p>Order A-17</p>", call.Body.Content));
     }
 

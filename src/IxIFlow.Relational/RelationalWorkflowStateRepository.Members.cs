@@ -13,6 +13,12 @@ public abstract partial class RelationalWorkflowStateRepository
     private sealed class MemberRow
     {
         public Guid MemberId { get; set; }
+
+        public object? MemberIdValue
+        {
+            set => MemberId = ReadGuid(value);
+        }
+
         public string Kind { get; set; } = "";
         public string Name { get; set; } = "";
         public string? Endpoint { get; set; }
@@ -26,6 +32,12 @@ public abstract partial class RelationalWorkflowStateRepository
     private sealed class CapabilityRow
     {
         public Guid MemberId { get; set; }
+
+        public object? MemberIdValue
+        {
+            set => MemberId = ReadGuid(value);
+        }
+
         public string Key { get; set; } = "";
         public string Value { get; set; } = "";
     }
@@ -33,31 +45,52 @@ public abstract partial class RelationalWorkflowStateRepository
     private sealed class HostPackageRow
     {
         public Guid MemberId { get; set; }
+
+        public object? MemberIdValue
+        {
+            set => MemberId = ReadGuid(value);
+        }
+
         public string Id { get; set; } = "";
         public string Version { get; set; } = "";
         public string Fingerprint { get; set; } = "";
     }
 
-    public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null)
+    public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null,
+        CancellationToken cancellationToken = default)
     {
-        if (id != null) id = WorkflowPackageRules.NormalizeId(id);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (id != null)
+            id = WorkflowPackageRules.NormalizeId(id);
+
         return RegistryAsync<IReadOnlyList<InstalledActivityPackage>>(async (connection, transaction, now) =>
         {
             var packages = await connection.QueryAsync<InstalledPackageRow>(new CommandDefinition(
-                RequiredSql(Statement.InstalledPackages), new { Id = id }, transaction));
+                RequiredSql(Statement.InstalledPackages), new { Id = id }, transaction, cancellationToken: cancellationToken));
+
             var marks = await connection.QueryAsync<HostPackageRow>(new CommandDefinition(
-                RequiredSql(Statement.HostPackages), transaction: transaction));
-            var live = (await ReadLiveMemberRowsAsync(connection, transaction, now, CancellationToken.None))
+                RequiredSql(Statement.HostPackages), transaction: transaction, cancellationToken: cancellationToken));
+
+            var live = (await ReadLiveMemberRowsAsync(connection, transaction, now, cancellationToken))
                 .Select(member => member.MemberId).ToHashSet();
+
             var hosts = marks.Where(mark => live.Contains(mark.MemberId))
                 .ToLookup(mark => (mark.Id, mark.Version, mark.Fingerprint), mark => mark.MemberId);
+
             var content = new List<InstalledActivityPackage>();
-            foreach (var row in packages) content.Add(await ReadInstalledPackageAsync(connection, transaction, row));
+
+            foreach (var row in packages)
+                content.Add(await ReadInstalledPackageAsync(connection, transaction, row, cancellationToken: cancellationToken));
+
             return content.OrderBy(package => package.Id, StringComparer.Ordinal)
                 .ThenBy(package => package.Version, StringComparer.Ordinal).ThenBy(package => package.Fingerprint, StringComparer.Ordinal)
-                .Select(package => package with { Hosts = Array.AsReadOnly(
-                    hosts[(package.Id, package.Version, package.Fingerprint)].Order().ToArray()) }).ToArray();
-        }, CancellationToken.None);
+                .Select(package => package with
+                {
+                    Hosts = Array.AsReadOnly(
+                        hosts[(package.Id, package.Version, package.Fingerprint)].Order().ToArray())
+                }).ToArray();
+        }, cancellationToken);
     }
 
     // All registry operations use the same database lock, so a read cannot combine a heartbeat
@@ -66,109 +99,156 @@ public abstract partial class RelationalWorkflowStateRepository
         CancellationToken cancellationToken, Action? committed = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        await EnsureSchemaAsync();
+        await EnsureSchemaAsync(cancellationToken: cancellationToken);
+
         return await ExecuteOperationAsync(Operation.Registry, async () =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await using var connection = await OpenConnectionAsync();
-            await using var transaction = await BeginTransactionAsync(connection, Operation.Registry);
+            await using var connection = await OpenConnectionAsync(cancellationToken: cancellationToken);
+            await using var transaction = await BeginTransactionAsync(connection, Operation.Registry, cancellationToken: cancellationToken);
+
             if (Sql(Statement.RegistryLock) is { } sql)
                 await connection.ExecuteAsync(new CommandDefinition(sql, transaction: transaction,
                     cancellationToken: cancellationToken));
-            var now = await OutboxNowAsync(connection, transaction);
+
+            var now = await OutboxNowAsync(connection, transaction, cancellationToken: cancellationToken);
+
             await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.PruneMembers),
                 WithTimes(new { }, ("PruneBefore", now - MemberRegistry.PruneAfter)), transaction,
                 cancellationToken: cancellationToken));
+
             var result = await action(connection, transaction, now);
             cancellationToken.ThrowIfCancellationRequested();
-            await CompleteAsync(transaction);
+            await CompleteAsync(transaction, cancellationToken: cancellationToken);
             committed?.Invoke();
+
             return result;
-        });
+        }, cancellationToken: cancellationToken);
     }
 
     public async Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         member = MemberRegistry.Snapshot(member);
+
         if (SingleHostRegistry && member.Kind == MemberKind.Coordinator)
             throw new InvalidOperationException("SQLite accepts one host and no coordinator.");
+
         await RegistryAsync(async (connection, transaction, now) =>
         {
             if (SingleHostRegistry && _singleHostMember is { } owner && owner != member.Id)
                 throw new InvalidOperationException("SQLite accepts one host and no coordinator.");
+
             await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.RegisterMember),
-                WithTimes(new { MemberId = member.Id, Kind = member.Kind == MemberKind.Host ? "host" : "coordinator",
+                WithTimes(new
+                {
+                    MemberId = member.Id, Kind = member.Kind == MemberKind.Host ? "host" : "coordinator",
                     member.Name, member.Endpoint, member.Slots, member.EngineVersion,
-                    HeartbeatIntervalTicks = member.HeartbeatInterval.Ticks }, ("Now", now)), transaction,
+                    HeartbeatIntervalTicks = member.HeartbeatInterval.Ticks
+                }, ("Now", now)), transaction,
                 cancellationToken: cancellationToken));
+
             await ReplaceCapabilitiesAsync(connection, transaction, member.Id, member.Capabilities, cancellationToken);
+
             await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.DeleteHostPackages),
                 new { MemberId = member.Id }, transaction, cancellationToken: cancellationToken));
+
             if (member.InstalledPackages.Count != 0)
-                await ExecuteOptionalAsync(connection, transaction, Statement.CatalogContentLock, null);
+                await ExecuteOptionalAsync(connection, transaction, Statement.CatalogContentLock, null,
+                    cancellationToken: cancellationToken);
+
             foreach (var package in member.InstalledPackages)
             {
-                var known = await connection.QuerySingleOrDefaultAsync<InstalledPackageRow>(
+                var known = await connection.QuerySingleOrDefaultAsync<InstalledPackageRow>(new CommandDefinition(
                     RequiredSql(Statement.InstalledPackages) + " AND Version=@Version AND Fingerprint=@Fingerprint",
-                    new { package.Id, package.Version, package.Fingerprint }, transaction);
+                    new { package.Id, package.Version, package.Fingerprint }, transaction, cancellationToken: cancellationToken));
+
                 if (known == null)
                 {
-                    var revision = await AdvanceCatalogRevisionAsync(connection, transaction!);
+                    var revision = await AdvanceCatalogRevisionAsync(connection, transaction!, cancellationToken: cancellationToken);
+
                     await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.InsertInstalledPackage),
                         new { package.Id, package.Version, package.Fingerprint, CatalogRevision = revision }, transaction,
                         cancellationToken: cancellationToken));
+
                     foreach (var activity in package.Activities)
-                        await InsertActivityAsync(connection, transaction!, activity, revision, package.Fingerprint);
+                        await InsertActivityAsync(connection, transaction!, activity, revision, package.Fingerprint,
+                            cancellationToken: cancellationToken);
                 }
                 else
                 {
-                    var stored = await ReadInstalledPackageAsync(connection, transaction, known);
+                    var stored = await ReadInstalledPackageAsync(connection, transaction, known, cancellationToken: cancellationToken);
+
                     if (InstalledPackageRules.Json(stored.Activities) != InstalledPackageRules.Json(package.Activities))
                         throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Installed package metadata is immutable");
                 }
+
                 await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.InsertHostPackage),
                     new { MemberId = member.Id, package.Id, package.Version, package.Fingerprint }, transaction,
                     cancellationToken: cancellationToken));
             }
+
             return true;
-        }, cancellationToken, () => { if (SingleHostRegistry) _singleHostMember = member.Id; });
+        }, cancellationToken, () =>
+        {
+            if (SingleHostRegistry)
+                _singleHostMember = member.Id;
+        });
     }
 
     public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         MemberRegistry.ValidateId(memberId);
         var snapshot = MemberRegistry.SnapshotCapabilities(capabilities);
+
         return RegistryAsync(async (connection, transaction, now) =>
         {
             var changed = await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.MemberHeartbeat),
                 WithTimes(new { MemberId = memberId }, ("Now", now)), transaction, cancellationToken: cancellationToken));
-            if (changed != 1) return false;
+
+            if (changed != 1)
+                return false;
+
             await ReplaceCapabilitiesAsync(connection, transaction, memberId, snapshot, cancellationToken);
+
             return true;
         }, cancellationToken);
     }
 
     public async Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         MemberRegistry.ValidateId(memberId);
+
         await RegistryAsync(async (connection, transaction, _) =>
         {
             await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.UnregisterMember),
                 new { MemberId = memberId }, transaction, cancellationToken: cancellationToken));
+
             return true;
-        }, cancellationToken, () => { if (SingleHostRegistry && _singleHostMember == memberId) _singleHostMember = null; });
+        }, cancellationToken, () =>
+        {
+            if (SingleHostRegistry && _singleHostMember == memberId)
+                _singleHostMember = null;
+        });
     }
 
-    public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default) =>
-        RegistryAsync<IReadOnlyList<StoreMember>>(async (connection, transaction, now) =>
+    public Task<IReadOnlyList<StoreMember>> GetLiveMembersAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return RegistryAsync<IReadOnlyList<StoreMember>>(async (connection, transaction, now) =>
             await ReadLiveMembersAsync(connection, transaction, now, cancellationToken), cancellationToken);
+    }
 
     private async Task<IReadOnlyList<MemberRow>> ReadLiveMemberRowsAsync(DbConnection connection,
         DbTransaction? transaction, DateTime now, CancellationToken cancellationToken)
     {
         var rows = await connection.QueryAsync<MemberRow>(new CommandDefinition(RequiredSql(Statement.Members),
             transaction: transaction, cancellationToken: cancellationToken));
+
         return rows.Where(row => MemberRegistry.IsLive(ReadTime(row.HeartbeatAtUtc),
             TimeSpan.FromTicks(row.HeartbeatIntervalTicks), now)).ToArray();
     }
@@ -177,9 +257,11 @@ public abstract partial class RelationalWorkflowStateRepository
         DbTransaction? transaction, DateTime now, CancellationToken cancellationToken)
     {
         var rows = await ReadLiveMemberRowsAsync(connection, transaction, now, cancellationToken);
+
         var capabilities = (await connection.QueryAsync<CapabilityRow>(new CommandDefinition(
-            RequiredSql(Statement.MemberCapabilities), transaction: transaction, cancellationToken: cancellationToken)))
+                RequiredSql(Statement.MemberCapabilities), transaction: transaction, cancellationToken: cancellationToken)))
             .ToLookup(row => row.MemberId);
+
         return rows.Select(row => new StoreMember(new MemberRegistration(row.MemberId,
                 row.Kind == "host" ? MemberKind.Host : MemberKind.Coordinator, row.Name, row.Endpoint, row.Slots,
                 row.EngineVersion, TimeSpan.FromTicks(row.HeartbeatIntervalTicks),
@@ -193,6 +275,7 @@ public abstract partial class RelationalWorkflowStateRepository
     {
         await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.DeleteCapabilities),
             new { MemberId = memberId }, transaction, cancellationToken: cancellationToken));
+
         if (capabilities.Count != 0)
             await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.InsertCapability),
                 capabilities.Select(pair => new { MemberId = memberId, pair.Key, pair.Value }), transaction,

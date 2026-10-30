@@ -18,6 +18,7 @@ public sealed class OptionalSetupTests
     public async Task StepRunsWithoutSetup()
     {
         using var services = Services();
+
         var definition = Workflow.Create<ParentData>("StepWithoutSetup")
             .Step<RecordActivity>()
             .Build();
@@ -32,6 +33,7 @@ public sealed class OptionalSetupTests
     public async Task StepAppliesItsSetup()
     {
         using var services = Services();
+
         var definition = Workflow.Create<ParentData>("StepWithSetup")
             .Step<RecordActivity>(setup => setup
                 .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Value)
@@ -50,6 +52,7 @@ public sealed class OptionalSetupTests
     {
         using var services = Services();
         await RegisterChildAsync(services);
+
         var definition = Workflow.Create<ParentData>("InvokeByNameWithoutSetup")
             .Step<RecordActivity>()
             .Invoke<ChildData>("SetupChild", 1)
@@ -65,6 +68,7 @@ public sealed class OptionalSetupTests
     public async Task InvokeByTypeRunsTheChildWithDefaultDataWithoutSetup()
     {
         using var services = Services();
+
         var definition = Workflow.Create<ParentData>("InvokeByTypeWithoutSetup")
             .Step<RecordActivity>()
             .Invoke<ChildWorkflow, ChildData>()
@@ -81,6 +85,7 @@ public sealed class OptionalSetupTests
     {
         using var services = Services();
         await RegisterChildAsync(services);
+
         var definition = Workflow.Create<ParentData>("InvokeWithSetup")
             .Step<RecordActivity>()
             .Invoke<ChildData>("SetupChild", 1, setup => setup
@@ -100,6 +105,7 @@ public sealed class OptionalSetupTests
     {
         using var services = Services();
         await RegisterChildAsync(services);
+
         var definition = Workflow.Create<ParentData>("InvokeWithoutSetupInScopes")
             .Step<RecordActivity>()
             .Try(attempt => attempt.Step<FailActivity>())
@@ -112,6 +118,7 @@ public sealed class OptionalSetupTests
         var result = await Engine(services).RunToEndAsync(definition, new ParentData());
 
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
+
         Assert.Equal(["activity-default", "child-default", "activity-default", "child-default"],
             Probe(services).Seen);
     }
@@ -125,6 +132,7 @@ public sealed class OptionalSetupTests
         services.AddSingleton<SetupProbe>();
         services.AddTransient<RecordActivity>();
         services.AddTransient<FailActivity>();
+
         return services.BuildServiceProvider();
     }
 
@@ -137,6 +145,7 @@ public sealed class OptionalSetupTests
     {
         var builder = new WorkflowBuilder<ChildData>("SetupChild", 1);
         new ChildWorkflow().Build(builder);
+
         return services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(builder.Build());
     }
 
@@ -162,7 +171,6 @@ public sealed class OptionalSetupTests
     [IxIFlow.Core.Workflow("ChildWorkflow", Version = 1)]
     public sealed class ChildWorkflow : IWorkflow<ChildData>
     {
-
         public void Build(IWorkflowBuilder<ChildData> builder) =>
             builder.Step<RecordActivity>(setup => setup
                 .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Value)
@@ -176,6 +184,7 @@ public sealed class OptionalSetupTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Record(Value);
+
             return Task.CompletedTask;
         }
     }

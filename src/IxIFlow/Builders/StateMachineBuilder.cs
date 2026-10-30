@@ -11,12 +11,14 @@ public sealed class StateMachineBuilder<TData, TPrevious> where TPrevious : clas
 {
     private readonly WorkflowStep _graph;
     private readonly IStateBodies<TData, TPrevious> _body;
+
     internal StateMachineBuilder(WorkflowStep graph, IStateBodies<TData, TPrevious> body) =>
         (_graph, _body) = (graph, body);
 
     public StateMachineBuilder<TData, TPrevious> Start(string key)
     {
         _graph.GraphStart = key;
+
         return this;
     }
 
@@ -26,14 +28,20 @@ public sealed class StateMachineBuilder<TData, TPrevious> where TPrevious : clas
         var state = new StateMachineState { Key = key, Name = key };
         state.Steps.Add(StatePicks.Create<TData, TPrevious>(WorkflowStepType.Enter, sourcePath, sourceLine));
         configure(new(state, _body));
+
         if (state.Transitions.Any(t => t.Steps[0].TriggerKind == TriggerKind.Activity) &&
             state.Transitions.Any(t => t.Steps[0].TriggerKind is TriggerKind.Event or TriggerKind.Reply or TriggerKind.Timer))
-            state.ListenSteps = [
+            state.ListenSteps =
+            [
                 StatePicks.Create<TData, TPrevious>(WorkflowStepType.Listen, sourcePath, sourceLine),
-                StatePicks.Create<TData, object>(WorkflowStepType.Fire, sourcePath, sourceLine)];
+                StatePicks.Create<TData, object>(WorkflowStepType.Fire, sourcePath, sourceLine)
+            ];
+
         if (!state.Final)
             state.Steps.Add(StatePicks.Create<TData, TPrevious>(WorkflowStepType.Arm, sourcePath, sourceLine));
+
         _graph.GraphStates.Add(state);
+
         return this;
     }
 }
@@ -43,6 +51,7 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
 {
     private readonly StateMachineState _state;
     private readonly IStateBodies<TData, TPrevious> _body;
+
     internal StateBuilder(StateMachineState state, IStateBodies<TData, TPrevious> body) =>
         (_state, _body) = (state, body);
 
@@ -50,12 +59,14 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         _state.Name = name;
+
         return this;
     }
 
     public StateBuilder<TData, TPrevious> Final()
     {
         _state.Final = true;
+
         return this;
     }
 
@@ -63,6 +74,7 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
         Func<ISequenceBuilder<TData, TPrevious>, IWorkflowBuilder<TData, TLast>> body) where TLast : class
     {
         body(_body.Body<TPrevious>(_state.Steps));
+
         return this;
     }
 
@@ -72,7 +84,9 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
     {
         if (_state.ExitSteps.Count == 0)
             _state.ExitSteps.Add(StatePicks.Create<TData, TPrevious>(WorkflowStepType.Enter, sourcePath, sourceLine));
+
         body(_body.Body<TPrevious>(_state.ExitSteps));
+
         return this;
     }
 
@@ -112,6 +126,7 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
         activity.OutputMappings = trigger.OutputMappings;
         transition.RunSteps = [activity, StatePicks.Create<TData, TActivity>(WorkflowStepType.Fire, sourcePath, sourceLine)];
         _state.Transitions.Add(transition);
+
         return this;
     }
 
@@ -129,8 +144,12 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
         trigger.ResumeEventType = typeof(TEvent);
         trigger.Runtime = WorkflowStepDelegates.Wait<TData, TEvent, TEvent>();
         trigger.StepMetadata["WaitKey"] = key;
-        if (kind == TriggerKind.Reply) trigger.ReplyToRequest = key;
+
+        if (kind == TriggerKind.Reply)
+            trigger.ReplyToRequest = key;
+
         Add(trigger, configure);
+
         return this;
     }
 
@@ -143,6 +162,7 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
         trigger.TriggerKind = TriggerKind.Timer;
         trigger.DelayDuration = duration;
         Add(trigger, configure);
+
         return this;
     }
 
@@ -160,6 +180,7 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
         trigger.AfterExpression = afterExpression;
         trigger.After = context => evaluate((WorkflowContext<TData, TPrevious>)context);
         Add(trigger, configure);
+
         return this;
     }
 
@@ -175,6 +196,7 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
         var trigger = StatePicks.Create<TData, TPrevious>(WorkflowStepType.Trigger, sourcePath, sourceLine);
         trigger.TriggerKind = TriggerKind.Immediate;
         Add(trigger, configure);
+
         return this;
     }
 
@@ -185,6 +207,7 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
         var trigger = StatePicks.Create<TData, TPrevious>(WorkflowStepType.Trigger, sourcePath, sourceLine);
         trigger.TriggerKind = TriggerKind.Immediate;
         Add<TPrevious>(trigger, t => t.When(whenExpression, to, action, sourcePath, sourceLine));
+
         return this;
     }
 
@@ -195,6 +218,7 @@ public sealed class StateBuilder<TData, TPrevious> where TPrevious : class
         var trigger = StatePicks.Create<TData, TPrevious>(WorkflowStepType.Trigger, sourcePath, sourceLine);
         trigger.TriggerKind = TriggerKind.Immediate;
         Add<TPrevious>(trigger, t => t.Otherwise(to, action, sourcePath, sourceLine));
+
         return this;
     }
 
@@ -213,6 +237,7 @@ public sealed class StateTransitionBuilder<TData, TIncoming, TValue> where TInco
     private readonly StateMachineTransition _transition;
     private WorkflowStep Trigger => _transition.Steps[0];
     private readonly IStateBodies<TData, TIncoming> _body;
+
     internal StateTransitionBuilder(StateMachineTransition transition, IStateBodies<TData, TIncoming> body) =>
         (_transition, _body) = (transition, body);
 
@@ -221,17 +246,21 @@ public sealed class StateTransitionBuilder<TData, TIncoming, TValue> where TInco
     {
         var evaluate = matchesExpression.Compile();
         Trigger.ConditionExpression = matchesExpression;
+
         Trigger.CompiledCondition = context =>
         {
             var resume = (ResumeEventContext<TData, TValue>)context;
+
             return evaluate(resume.ResumeEvent, new WorkflowContext<TData> { WorkflowData = resume.WorkflowData, Items = resume.Items });
         };
+
         return this;
     }
 
     public StateTransitionBuilder<TData, TIncoming, TValue> DefaultPayload(TValue payload)
     {
         Trigger.DefaultPayload = payload;
+
         return this;
     }
 
@@ -250,6 +279,7 @@ public sealed class StateTransitionBuilder<TData, TIncoming, TValue> where TInco
         var edge = Add(to, action, sourcePath, sourceLine);
         edge.ConditionExpression = whenExpression;
         edge.CompiledCondition = context => evaluate((WorkflowContext<TData, TValue>)context);
+
         return this;
     }
 
@@ -258,6 +288,7 @@ public sealed class StateTransitionBuilder<TData, TIncoming, TValue> where TInco
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         Add(to, action, sourcePath, sourceLine).IsDefault = true;
+
         return this;
     }
 
@@ -268,6 +299,7 @@ public sealed class StateTransitionBuilder<TData, TIncoming, TValue> where TInco
         var steps = new List<WorkflowStep> { edge };
         action?.Invoke(_body.Body<TValue>(steps));
         _transition.Cases.Add(steps);
+
         return edge;
     }
 }
@@ -276,11 +308,14 @@ public sealed class StateTriggerInput<TData, TIncoming, TValue, TProperty> where
 {
     private readonly StateTransitionBuilder<TData, TIncoming, TValue> _owner;
     private readonly ISuspendInputBuilder<TData, TValue, TProperty, TIncoming> _mapping;
+
     internal StateTriggerInput(StateTransitionBuilder<TData, TIncoming, TValue> owner,
         ISuspendInputBuilder<TData, TValue, TProperty, TIncoming> mapping) => (_owner, _mapping) = (owner, mapping);
+
     public StateTransitionBuilder<TData, TIncoming, TValue> From(Expression<Func<WorkflowContext<TData, TIncoming>, TProperty>> source)
     {
         _mapping.From(source);
+
         return _owner;
     }
 }
@@ -289,11 +324,14 @@ public sealed class StateTriggerOutput<TData, TIncoming, TValue, TProperty> wher
 {
     private readonly StateTransitionBuilder<TData, TIncoming, TValue> _owner;
     private readonly ISuspendOutputBuilder<TData, TValue, TProperty, TIncoming> _mapping;
+
     internal StateTriggerOutput(StateTransitionBuilder<TData, TIncoming, TValue> owner,
         ISuspendOutputBuilder<TData, TValue, TProperty, TIncoming> mapping) => (_owner, _mapping) = (owner, mapping);
+
     public StateTransitionBuilder<TData, TIncoming, TValue> To(Expression<Func<WorkflowContext<TData>, TProperty>> target)
     {
         _mapping.To(target);
+
         return _owner;
     }
 }
@@ -319,6 +357,7 @@ internal sealed class StateBodies<TData, TIncoming> : IStateBodies<TData, TIncom
 {
     public ISequenceBuilder<TData, TValue> Body<TValue>(List<WorkflowStep> steps) where TValue : class =>
         new SequenceBuilder<TData, TValue>(steps);
+
     public ISuspendSetupBuilder<TData, TValue, TIncoming> Setup<TValue>(WorkflowStep trigger) where TValue : class =>
         new SuspendSetupBuilder<TData, TValue, TIncoming>(trigger);
 }

@@ -16,9 +16,11 @@ public sealed class WaitReferenceTests
         string instanceId, string waitId, string expected)
     {
         Assert.Equal(expected, WaitReference.Of(instanceId, waitId));
+
         var refused = WorkflowStoreRules.RefusedEventTrace(
             new WorkflowEvent(instanceId, "refused", "go", "{}", TargetWaitId: waitId),
             EventRejection.UnknownWait, DateTime.UnixEpoch);
+
         Assert.Equal(expected, Assert.IsType<ReceivedEventTrace>(refused.Payload).WaitRef);
     }
 

@@ -4,12 +4,16 @@
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Suppress missing-member XML warnings for this project; XML documentation is generated and packaged. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
     <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
     <IsRoslynComponent>true</IsRoslynComponent>
-    <IsPackable>false</IsPackable>
+    <IsPackable>true</IsPackable>
+    <Description>Workflow YAML document models, validation, translation and source generation for IxIFlow.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="4.14.0" PrivateAssets="all" />
     <PackageReference Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
@@ -31,6 +35,7 @@
     </ItemGroup>
   </Target>
   <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
     <Compile Include="../Shared/RetryDelayRules.cs" Link="Authoring/RetryDelayRules.cs" />
   </ItemGroup>
 </Project>

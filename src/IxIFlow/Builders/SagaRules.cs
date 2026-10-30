@@ -15,6 +15,7 @@ internal static class SagaRules
     {
         foreach (var saga in Sagas(steps))
             Check(saga);
+
         return steps;
     }
 
@@ -24,63 +25,89 @@ internal static class SagaRules
         // order they run in; of two branches only one runs.
         var order = new List<WorkflowStep>();
         Flatten(saga.SequenceSteps, order);
+
         // A compensation that reads an answer belongs to a request answered with that type.
         foreach (var step in order)
             if (step.StepMetadata.TryGetValue("CompensationActivities", out var declared) &&
                 declared is IEnumerable<CompensationActivityInfo> compensations)
                 foreach (var compensation in compensations.Where(item => item.ReplyType != null))
                     if (step.RequestName == null)
-                        throw WorkflowBuildError.Invalid(step, $"The compensation {compensation.ActivityType.Name} of {step.ActivityType?.Name} " +
+                        throw WorkflowBuildError.Invalid(step,
+                            $"The compensation {compensation.ActivityType.Name} of {step.ActivityType?.Name} " +
                             $"reads an answer of type {compensation.ReplyType!.Name}, but {step.ActivityType?.Name} " +
                             "is not a request");
                     else if (compensation.ReplyType != step.ReplyType)
-                        throw WorkflowBuildError.Invalid(step, $"The compensation {compensation.ActivityType.Name} of request '{step.RequestName}' " +
+                        throw WorkflowBuildError.Invalid(step,
+                            $"The compensation {compensation.ActivityType.Name} of request '{step.RequestName}' " +
                             $"reads an answer of type {compensation.ReplyType!.Name}, but the request is answered " +
                             $"with {step.ReplyType?.Name}");
+
         foreach (var handler in saga.CatchBlocks)
         {
             var configuration = handler.StepMetadata.GetValueOrDefault("SagaErrorConfig") as SagaErrorConfiguration;
+
             if (configuration?.ContinuationAction == null &&
-                ParallelRules.Flatten(handler.SequenceSteps).FirstOrDefault(step => step.StepMetadata.ContainsKey("WaitKey")) is { } handlerWait)
+                ParallelRules.Flatten(handler.SequenceSteps).FirstOrDefault(step => step.StepMetadata.ContainsKey("WaitKey")) is
+                    { } handlerWait)
                 throw WorkflowBuildError.Invalid(handlerWait,
                     "A saga error handler with WaitFor must end with ThenContinue, ThenRetry, or ThenTerminate");
+
             if (!handler.StepMetadata.TryGetValue("SagaErrorConfig", out var value) ||
                 value is not SagaErrorConfiguration policy)
                 continue;
+
+            if (policy.ContinuationAction == SagaContinuationAction.Retry && policy.RetryPolicy == null)
+                throw WorkflowBuildError.Invalid(handler, "Saga retry requires retry settings");
+
+            if (policy.RetryPolicy is { } retry && IxIFlow.Authoring.RetryDelayRules.Validate(
+                    retry.MaximumAttempts, retry.InitialInterval, retry.MaximumInterval, retry.BackoffCoefficient) is { } problem)
+                throw WorkflowBuildError.Invalid(handler, problem);
+
             int stop;
             string boundary;
+
             switch (policy.CompensationStrategy)
             {
                 case CompensationStrategy.CompensateUpTo:
                     var target = policy.CompensationTargetType!;
+
                     var matches = order.Select((step, index) => (step, index))
                         .Where(item => item.step.StepType == WorkflowStepType.Activity && item.step.ActivityType == target)
                         .ToArray();
+
                     if (matches.Length != 1)
                         throw WorkflowBuildError.Invalid(handler, $"{handler.Name} compensates up to {target.Name}, which " +
                             (matches.Length == 0 ? "is not a step of the saga" : "is a step of the saga more than once"));
+
                     stop = matches[0].index;
                     boundary = $"{target.Name}, where the undo stops";
+
                     break;
                 case CompensationStrategy.None:
                     stop = -1;
                     boundary = "a step that may fail, and nothing is undone";
+
                     break;
                 default:
                     continue;
             }
+
             // A retry runs on past the boundary and reads the answer; anything else ends the saga.
             if (policy.ContinuationAction == SagaContinuationAction.Retry)
                 continue;
+
             foreach (var (body, request, inBody, wait, waitInBody) in Requests(saga.SequenceSteps))
             {
                 var index = order.IndexOf(request);
                 var name = request.RequestName!;
+
                 var lost = policy.CompensationStrategy == CompensationStrategy.None
                     ? waitInBody > inBody + 1
                     : index < stop && order.IndexOf(wait) > stop;
+
                 if (lost)
-                    throw WorkflowBuildError.Invalid(handler, $"{handler.Name} keeps request '{name}' ({request.ActivityType?.Name}), but its " +
+                    throw WorkflowBuildError.Invalid(handler,
+                        $"{handler.Name} keeps request '{name}' ({request.ActivityType?.Name}), but its " +
                         $"WaitFor(\"{name}\") comes after {boundary}, so the saga would end without its answer. " +
                         "Compensate the request too, read its answer earlier, or retry the saga");
             }
@@ -94,10 +121,14 @@ internal static class SagaRules
         for (var index = 0; index < body.Count; index++)
         {
             var step = body[index];
+
             if (step.RequestName is { } name &&
                 body.FindIndex(index + 1, candidate => candidate.ReplyToRequest == name) is var wait and >= 0)
                 yield return (body, step, index, body[wait], wait);
-            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "case" or "default" || step.StepType == WorkflowStepType.CancellationScope && scope.Kind == "sequence"))
+
+            foreach (var scope in step.ChildScopes().Where(scope =>
+                         scope.Kind is "case" or "default" ||
+                         step.StepType == WorkflowStepType.CancellationScope && scope.Kind == "sequence"))
             foreach (var nested in Requests(scope.Steps))
                 yield return nested;
         }
@@ -108,7 +139,10 @@ internal static class SagaRules
         foreach (var step in body)
         {
             order.Add(step);
-            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "case" or "default" || step.StepType == WorkflowStepType.CancellationScope && scope.Kind == "sequence"))
+
+            foreach (var scope in step.ChildScopes().Where(scope =>
+                         scope.Kind is "case" or "default" ||
+                         step.StepType == WorkflowStepType.CancellationScope && scope.Kind == "sequence"))
                 Flatten(scope.Steps, order);
         }
     }
@@ -119,6 +153,7 @@ internal static class SagaRules
         {
             if (step.StepType == WorkflowStepType.Saga)
                 yield return step;
+
             foreach (var scope in step.ChildScopes().Where(scope => scope.Kind != "inline").OrderBy(scope => scope.Kind switch
                      {
                          "foreach" => 1, "branch" or "case" or "default" => 2, _ => 0
@@ -127,5 +162,4 @@ internal static class SagaRules
                 yield return saga;
         }
     }
-
 }

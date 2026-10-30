@@ -7,7 +7,7 @@ using Microsoft.Extensions.Hosting;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// Every execution runs in the one public <see cref="WorkflowHost"/> (B-01, D-16). The application reaches it as a
+/// Every execution runs in the one public <see cref="WorkflowHost"/>. The application reaches it as a
 /// hosted service; its slots, queues and per-instance work stay the engine's.
 /// </summary>
 [Trait("Feature", "host")]
@@ -23,6 +23,7 @@ public sealed class WorkflowHostTests
         var hosted = provider.GetServices<IHostedService>().ToArray();
 
         Assert.Same(host, provider.GetRequiredService<WorkflowHost>());
+
         // Hosted services stop in reverse order: the host comes last, so it drains before the recovery scanner stops.
         Assert.Same(host, hosted[^1]);
         Assert.Single(hosted, service => ReferenceEquals(service, host));
@@ -38,8 +39,10 @@ public sealed class WorkflowHostTests
 
         Assert.Same(first.ServiceProvider.GetRequiredService<WorkflowHost.InstanceOperations>(),
             first.ServiceProvider.GetRequiredService<WorkflowHost.InstanceOperations>());
+
         Assert.NotSame(first.ServiceProvider.GetRequiredService<WorkflowHost.InstanceOperations>(),
             second.ServiceProvider.GetRequiredService<WorkflowHost.InstanceOperations>());
+
         Assert.NotSame(first.ServiceProvider.GetRequiredService<WorkflowHost.SlotClient>(),
             second.ServiceProvider.GetRequiredService<WorkflowHost.SlotClient>());
     }

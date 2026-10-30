@@ -14,20 +14,23 @@ using IxIFlow.Core;
 using IxIFlow.Extensions;
 
 builder.Services.AddIxIFlow(); // Or choose a persistent store with the returned builder.
+
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("orders-api", policy => policy.RequireAuthenticatedUser());
+
     options.AddPolicy("order-instance", policy => policy.RequireAssertion(context =>
         context.Resource is WorkflowOwnership resource &&
         (resource.OwnerKind == WorkflowOwnerKind.SignedSender
             ? resource.Owner == context.User.FindFirstValue("ixiflow:sender")
             : resource.Owner == context.User.FindFirstValue(ClaimTypes.NameIdentifier) ||
-              resource.Tenant != null && resource.Tenant == context.User.FindFirstValue("tenant"))));
+            resource.Tenant != null && resource.Tenant == context.User.FindFirstValue("tenant"))));
 });
 
 var app = builder.Build();
 app.UseAuthentication();
 app.UseAuthorization();
+
 app.MapWorkflowTriggers(triggers =>
 {
     triggers.Start<OrderData>("orders.create", "/orders/{orderId}", OrderWorkflow.Definition)
@@ -48,6 +51,7 @@ app.MapWorkflowTriggers(triggers =>
         .Authorize("orders-api")
         .AuthorizeInstance("order-instance");
 });
+
 app.Run();
 ```
 
@@ -90,7 +94,7 @@ The unique store key is `(sender, trigger, key)`. Concurrent callers can propose
 
 Fingerprints cover the original body bytes, all route values and query values, the content type, and every CloudEvents header in binary mode. Changing JSON whitespace therefore changes the fingerprint. The literal route path is not a namespace: renaming a route with the same mapping inputs preserves retries.
 
-Keys expire after 24 hours by default, according to the store's clock. Change a start's duration with `.IdempotencyRetention(TimeSpan.FromHours(48))`. The normal retention scan deletes expired keys and signed event delivery records in bounded batches. Expiry permits a fresh admission with a fresh generated ID, even if the previous instance remains retained. Retries after expiry no longer have the original idempotency guarantee. A start retried while its original instance is tombstoned returns `410` without a status location.
+Keys expire after 24 hours by default, according to the store's clock. Change a start's duration with `.IdempotencyRetention(TimeSpan.FromHours(48))`. The normal retention scan deletes expired keys and signed event delivery records in bounded batches. Expiry permits a fresh admission with a fresh generated ID, even if the previous instance remains retained. Retries after expiry have a new admission identity. A start retried while its original instance is tombstoned returns `410` without a status location.
 
 Owner and tenant metadata remain with the instance and its active removal tombstone independently of key expiry. `WorkflowOwnership.OwnerKind` separates `SignedSender` owners from authenticated `Principal` owners. The endpoint enforces this boundary before the application's instance policy: a bearer principal can never access a sender-owned instance, even with the same subject or tenant, and a signed sender cannot access a principal-owned instance. Metadata is bound to the instance incarnation, so reuse of an old instance ID cannot inherit its earlier owner's access.
 
@@ -160,7 +164,7 @@ Event identity is the pair of CloudEvents `source` and `id`, encoded without amb
 | Unknown ID, expired tombstone, or instance without ingress ownership | `404` problem details |
 | Authenticated caller outside the instance's access scope | `404` problem details, matching an unknown ID |
 
-Public statuses are `Running`, `Waiting`, `Stopped`, `Completed`, `Failed`, `Cancelled`, `TimedOut`, and `Removed`. Results are null unless `.ProjectResult(...)` is configured. The adapter never serializes `WorkflowExecutionResult`, workflow data, traces, error messages, stack traces, or reply tokens. The application chooses the public fields in its projection. If an old trigger is no longer mapped, its retained status remains readable with a null projection.
+Public statuses are `Running`, `Waiting`, `Stopped`, `Completed`, `Failed`, `Cancelled`, `Terminated`, `TimedOut`, `Paused`, and `Removed`. Results are null unless `.ProjectResult(...)` is configured. The adapter never serializes `WorkflowExecutionResult`, workflow data, traces, error messages, stack traces, or reply tokens. The application chooses the public fields in its projection. If a retained instance's trigger is absent from the mapping, its retained status remains readable with a null projection.
 
 The schema is declared at database creation. An existing instance table with missing current tables or columns produces a clear engine exception explaining that the database was created by an earlier build and must be recreated; the package performs no in-place upgrade. Custom stores must implement `IWorkflowAdmissionStore` explicitly. Acceptance-only engine integration is available through `IWorkflowIngressClient`; it shares the existing commit and inbox paths and wakes the normal host backlog.
 

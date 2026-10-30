@@ -8,7 +8,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
 /// The engine and the activities it runs log through <see cref="ILogger"/> inside scopes carrying the instance and,
-/// for an activity attempt, its step and invocation, so entries from concurrent branches can be told apart (G-03).
+/// for an activity attempt, its step and invocation, so entries from concurrent branches can be told apart.
 /// </summary>
 [Trait("Feature", "tracing")]
 [Trait("Spec", "G-03")]
@@ -24,6 +24,7 @@ public sealed class LoggingScopeTests
         services.AddSingleton<BothBranches>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
+
         var definition = Workflow.Create<ScopeData>("LoggingScopes")
             .Step<LogsItsName>(step => step.Input(activity => activity.Name).From(_ => "first"))
             .Parallel(parallel => parallel
@@ -34,9 +35,11 @@ public sealed class LoggingScopeTests
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition, new ScopeData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+
         var ran = new[] { "first", "left", "right" }
             .Select(name => Assert.Single(capture.Entries, entry => entry.Message == $"ran {name}"))
             .ToArray();
+
         foreach (var entry in ran)
         {
             Assert.Equal(result.InstanceId, entry.Scope["InstanceId"]);
@@ -44,16 +47,19 @@ public sealed class LoggingScopeTests
             Assert.False(string.IsNullOrEmpty(entry.Scope["StepId"] as string));
             Assert.False(string.IsNullOrEmpty(entry.Scope["InvocationId"] as string));
         }
+
         Assert.Equal(3, ran.Select(entry => entry.Scope["StepId"]).Distinct().Count());
+
         // Each entry carries its own step: the engine logs applying each activity's name input in the same scope.
         foreach (var entry in ran)
             Assert.Contains(capture.Entries, applied => applied.Message == "Applied typed input mapping: Name" &&
-                                                         Equals(applied.Scope["StepId"], entry.Scope["StepId"]));
+                Equals(applied.Scope["StepId"], entry.Scope["StepId"]));
 
         // The engine's own entries for an attempt, from applying its inputs to applying its outputs, carry the same
         // scope.
         var engine = capture.Entries.Where(entry => entry.Category == typeof(ActivityExecutor).FullName).ToList();
         Assert.NotEmpty(engine);
+
         Assert.All(engine, entry =>
         {
             Assert.Equal(result.InstanceId, entry.Scope["InstanceId"]);
@@ -73,6 +79,7 @@ public sealed class LoggingScopeTests
         {
             if (Interlocked.Increment(ref _arrived) == 2)
                 _both.TrySetResult();
+
             return _both.Task.WaitAsync(TimeSpan.FromSeconds(10));
         }
     }
@@ -86,6 +93,7 @@ public sealed class LoggingScopeTests
             // The branch activities write their entries while both are running, each on whatever thread resumes it.
             if (Name != "first")
                 await branches.ArriveAsync();
+
             await Task.Yield();
             logger.LogInformation("ran {Name}", Name);
         }
@@ -117,12 +125,14 @@ public sealed class LoggingScopeTests
         private void Add(string category, string message)
         {
             var scope = new Dictionary<string, object?>();
+
             _scopes.ForEachScope((state, values) =>
             {
                 if (state is IEnumerable<KeyValuePair<string, object?>> pairs)
                     foreach (var (key, value) in pairs)
                         values[key] = value;
             }, scope);
+
             lock (_entries)
                 _entries.Add(new Entry(category, message, scope));
         }

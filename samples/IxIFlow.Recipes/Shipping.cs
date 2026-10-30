@@ -77,6 +77,7 @@ public sealed class Delivered : IAsyncActivity
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Done = true;
+
         return Task.CompletedTask;
     }
 }

@@ -5,7 +5,7 @@ description: Build typed workflows, mappings and control flow.
 
 Start with `Workflow.Create<TData>(name, version)`, configure the fluent graph, then call its instance `Build()` to produce a `WorkflowDefinition`. `Build()` validates contracts and structure; `WorkflowDefinitionValidator.Validate` also exposes validation to applications.
 
-Workflow identity is `(name, version)`. A nonblank name is required; definitions no longer receive implicit or hash-derived names. Declare the version and change it when changing behavior.
+Workflow identity is `(name, version)`. A nonblank name is required; definitions require an explicit name. Declare the version and change it when changing behavior.
 
 ## Flowcharts
 
@@ -174,7 +174,7 @@ public static WorkflowDefinition Definition() =>
 
 [ActivityTriggers.cs](../samples/IxIFlow.Samples/ActivityTriggers.cs) supplies the compiled activities; [ActivityTriggerExamples.cs](../tests/IxIFlow.Samples.Tests/ActivityTriggerExamples.cs) executes this sample. Such a state uses one branch per activity plus one shared listener when event, reply or timer triggers exist. This counts against `MaxActiveBranches` and requires copyable workflow data and mergeable named output paths. Alternatives may write the same property. All armed machines in one instance share event keys; an event matching two waits is refused as ambiguous. Reply tokens keep their original state activation and remain usable after a losing listener or failed activity guards.
 
-Code-activity triggers are included; composed workflow triggers are not yet specified. `Immediately(t => ...)` groups several ordered `When`/`Otherwise` cases under one immediate trigger. YAML supports the same entry, exit, trigger, case and action shapes. See the [execution model](execution-model.md#state-machines) for arbitration and recovery.
+Code-activity triggers are supported; composed workflow triggers are outside 1.0. `Immediately(t => ...)` groups several ordered `When`/`Otherwise` cases under one immediate trigger. YAML supports the same entry, exit, trigger, case and action shapes. See the [execution model](execution-model.md#state-machines) for arbitration and recovery.
 
 `definition.GraphTable` describes every nested graph beside `definition.StepTable`: graph catalog id and start; keyed nodes/states, display names, entry ids and body/exit scope ids; ordered transitions with trigger kind, event/key, duration or activity type; and cases with edge ids, destinations, guards, labels, actions and source locations. `IWorkflowOperations.GetGraphTableAsync(instanceId)` reads detached metadata for the instance's registered definition through the same privacy projection as inspection. GraphTable describes topology; inspection and traces provide the live position and taken path.
 
@@ -258,8 +258,8 @@ Use `Assign(target, value)` for one write without an activity:
 ```csharp
 public void Build(IWorkflowBuilder<AssignmentTotalsData> builder) =>
     builder.Assign(ctx => ctx.WorkflowData.Total,
-                   ctx => ctx.WorkflowData.Price * ctx.WorkflowData.Quantity)
-           .WithId("total");
+            ctx => ctx.WorkflowData.Price * ctx.WorkflowData.Quantity)
+        .WithId("total");
 ```
 
 The target must be a writable serialized property, array/list element or dictionary entry reached through workflow data. Nested structs are written back through their setters. Getter-only reference objects are accepted as intermediate containers only with a restorable serializer Populate contract. Mutable collections populated by adding to initializer contents are refused, even with a setter, because assignments would not survive serialization and recovery faithfully; use collection replacement instead. Fields, ignored properties, previous values, item handles, fault DTOs and captured or static objects cannot be targets. Null parents and invalid indices fail at the step; Assign does not create containers or extend lists.
@@ -307,7 +307,7 @@ inside the body, or one with no business handler, does not activate cancellation
 ```csharp
 public static WorkflowDefinition Definition() => Workflow.Create<CancellationApprovalData>("CancellationApproval")
     .CancellationScope(body => body.WaitFor<CancellationApprovalSignal>("approval")
-        .Assign(c => c.WorkflowData.State, c => "approved"),
+            .Assign(c => c.WorkflowData.State, c => "approved"),
         onCancelled => onCancelled.Step<Label>(s => s.Input(a => a.Value).From(c => "withdrawn")
             .Output(a => a.Value).To(c => c.WorkflowData.State))).Build();
 ```
@@ -327,14 +327,14 @@ Use `Scope<TScope>(setup, body)` on a continuation or catch builder. Setup accep
 
 <!-- snippet: samples/IxIFlow.Samples/ScopeExamples.cs#connection -->
 ```csharp
-    public static WorkflowDefinition Connection() =>
-        new WorkflowBuilder<ScopeData, object>([], "ScopedConnection")
-            .Scope<FakeConnectionScope>(setup => setup
+public static WorkflowDefinition Connection() =>
+    new WorkflowBuilder<ScopeData, object>([], "ScopedConnection")
+        .Scope<FakeConnectionScope>(setup => setup
                 .Input(scope => scope.ConnectionRef).From(ctx => ctx.WorkflowData.Reference)
                 .Retry(new RetryPolicy(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), 2, 2)),
-                body => body.Step<ReadConnection>(setup => setup
-                    .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Result)))
-            .Build();
+            body => body.Step<ReadConnection>(setup => setup
+                .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Result)))
+        .Build();
 ```
 
 Body activities call `context.Scope<TValue>()` for the nearest assignable value, or `ScopeOrDefault<TValue>()`. `[RequiresScope<TValue>]` checks lexical placement. `.RequiresScope<TValue>()` on a reusable workflow's root declares a requirement that an inline `Use` caller supplies; independent child invocations and root starts cannot supply one.
@@ -345,11 +345,11 @@ Threading and concurrency are independent. `Serialized` is the default and admit
 
 <!-- snippet: samples/IxIFlow.Samples/ScopeExamples.cs#excel -->
 ```csharp
-    public static WorkflowDefinition Excel() =>
-        new WorkflowBuilder<ScopeData, object>([], "ScopedWorkbook")
-            .Scope<ExcelScope>(setup => setup.Input(scope => scope.WorkbookRef).From(ctx => ctx.WorkflowData.Reference),
-                body => body.Step<WriteCells>().Step<SaveWorkbook>())
-            .Build();
+public static WorkflowDefinition Excel() =>
+    new WorkflowBuilder<ScopeData, object>([], "ScopedWorkbook")
+        .Scope<ExcelScope>(setup => setup.Input(scope => scope.WorkbookRef).From(ctx => ctx.WorkflowData.Reference),
+            body => body.Step<WriteCells>().Step<SaveWorkbook>())
+        .Build();
 ```
 
 The fake workbook asserts its owning thread before and after an await and during disposal. It requires no Office installation. [Its YAML twin](yaml-authoring.md#scope-activities) is compiled and executed by the sample tests.

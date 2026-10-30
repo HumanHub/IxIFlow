@@ -18,6 +18,7 @@ internal static class MemberPath
     {
         var parts = new Stack<string>();
         var current = expression.Body;
+
         while (true)
         {
             switch (current)
@@ -25,29 +26,40 @@ internal static class MemberPath
                 case MemberExpression member:
                     parts.Push(member.Member.Name);
                     current = member.Expression;
+
                     continue;
                 case IndexExpression index:
                     parts.Push("[]");
                     current = index.Object;
+
                     continue;
                 case BinaryExpression { NodeType: ExpressionType.ArrayIndex } array:
                     parts.Push("[]");
                     current = array.Left;
+
                     continue;
+
                 // A built-in cast keeps the object; a user-defined conversion may return another one.
-                case UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked or
-                    ExpressionType.TypeAs, Method: null } cast:
+                case UnaryExpression
+                {
+                    NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked or
+                    ExpressionType.TypeAs,
+                    Method: null
+                } cast:
                     current = cast.Operand;
+
                     continue;
                 case MethodCallExpression call when IsItem(call):
                     return Join(ItemRoot, parts);
                 case MethodCallExpression { Method.Name: "get_Item", Object: not null } indexer:
                     parts.Push("[]");
                     current = indexer.Object;
+
                     continue;
                 case MethodCallExpression call when IsElementSelector(call):
                     parts.Push("[]");
                     current = call.Arguments[0];
+
                     continue;
                 case ParameterExpression when parts.Count > 0:
                     return Join(null, parts);
@@ -80,8 +92,10 @@ internal static class MemberPath
     private static string Join(string? root, Stack<string> parts)
     {
         var path = root ?? "";
+
         foreach (var part in parts)
             path = part == "[]" ? path + part : path.Length == 0 ? part : path + "." + part;
+
         return path;
     }
 }

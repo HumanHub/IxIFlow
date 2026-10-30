@@ -15,19 +15,24 @@ internal static class ThrowRules
             {
                 if (!BusinessType(step.ExceptionType))
                     throw WorkflowBuildError.Invalid(step, "THROW001: Throw requires a concrete business exception type");
+
                 if (step.ExceptionExpression == null || step.ExceptionFactory == null ||
                     step.ExceptionExpression.ReturnType != step.ExceptionType || step.ExceptionFactoryReturnType != step.ExceptionType)
                     throw WorkflowBuildError.Invalid(step, "THROW002: The factory must return the declared exception type");
             }
+
             if (step.StepType == WorkflowStepType.Rethrow && !caught)
                 throw WorkflowBuildError.Invalid(step, "RETHROW001: Rethrow must be inside a TryCatch Catch body");
+
             foreach (var child in step.ChildScopes())
             {
                 if (step.StepType == WorkflowStepType.TryCatch && child.Kind == "catch")
                 {
-                    foreach (var handler in child.Steps) Validate(handler.SequenceSteps, true);
+                    foreach (var handler in child.Steps)
+                        Validate(handler.SequenceSteps, true);
                 }
-                else Validate(child.Steps, child.Kind == "inline" ? false : caught);
+                else
+                    Validate(child.Steps, child.Kind == "inline" ? false : caught);
             }
         }
     }

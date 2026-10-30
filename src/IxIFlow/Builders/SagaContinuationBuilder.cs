@@ -6,7 +6,7 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Saga continuation builder - decides what to do after compensation strategy
 /// </summary>
-public class SagaContinuationBuilder<TWorkflowData, TPreviousStepData> : ISagaContinuationBuilder<TWorkflowData, TPreviousStepData>
+internal class SagaContinuationBuilder<TWorkflowData, TPreviousStepData> : ISagaContinuationBuilder<TWorkflowData, TPreviousStepData>
     where TWorkflowData : class
     where TPreviousStepData : class
 {
@@ -15,7 +15,7 @@ public class SagaContinuationBuilder<TWorkflowData, TPreviousStepData> : ISagaCo
     private readonly List<SagaStepInfo> _sagaSteps;
     private readonly List<WorkflowStep> _steps;
 
-    public SagaContinuationBuilder(
+    internal SagaContinuationBuilder(
         List<WorkflowStep> steps,
         List<SagaStepInfo> sagaSteps,
         List<ErrorHandler> errorHandlers,
@@ -77,9 +77,13 @@ public class SagaContinuationBuilder<TWorkflowData, TPreviousStepData> : ISagaCo
         _errorHandlers.Add(errorHandler);
     }
 
-    public void ThenRetry(int maxAttempts)
+    public void ThenRetry(int maxRetries)
     {
-        ThenRetry(RetryPolicy.CreateDefault(maxAttempts));
+        if (maxRetries < 0)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                "The additional retry count cannot be negative");
+
+        ThenRetry(RetryPolicy.CreateDefault(maxRetries));
     }
 
     public void ThenRetry(RetryPolicy retryPolicy)

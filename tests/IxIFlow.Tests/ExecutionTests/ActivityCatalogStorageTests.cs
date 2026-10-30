@@ -20,7 +20,11 @@ public sealed class ActivityCatalogStorageTests
     {
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.DecoratedCatalog", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
-        IWorkflowStateRepository inner = sqlite ? new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "state.db") + ";Pooling=False") : new InMemoryWorkflowStateRepository();
+
+        IWorkflowStateRepository inner = sqlite
+            ? new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "state.db") + ";Pooling=False")
+            : new InMemoryWorkflowStateRepository();
+
         try
         {
             var decorated = GuardedStateRepository.Wrap(new FaultInjectingRepository(inner));
@@ -30,21 +34,35 @@ public sealed class ActivityCatalogStorageTests
             Assert.Same(files, catalog.CatalogArtifacts);
             var digest = await files.PutAsync(ArtifactKind.Package, new MemoryStream([1]));
             var descriptor = ActivityDescriptor.OfType(typeof(FileActivity), "decorated.activity", "1.0.0");
+
             await catalog.RegisterPackageAsync(new(descriptor.PackageId, descriptor.PackageVersion, digest,
-                new Dictionary<string, ArtifactDigest> { ["fixture.nuspec"] = digest }, []), new([descriptor], PackageExtraction.Indexed, null, [], []), files);
-            Assert.True(Assert.Single((await catalog.ListPackagesAsync(new(CatalogScope.Unrestricted, ArtifactPresent: true))).Items).ArtifactPresent);
+                    new Dictionary<string, ArtifactDigest> { ["fixture.nuspec"] = digest }, []),
+                new([descriptor], PackageExtraction.Indexed, null, [], []), files);
+
+            Assert.True(Assert.Single((await catalog.ListPackagesAsync(new(CatalogScope.Unrestricted, ArtifactPresent: true))).Items)
+                .ArtifactPresent);
+
             var activity = Assert.Single((await catalog.ListActivitiesAsync(new(CatalogScope.Unrestricted, ArtifactPresent: true))).Items);
             var provider = new ActivityProviderSelector(descriptor.PackageId, descriptor.PackageVersion, digest.Value);
-            Assert.True((await catalog.GetActivityAsync(descriptor.Key, descriptor.Version, provider, CatalogScope.Unrestricted))!.Activity.ArtifactPresent);
-            Assert.True((await catalog.GetPackageDetailAsync(descriptor.PackageId, descriptor.PackageVersion, CatalogScope.Unrestricted))!.Summary.ArtifactPresent);
+
+            Assert.True((await catalog.GetActivityAsync(descriptor.Key, descriptor.Version, provider, CatalogScope.Unrestricted))!.Activity
+                .ArtifactPresent);
+
+            Assert.True((await catalog.GetPackageDetailAsync(descriptor.PackageId, descriptor.PackageVersion, CatalogScope.Unrestricted))!
+                .Summary.ArtifactPresent);
+
             await files.DeleteAsync(digest);
             Assert.Empty((await catalog.ListActivitiesAsync(new(CatalogScope.Unrestricted, ArtifactPresent: true))).Items);
             Assert.Empty((await catalog.ListPackagesAsync(new(CatalogScope.Unrestricted, ArtifactPresent: true))).Items);
-            Assert.False((await catalog.GetActivityAsync(activity.Descriptor.Key, descriptor.Version, provider, CatalogScope.Unrestricted))!.Activity.ArtifactPresent);
+
+            Assert.False((await catalog.GetActivityAsync(activity.Descriptor.Key, descriptor.Version, provider, CatalogScope.Unrestricted))!
+                .Activity.ArtifactPresent);
         }
         finally
         {
-            if (inner is IAsyncDisposable disposable) await disposable.DisposeAsync();
+            if (inner is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
+
             await SqliteTestFiles.DeleteAsync(folder);
         }
     }
@@ -57,19 +75,31 @@ public sealed class ActivityCatalogStorageTests
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.CatalogFiles", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         var files = new FileSystemArtifactStore(Path.Combine(folder, "artifacts"));
-        IWorkflowStateRepository store = sqlite ? new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "state.db") + ";Pooling=False") : new InMemoryWorkflowStateRepository();
+
+        IWorkflowStateRepository store = sqlite
+            ? new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "state.db") + ";Pooling=False")
+            : new InMemoryWorkflowStateRepository();
+
         try
         {
             using var catalog = new WorkflowCatalog(store, artifacts: files);
             var first = await files.PutAsync(ArtifactKind.Package, new MemoryStream([1]));
             var last = await files.PutAsync(ArtifactKind.Package, new MemoryStream([2]));
+
             for (var index = 0; index < 140; index++)
             {
                 var id = "files.p" + index.ToString("D3");
-                var descriptor = ActivityDescriptor.OfType(typeof(FileActivity), id, "1.0.0") with { Key = "files." + index.ToString("D3") };
+
+                var descriptor = ActivityDescriptor.OfType(typeof(FileActivity), id, "1.0.0") with
+                {
+                    Key = "files." + index.ToString("D3")
+                };
+
                 await catalog.RegisterPackageAsync(new(id, "1.0.0", index < 139 ? first : last,
-                    new Dictionary<string, ArtifactDigest> { ["file.nuspec"] = first }, []), new([descriptor], PackageExtraction.Indexed, null, [], []), files);
+                        new Dictionary<string, ArtifactDigest> { ["file.nuspec"] = first }, []),
+                    new([descriptor], PackageExtraction.Indexed, null, [], []), files);
             }
+
             await files.DeleteAsync(first);
             var revision = await catalog.GetCatalogRevisionAsync();
             var packages = await catalog.ListPackagesAsync(new(CatalogScope.Unrestricted, ArtifactPresent: true, Limit: 1));
@@ -87,7 +117,9 @@ public sealed class ActivityCatalogStorageTests
         }
         finally
         {
-            if (store is IAsyncDisposable disposable) await disposable.DisposeAsync();
+            if (store is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
+
             await SqliteTestFiles.DeleteAsync(folder);
         }
     }
@@ -103,20 +135,29 @@ public sealed class ActivityCatalogStorageTests
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.CatalogSchema", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         var connectionString = "Data Source=" + Path.Combine(folder, "state.db") + ";Pooling=False";
+
         try
         {
-            await using (var store = new SqliteWorkflowStateRepository(connectionString)) await store.GetCatalogRevisionAsync();
+            await using (var store = new SqliteWorkflowStateRepository(connectionString))
+                await store.GetCatalogRevisionAsync();
+
             await using (var connection = new SqliteConnection(connectionString))
             {
-                if (column == "origin") await connection.ExecuteAsync("DROP INDEX ix_packages_origin");
+                if (column == "origin")
+                    await connection.ExecuteAsync("DROP INDEX ix_packages_origin");
+
                 await connection.ExecuteAsync("ALTER TABLE ixiflow_packages DROP COLUMN " + column);
             }
+
             await using var reopened = new SqliteWorkflowStateRepository(connectionString);
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.GetCatalogRevisionAsync());
             Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
             Assert.Contains("recreated", error.Message);
         }
-        finally { await SqliteTestFiles.DeleteAsync(folder); }
+        finally
+        {
+            await SqliteTestFiles.DeleteAsync(folder);
+        }
     }
 
     [Theory]
@@ -131,15 +172,23 @@ public sealed class ActivityCatalogStorageTests
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.CatalogIndexes", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         var connectionString = "Data Source=" + Path.Combine(folder, "state.db") + ";Pooling=False";
+
         try
         {
-            await using (var store = new SqliteWorkflowStateRepository(connectionString)) await store.GetCatalogRevisionAsync();
-            await using (var connection = new SqliteConnection(connectionString)) await connection.ExecuteAsync("DROP INDEX " + index);
+            await using (var store = new SqliteWorkflowStateRepository(connectionString))
+                await store.GetCatalogRevisionAsync();
+
+            await using (var connection = new SqliteConnection(connectionString))
+                await connection.ExecuteAsync("DROP INDEX " + index);
+
             await using var reopened = new SqliteWorkflowStateRepository(connectionString);
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.GetCatalogRevisionAsync());
             Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
         }
-        finally { await SqliteTestFiles.DeleteAsync(folder); }
+        finally
+        {
+            await SqliteTestFiles.DeleteAsync(folder);
+        }
     }
 
     [Fact]
@@ -149,16 +198,31 @@ public sealed class ActivityCatalogStorageTests
         var entries = await WorkflowPackageArchive.ReadAsync(new MemoryStream(bytes), ArtifactDigest.Of(bytes), new());
         var implementation = entries["lib/net10.0/Package.Activities.dll"].ToArray();
         var store = new InMemoryWorkflowStateRepository();
-        var empty = await new PackageIngestion(store, store).UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("rid.empty", "1.0.0", [])));
+
+        var empty = await new PackageIngestion(store, store).UploadPackageAsync(
+            new MemoryStream(ActivityPackageFixture.Package("rid.empty", "1.0.0", [])));
+
         Assert.Equal(PackageExtraction.Indexed, empty.Activities.Extraction);
         Assert.Empty(empty.Activities.Activities);
         Assert.Empty(empty.Activities.Closure!);
-        var shared = await new PackageIngestion(store, store).UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("rid.shared", "1.0.0", new()
-        { ["lib/net10.0/" + Path.GetFileName(typeof(IAsyncActivity).Assembly.Location)] = await File.ReadAllBytesAsync(typeof(IAsyncActivity).Assembly.Location) })));
+
+        var shared = await new PackageIngestion(store, store).UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package(
+            "rid.shared", "1.0.0", new()
+            {
+                ["lib/net10.0/" + Path.GetFileName(typeof(IAsyncActivity).Assembly.Location)] =
+                    await File.ReadAllBytesAsync(typeof(IAsyncActivity).Assembly.Location)
+            })));
+
         Assert.Equal(PackageExtraction.Indexed, shared.Activities.Extraction);
         Assert.Empty(shared.Activities.Activities);
-        var receipt = await new PackageIngestion(store, store).UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package("rid.unsupported", "1.0.0", new()
-        { ["ref/net10.0/Package.Activities.dll"] = implementation, ["runtimes/never-compatible-rid/lib/net10.0/Package.Activities.dll"] = implementation })));
+
+        var receipt = await new PackageIngestion(store, store).UploadPackageAsync(new MemoryStream(ActivityPackageFixture.Package(
+            "rid.unsupported", "1.0.0", new()
+            {
+                ["ref/net10.0/Package.Activities.dll"] = implementation,
+                ["runtimes/never-compatible-rid/lib/net10.0/Package.Activities.dll"] = implementation
+            })));
+
         Assert.Equal(PackageExtraction.Unloadable, receipt.Activities.Extraction);
         Assert.Empty(receipt.Activities.Activities);
         Assert.NotNull(receipt.Activities.Closure);

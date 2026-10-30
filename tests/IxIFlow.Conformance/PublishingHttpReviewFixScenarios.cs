@@ -12,15 +12,16 @@ public sealed partial class PublishingHttpScenarios
     private static readonly Lazy<byte[]> HttpScopePackage = new(() => PublishingFeed.Package("http.scope", new()
     {
         ["lib/net10.0/Http.Scope.dll"] = PublishingFeed.Emit("Http.Scope", """
-            using IxIFlow.Core; using IxIFlow.ActivitySdk; using System.Threading; using System.Threading.Tasks;
-            [WorkflowActivity("http.scope", Version = "1"), ScopeThreading(ScopeThreading.ThreadAffine)]
-            public sealed class Container : IScopeActivity<object>
-            {
-                public Task<object> OpenAsync(ScopeOpening opening, IScopeContext context, CancellationToken token) => Task.FromResult(new object());
-                public Task CloseAsync(object value, ScopeClosing closing, IScopeContext context, CancellationToken token) => Task.CompletedTask;
-            }
-            """)
+                                                                           using IxIFlow.Core; using IxIFlow.ActivitySdk; using System.Threading; using System.Threading.Tasks;
+                                                                           [WorkflowActivity("http.scope", Version = "1"), ScopeThreading(ScopeThreading.ThreadAffine)]
+                                                                           public sealed class Container : IScopeActivity<object>
+                                                                           {
+                                                                               public Task<object> OpenAsync(ScopeOpening opening, IScopeContext context, CancellationToken token) => Task.FromResult(new object());
+                                                                               public Task CloseAsync(object value, ScopeClosing closing, IScopeContext context, CancellationToken token) => Task.CompletedTask;
+                                                                           }
+                                                                           """)
     }));
+
     // Like the neighbouring HTTP scenarios, every regression declares StoreProfiles.All
     // (or its cross product). Local verification selects memory and SQLite.
     [Theory, MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
@@ -36,23 +37,32 @@ public sealed partial class PublishingHttpScenarios
         var before = (await store.GetPackageAsync(package.Id, package.Version))!;
         var revision = await store.GetCatalogRevisionAsync();
         byte[] bytes;
+
         await using (var content = await store.OpenAsync(package.Digest))
         {
             Assert.NotNull(content);
-            using var buffer = new MemoryStream(); await content.CopyToAsync(buffer); bytes = buffer.ToArray();
+            using var buffer = new MemoryStream();
+            await content.CopyToAsync(buffer);
+            bytes = buffer.ToArray();
         }
+
         var artifacts = new ArtifactProbe(store);
         var authorized = new List<WorkflowPackage>();
+
         await using var factory = new PublishingHttpFactory(store)
         {
             Artifacts = artifacts,
             ResourceAllowed = resource =>
             {
-                if (resource is not WorkflowPackage row) return true;
+                if (resource is not WorkflowPackage row)
+                    return true;
+
                 authorized.Add(row);
+
                 return !row.Withdrawn;
             }
         };
+
         using var client = factory.Operator();
         using var denied = await client.PostAsync("/pub/catalog/packages", new ByteArrayContent(bytes));
         Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
@@ -73,7 +83,8 @@ public sealed partial class PublishingHttpScenarios
         Assert.Equal(JsonSerializer.Serialize(before), JsonSerializer.Serialize(await store.GetPackageAsync(package.Id, package.Version)));
         await using var unchanged = await store.OpenAsync(package.Digest);
         Assert.NotNull(unchanged);
-        using var after = new MemoryStream(); await unchanged.CopyToAsync(after);
+        using var after = new MemoryStream();
+        await unchanged.CopyToAsync(after);
         Assert.Equal(bytes, after.ToArray());
     }
 
@@ -86,6 +97,7 @@ public sealed partial class PublishingHttpScenarios
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
         WorkflowDraft draft;
+
         if (kind == "workflow")
         {
             draft = await store.SaveDefinitionAsync(new("Published", 1, kind, TypedPublishingScenarios.Yaml("Published")), null);
@@ -94,27 +106,41 @@ public sealed partial class PublishingHttpScenarios
         else if (kind == "activity")
         {
             draft = await store.SaveDefinitionAsync(new("acme.http", 1, kind, ActivityYaml), null);
-            var package = (await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(PublishingFeed.Package("acme.http", [])))).Stored;
+
+            var package =
+                (await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(PublishingFeed.Package("acme.http", []))))
+                .Stored;
+
             await store.SetPackageWithdrawnAsync(package.Id, package.Version, true, new(package.LifecycleRevision), "protected");
         }
         else
         {
             draft = await store.SaveDefinitionAsync(new("notice", 1, kind, "template: {key: notice, version: 1}"), null);
-            var version = IxIFlow.Templates.TemplateVersion.Create<TemplateCatalogScenarios.Model>("notice", 1, "liquid", IxIFlow.Templates.TemplateFormat.Text,
+
+            var version = IxIFlow.Templates.TemplateVersion.Create<TemplateCatalogScenarios.Model>("notice", 1, "liquid",
+                IxIFlow.Templates.TemplateFormat.Text,
                 new IxIFlow.Templates.TemplateVariant("", "protected"));
+
             await store.RegisterTemplateVersionAsync(version, store);
         }
+
         var artifacts = new ArtifactProbe(store);
         object? deniedResource = null;
+
         await using var factory = new PublishingHttpFactory(store)
         {
             Artifacts = artifacts,
             ResourceAllowed = resource =>
             {
-                if (resource is not (WorkflowVersion or WorkflowPackage or IxIFlow.Templates.TemplateVersionEntry)) return true;
-                deniedResource = resource; return false;
+                if (resource is not (WorkflowVersion or WorkflowPackage or IxIFlow.Templates.TemplateVersionEntry))
+                    return true;
+
+                deniedResource = resource;
+
+                return false;
             }
         };
+
         factory.Options.PublishWait = TimeSpan.FromSeconds(10);
         using var client = factory.Operator();
         var revision = await store.GetCatalogRevisionAsync();
@@ -136,31 +162,47 @@ public sealed partial class PublishingHttpScenarios
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
         var bytes = HttpScopePackage.Value;
+
         await using var factory = new PublishingHttpFactory(store)
         {
             ConfigureServices = services =>
             {
-                if (applicationConverter) services.ConfigureHttpJsonOptions(options =>
-                    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
+                if (applicationConverter)
+                    services.ConfigureHttpJsonOptions(options =>
+                        options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
             }
         };
+
         using var client = factory.Operator();
+
         void Check(JsonElement value)
         {
             var scope = value.GetProperty("scope");
             Assert.Equal("Serialized", scope.GetProperty("concurrency").GetString());
             Assert.Equal("ThreadAffine", scope.GetProperty("threading").GetString());
         }
+
         foreach (var status in new[] { HttpStatusCode.Created, HttpStatusCode.OK })
         {
             using var upload = await client.PostAsync("/pub/catalog/packages", new ByteArrayContent(bytes));
             Assert.Equal(status, upload.StatusCode);
-            Check(Assert.Single((await Read(upload)).GetProperty("package").GetProperty("activities").GetProperty("activities").EnumerateArray()));
+
+            Check(Assert.Single((await Read(upload)).GetProperty("package").GetProperty("activities").GetProperty("activities")
+                .EnumerateArray()));
         }
-        foreach (var path in new[] { "/pub/catalog/activities", "/pub/catalog/activities/http.scope/versions", "/pub/catalog/packages/http.scope/1.0.0/activities" })
+
+        foreach (var path in new[]
+                 {
+                     "/pub/catalog/activities", "/pub/catalog/activities/http.scope/versions",
+                     "/pub/catalog/packages/http.scope/1.0.0/activities"
+                 })
             Check(Assert.Single((await Read(await client.GetAsync(path))).GetProperty("items").EnumerateArray()).GetProperty("descriptor"));
-        Check((await Read(await client.GetAsync("/pub/catalog/activities/http.scope/versions/1?packageId=http.scope&packageVersion=1.0.0&build=" + ArtifactDigest.Of(bytes).Value)))
+
+        Check((await Read(await client.GetAsync(
+                "/pub/catalog/activities/http.scope/versions/1?packageId=http.scope&packageVersion=1.0.0&build=" +
+                ArtifactDigest.Of(bytes).Value)))
             .GetProperty("activity").GetProperty("descriptor"));
+
         Check(Assert.Single((await Read(await client.GetAsync("/pub/catalog/packages/http.scope/1.0.0")))
             .GetProperty("activities").GetProperty("activities").EnumerateArray()));
     }
@@ -173,11 +215,15 @@ public sealed partial class PublishingHttpScenarios
     {
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
-        await using var factory = new PublishingHttpFactory(store) { GroupPrefix = "/api", PathBase = pathBase.Length == 0 ? null : pathBase };
+
+        await using var factory = new PublishingHttpFactory(store)
+            { GroupPrefix = "/api", PathBase = pathBase.Length == 0 ? null : pathBase };
+
         using var client = factory.Operator();
         var root = pathBase + "/api/pub";
         var path = root + "/drafts/workflow/Work/1";
-        using var save = Request("PUT", path, content: Yaml()); save.Headers.TryAddWithoutValidation("If-None-Match", "*");
+        using var save = Request("PUT", path, content: Yaml());
+        save.Headers.TryAddWithoutValidation("If-None-Match", "*");
         using var saved = await client.SendAsync(save);
         Assert.Equal(HttpStatusCode.Created, saved.StatusCode);
         Assert.Equal(path, saved.Headers.Location!.ToString());
@@ -187,6 +233,7 @@ public sealed partial class PublishingHttpScenarios
         Assert.StartsWith(root + "/publications/", published.Headers.Location!.ToString());
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync(published.Headers.Location)).StatusCode);
         var bytes = PublishingFeed.Package("http.grouped", []);
+
         foreach (var status in new[] { HttpStatusCode.Created, HttpStatusCode.OK })
         {
             using var upload = await client.PostAsync(root + "/catalog/packages", new ByteArrayContent(bytes));
@@ -194,10 +241,10 @@ public sealed partial class PublishingHttpScenarios
             Assert.Equal(root + "/catalog/packages/http.grouped/1.0.0", upload.Headers.Location!.ToString());
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync(upload.Headers.Location)).StatusCode);
         }
+
         var feed = await Read(await client.GetAsync(root + "/nuget/index.json"));
         var address = feed.GetProperty("resources")[0].GetProperty("@id").GetString();
         Assert.EndsWith(root + "/nuget/flatcontainer/", address);
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync(address + "http.grouped/index.json")).StatusCode);
     }
-
 }

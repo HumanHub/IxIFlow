@@ -4,14 +4,26 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 public enum MemberRegistryScenario
 {
-    Registration, HeartbeatAndLiveness, CapabilityRepublish, Pruning, Unregister, MemberKinds,
-    AtomicSnapshots, CancelledAndInvalidWrites, ConfiguredInterval
+    Registration,
+    HeartbeatAndLiveness,
+    CapabilityRepublish,
+    Pruning,
+    Unregister,
+    MemberKinds,
+    AtomicSnapshots,
+    CancelledAndInvalidWrites,
+    ConfiguredInterval
 }
 
-internal sealed class MemberRegistryContract(IWorkflowStateRepository store, Func<Guid, TimeSpan, Task> age,
-    Func<Task<DateTime>> now, bool sqlite = false, Func<Guid, Task>? assertRowsRemoved = null)
+internal sealed class MemberRegistryContract(
+    IWorkflowStateRepository store,
+    Func<Guid, TimeSpan, Task> age,
+    Func<Task<DateTime>> now,
+    bool sqlite = false,
+    Func<Guid, Task>? assertRowsRemoved = null)
 {
     private readonly List<Guid> _ids = [];
+
     internal static MemberRegistration Registration(Guid? id = null, MemberKind kind = MemberKind.Host) =>
         new(id ?? Guid.NewGuid(), kind, "orders", kind == MemberKind.Coordinator ? "https://coordinator:7443" : null,
             kind == MemberKind.Host ? 8 : 0, "1.0.0", TimeSpan.FromSeconds(5),
@@ -22,6 +34,7 @@ internal sealed class MemberRegistryContract(IWorkflowStateRepository store, Fun
         member ??= Registration();
         _ids.Add(member.Id);
         await store.RegisterMemberAsync(member);
+
         return member;
     }
 
@@ -33,21 +46,50 @@ internal sealed class MemberRegistryContract(IWorkflowStateRepository store, Fun
         {
             switch (scenario)
             {
-                case MemberRegistryScenario.Registration: await RegisterAndRead(); break;
-                case MemberRegistryScenario.HeartbeatAndLiveness: await HeartbeatAndLiveness(); break;
-                case MemberRegistryScenario.CapabilityRepublish: await CapabilityRepublish(); break;
-                case MemberRegistryScenario.Pruning: await Pruning(); break;
-                case MemberRegistryScenario.Unregister: await Unregister(); break;
-                case MemberRegistryScenario.MemberKinds: await MemberKinds(); break;
-                case MemberRegistryScenario.AtomicSnapshots: await AtomicSnapshots(); break;
-                case MemberRegistryScenario.CancelledAndInvalidWrites: await CancelledAndInvalidWrites(); break;
-                case MemberRegistryScenario.ConfiguredInterval: await ConfiguredInterval(); break;
-                default: throw new ArgumentOutOfRangeException(nameof(scenario));
+                case MemberRegistryScenario.Registration:
+                    await RegisterAndRead();
+
+                    break;
+                case MemberRegistryScenario.HeartbeatAndLiveness:
+                    await HeartbeatAndLiveness();
+
+                    break;
+                case MemberRegistryScenario.CapabilityRepublish:
+                    await CapabilityRepublish();
+
+                    break;
+                case MemberRegistryScenario.Pruning:
+                    await Pruning();
+
+                    break;
+                case MemberRegistryScenario.Unregister:
+                    await Unregister();
+
+                    break;
+                case MemberRegistryScenario.MemberKinds:
+                    await MemberKinds();
+
+                    break;
+                case MemberRegistryScenario.AtomicSnapshots:
+                    await AtomicSnapshots();
+
+                    break;
+                case MemberRegistryScenario.CancelledAndInvalidWrites:
+                    await CancelledAndInvalidWrites();
+
+                    break;
+                case MemberRegistryScenario.ConfiguredInterval:
+                    await ConfiguredInterval();
+
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(scenario));
             }
         }
         finally
         {
-            foreach (var id in _ids) await store.UnregisterMemberAsync(id);
+            foreach (var id in _ids)
+                await store.UnregisterMemberAsync(id);
         }
     }
 
@@ -123,7 +165,10 @@ internal sealed class MemberRegistryContract(IWorkflowStateRepository store, Fun
         Assert.True(await store.HeartbeatAsync(member.Id, member.Capabilities));
         await age(member.Id, TimeSpan.FromHours(1) + TimeSpan.FromSeconds(1));
         Assert.DoesNotContain(await store.GetLiveMembersAsync(), m => m.Id == member.Id);
-        if (assertRowsRemoved != null) await assertRowsRemoved(member.Id);
+
+        if (assertRowsRemoved != null)
+            await assertRowsRemoved(member.Id);
+
         Assert.False(await store.HeartbeatAsync(member.Id, member.Capabilities));
         await store.RegisterMemberAsync(member);
         await Read(member.Id);
@@ -136,7 +181,9 @@ internal sealed class MemberRegistryContract(IWorkflowStateRepository store, Fun
         await store.UnregisterMemberAsync(member.Id);
         Assert.DoesNotContain(await store.GetLiveMembersAsync(), m => m.Id == member.Id);
         Assert.False(await store.HeartbeatAsync(member.Id, member.Capabilities));
-        if (assertRowsRemoved != null) await assertRowsRemoved(member.Id);
+
+        if (assertRowsRemoved != null)
+            await assertRowsRemoved(member.Id);
     }
 
     private async Task MemberKinds()
@@ -144,6 +191,7 @@ internal sealed class MemberRegistryContract(IWorkflowStateRepository store, Fun
         var host = await Register();
         var coordinator = Registration(kind: MemberKind.Coordinator);
         _ids.Add(coordinator.Id);
+
         if (sqlite)
         {
             var error = await Assert.ThrowsAsync<InvalidOperationException>(() => store.RegisterMemberAsync(coordinator));
@@ -152,8 +200,10 @@ internal sealed class MemberRegistryContract(IWorkflowStateRepository store, Fun
             await Read(host.Id);
             await store.UnregisterMemberAsync(host.Id);
             await Register(); // A stopped host releases the advertisement slot on the owned repository.
+
             return;
         }
+
         await store.RegisterMemberAsync(coordinator);
         var saved = await Read(coordinator.Id);
         Assert.Equal(MemberKind.Coordinator, saved.Kind);
@@ -173,17 +223,22 @@ internal sealed class MemberRegistryContract(IWorkflowStateRepository store, Fun
     {
         static Dictionary<string, string> Snapshot(int generation) => Enumerable.Range(0, 24)
             .ToDictionary(i => $"cap-{i}", _ => generation.ToString());
+
         var member = await Register(Registration() with { Capabilities = Snapshot(0) });
+
         var writes = Task.Run(async () =>
         {
-            for (var i = 1; i <= 16; i++) Assert.True(await store.HeartbeatAsync(member.Id, Snapshot(i)));
+            for (var i = 1; i <= 16; i++)
+                Assert.True(await store.HeartbeatAsync(member.Id, Snapshot(i)));
         });
+
         for (var i = 0; i < 16; i++)
         {
             var saved = await Read(member.Id);
             Assert.Equal(24, saved.Capabilities.Count);
             Assert.Single(saved.Capabilities.Values.Distinct());
         }
+
         await writes;
         Assert.All((await Read(member.Id)).Capabilities.Values, value => Assert.Equal("16", value));
     }
@@ -195,13 +250,20 @@ internal sealed class MemberRegistryContract(IWorkflowStateRepository store, Fun
         cancelled.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.UnregisterMemberAsync(member.Id, cancelled.Token));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.GetLiveMembersAsync(cancelled.Token));
+
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.HeartbeatAsync(member.Id,
             new Dictionary<string, string>(), cancelled.Token));
+
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => store.RegisterMemberAsync(member, cancelled.Token));
+
         await Assert.ThrowsAsync<ArgumentException>(() => store.HeartbeatAsync(member.Id,
             new Dictionary<string, string> { [" "] = "invalid" }));
+
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => store.RegisterMemberAsync(member with
-            { HeartbeatInterval = TimeSpan.FromMinutes(20) + TimeSpan.FromTicks(1) }));
+        {
+            HeartbeatInterval = TimeSpan.FromMinutes(20) + TimeSpan.FromTicks(1)
+        }));
+
         Assert.Equal(2, (await Read(member.Id)).Capabilities.Count);
     }
 

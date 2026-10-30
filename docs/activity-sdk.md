@@ -30,6 +30,7 @@ public sealed class AddFee : IAsyncActivity
     {
         Amount += Fee;
         Receipt = "Quote for " + Customer;
+
         return Task.CompletedTask;
     }
 }
@@ -70,6 +71,7 @@ The bundled analyzers check mapping direction, required mappings, accessors and 
 ```csharp
 services.AddIxIFlow()
     .AddActivities(typeof(AddFee).Assembly);
+
 // To select one activity instead:
 // services.AddIxIFlow().AddActivity<AddFee>();
 ```

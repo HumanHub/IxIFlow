@@ -14,11 +14,14 @@ public sealed class BreakpointScenarios
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
         var registry = new WorkflowCatalog();
+
         var definition = Workflow.Create<Data>("ConformanceBreakpoint").Step<Noop>().WaitFor<Go>("go")
             .Step<Noop>().WithId("target").Build();
+
         var repository = store.NewRepository();
         var first = Services(repository, registry);
         string id;
+
         try
         {
             var client = first.GetRequiredService<IWorkflowClient>();
@@ -34,8 +37,11 @@ public sealed class BreakpointScenarios
         {
             await first.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
             await first.DisposeAsync();
-            if (repository is IAsyncDisposable disposable) await disposable.DisposeAsync();
+
+            if (repository is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
         }
+
         await using var second = Services(store.NewRepository(), registry);
         var operations = second.GetRequiredService<IWorkflowOperations>();
         Assert.Equal(1, Assert.Single(await operations.GetBreakpointsAsync(id)).HitCount);
@@ -48,12 +54,18 @@ public sealed class BreakpointScenarios
 
     private static ServiceProvider Services(IWorkflowStateRepository repository, WorkflowCatalog registry)
     {
-        var services = new ServiceCollection().AddLogging(); services.AddIxIFlow(o => o.Debugging = true);
-        services.AddSingleton(repository); services.AddSingleton<IWorkflowCatalog>(registry);
+        var services = new ServiceCollection().AddLogging();
+        services.AddIxIFlow(o => o.Debugging = true);
+        services.AddSingleton(repository);
+        services.AddSingleton<IWorkflowCatalog>(registry);
+
         return services.BuildServiceProvider();
     }
+
     public sealed class Data;
+
     public sealed class Go;
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;

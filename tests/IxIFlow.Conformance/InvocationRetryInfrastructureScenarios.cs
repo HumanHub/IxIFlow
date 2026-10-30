@@ -21,10 +21,18 @@ public sealed class InvocationRetryInfrastructureScenarios
         var first = await fixture.Open(holdRetries: true);
         var child = Workflow.Create<Data>("InfrastructureRetryChild").Step<FailOnce>().Build();
         await fixture.Catalog.RegisterWorkflowAsync(child);
+
         var parent = new WorkflowBuilder<Data, object>([], "InfrastructureRetryInvocation")
             .Invoke<Data>(child.Name, 1, setup => setup
                 .OnError<InvalidOperationException>(error => error.ThenRetry(new RetryPolicy(fixture.Delay, fixture.Delay, 1, 1)))
-                .OnError<IOException>(error => { if (retry) error.ThenRetry(new RetryPolicy(3)); else error.ThenIgnore(); })).Build();
+                .OnError<IOException>(error =>
+                {
+                    if (retry)
+                        error.ThenRetry(new RetryPolicy(3));
+                    else
+                        error.ThenIgnore();
+                })).Build();
+
         await fixture.Catalog.RegisterWorkflowAsync(parent);
         var id = await first.Client.StartAsync(parent, new Data());
         var parked = await first.Parked(id);
@@ -51,9 +59,10 @@ public sealed class InvocationRetryInfrastructureScenarios
         fault.Armed = false;
         await second.Client.RecoverAsync(id);
         await Success(second.Client, id);
-        var completed = Record((await second.Store.GetWorkflowInstanceAsync(id))!);
-        Assert.Equal(2, completed.Attempts.Count);
-        Assert.Equal(1, completed.ScheduledRetries);
+        await InvocationTraceAssertions.PrunedAsync(second.Store, id);
+        var completed = await InvocationTraceAssertions.AttemptsAsync(second.Store, id, parent);
+        Assert.Equal(2, completed.Length);
+        Assert.Single(await InvocationTraceAssertions.RetriesAsync(second.Store, id));
         Assert.Equal(2, fixture.Ledger.Calls);
     }
 
@@ -68,36 +77,54 @@ public sealed class InvocationRetryInfrastructureScenarios
         var first = await fixture.Open(holdRetries: true);
         var child = Workflow.Create<Data>("ClockRetryChild").Step<FailOnce>().Build();
         await fixture.Catalog.RegisterWorkflowAsync(child);
+
         var parent = new WorkflowBuilder<Data, object>([], "ClockRetryInvocation")
             .Invoke<Data>(child.Name, 1, setup => setup.OnError(error =>
                 error.ThenRetry(new RetryPolicy(fixture.Delay, fixture.Delay, 1, 1)))).Build();
+
         await fixture.Catalog.RegisterWorkflowAsync(parent);
         var id = await first.Client.StartAsync(parent, new Data());
         var parked = await first.Parked(id);
         await first.DisposeAsync();
         var second = await fixture.Open();
+
         // Exercise the server-clock path against a controllable store whose clock is ahead of the host.
         var waiting = InvocationRetryProfile.Due(TimeProvider.System, second.Store, id, parked.RunnableAtUtc!.Value);
         Assert.False(waiting.IsCompleted);
         await fixture.Due(second.Store, id, parked.RunnableAtUtc.Value);
         await waiting.WaitAsync(InvocationRetryProfile.Patience(fixture.Delay));
-        Assert.DoesNotContain(await second.Store.GetRunnableInstancesAsync(new ClaimQuery(Guid.NewGuid(), new Dictionary<string, string>())),
+
+        Assert.DoesNotContain(
+            await second.Store.GetRunnableInstancesAsync(new ClaimQuery(Guid.NewGuid(), new Dictionary<string, string>())),
             item => item.InstanceId == id);
+
         await second.Client.RecoverAsync(id);
         await Success(second.Client, id);
-        Assert.Equal(2, Record((await second.Store.GetWorkflowInstanceAsync(id))!).Attempts.Count);
+        await InvocationTraceAssertions.PrunedAsync(second.Store, id);
+        Assert.Equal(2, (await InvocationTraceAssertions.AttemptsAsync(second.Store, id, parent)).Length);
     }
 
     public class CatalogFault : DispatchProxy
     {
         internal IWorkflowCatalog Inner = null!;
         internal bool Armed;
+
         protected override object? Invoke(MethodInfo? method, object?[]? args)
         {
-            if (Armed && method!.Name == nameof(IWorkflowCatalog.GetWorkflowVersionAsync) && args?[0] as string == "InfrastructureRetryChild")
+            if (Armed && method!.Name == nameof(IWorkflowCatalog.GetWorkflowVersionAsync) &&
+                args?[0] as string == "InfrastructureRetryChild")
                 throw new IOException("injected child-start catalog failure");
-            try { return method!.Invoke(Inner, args); }
-            catch (TargetInvocationException error) { ExceptionDispatchInfo.Capture(error.InnerException!).Throw(); throw; }
+
+            try
+            {
+                return method!.Invoke(Inner, args);
+            }
+            catch (TargetInvocationException error)
+            {
+                ExceptionDispatchInfo.Capture(error.InnerException!).Throw();
+
+                throw;
+            }
         }
     }
 }

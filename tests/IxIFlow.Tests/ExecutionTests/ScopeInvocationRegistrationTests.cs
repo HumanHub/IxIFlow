@@ -17,11 +17,14 @@ public sealed class ScopeInvocationRegistrationTests
     {
         var typed = Assert.Throws<WorkflowEngineException>(() => new WorkflowBuilder<Data, object>([], "Caller")
             .Invoke<TypedChild, Data>(sourcePath: "caller.cs", sourceLine: 17).Build());
+
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, typed.Kind);
         Assert.Contains("caller.cs:17", typed.Message);
         var contract = WorkflowDefinitionValidator.GetContract(RequiringChild());
+
         var pinned = Assert.Throws<WorkflowEngineException>(() => new WorkflowBuilder<Data, object>([], "Caller")
             .Invoke<Data>("RequiringChild", 1, contract).Build());
+
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, pinned.Kind);
         Assert.NotEqual(WorkflowContract.OfType(typeof(Data)).Hash, contract.Hash);
         Assert.Equal(contract.Hash, WorkflowContract.Parse(contract.ToJson()).Hash);
@@ -59,9 +62,15 @@ public sealed class ScopeInvocationRegistrationTests
         services.AddIxIFlow();
         services.AddSingleton<IWorkflowStateRepository>(store);
         services.AddSingleton(probe);
-        if (callerFirst) services.RegisterWorkflow<DiParent, Data>();
+
+        if (callerFirst)
+            services.RegisterWorkflow<DiParent, Data>();
+
         services.RegisterWorkflow<DiChild, Data>();
-        if (!callerFirst) services.RegisterWorkflow<DiParent, Data>();
+
+        if (!callerFirst)
+            services.RegisterWorkflow<DiParent, Data>();
+
         await using var provider = services.BuildServiceProvider();
         var error = Assert.Throws<WorkflowEngineException>(() => provider.GetRequiredService<IWorkflowClient>());
         AssertRefusal(error);
@@ -106,11 +115,16 @@ public sealed class ScopeInvocationRegistrationTests
         Assert.Contains("invoke-child", Assert.Single(published.Workflow!.Invocations!).Step);
         using var callers = new WorkflowCatalog(store);
         using var callees = new WorkflowCatalog(store);
-        if (callerFirst) await callers.RegisterWorkflowVersionAsync(published.Workflow, source);
-        else await callees.RegisterWorkflowAsync(RequiringChild());
+
+        if (callerFirst)
+            await callers.RegisterWorkflowVersionAsync(published.Workflow, source);
+        else
+            await callees.RegisterWorkflowAsync(RequiringChild());
+
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => callerFirst
             ? callees.RegisterWorkflowAsync(RequiringChild())
             : callers.RegisterWorkflowVersionAsync(published.Workflow, source));
+
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.Contains("workflow.yaml:", error.Message);
         Assert.Contains("Caller", error.Message);
@@ -124,9 +138,12 @@ public sealed class ScopeInvocationRegistrationTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var contract = WorkflowDefinitionValidator.GetContract(RequiringChild());
+
         // Catalog metadata is sufficient for refusal; no executable DTO or bundle
         // is needed to know that this child requires an enclosing scope.
-        await store.RegisterWorkflowVersionAsync(new("RequiringChild", 1, "structure", contract.ToJson(), contract.Hash, Descriptor: WorkflowDescriptor.Of(RequiringChild()), Invocations: []));
+        await store.RegisterWorkflowVersionAsync(new("RequiringChild", 1, "structure", contract.ToJson(), contract.Hash,
+            Descriptor: WorkflowDescriptor.Of(RequiringChild()), Invocations: []));
+
         var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Yaml), null);
         var result = await new WorkflowPublisher(store, store, Options()).PublishAsync(draft.Id);
         var error = Assert.Single(result.Diagnostics);
@@ -145,8 +162,10 @@ public sealed class ScopeInvocationRegistrationTests
         await catalog.RegisterWorkflowAsync(Workflow.Create<Data>("RequiringChild").Build());
         await catalog.RegisterWorkflowAsync(caller);
         var actual = RequiringChild();
+
         var mismatch = Assert.Throws<WorkflowEngineException>(() => ChildInputs.CheckContract(actual,
             caller.Steps[0], WorkflowDefinitionValidator.GetContract(actual)));
+
         Assert.Equal(WorkflowErrorKind.ArtifactMismatch, mismatch.Kind);
         var services = new ServiceCollection().AddLogging();
         services.AddIxIFlow();
@@ -154,8 +173,10 @@ public sealed class ScopeInvocationRegistrationTests
         services.AddSingleton<IWorkflowCatalog>(catalog);
         services.AddSingleton<IWorkflowDefinitionSource>(new ChangedChild(catalog, actual));
         await using var provider = services.BuildServiceProvider();
+
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(caller, new Data()));
+
         Assert.Equal(WorkflowErrorKind.ArtifactMismatch, error.Kind);
         Assert.Contains("scope requirements differ", error.Message);
         Assert.DoesNotContain((await store.QueryInstancesAsync(new())).Items, row => row.WorkflowName == "RequiringChild");
@@ -171,9 +192,11 @@ public sealed class ScopeInvocationRegistrationTests
         await using var provider = services.BuildServiceProvider();
         var catalog = provider.GetRequiredService<IWorkflowCatalog>();
         await catalog.RegisterWorkflowAsync(Workflow.Create<Data>("ScopeFree").Build());
+
         var caller = new WorkflowBuilder<Data, object>([], "Accepted")
             .Invoke<Data>("ScopeFree", 1)
             .Invoke<ScopeFreeDiChild, Data>().Build();
+
         var client = provider.GetRequiredService<IWorkflowClient>();
         var started = await client.RunAsync(caller, new Data());
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -186,10 +209,12 @@ public sealed class ScopeInvocationRegistrationTests
     {
         using var catalog = new WorkflowCatalog(store);
         await catalog.RegisterWorkflowAsync(RequiringChild());
+
         var caller = new WorkflowBuilder<Data, object>([], "Caller")
             .Scope<ProvidingScope>(null, body => body
                 .Invoke<Data>("RequiringChild", 1, sourcePath: "caller.cs", sourceLine: 17).Named("invoke-child"))
             .Build();
+
         AssertRefusal(await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.RegisterWorkflowAsync(caller)));
         Assert.Empty((await store.QueryInstancesAsync(new())).Items);
     });
@@ -204,53 +229,99 @@ public sealed class ScopeInvocationRegistrationTests
     }
 
     private static WorkflowDefinition RequiringChild() => Workflow.Create<Data>("RequiringChild").RequiresScope<Value>().Build();
+
     private static WorkflowDefinition Caller(bool di)
     {
         var builder = Workflow.Create<Data>("Caller").Step<Effect>();
-        return (di ? builder.Invoke<DiChild, Data>(sourcePath: "caller.cs", sourceLine: 17)
-            : builder.Invoke<Data>("RequiringChild", 1, sourcePath: "caller.cs", sourceLine: 17))
+
+        return (di
+                ? builder.Invoke<DiChild, Data>(sourcePath: "caller.cs", sourceLine: 17)
+                : builder.Invoke<Data>("RequiringChild", 1, sourcePath: "caller.cs", sourceLine: 17))
             .Named("invoke-child").Build();
     }
 
     private static WorkflowPublisherOptions Options() => new() { SourceOptions = YamlTestContracts.Create(("Data", typeof(Data))) };
+
     private const string Yaml = """
-        workflow: {name: Caller, dataType: Data}
-        definitions:
-          - kind: invokeWorkflow
-            id: invoke-child
-            workflow: {name: RequiringChild, version: 1}
-        """;
+                                workflow: {name: Caller, dataType: Data}
+                                definitions:
+                                  - kind: invokeWorkflow
+                                    id: invoke-child
+                                    workflow: {name: RequiringChild, version: 1}
+                                """;
 
     private static async Task WithStore(bool sqlite, Func<IWorkflowStateRepository, Task> test)
     {
-        if (!sqlite) { await test(new InMemoryWorkflowStateRepository()); return; }
+        if (!sqlite)
+        {
+            await test(new InMemoryWorkflowStateRepository());
+
+            return;
+        }
+
         var directory = Path.Combine(Path.GetTempPath(), "IxIFlow.ScopeInvocation", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
+
         try
         {
             await using var store = new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(directory, "catalog.db"));
             await test(store);
         }
-        finally { await SqliteTestFiles.DeleteAsync(directory); }
+        finally
+        {
+            await SqliteTestFiles.DeleteAsync(directory);
+        }
     }
 
     public sealed class Data;
+
     public sealed class Value;
+
     public sealed class ProvidingScope : IScopeActivity<Value>
     {
         public Task<Value> OpenAsync(ScopeOpening opening, IScopeContext context, CancellationToken token) => Task.FromResult(new Value());
         public Task CloseAsync(Value value, ScopeClosing closing, IScopeContext context, CancellationToken token) => Task.CompletedTask;
     }
-    public sealed class Probe { public int Effects; }
+
+    public sealed class Probe
+    {
+        public int Effects;
+    }
+
     public sealed class Effect(Probe probe) : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken token) { probe.Effects++; return Task.CompletedTask; } }
-    [Workflow("RequiringChild")] public sealed class TypedChild : IWorkflow<Data>
-    { public void Build(IWorkflowBuilder<Data> builder) => builder.RequiresScope<Value>(); }
-    [Workflow("RequiringChild")] public sealed class DiChild(Probe probe) : IWorkflow<Data>
-    { public void Build(IWorkflowBuilder<Data> builder) { GC.KeepAlive(probe); builder.RequiresScope<Value>(); } }
-    [Workflow("ScopeFree")] public sealed class ScopeFreeDiChild(Probe probe) : IWorkflow<Data>
-    { public void Build(IWorkflowBuilder<Data> builder) => GC.KeepAlive(probe); }
-    [Workflow("Caller")] public sealed class DiParent(Probe probe) : IWorkflow<Data>
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken token)
+        {
+            probe.Effects++;
+
+            return Task.CompletedTask;
+        }
+    }
+
+    [Workflow("RequiringChild")]
+    public sealed class TypedChild : IWorkflow<Data>
+    {
+        public void Build(IWorkflowBuilder<Data> builder) => builder.RequiresScope<Value>();
+    }
+
+    [Workflow("RequiringChild")]
+    public sealed class DiChild(Probe probe) : IWorkflow<Data>
+    {
+        public void Build(IWorkflowBuilder<Data> builder)
+        {
+            GC.KeepAlive(probe);
+            builder.RequiresScope<Value>();
+        }
+    }
+
+    [Workflow("ScopeFree")]
+    public sealed class ScopeFreeDiChild(Probe probe) : IWorkflow<Data>
+    {
+        public void Build(IWorkflowBuilder<Data> builder) => GC.KeepAlive(probe);
+    }
+
+    [Workflow("Caller")]
+    public sealed class DiParent(Probe probe) : IWorkflow<Data>
     {
         public void Build(IWorkflowBuilder<Data> builder)
         {
@@ -261,9 +332,13 @@ public sealed class ScopeInvocationRegistrationTests
 
     private sealed class ChangedChild(IWorkflowDefinitionSource original, WorkflowDefinition actual) : IWorkflowDefinitionSource
     {
-        public Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest, CancellationToken token = default) =>
+        public Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest,
+            CancellationToken token = default) =>
             original.AcquireWorkflowDefinitionAsync(name, version, digest, token);
+
         public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version, CancellationToken token = default) =>
-            name == actual.Name ? Task.FromResult(new WorkflowDefinitionLease(actual)) : original.ResolveWorkflowDefinitionAsync(name, version, token);
+            name == actual.Name
+                ? Task.FromResult(new WorkflowDefinitionLease(actual))
+                : original.ResolveWorkflowDefinitionAsync(name, version, token);
     }
 }

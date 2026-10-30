@@ -56,8 +56,11 @@ public sealed class IncomingWebhookScenarios
         Assert.Contains(response.StatusCode, new[] { HttpStatusCode.OK, HttpStatusCode.Accepted });
         var id = await Id(response);
         Assert.NotNull(await factory.Repository.GetWorkflowInstanceAsync(id));
-        if (response.StatusCode == HttpStatusCode.Accepted) Assert.NotNull(response.Headers.Location);
-        else Assert.DoesNotContain("Secret", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+
+        if (response.StatusCode == HttpStatusCode.Accepted)
+            Assert.NotNull(response.Headers.Location);
+        else
+            Assert.DoesNotContain("Secret", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -72,7 +75,10 @@ public sealed class IncomingWebhookScenarios
         using var retry = await Start(http, key: "lost-response");
         Assert.Equal(HttpStatusCode.Accepted, retry.StatusCode);
         Assert.Equal(id, await Id(retry));
-        Assert.Single(await Task.WhenAll((await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items.Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        Assert.Single(await Task.WhenAll(
+            (await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items
+            .Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Theory]
@@ -85,7 +91,10 @@ public sealed class IncomingWebhookScenarios
         using var first = await Start(http, key: "conflict");
         using var conflict = await Start(http, key: "conflict", value: 9);
         Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
-        Assert.Single(await Task.WhenAll((await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items.Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        Assert.Single(await Task.WhenAll(
+            (await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items
+            .Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Theory]
@@ -101,7 +110,10 @@ public sealed class IncomingWebhookScenarios
         request.Headers.Add("webhook-signature", "v1,invalid");
         using var response = await http.SendAsync(request);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
-        Assert.Empty(await Task.WhenAll((await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items.Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        Assert.Empty(await Task.WhenAll(
+            (await factory.Repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "HttpApproval", Limit: int.MaxValue))).Items
+            .Select(async row => (await factory.Repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Theory]
@@ -117,8 +129,10 @@ public sealed class IncomingWebhookScenarios
         using var request = Event(id, "approval");
         using var response = await http.SendAsync(request);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
         var eventId = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(
             JsonSerializer.Serialize(new[] { "urn:conformance", "approval-1" }))));
+
         Assert.NotNull(await factory.Repository.GetEventAsync(id, eventId));
     }
 
@@ -176,8 +190,10 @@ public sealed class IncomingWebhookScenarios
         using var request = Event(id, "approval");
         using var response = await secondHttp.SendAsync(request);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
         var result = await first.Services.GetRequiredService<IWorkflowClient>().AwaitAsync(id, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(30));
+
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
     }
 
@@ -189,21 +205,36 @@ public sealed class IncomingWebhookScenarios
         var first = store.NewRepository();
         var second = store.NewRepository();
         var request = new WorkflowAdmission("sender", "trigger", "key", new string('A', 64), "owner");
+
         CheckpointCommit Commit() => CheckpointCommit.CreateAdmission(new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Race", WorkflowVersion = 1,
-            Status = WorkflowStatus.Running, WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)), WorkflowDataJson = StoredJson.Inline("{}"),
+            Status = WorkflowStatus.Running, WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
+            WorkflowDataJson = StoredJson.Inline("{}"),
             ExecutionStateJson = JsonSerializer.Serialize(new ExecutionCheckpoint
             {
                 StructureHash = "race", Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
             })
         });
+
         var left = Commit();
         var right = Commit();
         using var barrier = new Barrier(2);
+
         var results = await Task.WhenAll(
-            Task.Run(async () => { barrier.SignalAndWait(); return await ((IWorkflowAdmissionStore)first).AdmitWorkflowInstanceAsync(left, request); }),
-            Task.Run(async () => { barrier.SignalAndWait(); return await ((IWorkflowAdmissionStore)second).AdmitWorkflowInstanceAsync(right, request); }));
+            Task.Run(async () =>
+            {
+                barrier.SignalAndWait();
+
+                return await ((IWorkflowAdmissionStore)first).AdmitWorkflowInstanceAsync(left, request);
+            }),
+            Task.Run(async () =>
+            {
+                barrier.SignalAndWait();
+
+                return await ((IWorkflowAdmissionStore)second).AdmitWorkflowInstanceAsync(right, request);
+            }));
+
         var winner = Assert.Single(results, r => r.Status == WorkflowCommitStatus.Applied).Admission!;
         Assert.All(results, result => Assert.Equal(winner, result.Admission));
         Assert.NotNull(await second.GetWorkflowInstanceAsync(winner.InstanceId));
@@ -214,7 +245,10 @@ public sealed class IncomingWebhookScenarios
     private static Task<HttpResponseMessage> Start(HttpClient http, string? key = null, int value = 1, string route = "/orders")
     {
         var request = new HttpRequestMessage(HttpMethod.Post, route) { Content = JsonContent.Create(new { value }) };
-        if (key != null) request.Headers.Add("Idempotency-Key", key);
+
+        if (key != null)
+            request.Headers.Add("Idempotency-Key", key);
+
         return http.SendAsync(request);
     }
 
@@ -225,25 +259,40 @@ public sealed class IncomingWebhookScenarios
             specversion = "1.0", source = "urn:conformance", id = "approval-1", type = "approved", data = new { approved = true }
         }), Encoding.UTF8, "application/cloudevents+json")
     };
+
     private static async Task<string> Id(HttpResponseMessage response) =>
         (await response.Content.ReadFromJsonAsync<WorkflowStatusResponse>())!.Id;
 
-    public sealed class Data { public int Value { get; set; } public string Secret { get; set; } = "private"; }
-    public sealed class Approval { public bool Approved { get; set; } }
+    public sealed class Data
+    {
+        public int Value { get; set; }
+        public string Secret { get; set; } = "private";
+    }
+
+    public sealed class Approval
+    {
+        public bool Approved { get; set; }
+    }
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
-    public sealed class Application { }
+
+    public sealed class Application
+    {
+    }
 
     private sealed class IngressFactory(ProfileStore profile, IWorkflowStateRepository repository, IWorkflowCatalog? registry = null)
         : WebApplicationFactory<Application>
     {
         public IWorkflowStateRepository Repository => repository;
+
         public HttpClient AuthenticatedClient(string user = "alice")
         {
             var client = CreateClient();
             client.DefaultRequestHeaders.Add("X-Test-User", user);
+
             return client;
         }
 
@@ -256,27 +305,37 @@ public sealed class IncomingWebhookScenarios
                 services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
                 services.AddTransient<Noop>();
                 profile.ConfigureHost(services);
-                services.AddAuthentication("test").AddScheme<AuthenticationSchemeOptions, TestAuthentication>("test", _ => { });
+
+                services.AddAuthentication("test").AddScheme<AuthenticationSchemeOptions, TestAuthentication>("test", _ =>
+                {
+                });
+
                 services.AddAuthorization(options =>
                 {
                     options.AddPolicy("api", policy => policy.RequireAuthenticatedUser());
+
                     options.AddPolicy("instance", policy => policy.RequireAssertion(context =>
-                        context.Resource is WorkflowOwnership ownership && ownership.Owner == context.User.FindFirstValue(ClaimTypes.NameIdentifier)));
+                        context.Resource is WorkflowOwnership ownership &&
+                        ownership.Owner == context.User.FindFirstValue(ClaimTypes.NameIdentifier)));
                 });
             }).Configure(app =>
             {
                 app.UseRouting();
                 app.UseAuthentication();
                 app.UseAuthorization();
+
                 app.UseEndpoints(endpoints => endpoints.MapWorkflowTriggers(triggers =>
                 {
                     var wait = Workflow.Create<Data>("HttpApproval").Step<Noop>().WaitFor<Approval>("approval").Build();
                     var complete = Workflow.Create<Data>("HttpComplete").Step<Noop>().Build();
                     triggers.Start<Data>("orders", "/orders", wait).FromBody<Data>((data, _) => data).Authorize("api");
+
                     triggers.Start<Data>("sync", "/sync", complete).FromBody<Data>((data, _) => data).Authorize("api")
                         .Synchronous(TimeSpan.FromSeconds(1)).ProjectResult(data => new { data.Value });
+
                     triggers.Start<Data>("signed", "/signed", wait).FromBody<Data>((data, _) => data)
                         .VerifyStandardWebhook("vendor", Secret).Authorize("api");
+
                     triggers.Events("events").Allow<Approval>("approved").Authorize("api").AuthorizeInstance("instance");
                     triggers.Status().Authorize("api").AuthorizeInstance("instance");
                 }));
@@ -285,14 +344,20 @@ public sealed class IncomingWebhookScenarios
         protected override void ConfigureWebHost(IWebHostBuilder builder) => builder.UseContentRoot(AppContext.BaseDirectory);
     }
 
-    private sealed class TestAuthentication(IOptionsMonitor<AuthenticationSchemeOptions> options,
-        ILoggerFactory logger, UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+    private sealed class TestAuthentication(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger,
+        UrlEncoder encoder) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
     {
         protected override Task<AuthenticateResult> HandleAuthenticateAsync()
         {
             var user = Request.Headers["X-Test-User"].ToString();
-            return Task.FromResult(string.IsNullOrEmpty(user) ? AuthenticateResult.NoResult() : AuthenticateResult.Success(
-                new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, user)], "test")), "test")));
+
+            return Task.FromResult(string.IsNullOrEmpty(user)
+                ? AuthenticateResult.NoResult()
+                : AuthenticateResult.Success(
+                    new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, user)], "test")),
+                        "test")));
         }
     }
 }

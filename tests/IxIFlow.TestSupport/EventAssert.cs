@@ -2,7 +2,7 @@ using IxIFlow.Core;
 
 namespace IxIFlow.Tests.Infrastructure;
 
-/// <summary>Reads what became of an event an instance's owner decides on its own time (D-33).</summary>
+/// <summary>Reads what became of an event an instance's owner decides on its own time.</summary>
 public static class EventAssert
 {
     /// <summary>Waits until the instance's owner has decided the event, and returns it.</summary>
@@ -10,14 +10,18 @@ public static class EventAssert
         string eventId, TimeSpan? patience = null)
     {
         var deadline = DateTime.UtcNow + (patience ?? TimeSpan.FromSeconds(10));
+
         while (true)
         {
             var stored = await inbox.GetEventAsync(instanceId, eventId);
+
             if (stored is { Outcome: not EventOutcome.Pending })
                 return stored;
+
             if (DateTime.UtcNow > deadline)
                 throw new TimeoutException(
                     $"Event '{eventId}' of instance '{instanceId}' is {stored?.Outcome.ToString() ?? "missing"}");
+
             await Task.Delay(20);
         }
     }

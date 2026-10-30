@@ -34,16 +34,20 @@ public sealed class SampleTests
         var second = await Execute(yaml, Data(sample, alternative), sample, Workflow_review_child_workflow.Build());
         Assert.Equal(first.StructureHash, second.StructureHash);
         Assert.Equal(JsonSerializer.Serialize(first.Data), JsonSerializer.Serialize(second.Data));
+
         if (first.Data is QuoteData quote)
         {
             Assert.Equal(sample == "reusable" ? 11m : alternative ? 2.5m : 12.5m, quote.Amount);
+
             if (sample == "quote")
                 Assert.Equal(alternative ? "small order" : "ready", quote.Outcome);
+
             if (sample == "reusable")
             {
                 Assert.Equal("quoted", quote.Outcome);
                 Assert.Equal(new FakeTimeProvider().GetUtcNow(), quote.PricedAt);
             }
+
             if (sample == "review")
                 Assert.Equal("Grace", quote.Customer);
         }
@@ -54,6 +58,7 @@ public sealed class SampleTests
             var results = Assert.IsType<BatchData>(first.Data).Results;
             Assert.Equal(alternative ? 0 : 3, results.Count);
             Assert.Equal(Enumerable.Range(0, results.Count), results.Select(result => result.Index));
+
             if (sample is "sequential" or "all")
             {
                 Assert.All(results, result => Assert.Equal(ItemStatus.Completed, result.Status));
@@ -72,6 +77,7 @@ public sealed class SampleTests
     {
         var generated = typeof(Quote).Assembly.GetExportedTypes()
             .Where(type => type.Namespace == "IxIFlow.Samples.Generated").Select(type => type.Name).Order().ToArray();
+
         var covered = Pairs.Select(row => Definitions((string)row[0]).Yaml)
             .Select(definition => definition.Name)
             .Concat(YamlSampleTests.YamlDefinitions.Values.Select(build => build().Name))
@@ -79,6 +85,7 @@ public sealed class SampleTests
             .Append(AssignSampleTests.GeneratedDefinition().Name)
             .Append(ThrowSampleTests.GeneratedDefinition().Name)
             .Append(CancellationSampleTests.GeneratedDefinition().Name).Distinct().Count();
+
         Assert.Equal(24, generated.Length);
         Assert.Equal(generated.Length, covered);
     }
@@ -115,6 +122,7 @@ public sealed class SampleTests
         var result = await Client(services).RunAsync(ParallelQuotes.Definition(join), new QuoteData());
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var amount = Assert.IsType<QuoteData>(result.WorkflowData).Amount;
+
         if (join == "all")
             Assert.Equal(17.5m, amount);
         else
@@ -162,7 +170,10 @@ public sealed class SampleTests
         var catalog = Contracts.Catalog();
         Assert.Single(catalog.Packages);
         var activity = Assert.Single(catalog.Activities, entry => entry.Key == "samples.add-fee");
-        Assert.Equal(2.5m, JsonDocument.Parse(Assert.Single(activity.Inputs, field => field.Name == "Fee").DefaultJson!).RootElement.GetDecimal());
+
+        Assert.Equal(2.5m,
+            JsonDocument.Parse(Assert.Single(activity.Inputs, field => field.Name == "Fee").DefaultJson!).RootElement.GetDecimal());
+
         var customer = Assert.Single(activity.Inputs, field => field.Name == "Customer");
         Assert.True(customer.Required);
         Assert.Equal("Customer", customer.DisplayName);
@@ -180,6 +191,7 @@ public sealed class SampleTests
     {
         var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<QuoteData>("MissingCustomer")
             .Step<AddFee>().Build());
+
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.Contains("Customer", error.Message);
     }
@@ -204,6 +216,10 @@ public sealed class SampleTests
         var inspection = await Observability.InspectAsync(client, result.InstanceId);
         Assert.NotEmpty(inspection.Trace);
         Assert.NotNull(inspection.Snapshot);
+        Assert.Equal(result.InstanceId, inspection.Snapshot.InstanceId);
+        var quote = Assert.IsType<QuoteData>(result.WorkflowData);
+        Assert.Equal(12.50m, quote.Amount);
+        Assert.Equal("ready", quote.Outcome);
         Assert.NotEmpty(observations.Spans);
         Assert.Contains("ixiflow.activity.duration", observations.Measurements);
         Assert.Contains("ixiflow.commit.size", observations.Measurements);
@@ -242,11 +258,12 @@ public sealed class SampleTests
     [Theory]
     [InlineData("memory", "InMemoryWorkflowStateRepository")]
     [InlineData("sqlite", "SqliteWorkflowStateRepository")]
-    [InlineData("sqlserver", "SqlWorkflowStateRepository")]
+    [InlineData("sqlserver", "SqlServerWorkflowStateRepository")]
     [InlineData("postgresql", "PostgreSqlWorkflowStateRepository")]
     public async Task BuilderChoosesEachStore(string store, string expected)
     {
         var file = Path.Combine(AppContext.BaseDirectory, "sample-" + Guid.NewGuid().ToString("N") + ".db");
+
         var connection = store switch
         {
             "sqlite" => "Data Source=" + file,
@@ -254,11 +271,13 @@ public sealed class SampleTests
             "postgresql" => "Host=localhost;Database=ixiflow;Username=ixiflow;Password=example",
             _ => null
         };
+
         try
         {
             await using var provider = Hosting.Services(store, connection).BuildServiceProvider();
             var repository = provider.GetRequiredService<IWorkflowStateRepository>();
             Assert.Equal(expected, repository.GetType().Name);
+
             if (store is "memory" or "sqlite")
             {
                 var result = await Client(provider).RunAsync(Quote.Definition(), new QuoteData());
@@ -279,6 +298,7 @@ public sealed class SampleTests
         collection.AddSingleton(time ?? new FakeTimeProvider());
         collection.AddSingleton<IQuoteReservations>(new RecoveryTests.Reservations { Found = true });
         collection.AddTransient<ReserveQuote>();
+
         return collection.BuildServiceProvider();
     }
 
@@ -313,26 +333,32 @@ public sealed class SampleTests
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var client = Client(services);
         var result = await client.RunAsync(definition, data);
+
         if (name == "review")
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
             result = await client.ResumeAsync(result.InstanceId, "review", new ReviewAnswer { Customer = "Grace" });
         }
+
         if (result.Status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended)
             result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
+
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
+
         return (result.WorkflowData!, checkpoint.RootElement.GetProperty("StructureHash").GetString()!);
     }
 
     private sealed class RecordingSender : ITemplateMessageSender
     {
         public List<TemplateMessage> Messages { get; } = [];
+
         public Task SendAsync(TemplateMessage message, CancellationToken cancellationToken = default)
         {
             if (Messages.All(existing => existing.MessageId != message.MessageId))
                 Messages.Add(message);
+
             return Task.CompletedTask;
         }
     }

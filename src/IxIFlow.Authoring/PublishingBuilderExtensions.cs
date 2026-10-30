@@ -12,6 +12,12 @@ public static class PublishingBuilderExtensions
     public static IIxIFlowBuilder AddPublishing(this IIxIFlowBuilder builder, WorkflowPublisherOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
+        options ??= new();
+        TimerIntervals.Validate(options.BuildTimeout, nameof(options.BuildTimeout));
+        TimerIntervals.Validate(options.PublicationHeartbeatInterval, nameof(options.PublicationHeartbeatInterval));
+        TimerIntervals.Validate(options.PackageIndexingInterval, nameof(options.PackageIndexingInterval));
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.MaxPackagesPerIndexingPass, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.MaxPackagesPerIndexingPass, 1000);
         var services = builder.Services;
         services.TryAddSingleton(options ?? new WorkflowPublisherOptions());
         services.TryAddSingleton<IWorkflowCatalogStore>(provider => provider.GetRequiredService<IWorkflowCatalog>());
@@ -20,6 +26,7 @@ public static class PublishingBuilderExtensions
         services.TryAddSingleton<PackageIndexingService>();
         services.AddHostedService(provider => provider.GetRequiredService<PublicationService>());
         services.AddHostedService(provider => provider.GetRequiredService<PackageIndexingService>());
+
         return builder;
     }
 }

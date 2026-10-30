@@ -11,7 +11,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
 /// The executor runs an instance against any host: commits, cancellation, ownership and child
-/// workflows all go through <see cref="IExecutionHost"/> (spec A-01).
+/// workflows all go through <see cref="IExecutionHost"/>.
 /// </summary>
 [Trait("Feature", "durability")]
 [Trait("Spec", "A-01")]
@@ -22,6 +22,7 @@ public sealed class WorkflowExecutorHostTests
     {
         using var services = Services();
         var host = new RecordingHost(Probe(services));
+
         var definition = Workflow.Create<ExecutorData>("ExecutorWithoutStore")
             .Step<FirstActivity>()
             .Step<SecondActivity>()
@@ -44,6 +45,7 @@ public sealed class WorkflowExecutorHostTests
     {
         using var services = Services();
         var host = new RecordingHost(Probe(services));
+
         var definition = Workflow.Create<ExecutorData>("ExecutorChild")
             .Step<FirstActivity>()
             .Invoke<ExecutorData>("ExecutorChildTarget", 1)
@@ -51,7 +53,7 @@ public sealed class WorkflowExecutorHostTests
 
         var result = await RunAsync(services, definition, host);
 
-        // The parent waits for its child, whose start travels in the parent's commit (D-17).
+        // The parent waits for its child, whose start travels in the parent's commit.
         Assert.Equal(AssignmentOutcomeKind.Idle, result.Outcome.Kind);
         Assert.Equal(WorkflowStatus.Suspended, result.Saved.Status);
         var invocation = Assert.Single(host.Invocations);
@@ -67,6 +69,7 @@ public sealed class WorkflowExecutorHostTests
         using var services = Services();
         var host = new RecordingHost(Probe(services));
         Recycle = () => host.Recycle();
+
         // The host starts draining as the join decides on the first item, before the next is admitted.
         var definition = Workflow.Create<ExecutorData>("DrainedBetweenItems")
             .Step<FirstActivity>()
@@ -74,6 +77,7 @@ public sealed class WorkflowExecutorHostTests
                 setup => setup.Parallel(maxConcurrency: 1).WaitConditionally<int>((_, _) =>
                 {
                     Recycle?.Invoke();
+
                     return false;
                 }))
             .Build();
@@ -92,6 +96,7 @@ public sealed class WorkflowExecutorHostTests
     {
         using var services = Services();
         var host = new RecordingHost(Probe(services)) { LoseOwnershipAtCommit = 2 };
+
         var definition = Workflow.Create<ExecutorData>("ExecutorLosesOwnership")
             .Step<FirstActivity>()
             .Step<SecondActivity>()
@@ -110,10 +115,12 @@ public sealed class WorkflowExecutorHostTests
     {
         using var services = Services();
         var probe = Probe(services);
+
         var host = new RecordingHost(probe)
         {
             CancellationWhen = () => probe.Seen.Any(seen => seen.Activity == "first")
         };
+
         var definition = Workflow.Create<ExecutorData>("ExecutorCancellation")
             .Step<StartActivity>()
             .Try(body => body
@@ -135,8 +142,10 @@ public sealed class WorkflowExecutorHostTests
         var time = TimeProvider.System;
         var now = time.GetUtcNow().UtcDateTime;
         var data = new ExecutorData();
+
         var instance = new WorkflowInstance
-        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
@@ -146,21 +155,28 @@ public sealed class WorkflowExecutorHostTests
             CreatedAt = now,
             StartedAt = now
         };
+
         var checkpoint = new ExecutionCheckpoint
         {
             StructureHash = new WorkflowScopeCatalog(definition).StructureHash,
             Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
         };
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ExecutorData>("ExecutorChildTarget").Step<FirstActivity>().Build());
+
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         var executor = new WorkflowExecutor(services, host);
         using var run = executor.PrepareAssignment(Guid.NewGuid());
         host.Recycle = () => executor.Deliver(new Recycle(run.AssignmentId));
+
         var ready = await executor.ExecuteAsync(new(run.AssignmentId, instance, null, checkpoint.StructureHash,
             1, 0, new() { MaxCheckpointBytes = long.MaxValue }, false, []), CancellationToken.None);
+
         Assert.NotNull(host.Saved);
+
         return (ready.Outcome, host.Saved);
     }
 
@@ -174,6 +190,7 @@ public sealed class WorkflowExecutorHostTests
         services.AddTransient<FirstActivity>();
         services.AddTransient<SecondActivity>();
         services.AddTransient<CleanupActivity>();
+
         return services.BuildServiceProvider();
     }
 
@@ -187,6 +204,7 @@ public sealed class WorkflowExecutorHostTests
     {
         public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
             Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
+
         private readonly List<WorkflowStatus> _commits = [];
 
         public IReadOnlyList<WorkflowStatus> Commits => _commits;
@@ -195,18 +213,25 @@ public sealed class WorkflowExecutorHostTests
         public int LoseOwnershipAtCommit { get; init; }
         public Func<bool> CancellationWhen { get; init; } = () => false;
 
-        public Action Recycle { get; set; } = () => { };
+        public Action Recycle { get; set; } = () =>
+        {
+        };
+
         public WorkflowInstance? Saved { get; private set; }
+
         public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
             var commit = request.Commit;
+
             if (_commits.Count + 1 == LoseOwnershipAtCommit)
                 return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Conflict,
                     Error: "Another owner committed"));
+
             Saved = commit.ReadInstance(Saved);
             _commits.Add(Saved.Status);
             ChildStarts.AddRange(commit.ChildStarts);
             probe.Commits = _commits.Count;
+
             // Like a store, the commit reply reports a pending cancellation request.
             return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Ack, _commits.Count,
                 PendingCancellation: CancellationWhen()
@@ -217,6 +242,7 @@ public sealed class WorkflowExecutorHostTests
         public Task<StartChildReply> StartChildAsync(StartChild request)
         {
             Invocations.Add(request.Start.Child!);
+
             return Task.FromResult(new StartChildReply(request.AssignmentId, request.Start));
         }
 
@@ -224,6 +250,7 @@ public sealed class WorkflowExecutorHostTests
         public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) =>
             Task.FromResult(new ReadInboxReply(request.AssignmentId,
                 new InboxPage([], request.AfterSequence, new Dictionary<string, long>())));
+
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => Task.FromResult(new ReadWaitReply(request.AssignmentId));
     }
 
@@ -246,6 +273,7 @@ public sealed class WorkflowExecutorHostTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Record("start");
+
             return Task.CompletedTask;
         }
     }
@@ -255,6 +283,7 @@ public sealed class WorkflowExecutorHostTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Record("first");
+
             return Task.CompletedTask;
         }
     }
@@ -264,6 +293,7 @@ public sealed class WorkflowExecutorHostTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Record("second");
+
             return Task.CompletedTask;
         }
     }
@@ -273,6 +303,7 @@ public sealed class WorkflowExecutorHostTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Record("cleanup");
+
             return Task.CompletedTask;
         }
     }

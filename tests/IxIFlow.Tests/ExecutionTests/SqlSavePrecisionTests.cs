@@ -11,9 +11,10 @@ public class SqlSavePrecisionTests
     [Trait("Category", "SqlIntegration")]
     public async Task CommitRoundTripsRunnableTimeWithSubThreeMillisecondPrecision()
     {
-        var repository = new SqlWorkflowStateRepository(SqlTestDatabase<SqlSavePrecisionTests>.ConnectionString);
+        var repository = new SqlServerWorkflowStateRepository(SqlTestDatabase<SqlSavePrecisionTests>.ConnectionString);
         var instanceId = Guid.NewGuid().ToString("N");
         var wakeAfter = TimeSpan.FromMinutes(1) + TimeSpan.FromTicks(12345);
+
         try
         {
             var instance = new WorkflowInstance
@@ -21,9 +22,12 @@ public class SqlSavePrecisionTests
                 ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = instanceId,
                 WorkflowName = "CommitPrecision", Status = WorkflowStatus.Suspended
             };
+
             var grant = await StoreTestSupport.LeaseAsync(repository, instanceId);
+
             var commit = CheckpointCommit.Create(instance, grant.Epoch, 0, wakeAfter: wakeAfter,
                 openedWaits: [new OpenedWait("clock", WaitKind.Delay, "", "", TimeSpan.FromMinutes(2))]);
+
             Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
             var storeNow = (await repository.GetWaitAsync(instanceId, "clock"))!.OpenedAtUtc;
             var runnableAt = storeNow + wakeAfter;

@@ -40,6 +40,8 @@ public sealed class RedactionReviewServerStoreTests
     [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
     public Task PostgreSqlSkipsDiagnosticFreePruning() => RedactionReviewFixTests.VerifyNoPruning(PostgreSql());
 
-    private static SqlWorkflowStateRepository SqlServer() => new(SqlTestDatabase<RedactionReviewServerStoreTests>.ConnectionString);
-    private static PostgreSqlWorkflowStateRepository PostgreSql() => new(PostgreSqlTestDatabase<RedactionReviewServerStoreTests>.ConnectionString);
+    private static SqlServerWorkflowStateRepository SqlServer() => new(SqlTestDatabase<RedactionReviewServerStoreTests>.ConnectionString);
+
+    private static PostgreSqlWorkflowStateRepository PostgreSql() =>
+        new(PostgreSqlTestDatabase<RedactionReviewServerStoreTests>.ConnectionString);
 }

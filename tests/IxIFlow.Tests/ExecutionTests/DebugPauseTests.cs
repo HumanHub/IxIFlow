@@ -16,25 +16,38 @@ public sealed class DebugPauseTests
     [Fact, Trait("Spec", "F-26")]
     public async Task PauseLetsAnAffineAsyncCallbackResumeBeforeClosingAndReopensOnContinue()
     {
-        var store = new ProbeStore(); var probe = new ScopeDebuggerFixture.Probe();
+        var store = new ProbeStore();
+        var probe = new ScopeDebuggerFixture.Probe();
         await using var host = ScopeDebuggerFixture.Services(store, new WorkflowCatalog(), probe);
-        var client = host.GetRequiredService<IWorkflowClient>(); var ops = host.GetRequiredService<IWorkflowOperations>();
+        var client = host.GetRequiredService<IWorkflowClient>();
+        var ops = host.GetRequiredService<IWorkflowOperations>();
+
         var definition = new WorkflowBuilder<ScopeDebuggerFixture.Data, object>([], "AffineAsyncPause")
             .Scope<ScopeDebuggerFixture.Container>(null, b => b.Step<ScopeDebuggerFixture.Block>()
                 .Step<ScopeDebuggerFixture.Read>().WithId("after-await")).Build();
+
         var id = Guid.NewGuid().ToString("N");
         var run = client.RunAsync(definition, new ScopeDebuggerFixture.Data(), new() { InstanceId = id });
+
         try
         {
             await probe.Started.Task.WaitAsync(Timeout);
-            await ops.PauseAsync(id, "pause"); await store.PauseObserved.Task.WaitAsync(Timeout);
-            Assert.False(run.IsCompleted); Assert.Empty(probe.Closes);
+            await ops.PauseAsync(id, "pause");
+            await store.PauseObserved.Task.WaitAsync(Timeout);
+            Assert.False(run.IsCompleted);
+            Assert.Empty(probe.Closes);
         }
-        finally { probe.Resume.TrySetResult(); }
+        finally
+        {
+            probe.Resume.TrySetResult();
+        }
+
         Assert.Equal(WorkflowExecutionStatus.Paused, (await run.WaitAsync(Timeout)).Status);
-        Assert.Equal(1, probe.Reads); Assert.Equal(ScopeCloseReason.Suspended, Assert.Single(probe.Closes));
+        Assert.Equal(1, probe.Reads);
+        Assert.Equal(ScopeCloseReason.Suspended, Assert.Single(probe.Closes));
         Assert.Equal(WorkflowExecutionStatus.Success, (await ops.ContinueAsync(id, "continue").WaitAsync(Timeout)).Status);
-        Assert.Equal(2, probe.Reads); Assert.Equal(2, probe.Threads.Distinct().Count());
+        Assert.Equal(2, probe.Reads);
+        Assert.Equal(2, probe.Threads.Distinct().Count());
         Assert.Equal(ScopeCloseReason.Completed, probe.Closes.Last());
     }
 
@@ -46,8 +59,10 @@ public sealed class DebugPauseTests
         await using var services = Services(store, probe);
         var client = services.GetRequiredService<IWorkflowClient>();
         var ops = services.GetRequiredService<IWorkflowOperations>();
+
         var definition = Workflow.Create<Data>("DrainPause").Step<Block>(s => s.Output(a => a.Value).To(c => c.WorkflowData.Value))
             .Step<After>().Build();
+
         var run = client.RunAsync(definition, new Data(), new() { InstanceId = "drain" });
         await probe.Started.Task.WaitAsync(Timeout);
         await ops.PauseAsync("drain", "operator");
@@ -62,21 +77,31 @@ public sealed class DebugPauseTests
         var saved = await store.GetWorkflowInstanceAsync("drain");
         Assert.Equal(WorkflowStatus.Paused, saved!.Status);
         Assert.Null(saved.RunnableAtUtc);
-        Assert.DoesNotContain(await store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(services, 20)), r => r.InstanceId == "drain");
+
+        Assert.DoesNotContain(await store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(services, 20)),
+            r => r.InstanceId == "drain");
+
         var grant = await store.TryAcquireExecutionLeaseAsync("drain", "inspection", TimeSpan.FromSeconds(10),
             await StoreTestSupport.ClaimAsync(services), ExecutionClaimKind.Operator);
+
         Assert.NotNull(grant);
         await store.ReleaseExecutionLeaseAsync("drain", "inspection");
         var trace = (await store.GetTraceAsync("drain")).Select(e => e.Entry).ToList();
-        Assert.True(trace.FindIndex(e => e.EntryType == TraceEntryType.ActivityCompleted) < trace.FindIndex(e => e.EntryType == TraceEntryType.Paused));
+
+        Assert.True(trace.FindIndex(e => e.EntryType == TraceEntryType.ActivityCompleted) <
+            trace.FindIndex(e => e.EntryType == TraceEntryType.Paused));
+
         Assert.Equal("operator", Assert.IsType<DebugCommandTrace>(trace.Single(e => e.EntryType == TraceEntryType.Paused).Payload).Actor);
-        Assert.All(trace.Where(e => e.EntryType is TraceEntryType.ActivityStarted or TraceEntryType.ActivityCompleted), e => Assert.Equal("root/0", e.StepId));
+
+        Assert.All(trace.Where(e => e.EntryType is TraceEntryType.ActivityStarted or TraceEntryType.ActivityCompleted),
+            e => Assert.Equal("root/0", e.StepId));
     }
 
     [Fact]
     public async Task IdleInstancePausesUnderLeaseAndEventsWaitForContinueOnAnotherHost()
     {
-        var store = new ProbeStore(); var probe = new Probe();
+        var store = new ProbeStore();
+        var probe = new Probe();
         await using var first = Services(store, probe);
         await using var second = Services(store, probe);
         var definition = Workflow.Create<Data>("IdlePause").Step<Noop>().WaitFor<Go>("go").Step<After>().Build();
@@ -95,13 +120,16 @@ public sealed class DebugPauseTests
         Assert.Equal(1, probe.AfterCount);
         Assert.Equal(EventOutcome.Consumed, (await store.GetEventAsync(run.InstanceId, "held"))!.Outcome);
         var trace = await store.GetTraceAsync(run.InstanceId);
-        Assert.Equal("resumer", Assert.IsType<DebugCommandTrace>(trace.Single(e => e.Entry.EntryType == TraceEntryType.Continued).Entry.Payload).Actor);
+
+        Assert.Equal("resumer",
+            Assert.IsType<DebugCommandTrace>(trace.Single(e => e.Entry.EntryType == TraceEntryType.Continued).Entry.Payload).Actor);
     }
 
     [Fact]
     public async Task CancellationEndsAPauseOnADebugDisabledHost()
     {
-        var store = new ProbeStore(); var probe = new Probe();
+        var store = new ProbeStore();
+        var probe = new Probe();
         await using var first = Services(store, probe);
         await using var second = Services(store, probe, debugging: false);
         var client = first.GetRequiredService<IWorkflowClient>();
@@ -115,10 +143,14 @@ public sealed class DebugPauseTests
     [Fact]
     public async Task PauseIntentSurvivesAnOwnerCrashAfterTheActivityCommit()
     {
-        var store = new ProbeStore { FailPause = true }; var probe = new Probe();
+        var store = new ProbeStore { FailPause = true };
+        var probe = new Probe();
         await using var first = Services(store, probe);
         await using var second = Services(store, probe);
-        var definition = Workflow.Create<Data>("CrashPause").Step<Block>(s => s.Output(a => a.Value).To(c => c.WorkflowData.Value)).Step<After>().Build();
+
+        var definition = Workflow.Create<Data>("CrashPause").Step<Block>(s => s.Output(a => a.Value).To(c => c.WorkflowData.Value))
+            .Step<After>().Build();
+
         var run = first.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data(), new() { InstanceId = "crash" });
         await probe.Started.Task.WaitAsync(Timeout);
         await first.GetRequiredService<IWorkflowOperations>().PauseAsync("crash", "operator");
@@ -126,7 +158,11 @@ public sealed class DebugPauseTests
         probe.Finish.TrySetResult();
         await Assert.ThrowsAsync<WorkflowEngineException>(() => run.WaitAsync(Timeout));
         Assert.Equal(0, probe.AfterCount);
-        Assert.Equal(42, System.Text.Json.JsonSerializer.Deserialize<Data>((await store.GetWorkflowInstanceAsync("crash"))!.WorkflowDataJson.InlineText)!.Value);
+
+        Assert.Equal(42,
+            System.Text.Json.JsonSerializer.Deserialize<Data>((await store.GetWorkflowInstanceAsync("crash"))!.WorkflowDataJson.InlineText)!
+                .Value);
+
         Assert.Null((await store.GetDebugStatesAsync(["crash"]))["crash"].Commands.Single().AcknowledgedRevision);
         store.FailPause = false;
         var recovered = await second.GetRequiredService<IWorkflowClient>().RecoverAsync("crash");
@@ -140,10 +176,13 @@ public sealed class DebugPauseTests
     [Fact]
     public async Task OwnershipLossDominatesAPause()
     {
-        var store = new ProbeStore(); var probe = new Probe();
+        var store = new ProbeStore();
+        var probe = new Probe();
         await using var services = Services(store, probe, shortLease: true);
+
         var run = services.GetRequiredService<IWorkflowClient>().RunAsync(
             Workflow.Create<Data>("LostPause").Step<Block>().Step<After>().Build(), new Data(), new() { InstanceId = "lost" });
+
         await probe.Started.Task.WaitAsync(Timeout);
         await services.GetRequiredService<IWorkflowOperations>().PauseAsync("lost", "operator");
         await store.PauseObserved.Task.WaitAsync(Timeout);
@@ -160,10 +199,14 @@ public sealed class DebugPauseTests
     [Fact]
     public async Task ContinueDuringThePauseCommitKeepsItsWakeAndAStaleGenerationIsRefused()
     {
-        var store = new ProbeStore { HoldPause = true }; var probe = new Probe();
-        await using var first = Services(store, probe); await using var second = Services(store, probe);
+        var store = new ProbeStore { HoldPause = true };
+        var probe = new Probe();
+        await using var first = Services(store, probe);
+        await using var second = Services(store, probe);
+
         var run = first.GetRequiredService<IWorkflowClient>().RunAsync(
             Workflow.Create<Data>("WakePause").Step<Block>().Step<After>().Build(), new Data(), new() { InstanceId = "wake" });
+
         await probe.Started.Task.WaitAsync(Timeout);
         await first.GetRequiredService<IWorkflowOperations>().PauseAsync("wake", "operator");
         await store.PauseObserved.Task.WaitAsync(Timeout);
@@ -184,8 +227,10 @@ public sealed class DebugPauseTests
     [Fact]
     public async Task DisabledHostsRefuseOperationsAndKeepPendingContinueHeld()
     {
-        var store = new ProbeStore(); var probe = new Probe();
-        await using var first = Services(store, probe); await using var disabled = Services(store, probe, debugging: false);
+        var store = new ProbeStore();
+        var probe = new Probe();
+        await using var first = Services(store, probe);
+        await using var disabled = Services(store, probe, debugging: false);
         var result = await first.GetRequiredService<IWorkflowClient>().RunAsync(Waiting("DisabledPause"), new Data());
         var ops = disabled.GetRequiredService<IWorkflowOperations>();
         await Assert.ThrowsAsync<WorkflowEngineException>(() => ops.PauseAsync(result.InstanceId, "actor"));
@@ -200,11 +245,14 @@ public sealed class DebugPauseTests
     [Fact]
     public async Task CancellationEndsAPauseAfterTheLastActivityFinished()
     {
-        var store = new ProbeStore(); var probe = new Probe();
+        var store = new ProbeStore();
+        var probe = new Probe();
         await using var services = Services(store, probe);
         var client = services.GetRequiredService<IWorkflowClient>();
+
         var run = client.RunAsync(Workflow.Create<Data>("FinishedButPaused").Step<Block>().Build(), new Data(),
             new() { InstanceId = "last" });
+
         await probe.Started.Task.WaitAsync(Timeout);
         await services.GetRequiredService<IWorkflowOperations>().PauseAsync("last", "operator");
         await store.PauseObserved.Task.WaitAsync(Timeout);
@@ -215,6 +263,7 @@ public sealed class DebugPauseTests
     }
 
     private static WorkflowDefinition Waiting(string name) => Workflow.Create<Data>(name).Step<Noop>().WaitFor<Go>("go").Build();
+
     private static ServiceProvider Services(ProbeStore store, Probe probe, bool debugging = true, bool shortLease = false)
     {
         var services = new ServiceCollection().AddLogging();
@@ -222,67 +271,104 @@ public sealed class DebugPauseTests
         services.AddSingleton<IWorkflowStateRepository>(store);
         services.AddSingleton(probe);
         services.AddSingleton<IWorkflowCatalog>(probe.Registry);
-        if (shortLease) services.AddSingleton(new ExecutionLeaseSettings(TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(100)));
+
+        if (shortLease)
+            services.AddSingleton(new ExecutionLeaseSettings(TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(100)));
+
         return services.BuildServiceProvider();
     }
-    public sealed class Data { public int Value { get; set; } }
+
+    public sealed class Data
+    {
+        public int Value { get; set; }
+    }
+
     public sealed class Go;
+
     public sealed class Probe
     {
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Finish { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public WorkflowCatalog Registry { get; } = new();
-        public int BlockCount; public int AfterCount;
+        public int BlockCount;
+        public int AfterCount;
     }
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     public sealed class Block(Probe probe) : IAsyncActivity
     {
         [ActivityOutput] public int Value { get; set; }
+
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
-            Interlocked.Increment(ref probe.BlockCount); probe.Started.TrySetResult();
-            await probe.Finish.Task.WaitAsync(cancellationToken); Value = 42;
+            Interlocked.Increment(ref probe.BlockCount);
+            probe.Started.TrySetResult();
+            await probe.Finish.Task.WaitAsync(cancellationToken);
+            Value = 42;
         }
     }
+
     public sealed class After(Probe probe) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Interlocked.Increment(ref probe.AfterCount); return Task.CompletedTask; }
+        {
+            Interlocked.Increment(ref probe.AfterCount);
+
+            return Task.CompletedTask;
+        }
     }
-    private sealed class ProbeStore : InMemoryWorkflowStateRepository
+
+    private sealed class ProbeStore : TestWorkflowStateRepository
     {
-        public bool FailPause; public bool HoldPause; public bool LoseLease;
+        public bool FailPause;
+        public bool HoldPause;
+        public bool LoseLease;
         public TaskCompletionSource PauseObserved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource PauseCommitting { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleasePause { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource LeaseLost { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public override async Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> ids)
         {
             var states = await base.GetDebugStatesAsync(ids);
-            if (states.Values.Any(s => s.Commands.Any(c => c.Kind == DebugCommandKind.Pause && c.AcknowledgedRevision == null))) PauseObserved.TrySetResult();
+
+            if (states.Values.Any(s => s.Commands.Any(c => c.Kind == DebugCommandKind.Pause && c.AcknowledgedRevision == null)))
+                PauseObserved.TrySetResult();
+
             return states;
         }
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
             if (commit.Instance.Status == WorkflowStatus.Paused)
             {
                 PauseCommitting.TrySetResult();
-                if (FailPause) throw new IOException("Injected owner crash before pause commit");
-                if (HoldPause) await ReleasePause.Task.WaitAsync(Timeout);
+
+                if (FailPause)
+                    throw new IOException("Injected owner crash before pause commit");
+
+                if (HoldPause)
+                    await ReleasePause.Task.WaitAsync(Timeout);
             }
-            return await base.CommitWorkflowInstanceAsync(commit);
+
+            return await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
         }
-        public override Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
+
+        public override Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+            IReadOnlyList<ExecutionLeaseRenewal> leases, CancellationToken cancellationToken = default)
         {
-            if (!LoseLease) return base.RenewExecutionLeasesAsync(leases);
+            if (!LoseLease)
+                return base.RenewExecutionLeasesAsync(leases, cancellationToken: cancellationToken);
+
             LeaseLost.TrySetResult();
+
             return Task.FromResult<IReadOnlyList<ExecutionLeaseRenewalResult>>(
                 leases.Select(_ => new ExecutionLeaseRenewalResult(ExecutionLeaseRenewalStatus.Refused)).ToArray());
         }
     }
 }
-
-

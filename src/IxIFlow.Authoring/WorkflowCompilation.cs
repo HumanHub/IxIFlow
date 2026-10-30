@@ -13,13 +13,30 @@ using Microsoft.CodeAnalysis.Emit;
 
 namespace IxIFlow.Authoring;
 
-public enum WorkflowPublishStage { Validate, Translate, Compile, Test, Publish }
-public sealed record WorkflowPublishDiagnostic(WorkflowPublishStage Stage, string Code, string Message,
-    WorkflowDiagnosticSeverity Severity, string Path, int Line, int Column)
+public enum WorkflowPublishStage
+{
+    Validate,
+    Translate,
+    Compile,
+    Test,
+    Publish
+}
+
+public sealed record WorkflowPublishDiagnostic(
+    WorkflowPublishStage Stage,
+    string Code,
+    string Message,
+    WorkflowDiagnosticSeverity Severity,
+    string Path,
+    int Line,
+    int Column)
 {
     public WorkflowPublishDiagnosticClass Class { get; init; } = WorkflowPublishDiagnosticClass.Authoring;
 }
-public sealed record WorkflowCompilationResult(byte[] Assembly, byte[] Pdb,
+
+public sealed record WorkflowCompilationResult(
+    byte[] Assembly,
+    byte[] Pdb,
     IReadOnlyList<WorkflowPublishDiagnostic> Diagnostics)
 {
     public bool Success => Diagnostics.All(item => item.Severity != WorkflowDiagnosticSeverity.Error);
@@ -38,20 +55,34 @@ public static class WorkflowCompilation
     {
         var paths = new HashSet<string>(((string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") ?? "")
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries), StringComparer.OrdinalIgnoreCase);
-        foreach (var contract in WorkflowSharedAssemblies.Current?.Contracts ?? []) paths.Add(contract.Location);
+
+        foreach (var contract in WorkflowSharedAssemblies.Current?.Contracts ?? [])
+            paths.Add(contract.Location);
+
         var pending = new Queue<Assembly>();
-        if (Assembly.GetEntryAssembly() is { } entry) pending.Enqueue(entry);
+
+        if (Assembly.GetEntryAssembly() is { } entry)
+            pending.Enqueue(entry);
+
         var visited = new HashSet<string>(StringComparer.Ordinal);
+
         while (pending.TryDequeue(out var assembly))
         {
-            if (!visited.Add(assembly.FullName!)) continue;
-            if (!assembly.IsDynamic && assembly.Location.Length > 0) paths.Add(assembly.Location);
+            if (!visited.Add(assembly.FullName!))
+                continue;
+
+            if (!assembly.IsDynamic && assembly.Location.Length > 0)
+                paths.Add(assembly.Location);
+
             foreach (var reference in assembly.GetReferencedAssemblies().OrderBy(item => item.FullName, StringComparer.Ordinal))
                 pending.Enqueue(Assembly.Load(reference));
         }
+
         var references = NormalizeReferences(paths);
+
         if (options != null && ConfiguredTypeNames(options).Any())
             ValidateConfiguredTypes(options, new ReferenceSet(references));
+
         return references;
     }
 
@@ -59,15 +90,22 @@ public static class WorkflowCompilation
     {
         var references = new ReferenceSet(ReferencePaths());
         ValidateConfiguredTypes(options, references);
+
         return references;
     }
 
     internal static ReferenceSet CreateReferences(WorkflowSourceOptions options, IEnumerable<string> packageReferences)
     {
         var packagePaths = packageReferences.ToArray();
-        var packageNames = packagePaths.Select(path => AssemblyName.GetAssemblyName(path).Name!).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var references = new ReferenceSet(NormalizeReferences(ReferencePaths().Where(path => !packageNames.Contains(AssemblyName.GetAssemblyName(path).Name!)).Concat(packagePaths)));
+
+        var packageNames = packagePaths.Select(path => AssemblyName.GetAssemblyName(path).Name!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var references = new ReferenceSet(NormalizeReferences(ReferencePaths()
+            .Where(path => !packageNames.Contains(AssemblyName.GetAssemblyName(path).Name!)).Concat(packagePaths)));
+
         ValidateConfiguredTypes(options, references);
+
         return references;
     }
 
@@ -80,16 +118,23 @@ public static class WorkflowCompilation
         foreach (var configured in ConfiguredTypeNames(options))
         {
             var type = SyntaxFactory.ParseTypeName(configured);
+
             // A qualified name is one component, not a type for each namespace segment.
             // Descending also visits generic arguments and array/nullable/tuple element types.
             foreach (var name in type.DescendantNodesAndSelf().OfType<NameSyntax>()
                          .Where(name => name.Parent is not (QualifiedNameSyntax or AliasQualifiedNameSyntax)))
             {
                 // These contextual keywords parse as identifiers but need no named type lookup.
-                if (name is IdentifierNameSyntax identifier && identifier.Identifier.Text is "dynamic" or "nint" or "nuint") continue;
+                if (name is IdentifierNameSyntax identifier && identifier.Identifier.Text is "dynamic" or "nint" or "nuint")
+                    continue;
+
                 var candidates = MetadataNames(name, options.Namespace).ToArray();
-                if (!references.Assemblies.Any(assembly => candidates.Any(candidate => WorkflowPublisher.FindType(assembly, candidate) != null)))
-                    throw new WorkflowPublishException("PUB003", $"Configured type '{configured}' has component '{name}' outside the host reference profile (trusted-platform assemblies and entry assembly closure)", null);
+
+                if (!references.Assemblies.Any(assembly =>
+                        candidates.Any(candidate => WorkflowPublisher.FindType(assembly, candidate) != null)))
+                    throw new WorkflowPublishException("PUB003",
+                        $"Configured type '{configured}' has component '{name}' outside the host reference profile (trusted-platform assemblies and entry assembly closure)",
+                        null);
             }
         }
     }
@@ -106,18 +151,26 @@ public static class WorkflowCompilation
     private static IEnumerable<string> MetadataNames(NameSyntax name, string generatedNamespace)
     {
         var metadataName = MetadataName(name);
+
         yield return metadataName;
+
         var first = name;
-        while (first is QualifiedNameSyntax qualified) first = qualified.Left;
-        if (first is AliasQualifiedNameSyntax { Alias.Identifier.ValueText: "global" }) yield break;
+
+        while (first is QualifiedNameSyntax qualified)
+            first = qualified.Left;
+
+        if (first is AliasQualifiedNameSyntax { Alias.Identifier.ValueText: "global" })
+            yield break;
 
         // Unqualified names also see the generated namespace and the translator's usings.
         for (var scope = generatedNamespace; scope.Length > 0;)
         {
             yield return scope + "." + metadataName;
+
             var dot = scope.LastIndexOf('.');
             scope = dot < 0 ? "" : scope[..dot];
         }
+
         foreach (var scope in WorkflowSourceTranslator.ImportedNamespaces)
             yield return scope + "." + metadataName;
     }
@@ -133,8 +186,11 @@ public static class WorkflowCompilation
         {
             get
             {
-                if (_assemblies != null) return _assemblies;
+                if (_assemblies != null)
+                    return _assemblies;
+
                 var compilation = CSharpCompilation.Create("WorkflowReferences", references: Metadata);
+
                 return _assemblies = compilation.References.Select(reference => compilation.GetAssemblyOrModuleSymbol(reference))
                     .OfType<IAssemblySymbol>().ToArray();
             }
@@ -144,67 +200,110 @@ public static class WorkflowCompilation
         {
             var source = string.Join("\n", WorkflowSourceTranslator.ImportedNamespaces.Select(name => "using " + name + ";")) +
                 "\nnamespace " + generatedNamespace + ";\ninternal class TypeBinding { private " + typeName + " value; }";
+
             var tree = CSharpSyntaxTree.ParseText(source);
+
             var compilation = CSharpCompilation.Create("WorkflowConfiguredType", [tree], Metadata,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
             var syntax = tree.GetRoot().DescendantNodes().OfType<FieldDeclarationSyntax>().Single().Declaration.Type;
-            return compilation.GetSemanticModel(tree).GetTypeInfo(syntax).Type is INamedTypeSymbol { TypeKind: not TypeKind.Error } type ? type : null;
+
+            return compilation.GetSemanticModel(tree).GetTypeInfo(syntax).Type is INamedTypeSymbol { TypeKind: not TypeKind.Error } type
+                ? type
+                : null;
         }
 
         internal string SavedTypeName(string savedName, ISet<string>? assemblyNames = null)
         {
-            if (!savedName.StartsWith("ixi-type:1:", StringComparison.Ordinal)) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type");
+            if (!savedName.StartsWith("ixi-type:1:", StringComparison.Ordinal))
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type");
+
             var compilation = CSharpCompilation.Create("WorkflowTypeReferences", references: Metadata);
             var position = "ixi-type:1:".Length;
+
             int Count()
             {
                 var end = savedName.IndexOf(':', position);
-                if (end <= position || end - position > 6) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type");
+
+                if (end <= position || end - position > 6)
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type");
+
                 var value = int.Parse(savedName.AsSpan(position, end - position), System.Globalization.CultureInfo.InvariantCulture);
                 position = end + 1;
+
                 return value;
             }
+
             string Part()
             {
                 var length = Count();
                 var value = savedName.Substring(position, length);
                 position += length;
+
                 return value;
             }
+
             ITypeSymbol Read(int depth)
             {
-                if (depth > 64) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type nesting");
+                if (depth > 64)
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type nesting");
+
                 var kind = savedName[position++];
+
                 if (kind is 'V' or 'A')
                 {
                     var rank = kind == 'V' ? 1 : Count();
+
                     return compilation.CreateArrayTypeSymbol(Read(depth + 1), rank);
                 }
-                if (kind != 'N') throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type");
+
+                if (kind != 'N')
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type");
+
                 var assembly = Part();
                 assemblyNames?.Add(assembly);
                 var name = Part();
                 var count = Count();
-                if (count > 128) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type arguments");
+
+                if (count > 128)
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type arguments");
+
                 var arguments = Enumerable.Range(0, count).Select(_ => Read(depth + 1)).ToArray();
+
                 var type = Assemblies.SingleOrDefault(item => item.Identity.Name == assembly)?.GetTypeByMetadataName(name)
-                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, $"Callee data type '{name}' in '{assembly}' is outside the publishing reference closure");
+                    ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch,
+                        $"Callee data type '{name}' in '{assembly}' is outside the publishing reference closure");
+
                 var index = 0;
+
                 INamedTypeSymbol Construct(INamedTypeSymbol definition)
                 {
-                    var result = definition.ContainingType == null ? definition :
-                        Construct(definition.ContainingType).GetTypeMembers(definition.Name, definition.Arity).Single();
-                    if (result.Arity == 0) return result;
+                    var result = definition.ContainingType == null
+                        ? definition
+                        : Construct(definition.ContainingType).GetTypeMembers(definition.Name, definition.Arity).Single();
+
+                    if (result.Arity == 0)
+                        return result;
+
                     var selected = arguments.Skip(index).Take(result.Arity).ToArray();
                     index += result.Arity;
+
                     return result.Construct(selected);
                 }
+
                 var result = count == 0 ? type : Construct(type);
-                if (index != count) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type arity");
+
+                if (index != count)
+                    throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type arity");
+
                 return result;
             }
+
             var result = Read(0);
-            if (position != savedName.Length) throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type suffix");
+
+            if (position != savedName.Length)
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Invalid saved workflow data type suffix");
+
             return result.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
         }
     }
@@ -218,8 +317,12 @@ public static class WorkflowCompilation
         .Select(group =>
         {
             var versions = group.Select(item => item.Name.Version).Distinct().ToArray();
+
             if (versions.Length > 1)
-                throw new WorkflowPublishException("PUB003", $"Conflicting reference versions for assembly '{group.First().Name.Name}': {string.Join(", ", versions.Select(item => item?.ToString() ?? "unspecified"))}", null);
+                throw new WorkflowPublishException("PUB003",
+                    $"Conflicting reference versions for assembly '{group.First().Name.Name}': {string.Join(", ", versions.Select(item => item?.ToString() ?? "unspecified"))}",
+                    null);
+
             return group.First().Path;
         }).Order(StringComparer.Ordinal).ToArray();
 
@@ -232,45 +335,32 @@ public static class WorkflowCompilation
     {
         var tree = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.CSharp14),
             "workflow.g.cs", Encoding.UTF8, cancellationToken);
-        var compilation = CSharpCompilation.Create(assemblyName ?? "Workflow_" + ArtifactDigest.Of(Encoding.UTF8.GetBytes(source)).Value[7..],
+
+        var compilation = CSharpCompilation.Create(
+            assemblyName ?? "Workflow_" + ArtifactDigest.Of(Encoding.UTF8.GetBytes(source)).Value[7..],
             [tree], references.Metadata,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, optimizationLevel: OptimizationLevel.Release,
                 deterministic: true, nullableContextOptions: NullableContextOptions.Enable));
+
         using var assembly = new MemoryStream();
         using var pdb = new MemoryStream();
+
         var emitted = compilation.Emit(assembly, pdb, options: new EmitOptions(debugInformationFormat: DebugInformationFormat.PortablePdb),
             cancellationToken: cancellationToken);
+
         var diagnostics = emitted.Diagnostics.Where(item => item.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning)
             .Select(item =>
             {
                 var span = item.Location.GetMappedLineSpan();
                 var mapped = span.IsValid && span.Path != "workflow.g.cs";
+
                 return new WorkflowPublishDiagnostic(WorkflowPublishStage.Compile, item.Id, item.GetMessage(),
                     item.Severity == DiagnosticSeverity.Error ? WorkflowDiagnosticSeverity.Error : WorkflowDiagnosticSeverity.Warning,
                     mapped ? span.Path : sourcePath, mapped ? span.StartLinePosition.Line + 1 : 1,
                     mapped ? span.StartLinePosition.Character + 1 : 1);
             }).ToArray();
+
         return new(assembly.ToArray(), pdb.ToArray(), diagnostics);
-    }
-
-    public static async Task<WorkflowDefinition> BuildAsync(WorkflowDocument document, WorkflowSourceOptions options)
-    {
-        var validation = await new WorkflowDocumentValidator().ValidateAsync(document, new WorkflowSourceContracts(options));
-        if (!validation.IsValid)
-        {
-            var error = validation.Diagnostics.First(item => item.Severity == WorkflowDiagnosticSeverity.Error);
-            var location = DocumentModel.GetLocation(document, error.Path);
-            throw new WorkflowSourceException(error.Message, "test.yaml", location.Line, location.Column);
-        }
-        return Build(WorkflowSourceTranslator.Translate(document, "test.yaml", options));
-    }
-
-    public static WorkflowDefinition Build(string source)
-    {
-        var emitted = Compile(source);
-        if (!emitted.Success) throw new WorkflowSourceException(string.Join("; ", emitted.Diagnostics.Select(item => item.Message)),
-            emitted.Diagnostics[0].Path, emitted.Diagnostics[0].Line, emitted.Diagnostics[0].Column);
-        return BuildAssembly(emitted.Assembly, emitted.Pdb);
     }
 
     internal static WorkflowDefinition BuildAssembly(byte[] assemblyBytes, byte[] pdbBytes) =>
@@ -280,14 +370,17 @@ public static class WorkflowCompilation
     {
         // In-process compilation uses the explicitly declared host reference profile.
         var references = ReferencePaths().ToDictionary(path => AssemblyName.GetAssemblyName(path).Name!, StringComparer.OrdinalIgnoreCase);
+
         return InspectDefinition(new CompilationContext(references), assemblyBytes, pdbBytes, inspect);
     }
 
-    internal static T WithDefinition<T>(byte[] assemblyBytes, byte[] pdbBytes, IReadOnlyDictionary<string, byte[]> dependencies, Func<WorkflowDefinition, T> inspect, Action<AssemblyLoadContext>? validate = null,
+    internal static T WithDefinition<T>(byte[] assemblyBytes, byte[] pdbBytes, IReadOnlyDictionary<string, byte[]> dependencies,
+        Func<WorkflowDefinition, T> inspect, Action<AssemblyLoadContext>? validate = null,
         IReadOnlyDictionary<string, byte[]>? symbols = null) =>
         InspectDefinition(new PackageScratchContext(dependencies, symbols), assemblyBytes, pdbBytes, inspect, validate);
 
-    private static T InspectDefinition<T>(AssemblyLoadContext context, byte[] assemblyBytes, byte[] pdbBytes, Func<WorkflowDefinition, T> inspect, Action<AssemblyLoadContext>? validate = null)
+    private static T InspectDefinition<T>(AssemblyLoadContext context, byte[] assemblyBytes, byte[] pdbBytes,
+        Func<WorkflowDefinition, T> inspect, Action<AssemblyLoadContext>? validate = null)
     {
         try
         {
@@ -296,19 +389,31 @@ public static class WorkflowCompilation
             var assembly = context.LoadFromStream(assemblyStream, pdbStream);
             using var types = IxIFlow.Core.Runtime.WorkflowTypeIdentity.Enter(context);
             validate?.Invoke(context);
+
             var method = assembly.GetTypes().Select(type => type.GetMethod("Build", BindingFlags.Public | BindingFlags.Static,
                 Type.EmptyTypes)).Single(method => method?.ReturnType == typeof(WorkflowDefinition))!;
-            try { return inspect((WorkflowDefinition)method.Invoke(null, null)!); }
+
+            try
+            {
+                return inspect((WorkflowDefinition)method.Invoke(null, null)!);
+            }
             catch (TargetInvocationException error) when (error.InnerException != null)
-            { ExceptionDispatchInfo.Capture(error.InnerException).Throw(); throw; }
+            {
+                ExceptionDispatchInfo.Capture(error.InnerException).Throw();
+
+                throw;
+            }
         }
-        finally { context.Unload(); }
+        finally
+        {
+            context.Unload();
+        }
     }
 
     private sealed class CompilationContext(IReadOnlyDictionary<string, string> references) : AssemblyLoadContext(isCollectible: true)
     {
         protected override Assembly Load(AssemblyName name) => references.TryGetValue(name.Name!, out var path)
-            ? Default.LoadFromAssemblyPath(path) : throw new PublishDependencyNotFoundException($"Compilation dependency '{name}' is outside the reference profile");
+            ? Default.LoadFromAssemblyPath(path)
+            : throw new PublishDependencyNotFoundException($"Compilation dependency '{name}' is outside the reference profile");
     }
-
 }

@@ -13,17 +13,17 @@ namespace IxIFlow.Analyzers.Tests;
 internal static class Verify
 {
     public const string Usings = """
-        using System;
-        using System.Collections.Generic;
-        using System.IO;
-        using System.Linq;
-        using System.Threading;
-        using System.Threading.Tasks;
-        using IxIFlow.ActivitySdk;
-        using IxIFlow.Builders;
-        using IxIFlow.Core;
+                                 using System;
+                                 using System.Collections.Generic;
+                                 using System.IO;
+                                 using System.Linq;
+                                 using System.Threading;
+                                 using System.Threading.Tasks;
+                                 using IxIFlow.ActivitySdk;
+                                 using IxIFlow.Builders;
+                                 using IxIFlow.Core;
 
-        """;
+                                 """;
 
     private static readonly ReferenceAssemblies Net10 = new("net10.0",
         new PackageIdentity("Microsoft.NETCore.App.Ref", "10.0.0"), Path.Combine("ref", "net10.0"));
@@ -32,9 +32,9 @@ internal static class Verify
     private static readonly MetadataReference[] Engine = Directory
         .GetFiles(AppContext.BaseDirectory, "*.dll")
         .Where(file => Path.GetFileName(file) is var name &&
-                       (name.StartsWith("IxIFlow.", StringComparison.Ordinal) &&
-                        !name.StartsWith("IxIFlow.Analyzers", StringComparison.Ordinal) ||
-                        name.StartsWith("Microsoft.Extensions.", StringComparison.Ordinal)))
+            (name.StartsWith("IxIFlow.", StringComparison.Ordinal) &&
+                !name.StartsWith("IxIFlow.Analyzers", StringComparison.Ordinal) ||
+                name.StartsWith("Microsoft.Extensions.", StringComparison.Ordinal)))
         .Select(file => (MetadataReference)MetadataReference.CreateFromFile(file))
         .ToArray();
 
@@ -49,8 +49,10 @@ internal static class Verify
             TestCode = Usings + source,
             ReferenceAssemblies = Net10
         };
+
         test.TestState.AdditionalReferences.AddRange(Engine);
         test.ExpectedDiagnostics.AddRange(expected);
+
         return test.RunAsync();
     }
 
@@ -69,8 +71,10 @@ internal static class Verify
             FixedCode = Usings + fixedSource,
             ReferenceAssemblies = Net10
         };
+
         test.TestState.AdditionalReferences.AddRange(Engine);
         test.ExpectedDiagnostics.AddRange(expected);
+
         return test.RunAsync();
     }
 }

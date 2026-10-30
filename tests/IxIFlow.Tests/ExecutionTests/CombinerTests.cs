@@ -7,7 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// The built-in combiners and a parallel step's own choice of combiner (D-14, spec E-05, E-06).
+/// The built-in combiners and a parallel step's own choice of combiner.
 /// </summary>
 [Trait("Feature", "control-flow")]
 [Trait("Spec", "E-06")]
@@ -29,7 +29,7 @@ public sealed class CombinerTests
         var append = new Append<string>();
 
         Assert.Equal(["a", "b", "c", "d"], append.Combine(["a"], [["a", "b"], ["a", "c", "d"]]));
-        Assert.Throws<InvalidOperationException>(() => append.Combine(["a"], [["x", "b"]]));
+        Assert.Throws<JoinConflictException>(() => append.Combine(["a"], [["x", "b"]]));
     }
 
     [Fact]
@@ -40,7 +40,8 @@ public sealed class CombinerTests
 
         Assert.Equal(new Dictionary<string, int> { ["a"] = 5, ["c"] = 3 },
             union.Combine(original, [new() { ["a"] = 5, ["b"] = 2 }, new() { ["a"] = 1, ["c"] = 3 }]));
-        Assert.Throws<InvalidOperationException>(() => union.Combine(original,
+
+        Assert.Throws<JoinConflictException>(() => union.Combine(original,
             [new() { ["a"] = 5, ["b"] = 2 }, new() { ["a"] = 6, ["b"] = 2 }]));
     }
 
@@ -55,6 +56,7 @@ public sealed class CombinerTests
     {
         // Every branch's set holds its own copies of the items at the fork, equal but not the same objects.
         var original = new HashSet<Item> { new() { Name = "a" } };
+
         var merged = new Union<Item>().Combine(original,
         [
             [new Item { Name = "a" }, new Item { Name = "b" }],
@@ -73,6 +75,7 @@ public sealed class CombinerTests
 
         var appended = new Append<Dictionary<string, int>>().Combine([Ordered("x", "yy")],
             [[Ordered("yy", "x"), Ordered("zzz")]]);
+
         var united = new Union<string, Dictionary<string, int>>().Combine([],
             [new() { ["k"] = Ordered("x", "yy") }, new() { ["k"] = Ordered("yy", "x") }]);
 
@@ -126,8 +129,12 @@ public sealed class CombinerTests
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(9, Assert.IsType<Scores>(result.WorkflowData).Score);
+
         // Without the step's choice, the two branches writing Score are a build error.
-        Assert.Throws<WorkflowEngineException>(() => Counted(_ => { }));
+        Assert.Throws<WorkflowEngineException>(() => Counted(_ =>
+        {
+        }));
+
         // The choice is part of the fingerprint.
         Assert.NotEqual(new WorkflowScopeCatalog(definition).StructureHash,
             new WorkflowScopeCatalog(Counted(parallel => parallel.Combine<int, Min<int>>(data => data.Score))).StructureHash);
@@ -138,6 +145,7 @@ public sealed class CombinerTests
     public async Task ACombinerThatCannotMergeFailsTheJoinWithAConflict()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Scores>("BadAppend")
             .Step<Noop>()
             .Try(attempt => attempt.Parallel(parallel => parallel
@@ -167,6 +175,7 @@ public sealed class CombinerTests
             .Parallel(parallel =>
             {
                 choose(parallel);
+
                 parallel
                     .Do(first => first.Step<SetScore>(step => step
                         .Input(activity => activity.Score).From(_ => 9)
@@ -182,6 +191,7 @@ public sealed class CombinerTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -189,8 +199,7 @@ public sealed class CombinerTests
     {
         public int Score { get; set; }
 
-        [Combine<Append<string>>]
-        public List<string> Names { get; set; } = [];
+        [Combine<Append<string>>] public List<string> Names { get; set; } = [];
     }
 
     public sealed class Item

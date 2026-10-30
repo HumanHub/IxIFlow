@@ -19,6 +19,7 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("OneApproval")
             .Step<StartActivity>()
             .WaitFor<ApprovalReply>("finance", Matches("finance"), setup => setup
@@ -56,6 +57,7 @@ public class ParallelApprovalContractTests
         Assert.True(started.Status == WorkflowExecutionStatus.Suspended, started.ErrorMessage);
         Assert.Equal(1, (await Saved(services, started)).FinanceStarted);
         Assert.Equal(1, (await Saved(services, started, 1)).LegalStarted);
+
         Assert.Equal(2, (await engine.GetSnapshotAsync(started.InstanceId))!
             .Pointers.Count(pointer => pointer.Status == "Waiting"));
 
@@ -88,6 +90,7 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("SharedApprovalKey")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -100,16 +103,19 @@ public class ParallelApprovalContractTests
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.LegalCompleted)
                         .Output(activity => activity.CompletedCount).To(ctx => ctx.WorkflowData.LegalCompleted))))
             .Build();
+
         var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
         var first = await engine.ResumeAsync(started.InstanceId, "approval",
             Reply("finance", approved: true));
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
         Assert.Equal(1, (await Saved(services, first)).FinanceCompleted);
         Assert.Equal(0, (await Saved(services, first, 1)).LegalCompleted);
 
         var second = await engine.ResumeAsync(started.InstanceId, "approval",
             Reply("legal", approved: true));
+
         Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
         Assert.Equal(1, GetData(second).FinanceCompleted);
         Assert.Equal(1, GetData(second).LegalCompleted);
@@ -120,6 +126,7 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("ConvertedPrevious")
             .Step<ConvertedOutputActivity>()
             .If(ctx => true, then => then.WaitFor<ApprovalReply>("approval"))
@@ -127,6 +134,7 @@ public class ParallelApprovalContractTests
                 .Input(activity => activity.Status).From(ctx => ctx.PreviousStep.Status)
                 .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.EntrySeen))
             .Build();
+
         var started = await engine.RunAsync(definition, new ApprovalData());
 
         var completed = await engine.ResumeAsync(started.InstanceId, "approval",
@@ -143,14 +151,18 @@ public class ParallelApprovalContractTests
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
+
         var started = await engine.RunAsync(
             CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false),
             new ApprovalData { RequestId = "request-1" });
+
         var deliveries = await engine.PublishAsync("finance", Reply("finance", approved: true), "reply-1");
 
         Assert.Contains(new EventDelivery(started.InstanceId, EventAppendStatus.Stored), deliveries);
+
         Assert.Equal(EventOutcome.Consumed,
             (await EventAssert.DecidedAsync(repository, started.InstanceId, "reply-1")).Outcome);
+
         // The run that took the reply goes on to the next step before the instance is idle again.
         await engine.AwaitAsync(started.InstanceId).WaitAsync(TimeSpan.FromSeconds(10));
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
@@ -165,6 +177,7 @@ public class ParallelApprovalContractTests
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
+
         var started = await engine.RunAsync(
             CreateApprovalWorkflow(ParallelJoinMode.WaitAll, includeRisk: false),
             new ApprovalData { RequestId = "request-1" });
@@ -194,14 +207,17 @@ public class ParallelApprovalContractTests
         var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
         await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: true));
+
         var duplicate = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: true));
 
         Assert.NotEqual(WorkflowExecutionStatus.Success, duplicate.Status);
         var saved = await repository.GetWorkflowInstanceAsync(started.InstanceId);
         Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
+
         var legal = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
+
         Assert.Equal(WorkflowExecutionStatus.Success, legal.Status);
         Assert.Equal(1, GetData(legal).FinanceCompleted);
         Assert.Equal(1, GetData(legal).LegalCompleted);
@@ -221,10 +237,12 @@ public class ParallelApprovalContractTests
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, unmatched.Status);
         EventAssert.Rejected(unmatched, EventRejection.NotMatched);
+
         Assert.Equal(2, (await engine.GetSnapshotAsync(started.InstanceId))!.Pointers
             .Count(pointer => pointer.Status == "Waiting"));
 
         await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: true));
+
         var completed = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
 
@@ -265,6 +283,7 @@ public class ParallelApprovalContractTests
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var probe = provider.GetRequiredService<ResumeGateProbe>();
+
         var definition = Workflow.Create<ApprovalData>("QueuedApprovals")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -278,11 +297,13 @@ public class ParallelApprovalContractTests
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finished)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
             .Build();
+
         var started = await engine.RunAsync(definition, new ApprovalData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         var first = engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true));
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
         try
         {
             var second = engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", true));
@@ -307,28 +328,40 @@ public class ParallelApprovalContractTests
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
+
         var definition = Workflow.Create<ApprovalData>("RunningApproval")
             .Step<StartActivity>()
             .WaitFor<ApprovalReply>("finance")
             .Build();
+
         var started = await engine.RunAsync(definition, new ApprovalData());
+
         // The delivery makes the next execution pass due before its owner claims it.
         await repository.AppendEventAsync(new WorkflowEvent(started.InstanceId, "reply-1",
-            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(ApprovalReply)), System.Text.Json.JsonSerializer.Serialize(Reply("finance", true)), "finance"));
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(ApprovalReply)),
+            System.Text.Json.JsonSerializer.Serialize(Reply("finance", true)), "finance"));
+
         // Another host owns the instance and is running it.
         var saved = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         saved.Status = WorkflowStatus.Running;
+
         var claimed = await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId, await StoreTestSupport.ClaimAsync(services))).Epoch, saved.Revision, Guid.NewGuid().ToString("N")));
+            CheckpointCommit.Create(saved,
+                (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId, await StoreTestSupport.ClaimAsync(services))).Epoch,
+                saved.Revision, Guid.NewGuid().ToString("N")));
+
         Assert.Equal(WorkflowCommitStatus.Applied, claimed.Status);
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
+
         Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(started.InstanceId, "other-host",
             TimeSpan.FromMinutes(1), await StoreTestSupport.ClaimAsync(services)));
 
         // The event is stored at once, and the caller waits for the owner to decide it.
         var sent = engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true), "reply-1");
-        while (await repository.GetEventAsync(started.InstanceId, "reply-1") == null)
-            await Task.Delay(10);
+
+        await IxIFlow.Tests.Infrastructure.TestEventually.UntilAsync(started.InstanceId, "event reply-1 stored",
+            () => repository.GetEventAsync(started.InstanceId, "reply-1"), entry => entry != null);
+
         Assert.Equal(EventOutcome.Pending, (await repository.GetEventAsync(started.InstanceId, "reply-1"))!.Outcome);
         Assert.False(sent.IsCompleted);
 
@@ -354,6 +387,7 @@ public class ParallelApprovalContractTests
 
         var saved = await services.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(started.InstanceId);
+
         Assert.Equal(WorkflowStatus.Suspended, saved!.Status);
         var data = await Saved(services, started);
         Assert.Equal(1, data.FinanceCompleted);
@@ -361,6 +395,7 @@ public class ParallelApprovalContractTests
 
         var completed = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
+
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, GetData(completed).FinanceCompleted);
     }
@@ -370,6 +405,7 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("FailedApproval")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -378,6 +414,7 @@ public class ParallelApprovalContractTests
             .Build();
 
         var result = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
+
         var saved = await services.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(result.InstanceId);
 
@@ -398,8 +435,10 @@ public class ParallelApprovalContractTests
         using (var startScope = services.CreateScope())
         {
             var engine = startScope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+
             var started = await engine.RunAsync(definition,
                 new ApprovalData { RequestId = "request-1" });
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -407,16 +446,20 @@ public class ParallelApprovalContractTests
         using (var resumeScope = services.CreateScope())
         {
             var engine = resumeScope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+
             var halfway = await engine.ResumeAsync(instanceId, "legal",
                 Reply("legal", approved: true));
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, halfway.Status);
         }
 
         using (var finishScope = services.CreateScope())
         {
             var engine = finishScope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+
             var completed = await engine.ResumeAsync(instanceId, "finance",
                 Reply("finance", approved: true));
+
             Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
             Assert.Equal(1, GetData(completed).FinanceCompleted);
             Assert.Equal(1, GetData(completed).LegalCompleted);
@@ -434,8 +477,10 @@ public class ParallelApprovalContractTests
         using (var firstProvider = CreateServices(repository))
         {
             var engine = firstProvider.GetRequiredService<IWorkflowClient>();
+
             var started = await engine.RunAsync(original,
                 new ApprovalData { RequestId = "request-1" });
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
@@ -447,6 +492,7 @@ public class ParallelApprovalContractTests
         var resumedEngine = secondProvider.GetRequiredService<IWorkflowClient>();
 
         await resumedEngine.ResumeAsync(instanceId, "finance", Reply("finance", approved: true));
+
         var completed = await resumedEngine.ResumeAsync(instanceId, "legal",
             Reply("legal", approved: true));
 
@@ -468,6 +514,7 @@ public class ParallelApprovalContractTests
         {
             var started = await firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new ApprovalData { RequestId = "request-1" });
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         }
 
@@ -476,7 +523,10 @@ public class ParallelApprovalContractTests
         Assert.Equal(WorkflowStatus.Running, saved.Status);
 
         var recoveredRepository = new InMemoryWorkflowStateRepository();
-        await recoveredRepository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(recoveredRepository, saved.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")));
+
+        await recoveredRepository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved,
+            (await StoreTestSupport.LeaseAsync(recoveredRepository, saved.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")));
+
         await StoreTestSupport.ReleaseAsync(recoveredRepository, saved.InstanceId);
         using var secondProvider = CreateServices(recoveredRepository);
         var rebuilt = CreateRecoverWorkflow();
@@ -489,6 +539,7 @@ public class ParallelApprovalContractTests
 
         var completed = await engine.ResumeAsync(saved.InstanceId, "finance",
             Reply("finance", approved: true));
+
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, GetData(completed).FinanceStarted);
         Assert.Equal(1, GetData(completed).Finished);
@@ -504,7 +555,10 @@ public class ParallelApprovalContractTests
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(
             CreateRecoverWorkflow(), new ApprovalData { RequestId = "request-1" }));
 
-        var saved = (await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Single();
+        var saved = (await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Single();
+
         Assert.Equal(0, System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(saved.WorkflowDataJson.InlineText)!.FinanceStarted);
 
         var recovered = await engine.RecoverAsync(saved.InstanceId);
@@ -517,38 +571,49 @@ public class ParallelApprovalContractTests
     {
         using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var recording = new RecordingRepository();
+
         using (var firstProvider = CreateServices(recording))
         {
             var started = await firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(CreateRecoverWorkflow(),
                     new ApprovalData { RequestId = "request-1" }, cancellationToken: patience.Token);
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         }
 
         var saved = recording.Initial!;
         var repository = new InMemoryWorkflowStateRepository();
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")));
+
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved,
+            (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")));
+
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
         var before = (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!;
         var noExecution = new Mock<IActivityExecutor>(MockBehavior.Strict);
+
         // Keep the wrong-code host capability test separate from durable catalog registration.
         var wrongServices = new ServiceCollection().AddLogging();
         wrongServices.AddSingleton<IWorkflowStateRepository>(repository);
         wrongServices.AddIxIFlow();
         wrongServices.AddSingleton<IWorkflowCatalog>(new WorkflowCatalog());
         wrongServices.AddSingleton<IActivityExecutor>(noExecution.Object);
+
         using (var wrongProvider = wrongServices.BuildServiceProvider())
         {
             var changed = Workflow.Create<ApprovalData>("RecoverApproval")
                 .Step<StartActivity>()
                 .WaitFor<ApprovalReply>("finance")
                 .Build();
+
             await wrongProvider.GetRequiredService<IWorkflowCatalog>()
                 .RegisterWorkflowAsync(changed);
+
             var rejected = await wrongProvider.GetRequiredService<IWorkflowClient>()
                 .RecoverAsync(saved.InstanceId, patience.Token).WaitAsync(patience.Token);
+
             Assert.Equal(WorkflowExecutionStatus.Scheduled, rejected.Status);
         }
+
         noExecution.VerifyNoOtherCalls();
 
         var stillSaved = await repository.GetWorkflowInstanceAsync(saved.InstanceId);
@@ -558,10 +623,13 @@ public class ParallelApprovalContractTests
         Assert.Equal(before.Revision, stillSaved.Revision);
         Assert.Equal(before.LastHostId, stillSaved.LastHostId);
         using var correctProvider = CreateServices(repository);
+
         await correctProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(CreateRecoverWorkflow());
+
         var recovered = await correctProvider.GetRequiredService<IWorkflowClient>()
             .RecoverAsync(saved.InstanceId, patience.Token).WaitAsync(patience.Token);
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
         Assert.Equal(1, GetData(recovered).FinanceStarted);
     }
@@ -570,27 +638,35 @@ public class ParallelApprovalContractTests
     public async Task CatalogRecoveryRejectsChangedDefinitionWithoutLosingTheCheckpoint()
     {
         var recording = new RecordingRepository();
+
         using (var firstProvider = CreateServices(recording))
         {
             var started = await firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(CreateRecoverWorkflow(),
                     new ApprovalData { RequestId = "request-1" });
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         }
 
         var saved = recording.Initial!;
         var repository = new InMemoryWorkflowStateRepository();
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")));
+
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved,
+            (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")));
+
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
         string checkpointJson;
+
         using (var wrongProvider = CreateServices(repository))
         {
             var catalog = wrongProvider.GetRequiredService<IWorkflowCatalog>();
             await catalog.RegisterWorkflowAsync(CreateRecoverWorkflow());
+
             var changed = Workflow.Create<ApprovalData>("RecoverApproval")
                 .Step<StartActivity>()
                 .WaitFor<ApprovalReply>("finance")
                 .Build();
+
             var registration = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.RegisterWorkflowAsync(changed));
             Assert.Equal(WorkflowErrorKind.InvalidState, registration.Kind);
 
@@ -600,8 +676,10 @@ public class ParallelApprovalContractTests
             instance.ExecutionStateJson = checkpoint.ToJsonString();
             await repository.SeedAsync(instance, query: await StoreTestSupport.ClaimAsync(wrongProvider));
             checkpointJson = (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.ExecutionStateJson;
+
             var rejected = await wrongProvider.GetRequiredService<IWorkflowClient>()
                 .RecoverAsync(saved.InstanceId);
+
             Assert.Equal(WorkflowExecutionStatus.Faulted, rejected.Status);
         }
 
@@ -610,11 +688,15 @@ public class ParallelApprovalContractTests
         Assert.Equal(checkpointJson, stillSaved.ExecutionStateJson);
         stillSaved.ExecutionStateJson = saved.ExecutionStateJson;
         using var correctProvider = CreateServices(repository);
+
         await correctProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(CreateRecoverWorkflow());
+
         await repository.SeedAsync(stillSaved, query: await StoreTestSupport.ClaimAsync(correctProvider));
+
         var recovered = await correctProvider.GetRequiredService<IWorkflowClient>()
             .RecoverAsync(saved.InstanceId);
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, recovered.Status);
         Assert.Equal(1, GetData(recovered).FinanceStarted);
     }
@@ -624,17 +706,20 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("UnsupportedScope")
             .Step<CountActivity>(setup => setup
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.FinanceStarted)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.FinanceStarted))
             .WaitFor<ApprovalReply>("finance")
             .Build();
+
         definition.Steps.Insert(1, new WorkflowStep
         {
             Name = "Unsupported invocation",
             StepType = WorkflowStepType.WorkflowInvocation
         });
+
         var data = new ApprovalData();
 
         await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidDefinition, () => engine.RunAsync(definition, data));
@@ -660,6 +745,7 @@ public class ParallelApprovalContractTests
 
         var late = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
+
         EventAssert.Closed(late);
     }
 
@@ -668,6 +754,7 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("TwoStageApproval")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -692,11 +779,13 @@ public class ParallelApprovalContractTests
 
         var firstReply = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: true));
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, firstReply.Status);
         Assert.Equal(0, GetData(firstReply).Finished);
 
         var legal = await engine.ResumeAsync(started.InstanceId, "legal",
             Reply("legal", approved: true));
+
         Assert.Equal(WorkflowExecutionStatus.Success, legal.Status);
         Assert.Equal(0, GetData(legal).FinanceCompleted);
         Assert.Equal(1, GetData(legal).LegalCompleted);
@@ -704,6 +793,7 @@ public class ParallelApprovalContractTests
 
         var late = await engine.ResumeAsync(started.InstanceId, "finance-review",
             Reply("finance-review", approved: true));
+
         EventAssert.Closed(late);
     }
 
@@ -715,6 +805,7 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("CompletedBranch")
             .Step<StartActivity>()
             .Parallel(parallel =>
@@ -725,6 +816,7 @@ public class ParallelApprovalContractTests
                 parallel.Do(branch => branch.Step<CountActivity>(setup => setup
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.FinanceCompleted)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.FinanceCompleted)));
+
                 AddLegalBranch(parallel);
             })
             .Step<CountActivity>(setup => setup
@@ -735,14 +827,18 @@ public class ParallelApprovalContractTests
         var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
 
         Assert.Equal(expectedStatus, started.Status);
-        Assert.Equal(1, (joinMode == ParallelJoinMode.WaitAny ? GetData(started)
+
+        Assert.Equal(1, (joinMode == ParallelJoinMode.WaitAny
+            ? GetData(started)
             : await Saved(services, started)).FinanceCompleted);
+
         Assert.Equal(joinMode == ParallelJoinMode.WaitAny ? 1 : 0, GetData(started).Finished);
 
         if (joinMode == ParallelJoinMode.WaitAll)
         {
             var completed = await engine.ResumeAsync(started.InstanceId, "legal",
                 Reply("legal", approved: true));
+
             Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
             Assert.Equal(1, GetData(completed).Finished);
         }
@@ -750,6 +846,7 @@ public class ParallelApprovalContractTests
         {
             var late = await engine.ResumeAsync(started.InstanceId, "legal",
                 Reply("legal", approved: true));
+
             EventAssert.Closed(late);
         }
     }
@@ -780,6 +877,7 @@ public class ParallelApprovalContractTests
 
         var late = await engine.ResumeAsync(started.InstanceId, "risk",
             Reply("risk", approved: true));
+
         EventAssert.Closed(late);
     }
 
@@ -793,6 +891,7 @@ public class ParallelApprovalContractTests
 
         await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: false));
         await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", approved: false));
+
         var last = await engine.ResumeAsync(started.InstanceId, "risk",
             Reply("risk", approved: false));
 
@@ -810,6 +909,7 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("NestedApprovals")
             .Step<StartActivity>()
             .Parallel(parallel =>
@@ -826,6 +926,7 @@ public class ParallelApprovalContractTests
                                 .Input(activity => activity.Approver).From(ctx => "finance")
                                 .Input(activity => activity.Approved).From(ctx => ctx.PreviousStep.Approved)
                                 .Output(activity => activity.CompletedCount).To(ctx => ctx.WorkflowData.FinanceCompleted)))));
+
                 AddLegalBranch(parallel);
             })
             .Step<CountActivity>(setup => setup
@@ -837,6 +938,7 @@ public class ParallelApprovalContractTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", approved: true));
+
         var completed = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: true));
 
@@ -855,6 +957,7 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("IfPreviousStep")
             .Step<StartActivity>(setup => setup
                 .Input(activity => activity.Marker).From(ctx => ctx.WorkflowData.RequestId))
@@ -875,6 +978,7 @@ public class ParallelApprovalContractTests
             .Build();
 
         var started = await engine.RunAsync(definition, new ApprovalData { RequestId = "request-1" });
+
         var result = waitInsideIf
             ? await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", approved: true))
             : started;
@@ -888,6 +992,7 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("PrivateOutput")
             .Step<PrivateOutputActivity>()
             .Step<CapturePreviousActivity>(setup => setup
@@ -912,6 +1017,7 @@ public class ParallelApprovalContractTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("InjectedPrevious")
             .Step<InjectedOutputActivity>()
             .If(ctx => true,
@@ -936,6 +1042,7 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("RenamedOutput")
             .Step<NamedOutputActivity>()
             .If(ctx => true, then => then.WaitFor<ApprovalReply>("finance", Matches("finance")))
@@ -949,6 +1056,7 @@ public class ParallelApprovalContractTests
 
         var completed = await engine.ResumeAsync(started.InstanceId, "finance",
             Reply("finance", approved: true));
+
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal("named-output", GetData(completed).EntrySeen);
     }
@@ -958,6 +1066,7 @@ public class ParallelApprovalContractTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("GetterOnlyOutput")
             .Step<GetterOnlyActivity>()
             .WaitFor<ApprovalReply>("finance")
@@ -978,6 +1087,7 @@ public class ParallelApprovalContractTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("ConcurrentBranches")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -1007,6 +1117,7 @@ public class ParallelApprovalContractTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var engine = provider.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ApprovalData>("CancelLosingBranch")
             .Step<StartActivity>()
             .Parallel(parallel =>
@@ -1017,6 +1128,7 @@ public class ParallelApprovalContractTests
                     parallel.WaitConditionally(data => data.ApprovedBy == "finance");
 
                 parallel.Do(branch => branch.Step<SlowCancellableActivity>());
+
                 parallel.Do(branch => branch.Step<FastApprovalActivity>(setup => setup
                     .Output(activity => activity.Winner).To(ctx => ctx.WorkflowData.ApprovedBy)));
             })
@@ -1044,6 +1156,7 @@ public class ParallelApprovalContractTests
         using var provider = services.BuildServiceProvider();
         var probe = provider.GetRequiredService<BlockedCancellationProbe>();
         var repository = provider.GetRequiredService<IWorkflowStateRepository>();
+
         var definition = Workflow.Create<ApprovalData>("IndependentBranchAfterWaitAny")
             .Step<StartActivity>()
             .Parallel(outer => outer
@@ -1058,39 +1171,54 @@ public class ParallelApprovalContractTests
 
         var execution = provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new ApprovalData());
+
         var otherCommittedBeforeLoserEnded = false;
+
         try
         {
             await Task.WhenAll(probe.LoserStarted.Task, probe.TriggerStarted.Task,
                     probe.OtherStarted.Task)
                 .WaitAsync(TimeSpan.FromSeconds(5));
+
             probe.ReleaseWinner.SetResult();
             await probe.LoserCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
             probe.ReleaseTrigger.SetResult();
             await probe.TriggerReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
             var triggerDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+
             while (DateTime.UtcNow < triggerDeadline)
             {
-                var saved = (await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: definition.Name, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Single();
+                var saved = (await Task.WhenAll(
+                    (await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: definition.Name, Limit: int.MaxValue))).Items
+                    .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Single();
+
                 if ((await BranchProgress.ReadAsync<ApprovalData>(repository, saved.InstanceId, 1))
                     .FinanceCompleted == 1)
                     break;
+
                 await Task.Delay(25);
             }
+
             probe.ReleaseOther.SetResult();
             await probe.OtherReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+
             while (DateTime.UtcNow < deadline)
             {
-                var saved = (await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: definition.Name, Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Single();
+                var saved = (await Task.WhenAll(
+                    (await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: definition.Name, Limit: int.MaxValue))).Items
+                    .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!))).Single();
+
                 // The branch's commit is read from its saved changes; the instance's data waits for the join.
                 if ((await BranchProgress.ReadAsync<ApprovalData>(repository, saved.InstanceId, 2))
                     .LegalCompleted == 1)
                 {
                     otherCommittedBeforeLoserEnded = true;
+
                     break;
                 }
+
                 await Task.Delay(25);
             }
         }
@@ -1100,8 +1228,10 @@ public class ParallelApprovalContractTests
         }
 
         var completed = await execution.WaitAsync(TimeSpan.FromSeconds(5));
+
         Assert.True(otherCommittedBeforeLoserEnded,
             "The independent branch must commit while the cancelled WaitAny loser is still running");
+
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, GetData(completed).LegalCompleted);
     }
@@ -1119,6 +1249,7 @@ public class ParallelApprovalContractTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var probe = provider.GetRequiredService<BlockedCancellationProbe>();
+
         var definition = Workflow.Create<ApprovalData>("IndependentIfAfterWaitAny")
             .Step<StartActivity>()
             .Parallel(outer => outer
@@ -1131,15 +1262,19 @@ public class ParallelApprovalContractTests
 
         var execution = provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new ApprovalData());
+
         var startedBeforeLoserEnded = false;
+
         try
         {
             await Task.WhenAll(probe.LoserStarted.Task, probe.TriggerStarted.Task)
                 .WaitAsync(TimeSpan.FromSeconds(5));
+
             probe.ReleaseWinner.SetResult();
             await probe.LoserCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
             probe.ReleaseTrigger.SetResult();
             await probe.TriggerReturned.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
             startedBeforeLoserEnded = await Task.WhenAny(probe.OtherStarted.Task,
                 Task.Delay(TimeSpan.FromSeconds(5))) == probe.OtherStarted.Task;
         }
@@ -1152,8 +1287,10 @@ public class ParallelApprovalContractTests
         }
 
         var completed = await execution.WaitAsync(TimeSpan.FromSeconds(5));
+
         Assert.True(startedBeforeLoserEnded,
             "An independent If must advance while a cancelled WaitAny loser is still running");
+
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
     }
 
@@ -1169,6 +1306,7 @@ public class ParallelApprovalContractTests
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
         var probe = provider.GetRequiredService<BlockedCancellationProbe>();
+
         var definition = Workflow.Create<ApprovalData>("NestedJoinBeforeUnrelatedActivity")
             .Step<StartActivity>()
             .Parallel(outer => outer
@@ -1181,11 +1319,14 @@ public class ParallelApprovalContractTests
 
         var execution = provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new ApprovalData());
+
         var nextStepStartedBeforeOtherEnded = false;
+
         try
         {
             await probe.OtherStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
             probe.ReleaseWinner.SetResult();
+
             nextStepStartedBeforeOtherEnded = await Task.WhenAny(probe.TriggerStarted.Task,
                 Task.Delay(TimeSpan.FromSeconds(5))) == probe.TriggerStarted.Task;
         }
@@ -1197,8 +1338,10 @@ public class ParallelApprovalContractTests
         }
 
         var completed = await execution.WaitAsync(TimeSpan.FromSeconds(5));
+
         Assert.True(nextStepStartedBeforeOtherEnded,
             "A completed join must resume its parent while an unrelated activity is running");
+
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
     }
 
@@ -1207,6 +1350,7 @@ public class ParallelApprovalContractTests
     public async Task NestedParallelWaitAllJoinsOnlyAfterEveryInnerAndOuterWait()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<ApprovalData>("NestedParallelWaitAll")
             .Step<StartActivity>()
             .Parallel(outer => outer
@@ -1231,10 +1375,12 @@ public class ParallelApprovalContractTests
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finished)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
             .Build();
+
         var engine = services.GetRequiredService<IWorkflowClient>();
 
         var started = await engine.RunAsync(definition,
             new ApprovalData { RequestId = "request-1" });
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var legal = await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", true));
         Assert.Equal(WorkflowExecutionStatus.Suspended, legal.Status);
@@ -1243,6 +1389,7 @@ public class ParallelApprovalContractTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, finance.Status);
         Assert.Equal(1, (await Saved(services, finance)).RiskCompleted);
         Assert.Equal(0, GetData(finance).Finished);
+        Assert.Equal(0, GetData(finance).RiskCompleted);
         var completed = await engine.ResumeAsync(started.InstanceId, "risk", Reply("risk", true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -1256,6 +1403,7 @@ public class ParallelApprovalContractTests
     public async Task ParallelWaitsInsideLoopRestartOnTheNextIteration()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<ApprovalData>("LoopOfParallelApprovals")
             .Step<StartActivity>()
             .WhileDo(ctx => ctx.WorkflowData.Finished < 2,
@@ -1272,18 +1420,24 @@ public class ParallelApprovalContractTests
                         .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finished)
                         .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished)))
             .Build();
+
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var started = await engine.RunAsync(definition,
             new ApprovalData { RequestId = "request-1" });
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
         Assert.Equal(WorkflowExecutionStatus.Suspended,
             (await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true))).Status);
+
         var nextIteration = await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", true));
         Assert.Equal(WorkflowExecutionStatus.Suspended, nextIteration.Status);
         Assert.Equal(1, GetData(nextIteration).Finished);
+
         Assert.Equal(WorkflowExecutionStatus.Suspended,
             (await engine.ResumeAsync(started.InstanceId, "legal", Reply("legal", true))).Status);
+
         var completed = await engine.ResumeAsync(started.InstanceId, "finance", Reply("finance", true));
 
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
@@ -1296,6 +1450,7 @@ public class ParallelApprovalContractTests
     public async Task ConditionalJoinFailureClosesTheOtherWait()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<ApprovalData>("ConditionalJoinFailure")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitConditionally(data => data.ApprovedBy != null)
@@ -1305,7 +1460,9 @@ public class ParallelApprovalContractTests
             .Step<CountActivity>(step => step
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finished))
             .Build();
+
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var started = await engine.RunAsync(definition,
             new ApprovalData { RequestId = "request-1" });
 
@@ -1328,14 +1485,17 @@ public class ParallelApprovalContractTests
                 {
                     case ParallelJoinMode.WaitAny:
                         parallel.WaitAny();
+
                         break;
                     case ParallelJoinMode.WaitConditionally:
                         parallel.WaitConditionally(data => data.ApprovedBy != null);
+
                         break;
                 }
 
                 AddFinanceBranch(parallel);
                 AddLegalBranch(parallel);
+
                 if (includeRisk)
                     AddRiskBranch(parallel);
             })
@@ -1409,7 +1569,7 @@ public class ParallelApprovalContractTests
     private static ApprovalData GetData(WorkflowExecutionResult result) =>
         Assert.IsType<ApprovalData>(result.WorkflowData);
 
-    // What the branches have committed while the parallel step is still open (D-14).
+    // What the branches have committed while the parallel step is still open.
     private static Task<ApprovalData> Saved(IServiceProvider services, WorkflowExecutionResult result, int branch = 0) =>
         BranchProgress.ReadAsync<ApprovalData>(services.GetRequiredService<IWorkflowStateRepository>(),
             result.InstanceId, branch);
@@ -1418,10 +1578,15 @@ public class ParallelApprovalContractTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+
         if (repository != null)
             services.AddSingleton(repository);
+
         services.AddIxIFlow();
-        if (executor != null) services.AddSingleton(executor);
+
+        if (executor != null)
+            services.AddSingleton(executor);
+
         return services.BuildServiceProvider();
     }
 
@@ -1436,10 +1601,11 @@ public class ParallelApprovalContractTests
         public int RiskCompleted { get; set; }
         public bool FinanceApproved { get; set; }
         public bool LegalApproved { get; set; }
+
         public bool RiskApproved { get; set; }
-        // Every approval branch may record itself; the first, in declaration order, is kept (D-14).
-        [Combine<FirstWins<string>>]
-        public string? ApprovedBy { get; set; }
+
+        // Every approval branch may record itself; the first, in declaration order, is kept.
+        [Combine<FirstWins<string>>] public string? ApprovedBy { get; set; }
         public int Finished { get; set; }
         public string? EntrySeen { get; set; }
     }
@@ -1467,6 +1633,7 @@ public class ParallelApprovalContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Result = Count + 1;
+
             return Task.CompletedTask;
         }
     }
@@ -1483,11 +1650,16 @@ public class ParallelApprovalContractTests
         {
             CompletedCount = Count + 1;
             Winner = Approved ? Approver : null;
+
             return Task.CompletedTask;
         }
     }
 
-    public enum ApprovalStatus { Approved, Rejected }
+    public enum ApprovalStatus
+    {
+        Approved,
+        Rejected
+    }
 
     public sealed class ConvertedOutputActivity : IAsyncActivity
     {
@@ -1497,6 +1669,7 @@ public class ParallelApprovalContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Status = ApprovalStatus.Approved;
+
             return Task.CompletedTask;
         }
     }
@@ -1509,6 +1682,7 @@ public class ParallelApprovalContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Value = Status.ToString();
+
             return Task.CompletedTask;
         }
     }
@@ -1521,6 +1695,7 @@ public class ParallelApprovalContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Captured = Value;
+
             return Task.CompletedTask;
         }
     }
@@ -1532,6 +1707,7 @@ public class ParallelApprovalContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Value = "private-output";
+
             return Task.CompletedTask;
         }
     }
@@ -1545,18 +1721,19 @@ public class ParallelApprovalContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Value = marker.Value;
+
             return Task.CompletedTask;
         }
     }
 
     public sealed class NamedOutputActivity : IAsyncActivity
     {
-        [JsonPropertyName("saved_value")]
-        public string Value { get; private set; } = string.Empty;
+        [JsonPropertyName("saved_value")] public string Value { get; private set; } = string.Empty;
 
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Value = "named-output";
+
             return Task.CompletedTask;
         }
     }
@@ -1602,6 +1779,7 @@ public class ParallelApprovalContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             signal.Started.TrySetResult(true);
+
             return Task.CompletedTask;
         }
     }
@@ -1631,6 +1809,7 @@ public class ParallelApprovalContractTests
         {
             using var registration = cancellationToken.Register(() =>
                 probe.LoserCancelled.TrySetResult());
+
             probe.LoserStarted.TrySetResult();
             await probe.ReleaseLoser.Task;
         }
@@ -1679,6 +1858,7 @@ public class ParallelApprovalContractTests
             catch (OperationCanceledException)
             {
                 probe.Cancelled.TrySetResult(true);
+
                 throw;
             }
         }
@@ -1690,6 +1870,7 @@ public class ParallelApprovalContractTests
         {
             if (!probe.Cancelled.Task.IsCompleted)
                 throw new InvalidOperationException("The losing branch is still running");
+
             return Task.CompletedTask;
         }
     }
@@ -1701,6 +1882,7 @@ public class ParallelApprovalContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Winner = "finance";
+
             return Task.CompletedTask;
         }
     }
@@ -1713,88 +1895,231 @@ public class ParallelApprovalContractTests
 
     private sealed class RecordingRepository : IWorkflowStateRepository
     {
-        public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => _inner.ListWorkflowsAsync(query);
-        public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => _inner.ListWorkflowVersionsAsync(name, query);
-        public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => _inner.GetWorkflowVersionDetailAsync(name, version, scope);
-        public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query) => _inner.ListTemplatesAsync(query);
-        public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query) => _inner.ListTemplateVersionsAsync(key, query);
-        public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope) => _inner.GetTemplateDetailAsync(key, version, scope);
-        public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope) => _inner.ListStepDescriptorsAsync(scope);
-        public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => _inner.ListActivitiesAsync(query);
-    public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => _inner.ListActivityVersionsAsync(key, query);
-    public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => _inner.GetActivityAsync(key, version, provider, scope);
-    public Task<CatalogPage<CatalogPackage>> ListPackagesAsync(CatalogPackageQuery query) => _inner.ListPackagesAsync(query);
-    public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query) => _inner.ListPackageVersionsAsync(id, query);
-    public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => _inner.GetPackageDetailAsync(id, version, scope);
-    public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => _inner.GetPackageActivitiesAsync(id, version, query);
-    public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => _inner.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit);
-    public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => _inner.RegisterTemplateVersionAsync(version, artifacts, actor);
-    public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version) => _inner.GetTemplateVersionAsync(key, version);
-    public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => _inner.GetTemplateVersionsAsync(key);
-    public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => _inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
-    public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => _inner.GetPackageHoldersAsync(id, version, scope);
-    public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _inner.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor);
-    public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected, string? actor = null) => _inner.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor);
-    public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _inner.RegisterPackageAsync(package, activities, artifacts, actor);
-    public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
-    public IArtifactStore? CatalogArtifacts { get => _inner.CatalogArtifacts; set => _inner.CatalogArtifacts = value; }
-    public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity, int limit) => _inner.GetPackageExtractionPageAsync(extraction, afterIdentity, limit);
-        public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) => _inner.GetInstalledPackagesAsync(id);
-        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _inner.GetPackagesAsync(id);
-        public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _inner.GetPackageAsync(id, version);
-        public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _inner.GetPackagePageAsync(id, afterVersion, limit);
+        public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query,
+            CancellationToken cancellationToken = default) => _inner.ListWorkflowsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.ListWorkflowVersionsAsync(name, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowVersionDetailAsync(name, version, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query,
+            CancellationToken cancellationToken = default) => _inner.ListTemplatesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.ListTemplateVersionsAsync(key, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetTemplateDetailAsync(key, version, scope, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope,
+            CancellationToken cancellationToken = default) => _inner.ListStepDescriptorsAsync(scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query,
+            CancellationToken cancellationToken = default) => _inner.ListActivitiesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.ListActivityVersionsAsync(key, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider,
+            CatalogScope scope, CancellationToken cancellationToken = default) =>
+            _inner.GetActivityAsync(key, version, provider, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogPackage>>
+            ListPackagesAsync(CatalogPackageQuery query, CancellationToken cancellationToken = default) =>
+            _inner.ListPackagesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.ListPackageVersionsAsync(id, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetPackageDetailAsync(id, version, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetPackageActivitiesAsync(id, version, query, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity,
+            int limit, CancellationToken cancellationToken = default) =>
+            _inner.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version,
+            IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.RegisterTemplateVersionAsync(version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetTemplateVersionAsync(key, version, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null,
+            CancellationToken cancellationToken = default) => _inner.GetTemplateVersionsAsync(key, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId,
+            IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetPackageHoldersAsync(id, version, scope, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package,
+            PackageActivities activities, IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected,
+            string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities,
+            IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.RegisterPackageAsync(package, activities, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest,
+            PackageActivities activities, IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor,
+                cancellationToken: cancellationToken);
+
+        public IArtifactStore? CatalogArtifacts
+        {
+            get => _inner.CatalogArtifacts;
+            set => _inner.CatalogArtifacts = value;
+        }
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity,
+            int limit, CancellationToken cancellationToken = default) =>
+            _inner.GetPackageExtractionPageAsync(extraction, afterIdentity, limit, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null,
+            CancellationToken cancellationToken = default) => _inner.GetInstalledPackagesAsync(id, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null, CancellationToken cancellationToken = default) =>
+            _inner.GetPackagesAsync(id, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPackage?> GetPackageAsync(string id, string version, CancellationToken cancellationToken = default) =>
+            _inner.GetPackageAsync(id, version, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetPackagePageAsync(id, afterVersion, limit, cancellationToken: cancellationToken);
+
         public IPayloadStore PayloadStore => _inner.PayloadStore;
-        public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected) => _inner.DeleteDefinitionAsync(expected);
-        public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query) => _inner.GetDefinitionsAsync(query);
-        public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope) => _inner.GetRetirementBlockersAsync(name, version, scope);
-        public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter) => _inner.BeginPublicationAsync(draftId, hostId, actor, staleAfter);
-        public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId) => _inner.HeartbeatPublicationAsync(id, hostId);
-        public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome) => _inner.CompletePublicationAsync(id, hostId, outcome);
-        public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope) => _inner.GetPublicationAsync(id, scope);
-        public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query) => _inner.GetPublicationsAsync(query);
-        public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => _inner.PurgePublicationsAsync(retention, batchSize, cancellationToken);
-        public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version) =>
-            _inner.GetDefinitionAsync(kind, name, version);
-        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null) =>
-            _inner.SaveDefinitionAsync(definition, expected, actor);
-        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
-            _inner.RegisterWorkflowVersionAsync(version, artifacts);
-        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
-            _inner.GetWorkflowVersionAsync(name, version);
-        public Task<long> GetCatalogRevisionAsync() => _inner.GetCatalogRevisionAsync();
-        public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => _inner.GetWorkflowVersionChangesAsync(afterRevision);
-        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
-            _inner.GetWorkflowVersionsAsync(name);
-        public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null) =>
-            _inner.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts, actor);
-        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null) =>
-            _inner.PublishDefinitionAsync(draftId, version, artifacts, actor);
-        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+
+        public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected, CancellationToken cancellationToken = default) =>
+            _inner.DeleteDefinitionAsync(expected, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query,
+            CancellationToken cancellationToken = default) => _inner.GetDefinitionsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetRetirementBlockersAsync(name, version, scope, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter,
+            CancellationToken cancellationToken = default) =>
+            _inner.BeginPublicationAsync(draftId, hostId, actor, staleAfter, cancellationToken: cancellationToken);
+
+        public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId, CancellationToken cancellationToken = default) =>
+            _inner.HeartbeatPublicationAsync(id, hostId, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome,
+            CancellationToken cancellationToken = default) =>
+            _inner.CompletePublicationAsync(id, hostId, outcome, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope, CancellationToken cancellationToken = default) =>
+            _inner.GetPublicationAsync(id, scope, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication?> GetLatestPublicationAsync(string kind, string name, int version, Guid generation,
+            CatalogScope scope, CancellationToken cancellationToken = default) =>
+            _inner.GetLatestPublicationAsync(kind, name, version, generation, scope, cancellationToken);
+
+        public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query,
+            CancellationToken cancellationToken = default) => _inner.GetPublicationsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+            _inner.PurgePublicationsAsync(retention, batchSize, cancellationToken);
+
+        public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetDefinitionAsync(kind, name, version, cancellationToken: cancellationToken);
+
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.SaveDefinitionAsync(definition, expected, actor, cancellationToken: cancellationToken);
+
+        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.RegisterWorkflowVersionAsync(version, artifacts, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version, CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowVersionAsync(name, version, cancellationToken: cancellationToken);
+
+        public Task<long> GetCatalogRevisionAsync(CancellationToken cancellationToken = default) =>
+            _inner.GetCatalogRevisionAsync(cancellationToken: cancellationToken);
+
+        public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowVersionChangesAsync(afterRevision, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowVersionsAsync(name, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state,
+            CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts,
+            string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.PublishDefinitionAsync(draftId, version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
+            CancellationToken cancellationToken = default) =>
             _inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
+
         public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
             _inner.PutAsync(kind, content, cancellationToken);
+
         public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
             _inner.OpenAsync(digest, cancellationToken);
+
         public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
             _inner.ExistsAsync(digest, cancellationToken);
-        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) =>
+
+        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize,
+            CancellationToken cancellationToken = default) =>
             _inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
+
         public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
             _inner.DeleteAsync(digest, cancellationToken);
 
         public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
             _inner.RegisterMemberAsync(member, cancellationToken);
+
         public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
             CancellationToken cancellationToken = default) =>
             _inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
+
         public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
             _inner.UnregisterMemberAsync(memberId, cancellationToken);
-        public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
-            _inner.GetWorkflowDemandsAsync(instanceId);
+
+        public Task<IReadOnlyList<WorkflowDemand>>
+            GetWorkflowDemandsAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowDemandsAsync(instanceId, cancellationToken: cancellationToken);
 
         public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
             CancellationToken cancellationToken = default) =>
             _inner.GetUnschedulableAsync(limit, cursor, cancellationToken);
+
         public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
             _inner.CanScheduleAsync(demands, cancellationToken);
 
@@ -1804,72 +2129,119 @@ public class ParallelApprovalContractTests
         public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
             CancellationToken cancellationToken = default) =>
             _inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);
-        public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
-            _inner.GetTombstoneAsync(instanceId);
+
+        public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            _inner.GetTombstoneAsync(instanceId, cancellationToken: cancellationToken);
+
         public Task<WorkflowCommitResult> AdmitWorkflowInstanceAsync(CheckpointCommit commit, WorkflowAdmission admission) =>
             _inner.AdmitWorkflowInstanceAsync(commit, admission);
+
         public Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId) =>
             _inner.GetWorkflowOwnershipAsync(instanceId);
+
         public Task<WorkflowAdmissionRecord?> GetWorkflowAdmissionAsync(string sender, string trigger, string key) =>
             _inner.GetWorkflowAdmissionAsync(sender, trigger, key);
 
-        public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
-            _inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
-        public Task UnregisterPublisherAsync(string name, string actor = "host") => _inner.UnregisterPublisherAsync(name, actor);
-        public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) => _inner.ListDeliveriesAsync(query);
-        public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => _inner.RetryDeliveryAsync(eventId, publisherName, actor);
-        public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() => _inner.ListPublishersAsync();
-        public Task<bool> EnablePublisherAsync(string publisherName, string actor) => _inner.EnablePublisherAsync(publisherName, actor);
-        public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
-            _inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
-        public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
-            _inner.RenewDeliveryLeaseAsync(eventId, publisherName, token, leaseDuration);
-        public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result) =>
-            _inner.SettleDeliveryAsync(eventId, publisherName, token, result);
-        public Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName) =>
-            _inner.GetDeliveryAsync(eventId, publisherName);
-        public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
-            _inner.GetPublisherAsync(publisherName);
+        public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false,
+            CancellationToken cancellationToken = default) =>
+            _inner.RegisterPublisherAsync(name, eventTypes, replayRetained, cancellationToken: cancellationToken);
 
-        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
-            _inner.AppendEventAsync(workflowEvent);
-        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
-            _inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
-        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
-            _inner.GetEventAsync(instanceId, eventId);
-        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
-            _inner.GetWaitAsync(instanceId, waitId);
+        public Task UnregisterPublisherAsync(string name, string actor = "host", CancellationToken cancellationToken = default) =>
+            _inner.UnregisterPublisherAsync(name, actor, cancellationToken: cancellationToken);
+
+        public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query, CancellationToken cancellationToken = default) =>
+            _inner.ListDeliveriesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor,
+            CancellationToken cancellationToken = default) =>
+            _inner.RetryDeliveryAsync(eventId, publisherName, actor, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync(CancellationToken cancellationToken = default) =>
+            _inner.ListPublishersAsync(cancellationToken: cancellationToken);
+
+        public Task<bool> EnablePublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default) =>
+            _inner.EnablePublisherAsync(publisherName, actor, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration,
+            int limit, CancellationToken cancellationToken = default) =>
+            _inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
+
+        public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration,
+            CancellationToken cancellationToken = default) =>
+            _inner.RenewDeliveryLeaseAsync(eventId, publisherName, token, leaseDuration);
+
+        public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result,
+            CancellationToken cancellationToken = default) =>
+            _inner.SettleDeliveryAsync(eventId, publisherName, token, result);
+
+        public Task<OutboxDelivery?>
+            GetDeliveryAsync(string eventId, string publisherName, CancellationToken cancellationToken = default) =>
+            _inner.GetDeliveryAsync(eventId, publisherName, cancellationToken: cancellationToken);
+
+        public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName, CancellationToken cancellationToken = default) =>
+            _inner.GetPublisherAsync(publisherName, cancellationToken: cancellationToken);
+
+        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent, CancellationToken cancellationToken = default) =>
+            _inner.AppendEventAsync(workflowEvent, cancellationToken: cancellationToken);
+
+        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetPendingEventsAsync(instanceId, afterSequence, limit, cancellationToken: cancellationToken);
+
+        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId, CancellationToken cancellationToken = default) =>
+            _inner.GetEventAsync(instanceId, eventId, cancellationToken: cancellationToken);
+
+        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId, CancellationToken cancellationToken = default) =>
+            _inner.GetWaitAsync(instanceId, waitId, cancellationToken: cancellationToken);
+
         public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(
-            IReadOnlyCollection<string> instanceIds) =>
-            _inner.GetInboxSequencesAsync(instanceIds);
-        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
-            _inner.GetOpenWaitsAsync(query);
+            IReadOnlyCollection<string> instanceIds, CancellationToken cancellationToken = default) =>
+            _inner.GetInboxSequencesAsync(instanceIds, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default) =>
+            _inner.GetOpenWaitsAsync(query, cancellationToken: cancellationToken);
 
         private readonly InMemoryWorkflowStateRepository _inner = new();
-        public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
-            _inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
-        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
-            _inner.GetCancellationRequestAsync(instanceId);
-        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
-            _inner.GetRunnableInstancesAsync(query);
-        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
+
+        public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason,
+            Guid? expectedIncarnation = null, CancellationToken cancellationToken = default) =>
+            _inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation, cancellationToken: cancellationToken);
+
+        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            _inner.GetCancellationRequestAsync(instanceId, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetRunnableInstancesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration,
+            ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable, CancellationToken cancellationToken = default) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
-        public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
-            _inner.RenewExecutionLeasesAsync(leases);
-        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+
+        public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases,
+            CancellationToken cancellationToken = default) =>
+            _inner.RenewExecutionLeasesAsync(leases, cancellationToken: cancellationToken);
+
+        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token,
+            CancellationToken cancellationToken = default) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
 
         public WorkflowInstance? Initial { get; private set; }
         public WorkflowInstance? AfterFinance { get; private set; }
         public int FailOnFinanceStartCount { get; set; }
 
-        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
             // The whole instance the commit saves: the commit applied to the instance it was based on.
             var instance = commit.ReadInstance(
-                commit.ReplacesParts ? null : await _inner.GetWorkflowInstanceAsync(commit.InstanceId));
+                commit.ReplacesParts
+                    ? null
+                    : await _inner.GetWorkflowInstanceAsync(commit.InstanceId, cancellationToken: cancellationToken));
+
             ObserveSave(instance);
-            return await _inner.CommitWorkflowInstanceAsync(commit);
+
+            return await _inner.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
         }
 
         private void ObserveSave(WorkflowInstance instance)
@@ -1878,45 +2250,58 @@ public class ParallelApprovalContractTests
                 System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(instance.WorkflowDataJson.InlineText)?.FinanceStarted == 1)
             {
                 FailOnFinanceStartCount--;
+
                 throw new IOException("The checkpoint store is temporarily unavailable");
             }
+
             if (instance.Status == WorkflowStatus.Running && !string.IsNullOrWhiteSpace(instance.ExecutionStateJson))
             {
                 var copy = System.Text.Json.JsonSerializer.Deserialize<WorkflowInstance>(
                     System.Text.Json.JsonSerializer.Serialize(instance))!;
+
                 Initial ??= copy;
+
                 if (System.Text.Json.JsonSerializer.Deserialize<ApprovalData>(instance.WorkflowDataJson.InlineText)?.FinanceStarted == 1)
                     AfterFinance ??= copy;
             }
         }
 
-        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
-            _inner.GetWorkflowInstanceSummaryAsync(instanceId);
+        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowInstanceSummaryAsync(instanceId, cancellationToken: cancellationToken);
+
         public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
             _inner.GetControlRequestsAsync(instanceIds);
+
         public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
             _inner.RequestDebugCommandAsync(instanceId, command);
+
         public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
             _inner.GetDebugStatesAsync(instanceIds);
 
-        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
-            _inner.GetWorkflowInstanceAsync(instanceId);
+        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowInstanceAsync(instanceId, cancellationToken: cancellationToken);
 
-        public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
-            _inner.QueryInstancesAsync(query);
+        public Task<InstancePage> QueryInstancesAsync(InstanceQuery query, CancellationToken cancellationToken = default) =>
+            _inner.QueryInstancesAsync(query, cancellationToken: cancellationToken);
 
-        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
-            _inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason,
+            Guid? expectedIncarnation = null, CancellationToken cancellationToken = default) =>
+            _inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation, cancellationToken: cancellationToken);
 
 
         public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId) =>
             _inner.GetDiagnosticsAsync(instanceId);
-        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation) =>
-            _inner.GetDiagnosticsForIncarnationAsync(instanceId, incarnation);
-        public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
-            int limit = 1000) =>
-            _inner.GetTraceAsync(instanceId, afterSequence, limit);
 
-        public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null) => _inner.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention);
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetDiagnosticsForIncarnationAsync(instanceId, incarnation, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
+            int limit = 1000, CancellationToken cancellationToken = default) =>
+            _inner.GetTraceAsync(instanceId, afterSequence, limit, cancellationToken: cancellationToken);
+
+        public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention, cancellationToken: cancellationToken);
     }
 }

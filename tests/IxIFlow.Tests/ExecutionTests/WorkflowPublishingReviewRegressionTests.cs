@@ -21,14 +21,29 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Spec", "F-09")]
 public sealed class WorkflowPublishingReviewRegressionTests
 {
-    public enum Scenario { Reupload, PurgedBeforeCommit, MissingBundle, MissingReference, ArtifactLock, Repeat, DraftChild, RetiredChild, ConcurrentPublish }
+    public enum Scenario
+    {
+        Reupload,
+        PurgedBeforeCommit,
+        MissingBundle,
+        MissingReference,
+        ArtifactLock,
+        Repeat,
+        DraftChild,
+        RetiredChild,
+        ConcurrentPublish
+    }
+
     public static TheoryData<Scenario, bool> Cases
     {
         get
         {
             var cases = new TheoryData<Scenario, bool>();
+
             foreach (var scenario in Enum.GetValues<Scenario>())
-                foreach (var file in new[] { false, true }) cases.Add(scenario, file);
+            foreach (var file in new[] { false, true })
+                cases.Add(scenario, file);
+
             return cases;
         }
     }
@@ -37,31 +52,50 @@ public sealed class WorkflowPublishingReviewRegressionTests
     public Task Memory(Scenario scenario, bool file)
     {
         var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+
         return Verify(new InMemoryWorkflowStateRepository(time), scenario, file,
-            _ => { time.Advance(TimeSpan.FromDays(91)); return Task.CompletedTask; });
+            _ =>
+            {
+                time.Advance(TimeSpan.FromDays(91));
+
+                return Task.CompletedTask;
+            });
     }
 
     [Theory, MemberData(nameof(Cases)), Trait("Category", "SqliteIntegration")]
     public async Task Sqlite(Scenario scenario, bool file)
     {
         var folder = Folder();
+
         try
         {
             var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
             await using var store = new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "catalog.db"), time);
-            await Verify(store, scenario, file, _ => { time.Advance(TimeSpan.FromDays(91)); return Task.CompletedTask; });
+
+            await Verify(store, scenario, file, _ =>
+            {
+                time.Advance(TimeSpan.FromDays(91));
+
+                return Task.CompletedTask;
+            });
         }
-        finally { await SqliteTestFiles.DeleteAsync(folder); }
+        finally
+        {
+            await SqliteTestFiles.DeleteAsync(folder);
+        }
     }
 
     [Theory, MemberData(nameof(Cases)), Trait("Category", "SqlIntegration")]
     public async Task SqlServer(Scenario scenario, bool file)
     {
         var cs = SqlTestDatabase<WorkflowPublishingReviewRegressionTests>.ConnectionString;
-        await Verify(new SqlWorkflowStateRepository(cs), scenario, file, async digest =>
+
+        await Verify(new SqlServerWorkflowStateRepository(cs), scenario, file, async digest =>
         {
             await using var connection = new SqlConnection(cs);
-            await connection.ExecuteAsync("UPDATE dbo.IxIFlowArtifacts SET CreatedAtUtc=DATEADD(day,-91,CreatedAtUtc) WHERE Digest=@Digest", new { Digest = digest.Value });
+
+            await connection.ExecuteAsync("UPDATE dbo.IxIFlowArtifacts SET CreatedAtUtc=DATEADD(day,-91,CreatedAtUtc) WHERE Digest=@Digest",
+                new { Digest = digest.Value });
         });
     }
 
@@ -69,27 +103,35 @@ public sealed class WorkflowPublishingReviewRegressionTests
     public async Task PostgreSql(Scenario scenario, bool file)
     {
         var cs = PostgreSqlTestDatabase<WorkflowPublishingReviewRegressionTests>.ConnectionString;
+
         await Verify(new PostgreSqlWorkflowStateRepository(cs), scenario, file, async digest =>
         {
             await using var connection = new NpgsqlConnection(cs);
-            await connection.ExecuteAsync("UPDATE ixiflow_artifacts SET created_at_utc=created_at_utc - INTERVAL '91 days' WHERE digest=@Digest", new { Digest = digest.Value });
+
+            await connection.ExecuteAsync(
+                "UPDATE ixiflow_artifacts SET created_at_utc=created_at_utc - INTERVAL '91 days' WHERE digest=@Digest",
+                new { Digest = digest.Value });
         });
     }
 
     private static async Task Verify(IWorkflowStateRepository store, Scenario scenario, bool file, Func<ArtifactDigest, Task> ageStore)
     {
         var folder = Folder();
+
         try
         {
             IArtifactStore artifacts = file ? new FileSystemArtifactStore(folder) : store;
             var name = "PublishReview" + Guid.NewGuid().ToString("N");
+
             async Task Age(ArtifactDigest digest)
             {
                 if (file)
                     foreach (var path in Directory.EnumerateFiles(folder, "*.artifact"))
                         File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddDays(-91));
-                else await ageStore(digest);
+                else
+                    await ageStore(digest);
             }
+
             if (scenario == Scenario.ConcurrentPublish)
             {
                 var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", Yaml(name)), null);
@@ -97,34 +139,52 @@ public sealed class WorkflowPublishingReviewRegressionTests
                 var losing = new WorkflowPublisher(barrier, artifacts, Options()).PublishAsync(draft.Id);
                 await barrier.Entered.Task.WaitAsync(TimeSpan.FromSeconds(20));
                 WorkflowPublishResult winner;
+
                 try
                 {
                     winner = await new WorkflowPublisher(store, artifacts, Options()).PublishAsync(draft.Id);
                     Assert.True(winner.Success, string.Join("; ", winner.Diagnostics));
                 }
-                finally { barrier.Release.TrySetResult(); }
+                finally
+                {
+                    barrier.Release.TrySetResult();
+                }
+
                 var loser = await losing.WaitAsync(TimeSpan.FromSeconds(20));
                 Assert.True(loser.Success, string.Join("; ", loser.Diagnostics));
                 Assert.Equal(JsonSerializer.Serialize(winner.Workflow), JsonSerializer.Serialize(loser.Workflow));
                 Assert.Null(await store.GetDefinitionAsync("workflow", name, 1));
+
                 return;
             }
+
             if (scenario is Scenario.Reupload or Scenario.PurgedBeforeCommit)
             {
                 var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", Yaml(name)), null);
-                var orphan = new ArtifactProbe(artifacts) { AfterUpload = () => throw new InvalidOperationException("Interrupted after upload") };
+
+                var orphan = new ArtifactProbe(artifacts)
+                    { AfterUpload = () => throw new InvalidOperationException("Interrupted after upload") };
+
                 Assert.False((await new WorkflowPublisher(store, orphan, Options()).PublishAsync(draft.Id)).Success);
                 Assert.True(await artifacts.ExistsAsync(orphan.Digest!.Value));
                 await Age(orphan.Digest.Value);
-                var observed = new ArtifactProbe(artifacts) { AfterUpload = async () =>
+
+                var observed = new ArtifactProbe(artifacts)
                 {
-                    // Force collection to win even after the duplicate-put age refresh.
-                    if (scenario == Scenario.PurgedBeforeCommit) await Age(orphan.Digest.Value);
-                    Assert.Equal(scenario == Scenario.Reupload ? 0 : 1,
-                        await store.PurgeArtifactsAsync(artifacts, TimeSpan.FromDays(90), 100));
-                } };
+                    AfterUpload = async () =>
+                    {
+                        // Force collection to win even after the duplicate-put age refresh.
+                        if (scenario == Scenario.PurgedBeforeCommit)
+                            await Age(orphan.Digest.Value);
+
+                        Assert.Equal(scenario == Scenario.Reupload ? 0 : 1,
+                            await store.PurgeArtifactsAsync(artifacts, TimeSpan.FromDays(90), 100));
+                    }
+                };
+
                 var result = await new WorkflowPublisher(new WorkflowCatalog(store), observed, Options()).PublishAsync(draft.Id);
                 Assert.Equal(orphan.Digest, observed.Digest);
+
                 if (scenario == Scenario.Reupload)
                 {
                     Assert.True(result.Success, string.Join("; ", result.Diagnostics));
@@ -134,75 +194,132 @@ public sealed class WorkflowPublishingReviewRegressionTests
                 else
                 {
                     Assert.False(result.Success);
-                    Assert.Contains(result.Diagnostics, item => item.Stage == WorkflowPublishStage.Publish && item.Code == "PUB041" && item.Class == WorkflowPublishDiagnosticClass.Unavailable);
+
+                    Assert.Contains(result.Diagnostics,
+                        item => item.Stage == WorkflowPublishStage.Publish && item.Code == "PUB041" &&
+                            item.Class == WorkflowPublishDiagnosticClass.Unavailable);
+
                     Assert.Equal(draft, await store.GetDefinitionAsync("workflow", name, 1));
                     Assert.Null(await store.GetWorkflowVersionAsync(name, 1));
                 }
+
                 return;
             }
+
             var source = await store.SaveDefinitionAsync(new(name, 1, "workflow", Yaml(name)), null);
             var bytes = Encoding.UTF8.GetBytes(name);
             var digest = await artifacts.PutAsync(ArtifactKind.Bundle, new MemoryStream(bytes));
-            var version = new WorkflowVersion(name, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: digest,
+
+            var version = new WorkflowVersion(name, 1, "hash", WorkflowContract.OfType(typeof(object)).ToJson(),
+                WorkflowContract.OfType(typeof(object)).Hash,
+                Descriptor: new WorkflowDescriptor(name, "", [], null, null,
+                    IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                    IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), ArtifactDigest: digest,
                 PublishedDraft: source.Id, ManifestJson: "{}", Invocations: []);
-            if (scenario == Scenario.MissingBundle) await artifacts.DeleteAsync(digest);
+
+            if (scenario == Scenario.MissingBundle)
+                await artifacts.DeleteAsync(digest);
+
             if (scenario == Scenario.MissingReference)
                 version = version with { ArtifactReferences = [ArtifactDigest.Of([4, 5, 6])] };
+
             if (scenario is Scenario.DraftChild or Scenario.RetiredChild)
             {
                 var child = name + "Child";
-                await store.RegisterWorkflowVersionAsync(new(child, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(child, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), State: scenario == Scenario.DraftChild
-                    ? WorkflowVersionState.Draft : WorkflowVersionState.Retired, Invocations: []));
+
+                await store.RegisterWorkflowVersionAsync(new(child, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(),
+                    WorkflowContract.OfType(typeof(object)).Hash,
+                    Descriptor: new WorkflowDescriptor(child, "", [], null, null,
+                        IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                        IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), State: scenario == Scenario.DraftChild
+                        ? WorkflowVersionState.Draft
+                        : WorkflowVersionState.Retired, Invocations: []));
+
                 version = version with { Dependencies = [new(child, 1)], Invocations = [new(child, 1, "invoke-child", "fixture")] };
             }
+
             if (scenario is Scenario.MissingBundle or Scenario.MissingReference or Scenario.DraftChild or Scenario.RetiredChild)
             {
-                var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.PublishDefinitionAsync(source.Id, version, artifacts));
+                var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+                    store.PublishDefinitionAsync(source.Id, version, artifacts));
+
                 Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, error.Kind);
                 Assert.Equal(source, await store.GetDefinitionAsync("workflow", name, 1));
                 Assert.Null(await store.GetWorkflowVersionAsync(name, 1));
+
                 return;
             }
+
             if (scenario == Scenario.ArtifactLock)
             {
                 await Age(digest);
-                var probe = new ArtifactProbe(artifacts) { PauseExists = true, PauseOnCheck = store is InMemoryWorkflowStateRepository ? 1 : 2 };
+
+                var probe = new ArtifactProbe(artifacts)
+                    { PauseExists = true, PauseOnCheck = store is InMemoryWorkflowStateRepository ? 1 : 2 };
+
                 var publishing = Task.Run(() => store.PublishDefinitionAsync(source.Id, version, probe));
                 await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(20));
                 var purging = Task.Run(() => store.PurgeArtifactsAsync(artifacts, TimeSpan.FromDays(90), 100));
-                try { await Task.Delay(100); Assert.False(purging.IsCompleted); }
-                finally { probe.Release.TrySetResult(); }
+
+                try
+                {
+                    await Task.Delay(100);
+                    Assert.False(purging.IsCompleted);
+                }
+                finally
+                {
+                    probe.Release.TrySetResult();
+                }
+
                 await publishing.WaitAsync(TimeSpan.FromSeconds(20));
                 Assert.Equal(0, await purging.WaitAsync(TimeSpan.FromSeconds(20)));
                 Assert.True(await artifacts.ExistsAsync(digest));
+
                 return;
             }
+
             var first = await store.PublishDefinitionAsync(source.Id, version, artifacts);
             Assert.True(await artifacts.ExistsAsync(first.ArtifactDigest!.Value));
+
             if (scenario == Scenario.Repeat)
             {
-                var second = await store.PublishDefinitionAsync(source.Id, version with { StructureHash = "loser", ArtifactDigest = ArtifactDigest.Of([9]) }, artifacts);
+                var second = await store.PublishDefinitionAsync(source.Id,
+                    version with { StructureHash = "loser", ArtifactDigest = ArtifactDigest.Of([9]) }, artifacts);
+
                 Assert.Equal(JsonSerializer.Serialize(first), JsonSerializer.Serialize(second));
                 Assert.Null(await store.GetDefinitionAsync("workflow", name, 1));
                 Assert.Single(await store.GetWorkflowVersionsAsync(name));
-                var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SaveDefinitionAsync(source with { Generation = Guid.Empty, Revision = 0 }, null));
+
+                var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+                    store.SaveDefinitionAsync(source with { Generation = Guid.Empty, Revision = 0 }, null));
+
                 Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
             }
         }
-        finally { Directory.Delete(folder, recursive: true); }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
     }
 
     private static string Folder()
     {
         var path = Path.Combine(Path.GetTempPath(), "IxIFlow.PublishReview", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(path);
+
         return path;
     }
 
-    private static string Yaml(string name) => $"workflow:\n  name: {name}\n  version: 1\n  dataType: Data\ndefinitions:\n  - kind: activity\n    activity: Echo\n";
+    private static string Yaml(string name) =>
+        $"workflow:\n  name: {name}\n  version: 1\n  dataType: Data\ndefinitions:\n  - kind: activity\n    activity: Echo\n";
+
     private static WorkflowPublisherOptions Options() => new()
-    { SourceOptions = YamlTestContracts.Create(("Data", typeof(Data)), ("Echo", typeof(YamlMappingActivity))) };
-    public sealed class Data { public string OrderId { get; set; } = ""; }
+        { SourceOptions = YamlTestContracts.Create(("Data", typeof(Data)), ("Echo", typeof(YamlMappingActivity))) };
+
+    public sealed class Data
+    {
+        public string OrderId { get; set; } = "";
+    }
 
     [Theory]
     [InlineData("workflow.yaml:2147483648")]
@@ -214,7 +331,10 @@ public sealed class WorkflowPublishingReviewRegressionTests
         ThrowingDefaultAttribute.Message = message;
         var store = new InMemoryWorkflowStateRepository();
         var draft = await store.SaveDefinitionAsync(new("Overflow", 1, "workflow", Yaml("Overflow")), null);
-        var options = new WorkflowPublisherOptions { SourceOptions = YamlTestContracts.Create(("Data", typeof(Data)), ("Echo", typeof(ThrowingActivity))) };
+
+        var options = new WorkflowPublisherOptions
+            { SourceOptions = YamlTestContracts.Create(("Data", typeof(Data)), ("Echo", typeof(ThrowingActivity))) };
+
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.False(result.Success);
         var error = Assert.Single(result.Diagnostics, item => item.Severity == WorkflowDiagnosticSeverity.Error);
@@ -231,6 +351,7 @@ public sealed class WorkflowPublishingReviewRegressionTests
         [ThrowingDefault] public string Value { get; set; } = "";
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     public sealed class ThrowingDefaultAttribute() : DefaultValueAttribute(Fail())
     {
         public static string Message
@@ -238,6 +359,7 @@ public sealed class WorkflowPublishingReviewRegressionTests
             get => (string?)AppDomain.CurrentDomain.GetData(typeof(ThrowingDefaultAttribute).FullName!) ?? "";
             set => AppDomain.CurrentDomain.SetData(typeof(ThrowingDefaultAttribute).FullName!, value);
         }
+
         private static object Fail() => throw new InvalidOperationException(Message);
     }
 
@@ -245,16 +367,20 @@ public sealed class WorkflowPublishingReviewRegressionTests
     public async Task DiagnosticFormattingFailureIsContainedByThreadEntry()
     {
         var compilation = WorkflowCompilation.Compile("""
-            public static class BrokenBuild
-            {
-                public static IxIFlow.Core.WorkflowDefinition Build() =>
-                    throw new IxIFlow.Tests.ExecutionTests.WorkflowPublishingReviewRegressionTests.BrokenMessageException();
-            }
-            """);
+                                                      public static class BrokenBuild
+                                                      {
+                                                          public static IxIFlow.Core.WorkflowDefinition Build() =>
+                                                              throw new IxIFlow.Tests.ExecutionTests.WorkflowPublishingReviewRegressionTests.BrokenMessageException();
+                                                      }
+                                                      """);
+
         Assert.True(compilation.Success, string.Join("; ", compilation.Diagnostics));
         var fixture = typeof(BrokenMessageException).Assembly;
-        var result = await WorkflowBuild.RunAsync(compilation, new Dictionary<string, byte[]> { [fixture.GetName().Name!] = File.ReadAllBytes(fixture.Location) }, TimeSpan.FromSeconds(10),
+
+        var result = await WorkflowBuild.RunAsync(compilation,
+            new Dictionary<string, byte[]> { [fixture.GetName().Name!] = File.ReadAllBytes(fixture.Location) }, TimeSpan.FromSeconds(10),
             Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance, CancellationToken.None);
+
         Assert.Equal("An unexpected publication failure occurred", result.Error);
         Assert.Equal("PUB007", result.ErrorCode);
         Assert.Equal(WorkflowPublishDiagnosticClass.Internal, result.ErrorClass);
@@ -272,7 +398,10 @@ public sealed class WorkflowPublishingReviewRegressionTests
     public void CompilerColumnsPointAtYamlTargets(int indentation)
     {
         var indent = new string(' ', indentation);
-        var yaml = $"workflow:\n{indent}name: Columns\n{indent}version: 1\n{indent}dataType: Data\ndefinitions:\n{indent}- kind: activity\n{indent}  activity: Echo\n{indent}  input:\n{indent}    - target: DoesNotExist\n{indent}      from: {{kind: constant, value: bad}}\n";
+
+        var yaml =
+            $"workflow:\n{indent}name: Columns\n{indent}version: 1\n{indent}dataType: Data\ndefinitions:\n{indent}- kind: activity\n{indent}  activity: Echo\n{indent}  input:\n{indent}    - target: DoesNotExist\n{indent}      from: {{kind: constant, value: bad}}\n";
+
         var source = WorkflowSourceTranslator.Translate(yaml, "workflow.yaml", Options().SourceOptions);
         var result = WorkflowCompilation.Compile(source);
         var error = Assert.Single(result.Diagnostics, item => item.Code == "CS1061");
@@ -288,7 +417,10 @@ public sealed class WorkflowPublishingReviewRegressionTests
     public void CompilerColumnsPointAtYamlConstantValues(int indentation)
     {
         var indent = new string(' ', indentation);
-        var yaml = $"workflow:\n{indent}name: Columns\n{indent}version: 1\n{indent}dataType: Data\ndefinitions:\n{indent}- kind: activity\n{indent}  activity: Echo\n{indent}  input:\n{indent}    - target: Value\n{indent}      from: {{kind: constant, value: true}}\n";
+
+        var yaml =
+            $"workflow:\n{indent}name: Columns\n{indent}version: 1\n{indent}dataType: Data\ndefinitions:\n{indent}- kind: activity\n{indent}  activity: Echo\n{indent}  input:\n{indent}    - target: Value\n{indent}      from: {{kind: constant, value: true}}\n";
+
         var source = WorkflowSourceTranslator.Translate(yaml, "workflow.yaml", Options().SourceOptions);
         var result = WorkflowCompilation.Compile(source);
         var error = Assert.Single(result.Diagnostics, item => item.Code == "CS0029");
@@ -316,9 +448,11 @@ public sealed class WorkflowPublishingReviewRegressionTests
     public async Task AutoResolvedTypesHaveCamelCaseAliases()
     {
         var store = new InMemoryWorkflowStateRepository();
+
         var yaml = Yaml("CamelCase").Replace("dataType: Data", "dataType: " + typeof(Data).FullName!.Replace('+', '.'))
-            .Replace("activity: Echo", "activity: " + typeof(YamlMappingActivity).FullName) +
+                .Replace("activity: Echo", "activity: " + typeof(YamlMappingActivity).FullName) +
             "    input:\n      - target: Value\n        from: {kind: path, path: workflow.orderId}\n";
+
         var draft = await store.SaveDefinitionAsync(new("CamelCase", 1, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store).PublishAsync(draft.Id);
         Assert.True(result.Success, string.Join("; ", result.Diagnostics));
@@ -328,60 +462,198 @@ public sealed class WorkflowPublishingReviewRegressionTests
     {
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => inner.ListWorkflowsAsync(query);
-        public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => inner.ListWorkflowVersionsAsync(name, query);
-        public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => inner.GetWorkflowVersionDetailAsync(name, version, scope);
-        public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query) => inner.ListTemplatesAsync(query);
-        public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query) => inner.ListTemplateVersionsAsync(key, query);
-        public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope) => inner.GetTemplateDetailAsync(key, version, scope);
-        public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope) => inner.ListStepDescriptorsAsync(scope);
-        public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => inner.ListActivitiesAsync(query);
-    public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => inner.ListActivityVersionsAsync(key, query);
-    public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => inner.GetActivityAsync(key, version, provider, scope);
-    public Task<CatalogPage<CatalogPackage>> ListPackagesAsync(CatalogPackageQuery query) => inner.ListPackagesAsync(query);
-    public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query) => inner.ListPackageVersionsAsync(id, query);
-    public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => inner.GetPackageDetailAsync(id, version, scope);
-    public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => inner.GetPackageActivitiesAsync(id, version, query);
-    public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => inner.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit);
-    public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => inner.RegisterTemplateVersionAsync(version, artifacts, actor);
-    public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version) => inner.GetTemplateVersionAsync(key, version);
-    public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => inner.GetTemplateVersionsAsync(key);
-    public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
-    public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => inner.GetPackageHoldersAsync(id, version, scope);
-    public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor);
-    public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected, string? actor = null) => inner.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor);
-    public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.RegisterPackageAsync(package, activities, artifacts, actor);
-    public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
-    public IArtifactStore? CatalogArtifacts { get => inner.CatalogArtifacts; set => inner.CatalogArtifacts = value; }
-    public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity, int limit) => inner.GetPackageExtractionPageAsync(extraction, afterIdentity, limit);
-        public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) => inner.GetInstalledPackagesAsync(id);
-        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => inner.GetPackagesAsync(id);
-        public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => inner.GetPackageAsync(id, version);
-        public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => inner.GetPackagePageAsync(id, afterVersion, limit);
-        public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected) => inner.DeleteDefinitionAsync(expected);
-        public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query) => inner.GetDefinitionsAsync(query);
-        public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope) => inner.GetRetirementBlockersAsync(name, version, scope);
-        public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter) => inner.BeginPublicationAsync(draftId, hostId, actor, staleAfter);
-        public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId) => inner.HeartbeatPublicationAsync(id, hostId);
-        public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome) => inner.CompletePublicationAsync(id, hostId, outcome);
-        public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope) => inner.GetPublicationAsync(id, scope);
-        public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query) => inner.GetPublicationsAsync(query);
-        public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => inner.PurgePublicationsAsync(retention, batchSize, cancellationToken);
-        public async Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version)
+
+        public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query,
+            CancellationToken cancellationToken = default) => inner.ListWorkflowsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.ListWorkflowVersionsAsync(name, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            inner.GetWorkflowVersionDetailAsync(name, version, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query,
+            CancellationToken cancellationToken = default) => inner.ListTemplatesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.ListTemplateVersionsAsync(key, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            inner.GetTemplateDetailAsync(key, version, scope, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope,
+            CancellationToken cancellationToken = default) => inner.ListStepDescriptorsAsync(scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query,
+            CancellationToken cancellationToken = default) => inner.ListActivitiesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.ListActivityVersionsAsync(key, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider,
+            CatalogScope scope, CancellationToken cancellationToken = default) =>
+            inner.GetActivityAsync(key, version, provider, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogPackage>>
+            ListPackagesAsync(CatalogPackageQuery query, CancellationToken cancellationToken = default) =>
+            inner.ListPackagesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.ListPackageVersionsAsync(id, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            inner.GetPackageDetailAsync(id, version, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            inner.GetPackageActivitiesAsync(id, version, query, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity,
+            int limit, CancellationToken cancellationToken = default) =>
+            inner.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version,
+            IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.RegisterTemplateVersionAsync(version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version,
+            CancellationToken cancellationToken = default) =>
+            inner.GetTemplateVersionAsync(key, version, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null,
+            CancellationToken cancellationToken = default) => inner.GetTemplateVersionsAsync(key, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId,
+            IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null,
+            CancellationToken cancellationToken = default) =>
+            inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            inner.GetPackageHoldersAsync(id, version, scope, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package,
+            PackageActivities activities, IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected,
+            string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities,
+            IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.RegisterPackageAsync(package, activities, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest,
+            PackageActivities activities, IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor,
+                cancellationToken: cancellationToken);
+
+        public IArtifactStore? CatalogArtifacts
+        {
+            get => inner.CatalogArtifacts;
+            set => inner.CatalogArtifacts = value;
+        }
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity,
+            int limit, CancellationToken cancellationToken = default) =>
+            inner.GetPackageExtractionPageAsync(extraction, afterIdentity, limit, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null,
+            CancellationToken cancellationToken = default) => inner.GetInstalledPackagesAsync(id, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null, CancellationToken cancellationToken = default) =>
+            inner.GetPackagesAsync(id, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPackage?> GetPackageAsync(string id, string version, CancellationToken cancellationToken = default) =>
+            inner.GetPackageAsync(id, version, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit,
+            CancellationToken cancellationToken = default) =>
+            inner.GetPackagePageAsync(id, afterVersion, limit, cancellationToken: cancellationToken);
+
+        public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected, CancellationToken cancellationToken = default) =>
+            inner.DeleteDefinitionAsync(expected, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query,
+            CancellationToken cancellationToken = default) => inner.GetDefinitionsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            inner.GetRetirementBlockersAsync(name, version, scope, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter,
+            CancellationToken cancellationToken = default) =>
+            inner.BeginPublicationAsync(draftId, hostId, actor, staleAfter, cancellationToken: cancellationToken);
+
+        public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId, CancellationToken cancellationToken = default) =>
+            inner.HeartbeatPublicationAsync(id, hostId, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome,
+            CancellationToken cancellationToken = default) =>
+            inner.CompletePublicationAsync(id, hostId, outcome, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope, CancellationToken cancellationToken = default) =>
+            inner.GetPublicationAsync(id, scope, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication?> GetLatestPublicationAsync(string kind, string name, int version, Guid generation,
+            CatalogScope scope, CancellationToken cancellationToken = default) =>
+            inner.GetLatestPublicationAsync(kind, name, version, generation, scope, cancellationToken);
+
+        public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query,
+            CancellationToken cancellationToken = default) => inner.GetPublicationsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+            inner.PurgePublicationsAsync(retention, batchSize, cancellationToken);
+
+        public async Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version,
+            CancellationToken cancellationToken = default)
         {
             Entered.TrySetResult();
             await Release.Task.WaitAsync(TimeSpan.FromSeconds(30));
-            return await inner.GetDefinitionAsync(kind, name, version);
+
+            return await inner.GetDefinitionAsync(kind, name, version, cancellationToken: cancellationToken);
         }
-        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null) => inner.SaveDefinitionAsync(definition, expected, actor);
-        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) => inner.RegisterWorkflowVersionAsync(version, artifacts);
-        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => inner.GetWorkflowVersionAsync(name, version);
-        public Task<long> GetCatalogRevisionAsync() => inner.GetCatalogRevisionAsync();
-        public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => inner.GetWorkflowVersionChangesAsync(afterRevision);
-        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => inner.GetWorkflowVersionsAsync(name);
-        public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null) => inner.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts, actor);
-        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null) => inner.PublishDefinitionAsync(draftId, version, artifacts, actor);
-        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
+
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null,
+            CancellationToken cancellationToken = default) =>
+            inner.SaveDefinitionAsync(definition, expected, actor, cancellationToken: cancellationToken);
+
+        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null,
+            CancellationToken cancellationToken = default) =>
+            inner.RegisterWorkflowVersionAsync(version, artifacts, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version, CancellationToken cancellationToken = default) =>
+            inner.GetWorkflowVersionAsync(name, version, cancellationToken: cancellationToken);
+
+        public Task<long> GetCatalogRevisionAsync(CancellationToken cancellationToken = default) =>
+            inner.GetCatalogRevisionAsync(cancellationToken: cancellationToken);
+
+        public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision,
+            CancellationToken cancellationToken = default) =>
+            inner.GetWorkflowVersionChangesAsync(afterRevision, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null,
+            CancellationToken cancellationToken = default) => inner.GetWorkflowVersionsAsync(name, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state,
+            CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null,
+            CancellationToken cancellationToken = default) => inner.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts,
+            actor, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts,
+            string? actor = null, CancellationToken cancellationToken = default) =>
+            inner.PublishDefinitionAsync(draftId, version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
+            CancellationToken cancellationToken = default) => inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
     }
 
     private sealed class ArtifactProbe(IArtifactStore inner) : IArtifactStore
@@ -393,20 +665,37 @@ public sealed class WorkflowPublishingReviewRegressionTests
         private int _checks;
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public async ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default)
         {
             var digest = await inner.PutAsync(kind, content, cancellationToken);
             Digest = digest;
-            if (AfterUpload != null) await AfterUpload();
+
+            if (AfterUpload != null)
+                await AfterUpload();
+
             return digest;
         }
+
         public async ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default)
         {
-            if (PauseExists && Interlocked.Increment(ref _checks) == PauseOnCheck) { Entered.TrySetResult(); await Release.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken); }
+            if (PauseExists && Interlocked.Increment(ref _checks) == PauseOnCheck)
+            {
+                Entered.TrySetResult();
+                await Release.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            }
+
             return await inner.ExistsAsync(digest, cancellationToken);
         }
-        public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => inner.OpenAsync(digest, cancellationToken);
-        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => inner.DeleteAsync(digest, cancellationToken);
-        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) => inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
+
+        public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            inner.OpenAsync(digest, cancellationToken);
+
+        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            inner.DeleteAsync(digest, cancellationToken);
+
+        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize,
+            CancellationToken cancellationToken = default) =>
+            inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
     }
 }

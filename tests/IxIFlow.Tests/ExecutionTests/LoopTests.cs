@@ -502,6 +502,7 @@ public class LoopTests
             IterationResult = OuterCounter * 100 + InnerCounter + 1; // Unique result combining outer and inner
 
             IterationResults.Add(IterationResult);
+
             ExecutionLog.Add(
                 $"Inner loop iteration {InnerCounter + 1} of outer {OuterCounter + 1} executed at {DateTime.UtcNow:HH:mm:ss.fff}");
 

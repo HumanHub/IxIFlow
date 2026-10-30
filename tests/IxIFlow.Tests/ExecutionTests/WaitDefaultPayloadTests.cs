@@ -26,6 +26,7 @@ public sealed class WaitDefaultPayloadTests : IClassFixture<SqliteTestDatabase<W
         var wait = Assert.Single(await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
         Assert.True(JsonSerializer.Deserialize<Approval>(wait.DefaultPayloadJson!)!.Approved);
         Assert.Contains("\"Approved\"", wait.EventSchema);
+
         Assert.Equal(wait.DefaultPayloadJson, (await ((IWorkflowInbox)services.GetRequiredService<IWorkflowStateRepository>())
             .GetWaitAsync(started.InstanceId, wait.WaitId))!.DefaultPayloadJson.InlineText);
     }
@@ -56,8 +57,10 @@ public sealed class WaitDefaultPayloadTests : IClassFixture<SqliteTestDatabase<W
     public void ADefaultOfTheWrongTypeFailsTheBuild()
     {
         var steps = new List<WorkflowStep>();
+
         var builder = new WorkflowBuilder<Data, object>(steps, "WrongWaitDefault")
             .WaitFor<Approval>("approve").WithId("approval", "wrong-default.cs", 12);
+
         Assert.Single(steps).DefaultPayload = "wrong";
 
         var error = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => builder.Build());
@@ -80,6 +83,7 @@ public sealed class WaitDefaultPayloadTests : IClassFixture<SqliteTestDatabase<W
     {
         string instanceId;
         string? json;
+
         await using (var services = Services(sqlite: true))
         {
             var client = services.GetRequiredService<IWorkflowClient>();
@@ -88,8 +92,10 @@ public sealed class WaitDefaultPayloadTests : IClassFixture<SqliteTestDatabase<W
         }
 
         await using var reopened = Services(sqlite: true);
+
         var wait = Assert.Single(await reopened.GetRequiredService<IWorkflowClient>()
             .GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId)));
+
         Assert.Equal(json, wait.DefaultPayloadJson);
         Assert.True(JsonSerializer.Deserialize<Approval>(wait.DefaultPayloadJson!)!.Approved);
     }
@@ -97,7 +103,9 @@ public sealed class WaitDefaultPayloadTests : IClassFixture<SqliteTestDatabase<W
     private static WorkflowDefinition Define(Approval? payload) => new WorkflowBuilder<Data, object>([], "WaitDefault")
         .WaitFor<Approval>("approve", configure: wait =>
         {
-            if (payload != null) wait.DefaultPayload(payload);
+            if (payload != null)
+                wait.DefaultPayload(payload);
+
             wait.Output(answer => answer.Approved).To(ctx => ctx.WorkflowData.Approved);
         }).Build();
 
@@ -105,7 +113,10 @@ public sealed class WaitDefaultPayloadTests : IClassFixture<SqliteTestDatabase<W
     {
         var services = new ServiceCollection().AddLogging();
         var builder = services.AddIxIFlow();
-        if (sqlite) builder.UseSqlite(SqliteTestDatabase<WaitDefaultPayloadTests>.ConnectionString);
+
+        if (sqlite)
+            builder.UseSqlite(SqliteTestDatabase<WaitDefaultPayloadTests>.ConnectionString);
+
         return services.BuildServiceProvider();
     }
 

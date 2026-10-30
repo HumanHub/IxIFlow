@@ -2,6 +2,7 @@ using IxIFlow.Core;
 using IxIFlow.Extensions;
 using IxIFlow.Debugging;
 using Microsoft.Extensions.DependencyInjection;
+
 namespace IxIFlow.Samples;
 
 public static class DebuggingExamples
@@ -13,6 +14,7 @@ public static class DebuggingExamples
         {
             options.Debugging = true;
         });
+
         // end-snippet: edit-host
     }
 
@@ -24,6 +26,7 @@ public static class DebuggingExamples
             new DataEditTarget(pauseGeneration),
             [new DataPatch(["Total"], System.Text.Json.JsonSerializer.SerializeToElement(125.50m))],
             actor: "operator@example.com");
+
         // end-snippet: edit-data
         return receipt;
     }
@@ -33,6 +36,7 @@ public static class DebuggingExamples
         // snippet: step
         await operations.StepAsync(instanceId, continuationId, DebugStepKind.Over,
             actor: "operator@example.com");
+
         // end-snippet: step
     }
 
@@ -41,6 +45,7 @@ public static class DebuggingExamples
         // snippet: configure-conditions
         services.AddIxIFlow(options => options.Debugging = true);
         services.AddBreakpointConditions();
+
         // end-snippet: configure-conditions
     }
 
@@ -56,6 +61,7 @@ public static class DebuggingExamples
             new Breakpoint("second-item", "root/2/foreach/0", HitCondition: ">= 2",
                 Condition: "context.Index == 1 && context.Item.Amount > 100")
         ], actor: "operator@example.com");
+
         // end-snippet: conditions
     }
 
@@ -68,6 +74,7 @@ public static class DebuggingExamples
             new("name", "charge-card", Condition: "context.WorkflowData.Name.StartsWith(\"test\", StringComparison.OrdinalIgnoreCase)"),
             new("time", "charge-card", Condition: "context.UtcNow.Hour >= 18")
         ];
+
         // end-snippet: pure-conditions
         return examples;
     }
@@ -76,16 +83,20 @@ public static class DebuggingExamples
     {
         // snippet: configure
         services.AddIxIFlow(options => options.Debugging = true);
+
         // end-snippet: configure
     }
+
     public static async Task OperateAsync(IServiceProvider provider, string instanceId)
     {
         // snippet: operate
         var operations = provider.GetRequiredService<IWorkflowOperations>();
         await operations.PauseAsync(instanceId, actor: "operator@example.com");
         await operations.ContinueAsync(instanceId, actor: "operator@example.com");
+
         // end-snippet: operate
     }
+
     public static async Task BreakpointsAsync(IWorkflowOperations operations, string instanceId)
     {
         // snippet: breakpoints
@@ -95,7 +106,9 @@ public static class DebuggingExamples
             new Breakpoint("third-item", "root/2/foreach/0", HitCondition: "== 3"),
             new Breakpoint("source", Source: new BreakpointSource("order.yaml", 20))
         ], actor: "operator@example.com");
+
         var current = await operations.GetBreakpointsAsync(instanceId);
+
         // end-snippet: breakpoints
     }
 }

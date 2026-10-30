@@ -14,20 +14,23 @@ public static class IncomingWebhookExamples
     {
         // snippet: incoming-host
         builder.Services.AddIxIFlow(); // Or choose a persistent store with the returned builder.
+
         builder.Services.AddAuthorization(options =>
         {
             options.AddPolicy("orders-api", policy => policy.RequireAuthenticatedUser());
+
             options.AddPolicy("order-instance", policy => policy.RequireAssertion(context =>
                 context.Resource is WorkflowOwnership resource &&
                 (resource.OwnerKind == WorkflowOwnerKind.SignedSender
                     ? resource.Owner == context.User.FindFirstValue("ixiflow:sender")
                     : resource.Owner == context.User.FindFirstValue(ClaimTypes.NameIdentifier) ||
-                      resource.Tenant != null && resource.Tenant == context.User.FindFirstValue("tenant"))));
+                    resource.Tenant != null && resource.Tenant == context.User.FindFirstValue("tenant"))));
         });
 
         var app = builder.Build();
         app.UseAuthentication();
         app.UseAuthorization();
+
         app.MapWorkflowTriggers(triggers =>
         {
             triggers.Start<OrderData>("orders.create", "/orders/{orderId}", OrderWorkflow.Definition)
@@ -48,7 +51,9 @@ public static class IncomingWebhookExamples
                 .Authorize("orders-api")
                 .AuthorizeInstance("order-instance");
         });
+
         app.Run();
+
         // end-snippet: incoming-host
     }
 
@@ -59,6 +64,7 @@ public static class IncomingWebhookExamples
             .FromBody<OrderRequest>((body, request) => new OrderData { Amount = body.Amount })
             .VerifyStandardWebhook("billing-vendor", currentSecret, previousSecret)
             .Authorize("billing-vendor-policy");
+
         // end-snippet: incoming-signed
     }
 
@@ -79,17 +85,27 @@ public static class IncomingWebhookExamples
 
             triggers.Status().Authorize("orders-api").AuthorizeInstance("order-instance");
         });
+
         // end-snippet: incoming-map
     }
 
-    public sealed class OrderRequest { public decimal Amount { get; set; } }
-    public sealed class PaymentReceived { public decimal Amount { get; set; } }
+    public sealed class OrderRequest
+    {
+        public decimal Amount { get; set; }
+    }
+
+    public sealed class PaymentReceived
+    {
+        public decimal Amount { get; set; }
+    }
+
     public sealed class OrderData
     {
         public string OrderId { get; set; } = "";
         public decimal Amount { get; set; }
         public string ReceiptNumber { get; set; } = "";
     }
+
     public static class OrderWorkflow
     {
         public static WorkflowDefinition Definition { get; } = Workflow.Create<OrderData>("WebhookOrder")
@@ -99,13 +115,16 @@ public static class IncomingWebhookExamples
             .WaitFor<PaymentReceived>("payment")
             .Build();
     }
+
     public sealed class AssignReceipt : IAsyncActivity
     {
         public string OrderId { get; set; } = "";
         public string Receipt { get; private set; } = "";
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Receipt = "receipt-" + OrderId;
+
             return Task.CompletedTask;
         }
     }

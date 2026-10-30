@@ -15,6 +15,7 @@ public sealed class DebugCommandWakeRound2Tests
     public Task AcceptedCommandRecoversWithoutScanning(string scenario)
     {
         var store = new InMemoryWorkflowStateRepository();
+
         return DebugCommandWakeRound2Scenario.VerifyAsync(store, store, scenario);
     }
 }

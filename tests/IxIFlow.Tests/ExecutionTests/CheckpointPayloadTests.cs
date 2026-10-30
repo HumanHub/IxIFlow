@@ -6,7 +6,7 @@ using IxIFlow.Core.Runtime;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// What a commit carries (A-08): the execution state as JSON inside the instance, not an escaped string, and
+/// What a commit carries: the execution state as JSON inside the instance, not an escaped string, and
 /// the fields a store applies the commit by, so a store need not parse the payload.
 /// </summary>
 [Trait("Feature", "durability")]
@@ -41,16 +41,20 @@ public sealed class CheckpointPayloadTests
 
         Assert.Contains("Unsupported execution checkpoint version",
             Assert.Throws<WorkflowEngineException>(() => CheckpointCommit.Create(instance, grant.Epoch, 0)).Message);
+
         if (state == "{}")
             Assert.Contains("Unsupported execution checkpoint version",
                 Assert.Throws<WorkflowEngineException>(() => JsonSerializer.Serialize(instance)).Message);
         else
             Assert.ThrowsAny<JsonException>(() => JsonSerializer.Serialize(instance));
+
         Func<object?> read = () => JsonSerializer.Deserialize<WorkflowInstance>("{\"ExecutionStateJson\":" + state + "}");
+
         if (state == "{}")
             Assert.Contains("Unsupported execution checkpoint version", Assert.Throws<WorkflowEngineException>(read).Message);
         else
             Assert.ThrowsAny<JsonException>(read);
+
         Assert.Null(await store.GetWorkflowInstanceAsync(instance.InstanceId));
     }
 
@@ -61,6 +65,7 @@ public sealed class CheckpointPayloadTests
         {
             InstanceId = "unleased", ExecutionStateJson = StoreTestSupport.CheckpointJson
         };
+
         Assert.Throws<ArgumentOutOfRangeException>(() => CheckpointCommit.Create(instance, 0, 0));
     }
 
@@ -73,13 +78,17 @@ public sealed class CheckpointPayloadTests
         var nested = new string('[', depth - 1) + new string(']', depth - 1);
         var state = StoreTestSupport.CheckpointJson[..^1] + ",\"DepthProbe\":" + nested + "}";
         var instance = new WorkflowInstance { InstanceId = "deep", ExecutionStateJson = state };
+
         if (!supported)
         {
             Assert.Throws<JsonException>(() => JsonSerializer.Serialize(instance));
+
             Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<WorkflowInstance>(
                 "{\"ExecutionStateJson\":" + state + "}"));
+
             return;
         }
+
         var json = JsonSerializer.Serialize(instance);
         Assert.Contains("\"ExecutionStateJson\":{", json);
         Assert.Equal(state, JsonSerializer.Deserialize<WorkflowInstance>(json)!.ExecutionStateJson);
@@ -90,20 +99,29 @@ public sealed class CheckpointPayloadTests
     public async Task ALargeStateRoundTripsThroughACommit()
     {
         var repository = new InMemoryWorkflowStateRepository();
+
         var checkpoint = new ExecutionCheckpoint
         {
             StructureHash = "large",
-            Continuations = [new ContinuationState
-            {
-                Id = "root", Stack = [new ScopePosition
+            Continuations =
+            [
+                new ContinuationState
                 {
-                    ScopeId = "root", ForEach = new ForEachState
-                    {
-                        Items = Enumerable.Range(0, 100_000).Select(index => StoredJson.Inline($"{{\"Id\":\"item-{index}\"}}")).ToList()
-                    }
-                }]
-            }]
+                    Id = "root", Stack =
+                    [
+                        new ScopePosition
+                        {
+                            ScopeId = "root", ForEach = new ForEachState
+                            {
+                                Items = Enumerable.Range(0, 100_000).Select(index => StoredJson.Inline($"{{\"Id\":\"item-{index}\"}}"))
+                                    .ToList()
+                            }
+                        }
+                    ]
+                }
+            ]
         };
+
         var instance = new WorkflowInstance
         {
             InstanceId = "large", WorkflowName = "Large", ExecutionStateJson = JsonSerializer.Serialize(checkpoint)
@@ -114,8 +132,10 @@ public sealed class CheckpointPayloadTests
         Assert.True(commit.Payload.Length + commit.Parts.Sum(part => part.Json.InlineText.Length) > 1_000_000);
         Assert.True(commit.Payload.Length < 10_000);
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
+
         Assert.Equal(instance.ExecutionStateJson,
             (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!.ExecutionStateJson);
+
         Assert.Equal(instance.ExecutionStateJson, commit.ReadInstance().ExecutionStateJson);
     }
 
@@ -124,8 +144,10 @@ public sealed class CheckpointPayloadTests
     public async Task ACommitCarriesWhatAStoreAppliesItByAndReadsAtItsNewRevision()
     {
         var repository = new InMemoryWorkflowStateRepository();
+
         var instance = new WorkflowInstance
-        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = "header", WorkflowName = "Header", CorrelationId = "c-1", Status = WorkflowStatus.Suspended,
             CancellationReason = new CancellationReason { ReasonCode = "operator" }, Revision = 3
         };

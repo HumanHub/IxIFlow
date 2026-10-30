@@ -17,12 +17,15 @@ internal static class ExecutionSnapshotFactory
             Status = instance.Status,
             Errors = checkpoint.Diagnostics?.ToArray() ?? []
         };
+
         foreach (var continuation in checkpoint.Continuations)
         {
             if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled)
                 continue;
+
             var position = continuation.Stack[^1];
             var next = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
+
             snapshot.Pointers.Add(new ExecutionPointer
             {
                 PointerId = continuation.Id,
@@ -39,18 +42,28 @@ internal static class ExecutionSnapshotFactory
                 UnwindCause = continuation.UnwindCause,
                 FrameId = position.ActivationId
             });
+
             for (var index = 0; index < continuation.Stack.Count; index++)
             {
                 var frame = continuation.Stack[index];
                 var parent = index == 0 ? null : continuation.Stack[index - 1];
-                var owner = parent == null ? null :
-                    scopes.Steps(parent.ScopeId).ElementAtOrDefault(parent.NextStepIndex);
+                var owner = parent == null ? null : scopes.Steps(parent.ScopeId).ElementAtOrDefault(parent.NextStepIndex);
                 var iteration = owner?.StepType == WorkflowStepType.Loop ? parent!.LoopIterationCount : frame.LoopIterationCount;
                 var name = owner?.Name ?? frame.ScopeId;
-                if (owner?.StepType == WorkflowStepType.Loop) name += $" (iteration {iteration})";
-                if (frame.Kind == FrameKind.SwitchCase) name += frame.ScopeId.EndsWith("/default", StringComparison.Ordinal) ? " / default" : " / case " + frame.ScopeId[(frame.ScopeId.LastIndexOf('/') + 1)..];
-                if (frame.ForEachIndex is { } itemIndex) name += $" (item {itemIndex})";
+
+                if (owner?.StepType == WorkflowStepType.Loop)
+                    name += $" (iteration {iteration})";
+
+                if (frame.Kind == FrameKind.SwitchCase)
+                    name += frame.ScopeId.EndsWith("/default", StringComparison.Ordinal)
+                        ? " / default"
+                        : " / case " + frame.ScopeId[(frame.ScopeId.LastIndexOf('/') + 1)..];
+
+                if (frame.ForEachIndex is { } itemIndex)
+                    name += $" (item {itemIndex})";
+
                 var graph = GraphFrameInfo.Of(scopes, continuation, index, checkpoint);
+
                 snapshot.Frames.Add(new ExecutionFrame
                 {
                     FrameId = frame.ActivationId,
@@ -58,8 +71,11 @@ internal static class ExecutionSnapshotFactory
                     Name = graph?.Name ?? name,
                     LoopIteration = iteration,
                     ForEachItemIndex = frame.ForEachIndex,
-                    Kind = frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase or FrameKind.CancellationHandler
-                        ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId,
+                    Kind = frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit
+                        or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase
+                        or FrameKind.CancellationHandler
+                        ? frame.Kind.ToString()
+                        : owner?.StepType.ToString() ?? frame.ScopeId,
                     StepId = frame.ScopeId,
                     ParentFrameId = parent?.ActivationId,
                     State = new Dictionary<string, string>
@@ -87,19 +103,28 @@ internal static class ExecutionSnapshotFactory
                 });
             }
         }
+
         return snapshot;
     }
-    internal static string FrameDataType(ExecutionCheckpoint checkpoint, ContinuationState continuation, int index, WorkflowScopeCatalog scopes)
+
+    internal static string FrameDataType(ExecutionCheckpoint checkpoint, ContinuationState continuation, int index,
+        WorkflowScopeCatalog scopes)
     {
         var frame = continuation.Stack.Take(index + 1).LastOrDefault(f => f.Kind == FrameKind.Inline);
-        if (frame != null) return checkpoint.InlineFrames[frame.ActivationId].DataType;
+
+        if (frame != null)
+            return checkpoint.InlineFrames[frame.ActivationId].DataType;
+
         while (continuation.ParentJoinId is { } joinId)
         {
             var join = checkpoint.Joins.Single(j => j.Id == joinId);
-            if (join.DataFrameId is { } id) return checkpoint.InlineFrames[id].DataType;
+
+            if (join.DataFrameId is { } id)
+                return checkpoint.InlineFrames[id].DataType;
+
             continuation = checkpoint.ContinuationById(join.ParentContinuationId)!;
         }
+
         return scopes.RootDataType == null ? "" : WorkflowTypeIdentity.SavedName(scopes.RootDataType);
     }
-
 }

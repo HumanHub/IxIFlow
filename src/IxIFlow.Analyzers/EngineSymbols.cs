@@ -71,12 +71,14 @@ internal sealed class EngineSymbols
     public static bool InNamespace(ITypeSymbol type, string name)
     {
         var space = type.ContainingNamespace?.ToDisplayString();
+
         return space != null && (space == name || space.StartsWith(name + ".", System.StringComparison.Ordinal));
     }
 
     public bool IsActivity(ITypeSymbol type) =>
         type is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Struct } named &&
-        (named.AllInterfaces.Contains(Activity, SymbolEqualityComparer.Default) || named.AllInterfaces.Any(item => item.ToDisplayString() == "IxIFlow.Core.IScopeActivity"));
+        (named.AllInterfaces.Contains(Activity, SymbolEqualityComparer.Default) ||
+            named.AllInterfaces.Any(item => item.ToDisplayString() == "IxIFlow.Core.IScopeActivity"));
 
     /// <summary>True for a <c>Func</c> or an <c>Expression</c> of one: a parameter that takes workflow code.</summary>
     public bool TakesCode(ITypeSymbol type)
@@ -84,8 +86,9 @@ internal sealed class EngineSymbols
         if (type is INamedTypeSymbol expression && Expression != null &&
             SymbolEqualityComparer.Default.Equals(expression.OriginalDefinition, Expression))
             type = expression.TypeArguments[0];
+
         return type is INamedTypeSymbol { TypeKind: TypeKind.Delegate, Name: "Func" } func &&
-               func.ContainingNamespace?.ToDisplayString() == "System";
+            func.ContainingNamespace?.ToDisplayString() == "System";
     }
 
     /// <summary>True when <paramref name="type"/> is a workflow context, whose <c>UtcNow</c> is the run's clock.</summary>
@@ -94,6 +97,7 @@ internal sealed class EngineSymbols
         for (var each = type as INamedTypeSymbol; each != null; each = each.BaseType)
             if (Context != null && SymbolEqualityComparer.Default.Equals(each.OriginalDefinition, Context))
                 return true;
+
         return false;
     }
 
@@ -105,32 +109,41 @@ internal sealed class EngineSymbols
     public static IOperation? Initializer(ILocalReferenceOperation reference, CancellationToken cancellation)
     {
         var local = reference.Local;
+
         if (local.DeclaringSyntaxReferences.Length != 1 || reference.SemanticModel == null ||
             reference.SemanticModel.GetOperation(local.DeclaringSyntaxReferences[0].GetSyntax(cancellation), cancellation)
                 is not IVariableDeclaratorOperation { Initializer.Value: { } value })
             return null;
+
         var root = (IOperation)reference;
+
         while (root.Parent != null)
             root = root.Parent;
+
         return Written.GetValue(root, WrittenLocals).Contains(local) ? null : value;
     }
 
     private static HashSet<ILocalSymbol> WrittenLocals(IOperation root)
     {
         var written = new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default);
+
         foreach (var operation in root.Descendants())
             switch (operation)
             {
                 case IAssignmentOperation assignment:
                     Writes(assignment.Target, written);
+
                     break;
                 case IIncrementOrDecrementOperation step:
                     Writes(step.Target, written);
+
                     break;
                 case IArgumentOperation { Parameter.RefKind: RefKind.Ref or RefKind.Out } argument:
                     Writes(argument.Value, written);
+
                     break;
             }
+
         return written;
     }
 
@@ -141,16 +154,20 @@ internal sealed class EngineSymbols
         {
             case ILocalReferenceOperation local:
                 written.Add(local.Local);
+
                 break;
             case ITupleOperation tuple:
                 foreach (var element in tuple.Elements)
                     Writes(element, written);
+
                 break;
             case IDeclarationExpressionOperation declaration:
                 Writes(declaration.Expression, written);
+
                 break;
             case IConversionOperation conversion:
                 Writes(conversion.Operand, written);
+
                 break;
         }
     }
@@ -164,12 +181,15 @@ internal sealed class EngineSymbols
             {
                 case IConversionOperation conversion:
                     operation = conversion.Operand;
+
                     break;
                 case IDelegateCreationOperation creation:
                     operation = creation.Target;
+
                     break;
                 case IParenthesizedOperation parenthesized:
                     operation = parenthesized.Operand;
+
                     break;
                 default:
                     return operation;

@@ -7,8 +7,8 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.Conformance;
 
 /// <summary>
-/// Recipe 8 of spec D-17, a payment requested inside a saga, run as the sample defines it in every
-/// profile (J-02). It asserts what became of every callback it sends.
+/// A payment requested inside a saga, run as the sample defines it in every
+/// profile. It asserts what became of every callback it sends.
 /// </summary>
 [Trait("Spec", "D-17")]
 [Trait("Spec", "D-16")]
@@ -20,6 +20,7 @@ public sealed class SagaRecipeScenarios
     {
         var payments = new Payments();
         var stock = new Stock(failures: 1);
+
         await using var cluster = await ConformanceCluster.CreateAsync(profile, services =>
         {
             services.AddWaitRecipes();
@@ -27,6 +28,7 @@ public sealed class SagaRecipeScenarios
             services.AddSingleton<IPaymentRefunds>(payments);
             services.AddSingleton<IStock>(stock);
         });
+
         var engine = cluster.AddHost();
 
         var started = await engine.RunAsync(SagaPaymentRecipe.Definition(),
@@ -41,6 +43,7 @@ public sealed class SagaRecipeScenarios
 
         EventAssert.Rejected(await engine.ReplyAsync(first, new PaymentReceived { Status = "paid" }),
             EventRejection.WaitCancelled);
+
         var paid = await engine.ReplyAsync(second, new PaymentReceived { Status = "paid" });
 
         EventAssert.Consumed(paid);
@@ -56,6 +59,7 @@ public sealed class SagaRecipeScenarios
     {
         var payments = new Payments();
         var stock = new Stock(failures: 1);
+
         await using var cluster = await ConformanceCluster.CreateAsync(profile, services =>
         {
             services.AddWaitRecipes();
@@ -63,8 +67,10 @@ public sealed class SagaRecipeScenarios
             services.AddSingleton<IPaymentRefunds>(payments);
             services.AddSingleton<IStock>(stock);
         });
+
         var engine = cluster.AddHost();
-        // As recipe 8, but the retry keeps the payment: nothing completed after it is undone (D-36).
+
+        // As recipe 8, but the retry keeps the payment: nothing completed after it is undone.
         var definition = Workflow.Create<Payment>("KeptPaymentInASaga")
             .Step<ValidateOrder>()
             .Saga(saga => saga
@@ -101,12 +107,20 @@ public sealed class SagaRecipeScenarios
         /// <summary>The reply token of each payment created, in order.</summary>
         public IReadOnlyList<string> Created
         {
-            get { lock (_created) return _created.ToArray(); }
+            get
+            {
+                lock (_created)
+                    return _created.ToArray();
+            }
         }
 
         public IReadOnlyList<string> Refunded
         {
-            get { lock (_refunded) return _refunded.ToArray(); }
+            get
+            {
+                lock (_refunded)
+                    return _refunded.ToArray();
+            }
         }
 
         public Task<string> CreatePaymentAsync(decimal amount, string replyToken, CancellationToken cancellationToken)
@@ -114,6 +128,7 @@ public sealed class SagaRecipeScenarios
             lock (_created)
             {
                 _created.Add(replyToken);
+
                 return Task.FromResult($"pay-{_created.Count}");
             }
         }
@@ -122,6 +137,7 @@ public sealed class SagaRecipeScenarios
         {
             lock (_refunded)
                 _refunded.Add(reference);
+
             return Task.CompletedTask;
         }
     }

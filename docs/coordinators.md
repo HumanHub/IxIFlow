@@ -19,6 +19,7 @@ public static IHost CreateSecureCoordinator(string connectionString,
     X509Certificate2 certificate, string currentKey, string nextKey)
 {
     var builder = Host.CreateApplicationBuilder();
+
     builder.Services.AddIxIFlow().UsePostgreSql(connectionString)
         .AddCoordinator(options =>
         {
@@ -29,6 +30,7 @@ public static IHost CreateSecureCoordinator(string connectionString,
             options.SharedKeys.Add(currentKey);
             options.SharedKeys.Add(nextKey);
         });
+
     return builder.Build();
 }
 ```
@@ -46,6 +48,7 @@ public static void LinkSecureHost(IServiceCollection services, string connection
             options.AuthenticationMode = CoordinatorAuthenticationMode.SharedKey;
             options.SharedKey = sharedKey;
             options.ServerCertificateTrust.Thumbprints.Add(coordinatorSha256Thumbprint);
+
             // Optional: the same identity policy protects discovered endpoints.
             options.Coordinators.Add(new Uri("https://coordinator.example.internal:5088"));
         });
@@ -101,6 +104,7 @@ using Microsoft.Extensions.Hosting;
 public static IHost CreateCoordinator(string connectionString)
 {
     var builder = Host.CreateApplicationBuilder();
+
     builder.Services.AddIxIFlow()
         .UsePostgreSql(connectionString)
         .AddCoordinator(options =>
@@ -108,6 +112,7 @@ public static IHost CreateCoordinator(string connectionString)
             options.ListenEndpoint = new Uri("http://127.0.0.1:5088");
             options.AllowInsecure = true;
         });
+
     return builder.Build();
 }
 ```
@@ -129,6 +134,7 @@ public static void LinkHost(IServiceCollection services, string connectionString
         .UseCoordinators(options =>
         {
             options.AllowInsecure = true;
+
             // Optional: registry discovery already connects to every live coordinator.
             options.Coordinators.Add(new Uri("http://127.0.0.1:5088"));
         });

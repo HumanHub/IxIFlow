@@ -11,8 +11,12 @@ public static class LiquidTemplatesBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         var settings = new LiquidEngineOptions();
         configure?.Invoke(settings);
+        ArgumentOutOfRangeException.ThrowIfLessThan(settings.MaxSteps, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(settings.MaxRecursion, 1);
+
         builder.Services.TryAddEnumerable(
             ServiceDescriptor.Singleton<ITemplateEngine, LiquidTemplateEngine>(_ => new LiquidTemplateEngine(settings)));
+
         return builder;
     }
 }

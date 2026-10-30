@@ -17,19 +17,24 @@ public sealed class BundleInspectionHttpTests
     public async Task AnOversizedBundleOnInspectionReportsTheServerBundleLimit(string route)
     {
         var root = Path.Combine(Path.GetTempPath(), "IxIFlow.BundleInspection", Guid.NewGuid().ToString("N"));
+
         try
         {
             var store = new InMemoryWorkflowStateRepository();
             var version = await PublishedBundleScenario.PublishAsync(store);
             string id;
+
             await using (var starter = PublishedBundleScenario.Host(store, Path.Combine(root, "starter")))
             {
                 id = await starter.GetRequiredService<IWorkflowClient>().StartAsync(version.Name, new FirstData());
                 await PublishedBundleScenario.UntilAsync(store, id, WorkflowStatus.Suspended);
             }
+
             var checkpoint = (await store.GetWorkflowInstanceAsync(id))!.ExecutionStateJson;
+
             using var catalog = new WorkflowCatalog(store, artifacts: store, bundles: new(Path.Combine(root, "limited"))
-            { ReadLimits = new() { MaxArchiveBytes = 1 } });
+                { ReadLimits = new() { MaxArchiveBytes = 1 } });
+
             await using var app = new OperationsHttpFactory(store, catalog);
             using var client = app.Operator();
             using var response = await client.GetAsync($"/ops/instances/{id}/{route}");
@@ -39,6 +44,10 @@ public sealed class BundleInspectionHttpTests
             Assert.Equal(checkpoint, (await store.GetWorkflowInstanceAsync(id))!.ExecutionStateJson);
             Assert.Equal(WorkflowStatus.Suspended, (await store.GetWorkflowInstanceSummaryAsync(id))!.Status);
         }
-        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
     }
 }

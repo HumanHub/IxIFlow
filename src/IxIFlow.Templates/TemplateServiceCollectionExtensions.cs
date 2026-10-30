@@ -21,6 +21,7 @@ public static class TemplateServiceCollectionExtensions
         services.TryAddSingleton<TemplateEngines>();
         services.TryAddSingleton<TemplatePublisher>();
         services.TryAddSingleton<TemplateRenderer>();
+
         return new TemplatesBuilder(services);
     }
 }
@@ -34,6 +35,7 @@ public sealed class TemplatesBuilder(IServiceCollection services)
     public TemplatesBuilder AddEngine<TEngine>() where TEngine : class, ITemplateEngine
     {
         Services.TryAddEnumerable(ServiceDescriptor.Singleton<ITemplateEngine, TEngine>());
+
         return this;
     }
 }

@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.Conformance;
 
 /// <summary>
-/// Core engine scenarios that must behave the same in every profile (spec J-02).
+/// Core engine scenarios that must behave the same in every profile.
 /// </summary>
 [Trait("Spec", "J-02")]
 public sealed class CoreScenarios
@@ -31,6 +31,7 @@ public sealed class CoreScenarios
     {
         await using var cluster = await CreateClusterAsync(profile);
         var engine = cluster.AddHost();
+
         var definition = Workflow.Create<CounterData>("ConformanceComplete")
             .Step<IncrementActivity>(step => step
                 .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Count)
@@ -73,18 +74,21 @@ public sealed class CoreScenarios
         await using var cluster = await CreateClusterAsync(profile, services => services.AddSingleton(counter));
         var first = cluster.AddHost();
         var second = cluster.AddHost();
+
         var definition = Workflow.Create<CounterData>("ConformanceResumeOnce")
             .Step<NoopActivity>()
             .WaitFor<Approval>("approval")
             .Step<CountExecutionActivity>()
             .WaitFor<Approval>("approval")
             .Build();
+
         await cluster.Registry.RegisterWorkflowAsync(definition);
         var started = await first.RunAsync(definition, new CounterData());
 
         await Task.WhenAll(
             first.ResumeAsync(started.InstanceId, "approval", new Approval(), "delivery-1"),
             second.ResumeAsync(started.InstanceId, "approval", new Approval(), "delivery-1"));
+
         Assert.Equal(1, counter.Count);
 
         await first.ResumeAsync(started.InstanceId, "approval", new Approval(), "delivery-1");
@@ -93,6 +97,7 @@ public sealed class CoreScenarios
 
         var completed = await second.ResumeAsync(
             started.InstanceId, "approval", new Approval(), "delivery-2");
+
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, counter.Count);
     }
@@ -110,6 +115,7 @@ public sealed class CoreScenarios
 
         var cancelled = await second.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "conformance" });
+
         var resumed = await first.ResumeAsync(started.InstanceId, "approval", new Approval());
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
@@ -127,6 +133,7 @@ public sealed class CoreScenarios
         await using var cluster = await CreateClusterAsync(profile);
         var engine = cluster.AddHost();
         var receivingHost = cluster.AddHost();
+
         var child = Workflow.Create<CounterData>("ConformanceChild")
             .Step<NoopActivity>()
             .WaitFor<Approval>("approval")
@@ -134,20 +141,23 @@ public sealed class CoreScenarios
                 .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Count)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Count))
             .Build();
+
         var parent = Workflow.Create<CounterData>("ConformanceParent")
             .Step<NoopActivity>()
             .Invoke<CounterData>("ConformanceChild", 1, step => step
                 .Output(data => data.Count).To(ctx => ctx.WorkflowData.Count))
             .Build();
+
         await cluster.Registry.RegisterWorkflowAsync(child);
         await cluster.Registry.RegisterWorkflowAsync(parent);
         var started = await engine.RunAsync(parent, new CounterData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
         var childId = ExecutionCheckpoint.Read((await cluster.GetInstanceAsync(started.InstanceId))!.ExecutionStateJson)
             .Continuations.Single(item => item.PendingActivity?.ChildWorkflowId != null)
             .PendingActivity!.ChildWorkflowId!;
 
-        // The child runs as an instance of its own (D-17); its event is addressed to it once it waits.
+        // The child runs as an instance of its own; its event is addressed to it once it waits.
         await cluster.UntilAsync(childId, WorkflowStatus.Suspended);
         var childResult = await receivingHost.ResumeAsync(childId, "approval", new Approval());
         Assert.Equal(WorkflowExecutionStatus.Success, childResult.Status);
@@ -156,6 +166,7 @@ public sealed class CoreScenarios
         // The child's completion woke its parent, whichever host ran it.
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(30));
+
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
         var saved = await cluster.GetInstanceAsync(started.InstanceId);
         Assert.Equal(1, System.Text.Json.JsonSerializer.Deserialize<CounterData>(saved!.WorkflowDataJson.InlineText)!.Count);
@@ -210,6 +221,7 @@ public sealed class CoreScenarios
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Result = Value + 1;
+
             return Task.CompletedTask;
         }
     }
@@ -219,6 +231,7 @@ public sealed class CoreScenarios
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             counter.Increment();
+
             return Task.CompletedTask;
         }
     }

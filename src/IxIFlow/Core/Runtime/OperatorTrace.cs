@@ -30,22 +30,31 @@ internal static class OperatorTrace
 
         var completedPause = instance.Status == WorkflowStatus.Paused &&
             checkpoint.Continuations[0].Status == ContinuationStatus.Completed;
+
         ContinuationTransitions.CancelTree(checkpoint, checkpoint.Continuations[0]);
-        if (completedPause) checkpoint.Continuations[0].Status = ContinuationStatus.Cancelled;
+
+        if (completedPause)
+            checkpoint.Continuations[0].Status = ContinuationStatus.Cancelled;
     }
 
     public static void Cancellation(ExecutionCheckpoint checkpoint, CancellationReason reason, DateTime now)
     {
         if (checkpoint.Trace.Accepts(TraceEntryType.CancellationRequested, now))
-            checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now,
-                EntryType = TraceEntryType.CancellationRequested, Payload = Payload(reason, now) });
+            checkpoint.Trace.Add(new ExecutionTraceEntry
+            {
+                Timestamp = now,
+                EntryType = TraceEntryType.CancellationRequested, Payload = Payload(reason, now)
+            });
     }
 
     public static void CompletedCancellation(WorkflowInstance instance, ExecutionCheckpoint checkpoint, DateTime now)
     {
         if (checkpoint.Trace.Accepts(TraceEntryType.WorkflowCancelled, now))
-            checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now,
-                EntryType = TraceEntryType.WorkflowCancelled, Payload = Payload(instance.CancellationReason!, now) });
+            checkpoint.Trace.Add(new ExecutionTraceEntry
+            {
+                Timestamp = now,
+                EntryType = TraceEntryType.WorkflowCancelled, Payload = Payload(instance.CancellationReason!, now)
+            });
     }
 
     public static void ChildCancellations(WorkflowInstance instance, ExecutionCheckpoint checkpoint, DateTime now)
@@ -53,14 +62,22 @@ internal static class OperatorTrace
         for (var index = 0; index < checkpoint.ChildCancellations.Count; index++)
         {
             var command = checkpoint.ChildCancellations[index];
+
             var reason = WithActor(command.Reason, instance.CancellationReason?.RequestedBy,
                 instance.CancellationReason?.RequestedAt ?? now);
+
             checkpoint.ChildCancellations[index] = command with { Reason = reason };
+
             if (checkpoint.Trace.Accepts(TraceEntryType.ChildCancellationRequested, now))
-                checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now,
+                checkpoint.Trace.Add(new ExecutionTraceEntry
+                {
+                    Timestamp = now,
                     EntryType = TraceEntryType.ChildCancellationRequested, Payload = Payload(reason, now) with
-                    { ChildInstanceId = command.ChildInstanceId,
-                        WaitRef = command.ParentWaitId is { } waitId ? WaitReference.Of(instance.InstanceId, waitId) : null } });
+                    {
+                        ChildInstanceId = command.ChildInstanceId,
+                        WaitRef = command.ParentWaitId is { } waitId ? WaitReference.Of(instance.InstanceId, waitId) : null
+                    }
+                });
         }
     }
 
@@ -72,17 +89,24 @@ internal static class OperatorTrace
         ActivityResolutionState decision, DateTime now)
     {
         var diagnostic = string.IsNullOrEmpty(decision.Note) ? null : checkpoint.RecordOperatorDiagnostic("OperatorNote", decision.Note);
+
         if (checkpoint.Trace.Accepts(TraceEntryType.ActivityResolved, now))
-            checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now, EntryType = TraceEntryType.ActivityResolved,
+            checkpoint.Trace.Add(new ExecutionTraceEntry
+            {
+                Timestamp = now, EntryType = TraceEntryType.ActivityResolved,
                 Error = diagnostic,
                 Payload = new ActivityResolutionTrace(pending.Id, pending.StepId, decision.Kind, decision.DecidedBy)
-                { PolicyAttemptId = decision.PolicyAttemptId } });
+                    { PolicyAttemptId = decision.PolicyAttemptId }
+            });
     }
 
     public static void Released(ExecutionCheckpoint checkpoint, string? actor, DateTime now)
     {
         if (checkpoint.Trace.Accepts(TraceEntryType.Released, now))
-            checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = now, EntryType = TraceEntryType.Released,
-                Payload = new ReleaseTrace(string.IsNullOrEmpty(actor) ? null : actor) });
+            checkpoint.Trace.Add(new ExecutionTraceEntry
+            {
+                Timestamp = now, EntryType = TraceEntryType.Released,
+                Payload = new ReleaseTrace(string.IsNullOrEmpty(actor) ? null : actor)
+            });
     }
 }

@@ -54,19 +54,27 @@ public sealed class SerializedExecutorTests
         var running = harness.ExecuteAsync();
         await harness.Probe.Started.Task.WaitAsync(Patience);
         var calls = harness.Host.StoreCalls;
+
         harness.Deliver(new Cancel(assign.AssignmentId, kind,
             kind == CancelKind.Workflow ? new() { ReasonCode = "withdrawn" } : null));
+
         var ready = await running.WaitAsync(Patience);
+
         Assert.Equal(kind switch
         {
             CancelKind.Workflow => AssignmentOutcomeKind.Idle,
             CancelKind.Run => AssignmentOutcomeKind.RunCancelled,
             _ => AssignmentOutcomeKind.OwnershipLost
         }, ready.Outcome!.Kind);
+
         Assert.Equal(kind == CancelKind.Workflow ? 1 : 0, harness.Probe.Cleanups);
         Assert.Equal(kind == CancelKind.Workflow ? WorkflowStatus.Cancelled : WorkflowStatus.Running, harness.Host.Saved!.Status);
-        if (kind == CancelKind.Workflow) Assert.Equal("withdrawn", harness.Host.Saved.CancellationReason!.ReasonCode);
-        if (kind == CancelKind.Ownership) Assert.Equal(calls, harness.Host.StoreCalls);
+
+        if (kind == CancelKind.Workflow)
+            Assert.Equal("withdrawn", harness.Host.Saved.CancellationReason!.ReasonCode);
+
+        if (kind == CancelKind.Ownership)
+            Assert.Equal(calls, harness.Host.StoreCalls);
     }
 
     [Fact]
@@ -110,11 +118,13 @@ public sealed class SerializedExecutorTests
         using var harness = new MessageHarness();
         var definition = Workflow.Create<Data>("breakpoints").Step<Noop>().Build();
         var assign = await harness.AssignAsync(definition);
+
         var ready = await harness.ExecuteAsync(assign with
         {
             DebuggingEnabled = true,
             Breakpoints = BreakpointResolver.Resolve(definition, [new("first", "root/0")])
         });
+
         Assert.Equal(AssignmentOutcomeKind.Idle, ready.Outcome!.Kind);
         Assert.Equal(WorkflowStatus.Paused, Assert.Single(harness.Host.Requests).Commit.Instance.Status);
         Assert.Equal(WorkflowStatus.Paused, harness.Host.Saved!.Status);
@@ -126,11 +136,16 @@ public sealed class SerializedExecutorTests
         Assert.Equal("first", hit.BreakpointId);
         Assert.Equal(1, hit.HitCount);
         Assert.Equal(1, Assert.Single(debug.Breakpoints).HitCount);
+
         Assert.Single(await harness.Host.Store.GetTraceAsync(assign.Instance.InstanceId),
             entry => entry.Entry.EntryType == TraceEntryType.BreakpointHit);
+
         Assert.Equal(0, harness.Probe.Noops);
-        Assert.Equal([typeof(Assign), typeof(ReadInbox), typeof(ReadInboxReply),
-            typeof(Checkpoint), typeof(CheckpointReply), typeof(Ready)], harness.Crossed);
+
+        Assert.Equal([
+            typeof(Assign), typeof(ReadInbox), typeof(ReadInboxReply),
+            typeof(Checkpoint), typeof(CheckpointReply), typeof(Ready)
+        ], harness.Crossed);
     }
 
     [Fact]
@@ -164,5 +179,6 @@ public sealed class SerializedExecutorTests
         commit.Payload, commit.Parts, commit.DeletedParts, commit.ReplacesParts, commit.Incarnation,
         epoch ?? commit.Epoch, commit.CommitId, commit.ExpectedRevision, commit.ClearsCrashCount, commit.Parks,
         commit.Settlements, commit.InboxReadThrough, commit.OpenedWaits, commit.ArmedWaits, commit.ClosedWaits,
-        commit.WakeAfter, commit.Stopped, commit.ChildStarts, commit.ChildCancellations, commit.ParentNotice, commit.TraceEntries, commit.Diagnostics, commit.RetainedDiagnosticIds);
+        commit.WakeAfter, commit.Stopped, commit.ChildStarts, commit.ChildCancellations, commit.ParentNotice, commit.TraceEntries,
+        commit.Diagnostics, commit.RetainedDiagnosticIds);
 }

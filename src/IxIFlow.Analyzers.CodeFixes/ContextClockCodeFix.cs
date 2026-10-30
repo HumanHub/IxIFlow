@@ -26,23 +26,30 @@ public sealed class ContextClockCodeFix : CodeFixProvider
     public override async Task RegisterCodeFixesAsync(CodeFixContext context)
     {
         var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
         if (root == null)
             return;
+
         foreach (var diagnostic in context.Diagnostics)
         {
             if (!diagnostic.Properties.TryGetValue(Descriptors.ClockReplacement, out var replacement) ||
                 replacement == null)
                 continue;
+
             var node = root.FindNode(diagnostic.Location.SourceSpan, getInnermostNodeForTie: true);
+
             // A comment or directive inside the member access would be lost with it.
             if (node.DescendantTrivia().Any(trivia => trivia.Span.Length > 0 && node.Span.Contains(trivia.Span) &&
-                                                      !trivia.IsKind(SyntaxKind.WhitespaceTrivia) &&
-                                                      !trivia.IsKind(SyntaxKind.EndOfLineTrivia)))
+                    !trivia.IsKind(SyntaxKind.WhitespaceTrivia) &&
+                    !trivia.IsKind(SyntaxKind.EndOfLineTrivia)))
                 continue;
+
             var document = context.Document;
+
             context.RegisterCodeFix(CodeAction.Create(Title, _ =>
             {
                 var code = SyntaxFactory.ParseExpression(replacement).WithTriviaFrom(node);
+
                 return Task.FromResult(document.WithSyntaxRoot(root.ReplaceNode(node, code)));
             }, equivalenceKey: Title), diagnostic);
         }

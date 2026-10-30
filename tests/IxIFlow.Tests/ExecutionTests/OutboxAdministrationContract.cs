@@ -16,20 +16,27 @@ internal static class OutboxAdministrationContract
         await store.RegisterPublisherAsync(name, [OutboxEvent.WorkflowCompleted]);
         await store.RegisterPublisherAsync(other, [OutboxEvent.WorkflowCompleted]);
         var instances = new List<string> { retainedBeforeRegistration.InstanceId };
+
         async Task<string> Complete()
         {
             var instance = await OutboxStoreContract.CompleteAsync(store);
             instances.Add(instance.InstanceId);
+
             return instance.InstanceId;
         }
+
         async Task<OutboxDelivery> Claim(string publisher) => Assert.Single(await store.ClaimDeliveriesAsync(
             publisher, "secret-lease-token", TimeSpan.FromHours(1), 1));
+
         async Task<OutboxDelivery> GiveUp(string publisher, OutboxGivenUpReason reason)
         {
             var delivery = await Claim(publisher);
+
             Assert.True(await store.SettleDeliveryAsync(delivery.Event.Id, publisher, delivery.LeaseToken!,
                 OutboxPublishResult.GiveUp("test", reason: reason)));
+
             Assert.Equal(reason, (await store.GetDeliveryAsync(delivery.Event.Id, publisher))!.GivenUpReason);
+
             return delivery;
         }
 
@@ -44,7 +51,11 @@ internal static class OutboxAdministrationContract
         Assert.Equal(3, (await store.ListDeliveriesAsync(new(PublisherName: name, Status: OutboxDeliveryStatus.GivenUp))).Items.Count);
         Assert.Empty((await store.ListDeliveriesAsync(new(PublisherName: name, Status: OutboxDeliveryStatus.Pending))).Items);
         Assert.Empty((await store.ListDeliveriesAsync(new(PublisherName: name, NeverAttempted: true))).Items);
-        Assert.Equal(3, (await store.ListDeliveriesAsync(new(PublisherName: other, Status: OutboxDeliveryStatus.Pending, NeverAttempted: true))).Items.Count);
+
+        Assert.Equal(3,
+            (await store.ListDeliveriesAsync(new(PublisherName: other, Status: OutboxDeliveryStatus.Pending, NeverAttempted: true))).Items
+            .Count);
+
         Assert.Single((await store.ListDeliveriesAsync(new(PublisherName: name, InstanceId: first))).Items);
 
         // Both publishers share the event ID. Paging must also advance across the publisher tie.
@@ -57,12 +68,14 @@ internal static class OutboxAdministrationContract
         Assert.NotEqual(page1.Items[0].PublisherName, page2.Items[0].PublisherName);
         var paged = new List<DeliverySummary>();
         string? cursor = null;
+
         do
         {
             var page = await store.ListDeliveriesAsync(new(PublisherName: name, Limit: 1, After: cursor));
             paged.AddRange(page.Items);
             cursor = page.NextCursor;
         } while (cursor != null);
+
         Assert.Equal(expected.Select(d => d.Event.Id), paged.Select(d => d.Event.Id));
         var json = JsonSerializer.Serialize(await store.ListDeliveriesAsync(new(InstanceId: first)));
         Assert.DoesNotContain("Lease", json);
@@ -99,12 +112,16 @@ internal static class OutboxAdministrationContract
         await Complete();
         await Complete();
         var trigger = await Claim(name);
+
         Assert.True(await store.SettleDeliveryAsync(trigger.Event.Id, name, trigger.LeaseToken!,
             OutboxPublishResult.GiveUp("HTTP 410", disablePublisher: true)));
+
         await Complete();
         await store.RegisterPublisherAsync(name, [OutboxEvent.WorkflowCompleted], replayRetained: true);
+
         var disabled = (await store.ListDeliveriesAsync(new(PublisherName: name))).Items
             .Where(d => d.GivenUpReason == OutboxGivenUpReason.Disabled).ToArray();
+
         Assert.True(disabled.Length >= 3);
         Assert.Contains(disabled, d => d.Event.Id == trigger.Event.Id);
         Assert.Contains(disabled, d => d.Event.InstanceId == retainedBeforeRegistration.InstanceId);
@@ -116,6 +133,7 @@ internal static class OutboxAdministrationContract
         Assert.Null(enabled.LastError);
         Assert.Equal("bob", enabled.EnabledBy);
         Assert.NotNull(enabled.EnabledAtUtc);
+
         foreach (var item in disabled)
         {
             var delivery = (await store.GetDeliveryAsync(item.Event.Id, name))!;
@@ -126,6 +144,7 @@ internal static class OutboxAdministrationContract
             Assert.Equal("bob", delivery.RetriedBy);
             Assert.Equal(enabled.EnabledAtUtc, delivery.RetriedAtUtc);
         }
+
         Assert.Equal(OutboxGivenUpReason.Horizon, (await store.GetDeliveryAsync(horizon.Event.Id, name))!.GivenUpReason);
         Assert.Equal(OutboxGivenUpReason.Operator, (await store.GetDeliveryAsync(operatorDelivery.Event.Id, name))!.GivenUpReason);
         Assert.Equal(OutboxDeliveryStatus.Delivered, (await store.GetDeliveryAsync(exhausted.Event.Id, name))!.Status);
@@ -135,14 +154,17 @@ internal static class OutboxAdministrationContract
         Assert.Equal("carol", removed.UnregisteredBy);
         Assert.NotNull(removed.UnregisteredAtUtc);
         Assert.Equal(DateTimeKind.Utc, removed.UnregisteredAtUtc!.Value.Kind);
+
         foreach (var item in disabled)
             Assert.Equal(OutboxGivenUpReason.Unregistered, (await store.GetDeliveryAsync(item.Event.Id, name))!.GivenUpReason);
+
         await store.UnregisterPublisherAsync(other, "cleanup");
         Assert.Contains(await store.ListPublishersAsync(), p => p == removed);
         Assert.False(await store.EnablePublisherAsync(name, "denied"));
         Assert.False(await store.RetryDeliveryAsync(trigger.Event.Id, name, "denied"));
 
-        foreach (var id in instances) await age(id, TimeSpan.FromDays(31));
+        foreach (var id in instances)
+            await age(id, TimeSpan.FromDays(31));
 
         // Retry and purge can commit in either order, but may never resurrect a purged delivery.
         var racing = name + "-race";
@@ -151,23 +173,40 @@ internal static class OutboxAdministrationContract
         var race = await GiveUp(racing, OutboxGivenUpReason.Exhausted);
         await age(raceId, TimeSpan.FromDays(31));
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var retrying = Task.Run(async () => { await gate.Task; return await store.RetryDeliveryAsync(race.Event.Id, racing, "racer"); });
-        var purging = Task.Run(async () => { await gate.Task; return await store.PurgeAsync(TimeSpan.FromMinutes(1), TimeSpan.FromDays(90), 1000); });
+
+        var retrying = Task.Run(async () =>
+        {
+            await gate.Task;
+
+            return await store.RetryDeliveryAsync(race.Event.Id, racing, "racer");
+        });
+
+        var purging = Task.Run(async () =>
+        {
+            await gate.Task;
+
+            return await store.PurgeAsync(TimeSpan.FromMinutes(1), TimeSpan.FromDays(90), 1000);
+        });
+
         gate.SetResult();
         await Task.WhenAll(retrying, purging).WaitAsync(TimeSpan.FromSeconds(15));
         var surviving = await store.GetDeliveryAsync(race.Event.Id, racing);
+
         if (await retrying)
         {
             Assert.NotNull(surviving);
             Assert.Equal(OutboxDeliveryStatus.Pending, surviving.Status);
             Assert.NotNull(await store.GetWorkflowInstanceAsync(raceId));
         }
-        else Assert.Null(surviving);
+        else
+            Assert.Null(surviving);
+
         if (surviving != null)
         {
             var claimed = await Claim(racing);
             Assert.True(await store.SettleDeliveryAsync(claimed.Event.Id, racing, claimed.LeaseToken!, OutboxPublishResult.GiveUp()));
         }
+
         await store.PurgeAsync(TimeSpan.FromMinutes(1), TimeSpan.FromDays(90), 1000);
         Assert.Null(await store.GetDeliveryAsync(race.Event.Id, racing));
         Assert.False(await store.RetryDeliveryAsync(race.Event.Id, racing, "too-late"));
@@ -188,25 +227,30 @@ internal static class OutboxAdministrationContract
         // A new service on another/reopened repository performs normal startup registration.
         store = await restart();
         var publisher = new Publisher(name);
+
         using (var service = new WorkflowOutboxService(store, [publisher],
-            new HostSettings(1, TimeSpan.FromMilliseconds(10), TimeSpan.FromSeconds(1), "other-host"),
-            new OutboxSettings(), TimeProvider.System, NullLogger<WorkflowOutboxService>.Instance))
+                   new HostSettings(1, TimeSpan.FromMilliseconds(10), TimeSpan.FromSeconds(1), "other-host"),
+                   new OutboxSettings(), TimeProvider.System, NullLogger<WorkflowOutboxService>.Instance))
         {
             await service.StartAsync(default);
             await Complete();
             await service.StopAsync(default);
         }
+
         Assert.Equal(0, publisher.Calls);
         Assert.Equal(removed, await store.GetPublisherAsync(name));
         Assert.Empty(await store.ClaimDeliveriesAsync(name, "other-host", TimeSpan.FromMinutes(1), 100));
         Assert.Empty((await store.ListDeliveriesAsync(new(PublisherName: name))).Items);
+
         // Even unregistering an unknown name prevents stale hosts introducing it later.
         var absent = name + "-absent";
         await store.UnregisterPublisherAsync(absent, "dana");
         await store.RegisterPublisherAsync(absent, [OutboxEvent.WorkflowCompleted], replayRetained: true);
         Assert.Equal("dana", (await store.GetPublisherAsync(absent))!.UnregisteredBy);
         Assert.Empty((await store.ListDeliveriesAsync(new(PublisherName: absent))).Items);
-        foreach (var id in instances) await store.DeleteWorkflowInstanceAsync(id);
+
+        foreach (var id in instances)
+            await store.DeleteWorkflowInstanceAsync(id);
     }
 
     private sealed class Publisher(string name) : IOutboxPublisher
@@ -214,7 +258,12 @@ internal static class OutboxAdministrationContract
         public int Calls;
         public string Name => name;
         public IReadOnlyCollection<string> EventTypes => [OutboxEvent.WorkflowCompleted];
+
         public Task<OutboxPublishResult> PublishAsync(OutboxPublishContext delivery, CancellationToken cancellationToken)
-        { Interlocked.Increment(ref Calls); return Task.FromResult(OutboxPublishResult.Delivered()); }
+        {
+            Interlocked.Increment(ref Calls);
+
+            return Task.FromResult(OutboxPublishResult.Delivered());
+        }
     }
 }

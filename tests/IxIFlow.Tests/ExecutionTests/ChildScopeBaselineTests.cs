@@ -16,14 +16,19 @@ public sealed partial class ChildScopeBaselineTests
         var snapshots = Fixtures().Select(definition =>
         {
             var catalog = new WorkflowScopeCatalog(definition);
+
             var scopes = (Dictionary<string, IReadOnlyList<WorkflowStep>>)typeof(WorkflowScopeCatalog)
                 .GetField("_scopes", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(catalog)!;
+
             Assert.Equal(catalog.AllSteps.Select(pair => pair.Key), catalog.StepTable.Select(entry => entry.CatalogId));
+
             return new Snapshot(definition.Name, catalog.StructureHash, scopes.Keys.ToArray(),
                 catalog.AllSteps.Select(pair => pair.Key).ToArray());
         }).ToArray();
+
         var expected = JsonSerializer.Deserialize<Snapshot[]>(MainBaseline)!;
         Assert.Equal(expected.Length, snapshots.Length);
+
         for (var index = 0; index < expected.Length; index++)
         {
             Assert.Equal(expected[index].Name, snapshots[index].Name);
@@ -38,17 +43,21 @@ public sealed partial class ChildScopeBaselineTests
     {
         var catalog = new WorkflowScopeCatalog(Fixtures().Last());
         var (stepId, step) = Assert.Single(catalog.AllSteps, pair => pair.Value.TimeoutSteps.Count > 0);
+
         var parent = new ScopePosition
         {
             ScopeId = stepId[..stepId.LastIndexOf('/')],
             NextStepIndex = int.Parse(stepId[(stepId.LastIndexOf('/') + 1)..])
         };
+
         var continuation = new ContinuationState { Status = ContinuationStatus.Waiting, Stack = [parent] };
         var wait = new WaitState { ContinuationId = continuation.Id, StepId = stepId };
         var checkpoint = new ExecutionCheckpoint { Continuations = [continuation], Waits = [wait] };
         checkpoint.Inbox.Due([wait.Id]);
+
         checkpoint.Trace.Configure(new WorkflowInstance { TracingEnabled = false }, checkpoint,
             new ExecutionLimits(), TimeProvider.System, catalog);
+
         using var services = new ServiceCollection().BuildServiceProvider();
 
         Assert.True(new ContinuationTransitions(services, TimeProvider.System).ProcessDueWaits(checkpoint, catalog));
@@ -71,22 +80,26 @@ public sealed partial class ChildScopeBaselineTests
         request.RequestName = "approval";
         request.ReplyType = typeof(string);
         request.StepMetadata["IsSagaStep"] = true;
+
         request.StepMetadata["CompensationActivities"] = new List<CompensationActivityInfo>
         {
             new() { ActivityType = typeof(object) },
             new() { ActivityType = typeof(string), PreviousChainActivityType = typeof(object) }
         };
+
         var outcomeSource = Step(WorkflowStepType.Activity);
         outcomeSource.StepMetadata["IsSagaStep"] = true;
         var saga = Step(WorkflowStepType.Saga);
         saga.SequenceSteps = [request, Step(WorkflowStepType.SuspendResume)];
         saga.SequenceSteps[1].ReplyToRequest = "approval";
         saga.SequenceSteps[1].StepMetadata["WaitKey"] = "approval";
+
         request.OutcomeBranches =
         [
             new() { Value = "accepted", Steps = [outcomeSource] },
             new() { IsDefault = true }
         ];
+
         saga.CatchBlocks = [Step(WorkflowStepType.CatchBlock)];
         saga.CatchBlocks[0].SequenceSteps = [Step(WorkflowStepType.Activity)];
 
@@ -111,6 +124,7 @@ public sealed partial class ChildScopeBaselineTests
         parallel.ParallelBranches = [[attempt], [], [saga]];
         var sequence = Step(WorkflowStepType.Sequence);
         sequence.SequenceSteps = [parallel];
+
         yield return Definition("Nested bodies", [sequence]);
     }
 

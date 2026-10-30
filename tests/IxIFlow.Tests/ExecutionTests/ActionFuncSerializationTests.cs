@@ -138,19 +138,19 @@ public class ActionFuncSerializationTests
             )
             .Catch<TestSecurityException, MessageFault>(c => c
                 .Step<TestGenericFaultHandler<TestErrorResponse>>(setup => setup
-                .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
+                    .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                     .Input(step => step.ProcessName).From(data => data.WorkflowData.ProcessName)
                     .Input(step => step.ExceptionMessage).From(data => data.Fault.Message)
-                .Input(step => step.OnException).From(data => CreateSecurityErrorResponse)
+                    .Input(step => step.OnException).From(data => CreateSecurityErrorResponse)
                     .Output(step => step.ResponseHeader).To(data => data.WorkflowData.ErrorResponse)
                 )
             )
             .Catch<Exception, MessageFault>(c => c
                 .Step<TestGenericFaultHandler<TestErrorResponse>>(setup => setup
-                .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
+                    .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                     .Input(step => step.ProcessName).From(data => data.WorkflowData.ProcessName)
                     .Input(step => step.ExceptionMessage).From(data => data.Fault.Message)
-                .Input(step => step.OnException).From(data => CreateGenericErrorResponse)
+                    .Input(step => step.OnException).From(data => CreateGenericErrorResponse)
                     .Output(step => step.ResponseHeader).To(data => data.WorkflowData.ErrorResponse)
                 )
             )
@@ -186,7 +186,7 @@ public class ActionFuncSerializationTests
                     .Input(step => step.WorkflowId).From(data => data.WorkflowData.Id)
                     .Input(step => step.ProcessName).From(data => data.WorkflowData.ProcessName)
                     .Input(step => step.ExceptionMessage).From(data => data.Fault.Message)
-                .Input(step => step.OnException).From(data => data.WorkflowData.CreateSecurityError)
+                    .Input(step => step.OnException).From(data => data.WorkflowData.CreateSecurityError)
                     .Output(step => step.ResponseHeader).To(data => data.WorkflowData.ErrorResponse)
                 )
             )
@@ -367,8 +367,13 @@ public class ActionFuncSerializationTests
     /// </summary>
     public class TestSecurityException : Exception
     {
-        public TestSecurityException(string message) : base(message) { }
-        public TestSecurityException(string message, Exception innerException) : base(message, innerException) { }
+        public TestSecurityException(string message) : base(message)
+        {
+        }
+
+        public TestSecurityException(string message, Exception innerException) : base(message, innerException)
+        {
+        }
     }
 
     public class TestInitializationActivity : IAsyncActivity
@@ -381,6 +386,7 @@ public class ActionFuncSerializationTests
             {
                 WorkflowId = Guid.NewGuid().ToString();
             }
+
             await Task.CompletedTask;
         }
     }
@@ -390,6 +396,7 @@ public class ActionFuncSerializationTests
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken)
         {
             await Task.Delay(10, cancellationToken); // Simulate some work
+
             throw new TestSecurityException("Security check failed. Invalid credentials.");
         }
     }
@@ -456,8 +463,7 @@ public class ActionFuncSerializationTests
 
     public class TestLogActivity : IAsyncActivity
     {
-        [JsonIgnore]
-        public Action<TestLogContext> OnLog { get; set; }
+        [JsonIgnore] public Action<TestLogContext> OnLog { get; set; }
         public string WorkflowId { get; set; } = "";
 
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken)
@@ -487,5 +493,4 @@ public class ActionFuncSerializationTests
     }
 
     #endregion
-
 }

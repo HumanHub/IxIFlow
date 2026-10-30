@@ -19,7 +19,9 @@ public static void Register(IServiceCollection services)
             options.AddPolicy("publishing-" + permission, policy => policy
                 .RequireAuthenticatedUser().RequireClaim("publishing", permission));
     });
+
     services.AddScoped<ICatalogQueryScope, SampleCatalogScope>();
+
     services.AddIxIFlow().AddWorkflowPublishing(new WorkflowPublishingOptions
     {
         ReadPolicy = "publishing-read",

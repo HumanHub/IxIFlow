@@ -17,15 +17,21 @@ public sealed class CatalogCheckpointNameAdmissionTests
         if (profile == "local-memory")
         {
             await CheckpointNameAdmissionScenario.VerifyAsync(new InMemoryWorkflowStateRepository(), start, malformed);
+
             return;
         }
+
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.CheckpointNames", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
+
         try
         {
             await using var store = new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "names.db"));
             await CheckpointNameAdmissionScenario.VerifyAsync(store, start, malformed);
         }
-        finally { await SqliteTestFiles.DeleteAsync(folder); }
+        finally
+        {
+            await SqliteTestFiles.DeleteAsync(folder);
+        }
     }
 }

@@ -16,6 +16,7 @@ public sealed class ActivityActivationTests
         var registry = new WorkflowCatalog();
         var firstProbe = new Probe("first host");
         var secondProbe = new Probe("second host");
+
         var definition = Workflow.Create<Data>("ActivityActivation")
             .Step<InjectedActivity>()
             .If(_ => true, then => then.WaitFor<Approval>("approval"))
@@ -23,7 +24,9 @@ public sealed class ActivityActivationTests
                 .Input(activity => activity.Value).From(ctx => ctx.PreviousStep.Value)
                 .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Value))
             .Build();
+
         string id;
+
         await using (var first = Services(firstProbe))
         {
             var started = await first.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
@@ -33,6 +36,7 @@ public sealed class ActivityActivationTests
             Assert.NotEmpty(firstProbe.Constructed);
             Assert.All(firstProbe.Constructed, activity => Assert.Same(firstProbe, activity.Dependency));
         }
+
         await using var second = Services(secondProbe);
         var completed = await second.GetRequiredService<IWorkflowClient>().ResumeAsync(id, "approval", new Approval());
         Assert.True(completed.Status == WorkflowExecutionStatus.Success, completed.ErrorMessage);
@@ -48,8 +52,13 @@ public sealed class ActivityActivationTests
             .AddSingleton(probe).BuildServiceProvider();
     }
 
-    public sealed class Data { public string Value { get; set; } = ""; }
+    public sealed class Data
+    {
+        public string Value { get; set; } = "";
+    }
+
     public sealed class Approval;
+
     public sealed class Probe(string value)
     {
         public string Value { get; } = value;
@@ -72,6 +81,7 @@ public sealed class ActivityActivationTests
         {
             Dependency.Executions++;
             Value = Dependency.Value;
+
             return Task.CompletedTask;
         }
     }

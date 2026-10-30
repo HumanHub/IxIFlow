@@ -20,11 +20,19 @@ public sealed class CoordinatorDormantPopulationTests(ITestOutputHelper output)
         var definition = Workflow.Create<Data>("DormantPopulation").Demand("region", "absent").Step<Noop>().Build();
         await Add("first");
         var before = await Measure();
-        for (var i = 0; i < 100_000; i++) await Add("dormant-" + i);
+
+        for (var i = 0; i < 100_000; i++)
+            await Add("dormant-" + i);
+
         var after = await Measure();
         var budget = Math.Max(5, before.TotalMilliseconds * 8);
-        output.WriteLine($"100,001 dormant members of one set, median claim/backlog: {before.TotalMilliseconds:F3} -> {after.TotalMilliseconds:F3} ms; budget {budget:F3} ms");
-        Assert.True(after.TotalMilliseconds <= budget, $"Dormant population scan took {after.TotalMilliseconds:F3} ms; budget {budget:F3} ms");
+
+        output.WriteLine(
+            $"100,001 dormant members of one set, median claim/backlog: {before.TotalMilliseconds:F3} -> {after.TotalMilliseconds:F3} ms; budget {budget:F3} ms");
+
+        Assert.True(after.TotalMilliseconds <= budget,
+            $"Dormant population scan took {after.TotalMilliseconds:F3} ms; budget {budget:F3} ms");
+
         Assert.Empty(await store.GetRunnableInstancesAsync(query));
         Assert.Empty((await store.GetUnschedulableAsync()).Items);
 
@@ -32,13 +40,16 @@ public sealed class CoordinatorDormantPopulationTests(ITestOutputHelper output)
         {
             var (instance, checkpoint, catalog) = WorkflowInstances.NewInstance(definition, new Data(),
                 new() { InstanceId = id }, DateTime.UtcNow);
+
             ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), catalog, DateTime.UtcNow);
             instance.Status = WorkflowStatus.Completed;
             await store.SeedAsync(instance);
         }
+
         async Task<TimeSpan> Measure()
         {
             var samples = new List<TimeSpan>();
+
             for (var i = 0; i < 9; i++)
             {
                 var start = Stopwatch.GetTimestamp();
@@ -46,10 +57,13 @@ public sealed class CoordinatorDormantPopulationTests(ITestOutputHelper output)
                 await store.GetUnschedulableAsync();
                 samples.Add(Stopwatch.GetElapsedTime(start));
             }
+
             return samples.Order().ElementAt(4);
         }
     }
+
     public sealed class Data;
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;

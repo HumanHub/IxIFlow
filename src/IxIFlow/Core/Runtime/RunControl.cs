@@ -42,14 +42,19 @@ internal sealed class RunControl
     public IDisposable Register(Guid runId, Action<Recycle> deliver)
     {
         _runs[runId] = deliver;
-        if (Volatile.Read(ref _recycling) != 0) deliver(new Recycle(runId));
+
+        if (Volatile.Read(ref _recycling) != 0)
+            deliver(new Recycle(runId));
+
         return new Registration(() => _runs.TryRemove(runId, out _));
     }
 
     public void Recycle()
     {
         Interlocked.Exchange(ref _recycling, 1);
-        foreach (var (runId, deliver) in _runs) deliver(new Recycle(runId));
+
+        foreach (var (runId, deliver) in _runs)
+            deliver(new Recycle(runId));
     }
 
     private sealed class Registration(Action remove) : IDisposable

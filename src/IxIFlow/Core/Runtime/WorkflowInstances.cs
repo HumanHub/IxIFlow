@@ -10,10 +10,12 @@ internal static class WorkflowInstances
     /// saves it, and its initial checkpoint: a client's start, or a child a parent's commit starts.
     /// </summary>
     public static (WorkflowInstance Instance, ExecutionCheckpoint Checkpoint, WorkflowScopeCatalog Scopes)
-        NewInstance(WorkflowDefinition definition, object workflowData, WorkflowOptions options, DateTime now, TimeSpan? hostPinLifetime = null,
+        NewInstance(WorkflowDefinition definition, object workflowData, WorkflowOptions options, DateTime now,
+            TimeSpan? hostPinLifetime = null,
             IEnumerable<WorkflowDemand>? registrationDemands = null)
     {
         WorkflowDefinitionValidator.Validate(definition);
+
         var instance = new WorkflowInstance
         {
             InstanceId = options.InstanceId ?? Guid.NewGuid().ToString("N"),
@@ -30,13 +32,16 @@ internal static class WorkflowInstances
             TracingEnabled = options.EnableTracing,
             Properties = options.Properties.ToDictionary(pair => pair.Key, pair => JsonSerializer.SerializeToElement(pair.Value))
         };
+
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
+
         var checkpoint = new ExecutionCheckpoint
         {
             StructureHash = scopes.StructureHash,
             Demands = WorkflowDemands.Resolve(definition, workflowData, options, scopes.StructureHash, registrationDemands),
             HostPinLifetime = options.RequiredHostId != null ? hostPinLifetime ?? DemandSettings.Default.HostPinLifetime : null,
-            // The store stamps the execution deadline when the start is committed (D-35).
+
+            // The store stamps the execution deadline when the start is committed.
             ExecutionTimeout = options.ExecutionTimeout,
             ExecutionTimerId = options.ExecutionTimeout != null ? Guid.NewGuid().ToString("N") : null,
             ExecutionDeadlineUtc = instance.StartedAt + options.ExecutionTimeout,
@@ -48,7 +53,9 @@ internal static class WorkflowInstances
                 }
             ]
         };
+
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+
         return (instance, checkpoint, scopes);
     }
 
@@ -66,11 +73,14 @@ internal static class WorkflowInstances
             ParentInstanceId = parent.InstanceId,
             Demands = WorkflowDemands.Saved(parent).Where(demand => demand.Inherit).ToList()
         }, now);
+
         child.ParentWaitId = parentWaitId;
         checkpoint.InvocationFaultProperties = faultProperties?.Distinct(StringComparer.Ordinal).ToList() ?? [];
         ExecutionCheckpointWriter.Prepare(child, checkpoint, data, scopes, now);
+
         // The store saves a child's start whole, as one instance with no parts.
         child.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+
         return new ChildStart(childId, JsonSerializer.Serialize(child), parentWaitId);
     }
 }

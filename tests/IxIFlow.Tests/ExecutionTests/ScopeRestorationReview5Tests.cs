@@ -44,14 +44,18 @@ public sealed class ScopeRestorationReview5Tests
         var store = services.GetRequiredService<IWorkflowStateRepository>();
         var instance = (await store.GetWorkflowInstanceAsync(idle.InstanceId))!;
         var state = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance));
+
         Assert.Single(state.Scopes).Inputs.Properties[nameof(Container.Argument)] = new()
         {
             Value = new() { Type = WorkflowTypeIdentity.SavedName(typeof(string)), Json = StoredJson.Inline("\"not an integer\"") }
         };
+
         instance.ExecutionStateJson = JsonSerializer.Serialize(state);
         var eventId = Guid.NewGuid().ToString("N");
+
         Assert.Equal(EventAppendStatus.Stored, (await store.AppendEventAsync(new(instance.InstanceId, eventId,
             WorkflowTypeIdentity.SavedName(typeof(Signal)), "{}", Key: "go"))).Status);
+
         await store.SeedAsync(instance, wakeAfter: TimeSpan.Zero);
         var sets = probe.Sets;
         var done = await client.ResumeAsync(idle.InstanceId, "go", new Signal(), eventId).WaitAsync(TimeSpan.FromSeconds(15));
@@ -71,12 +75,14 @@ public sealed class ScopeRestorationReview5Tests
         await using var services = Services(probe);
         var client = services.GetRequiredService<IWorkflowClient>();
         var done = await client.RunAsync(Definition(probe, retry: true, wait: restoration), new Data());
+
         if (restoration)
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, done.Status);
             probe.SetterFailures = 1;
             done = await client.ResumeAsync(done.InstanceId, "go", new Signal());
         }
+
         Assert.True(done.Status == WorkflowExecutionStatus.Success, done.ErrorMessage);
         Assert.Equal(0, probe.OuterCatches);
         Assert.Equal(1, probe.Bodies);
@@ -95,8 +101,10 @@ public sealed class ScopeRestorationReview5Tests
         var client = services.GetRequiredService<IWorkflowClient>();
         var definition = Definition(probe, wait: false, retry: true);
         var id = Guid.NewGuid().ToString("N");
+
         store.FailCommit = instance => probe.Bodies > 0 && ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(instance))
             .Continuations.All(continuation => continuation.PendingActivity == null);
+
         await Assert.ThrowsAsync<WorkflowEngineException>(() => client.RunAsync(definition, new Data(), new() { InstanceId = id }));
         store.FailCommit = _ => false;
         probe.SetterFailures = 1;
@@ -104,7 +112,10 @@ public sealed class ScopeRestorationReview5Tests
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, waiting.Status);
         var pending = Assert.Single(await client.GetPendingActivitiesAsync(id));
         var state = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState((await store.GetWorkflowInstanceAsync(id))!));
-        Assert.Contains("could not be re-opened", Assert.Single(state.Continuations, c => c.PendingActivity != null).PendingActivity!.ResolutionReason);
+
+        Assert.Contains("could not be re-opened",
+            Assert.Single(state.Continuations, c => c.PendingActivity != null).PendingActivity!.ResolutionReason);
+
         Assert.Equal(0, probe.OuterCatches);
         Assert.Equal(1, probe.Opens);
         var sets = probe.Sets;
@@ -119,16 +130,23 @@ public sealed class ScopeRestorationReview5Tests
             .Try(outer => outer.Scope<Container>(scope =>
             {
                 scope.Input(x => x.Argument).From(c => probe.Map());
-                if (retry) scope.Retry(new RetryPolicy(1));
+
+                if (retry)
+                    scope.Retry(new RetryPolicy(1));
             }, body =>
             {
                 void Steps(IWorkflowBuilder<Data, Container> steps)
                 {
-                    if (wait) steps.WaitFor<Signal>("go").Step<Body>();
-                    else steps.Step<Body>();
+                    if (wait)
+                        steps.WaitFor<Signal>("go").Step<Body>();
+                    else
+                        steps.Step<Body>();
                 }
-                if (innerCatch) body.Try(Steps).Catch<InvalidOperationException>(caught => caught.Step<InnerCaught>());
-                else Steps(body);
+
+                if (innerCatch)
+                    body.Try(Steps).Catch<InvalidOperationException>(caught => caught.Step<InnerCaught>());
+                else
+                    Steps(body);
             }))
             .Catch<InvalidOperationException>(caught => caught.Step<OuterCaught>())
             .Catch<Exception>(caught => caught.Step<OtherCaught>()).Build();
@@ -137,13 +155,22 @@ public sealed class ScopeRestorationReview5Tests
     {
         var collection = new ServiceCollection().AddSingleton(probe);
         collection.AddIxIFlow(options => options.VerifyCheckpointParts = true);
-        if (store != null) collection.AddSingleton(store);
+
+        if (store != null)
+            collection.AddSingleton(store);
+
         return collection.BuildServiceProvider();
     }
 
     public sealed class Data;
+
     public sealed class Signal;
-    public sealed class Value(int argument) { public int Argument { get; } = argument; }
+
+    public sealed class Value(int argument)
+    {
+        public int Argument { get; } = argument;
+    }
+
     public sealed class Probe
     {
         public int SetterFailures;
@@ -157,34 +184,83 @@ public sealed class ScopeRestorationReview5Tests
         public int OtherCatches;
         public InvalidOperationException Error { get; } = new("restored input setter failed");
         public List<string> Invocations { get; } = [];
-        public int Map() { Mappings++; return 42; }
+
+        public int Map()
+        {
+            Mappings++;
+
+            return 42;
+        }
     }
+
     public sealed class Container(Probe probe) : IScopeActivity<Value>
     {
         private int _argument;
-        [ActivityInput, JsonIgnore] public int Argument
+
+        [ActivityInput, JsonIgnore]
+        public int Argument
         {
             get => _argument;
             set
             {
                 probe.Sets++;
-                if (probe.SetterFailures-- > 0) throw probe.Error;
+
+                if (probe.SetterFailures-- > 0)
+                    throw probe.Error;
+
                 _argument = value;
             }
         }
+
         public Task<Value> OpenAsync(ScopeOpening opening, IScopeContext context, CancellationToken token)
-        { probe.Opens++; probe.Invocations.Add(context.InvocationId); return Task.FromResult(new Value(Argument)); }
+        {
+            probe.Opens++;
+            probe.Invocations.Add(context.InvocationId);
+
+            return Task.FromResult(new Value(Argument));
+        }
+
         public Task CloseAsync(Value value, ScopeClosing closing, IScopeContext context, CancellationToken token) => Task.CompletedTask;
     }
+
     public sealed class Body(Probe probe) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken token)
-        { probe.Bodies++; probe.BodyArgument = context.Scope<Value>().Argument; return Task.CompletedTask; }
+        {
+            probe.Bodies++;
+            probe.BodyArgument = context.Scope<Value>().Argument;
+
+            return Task.CompletedTask;
+        }
     }
+
     public sealed class OuterCaught(Probe probe) : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken token) { probe.OuterCatches++; return Task.CompletedTask; } }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken token)
+        {
+            probe.OuterCatches++;
+
+            return Task.CompletedTask;
+        }
+    }
+
     public sealed class InnerCaught(Probe probe) : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken token) { probe.InnerCatches++; return Task.CompletedTask; } }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken token)
+        {
+            probe.InnerCatches++;
+
+            return Task.CompletedTask;
+        }
+    }
+
     public sealed class OtherCaught(Probe probe) : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken token) { probe.OtherCatches++; return Task.CompletedTask; } }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken token)
+        {
+            probe.OtherCatches++;
+
+            return Task.CompletedTask;
+        }
+    }
 }

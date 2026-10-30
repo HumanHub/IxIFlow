@@ -22,9 +22,16 @@ public static partial class WorkflowSourceTranslator
 
     public static string Translate(string yaml, string sourcePath, WorkflowSourceOptions? options = null)
     {
-        if (yaml is null) throw new ArgumentNullException(nameof(yaml));
-        if (sourcePath is null) throw new ArgumentNullException(nameof(sourcePath));
-        try { return Translate(WorkflowYamlSerializer.Read(yaml), sourcePath, options); }
+        if (yaml is null)
+            throw new ArgumentNullException(nameof(yaml));
+
+        if (sourcePath is null)
+            throw new ArgumentNullException(nameof(sourcePath));
+
+        try
+        {
+            return Translate(WorkflowYamlSerializer.Read(yaml), sourcePath, options);
+        }
         catch (YamlException error)
         {
             throw new WorkflowSourceException(error.Message, sourcePath, (int)error.Start.Line, (int)error.Start.Column);
@@ -37,18 +44,36 @@ public static partial class WorkflowSourceTranslator
 
     public static string Translate(WorkflowDocument document, string sourcePath, WorkflowSourceOptions? options = null)
     {
-        if (document is null) throw new ArgumentNullException(nameof(document));
-        if (sourcePath is null) throw new ArgumentNullException(nameof(sourcePath));
+        if (document is null)
+            throw new ArgumentNullException(nameof(document));
+
+        if (sourcePath is null)
+            throw new ArgumentNullException(nameof(sourcePath));
+
         if (sourcePath.IndexOf('"') >= 0 || sourcePath.IndexOf('\r') >= 0 || sourcePath.IndexOf('\n') >= 0)
             throw new WorkflowSourceException("A source path cannot contain quotes or newlines", sourcePath, 1, 1);
+
         options ??= new WorkflowSourceOptions();
-        var validation = new WorkflowDocumentValidator().ValidateAsync(document, new WorkflowSourceContracts(options)).GetAwaiter().GetResult();
+
+        var validation = new WorkflowDocumentValidator().ValidateAsync(document, new WorkflowSourceContracts(options)).GetAwaiter()
+            .GetResult();
+
         var diagnostic = validation.Diagnostics.FirstOrDefault(item => item.Severity == WorkflowDiagnosticSeverity.Error);
+
         if (diagnostic != null)
         {
             var location = DocumentModel.GetLocation(document, diagnostic.Path);
-            throw new WorkflowSourceException(((diagnostic.Code.StartsWith("SCOPE", StringComparison.Ordinal) || diagnostic.Code.StartsWith("SWITCH", StringComparison.Ordinal) || diagnostic.Code.StartsWith("ASSIGN", StringComparison.Ordinal) || diagnostic.Code.StartsWith("THROW", StringComparison.Ordinal) || diagnostic.Code.StartsWith("RETHROW", StringComparison.Ordinal)) ? diagnostic.Code + ": " : "") + diagnostic.Message, sourcePath, location.Line, location.Column);
+
+            throw new WorkflowSourceException(
+                ((diagnostic.Code.StartsWith("SCOPE", StringComparison.Ordinal) ||
+                    diagnostic.Code.StartsWith("SWITCH", StringComparison.Ordinal) ||
+                    diagnostic.Code.StartsWith("ASSIGN", StringComparison.Ordinal) ||
+                    diagnostic.Code.StartsWith("THROW", StringComparison.Ordinal) ||
+                    diagnostic.Code.StartsWith("RETHROW", StringComparison.Ordinal))
+                    ? diagnostic.Code + ": "
+                    : "") + diagnostic.Message, sourcePath, location.Line, location.Column);
         }
+
         return new Translation(document, sourcePath, options).Run();
     }
 
@@ -59,10 +84,16 @@ public static partial class WorkflowSourceTranslator
     public static IEnumerable<string> TypeNames(WorkflowDocument document)
     {
         yield return document.Workflow.DataType;
-        foreach (var type in document.Workflow.RequiresScopes) yield return type;
-        foreach (var activity in document.Activities.Values) yield return activity.Activity;
+
+        foreach (var type in document.Workflow.RequiresScopes)
+            yield return type;
+
+        foreach (var activity in document.Activities.Values)
+            yield return activity.Activity;
+
         foreach (var step in Flatten(document.Definitions.Concat(document.Steps.Values.SelectMany(template => template.Steps))))
-            foreach (var type in StepTypeNames(step)) yield return type;
+        foreach (var type in StepTypeNames(step))
+            yield return type;
     }
 
     public static IEnumerable<WorkflowStepDocument> Flatten(IEnumerable<WorkflowStepDocument> steps)
@@ -70,7 +101,9 @@ public static partial class WorkflowSourceTranslator
         foreach (var step in steps)
         {
             yield return step;
-            foreach (var nested in Flatten(Children(step))) yield return nested;
+
+            foreach (var nested in Flatten(Children(step)))
+                yield return nested;
         }
     }
 
@@ -81,73 +114,126 @@ public static partial class WorkflowSourceTranslator
     {
         switch (step)
         {
-            case ScopeStepDocument scope: yield return scope.Activity; break;
-            case RenderTemplateStepDocument { ModelType: { } modelType }: yield return modelType; break;
+            case ScopeStepDocument scope:
+                yield return scope.Activity;
+
+                break;
+            case RenderTemplateStepDocument { ModelType: { } modelType }:
+                yield return modelType;
+
+                break;
             case StateMachineStepDocument machine:
                 foreach (var transition in machine.States.SelectMany(state => state.Transitions))
                 {
-                    if (transition.Event != null) yield return transition.Event;
-                    if (transition.Activity != null) yield return transition.Activity;
+                    if (transition.Event != null)
+                        yield return transition.Event;
+
+                    if (transition.Activity != null)
+                        yield return transition.Activity;
                 }
+
                 break;
             case ActivityStepDocument activity:
                 yield return activity.Activity;
+
                 foreach (var undo in activity.Compensation)
                 {
                     yield return undo.Activity;
-                    if (undo.ReplyType != null) yield return undo.ReplyType;
-                    if (undo.PreviousActivity != null) yield return undo.PreviousActivity;
+
+                    if (undo.ReplyType != null)
+                        yield return undo.ReplyType;
+
+                    if (undo.PreviousActivity != null)
+                        yield return undo.PreviousActivity;
                 }
+
                 foreach (var policy in activity.OnError)
-                    if (policy.Exception != null) yield return policy.Exception;
+                    if (policy.Exception != null)
+                        yield return policy.Exception;
+
                 break;
-            case WaitStepDocument wait: yield return wait.Event; break;
-            case ThrowStepDocument raised: yield return raised.Exception; break;
-            case SwitchStepDocument { ValueType: { } valueType }: yield return valueType; break;
+            case WaitStepDocument wait:
+                yield return wait.Event;
+
+                break;
+            case ThrowStepDocument raised:
+                yield return raised.Exception;
+
+                break;
+            case SwitchStepDocument { ValueType: { } valueType }:
+                yield return valueType;
+
+                break;
             case InvokeWorkflowStepDocument namedInvocation:
                 foreach (var policy in namedInvocation.OnError)
-                    if (policy.Exception != null) yield return policy.Exception;
+                    if (policy.Exception != null)
+                        yield return policy.Exception;
+
                 break;
             case InvokeWorkflowTypeStepDocument invocation:
                 foreach (var policy in invocation.OnError)
-                    if (policy.Exception != null) yield return policy.Exception;
+                    if (policy.Exception != null)
+                        yield return policy.Exception;
+
                 yield return invocation.WorkflowType;
-                if (invocation.DataType != null) yield return invocation.DataType;
+
+                if (invocation.DataType != null)
+                    yield return invocation.DataType;
+
                 break;
             case UseTypeStepDocument inline:
                 yield return inline.WorkflowType;
-                if (inline.DataType != null) yield return inline.DataType;
+
+                if (inline.DataType != null)
+                    yield return inline.DataType;
+
                 break;
             case TryStepDocument attempt:
                 foreach (var scope in attempt.ChildScopes().Where(scope => scope.Kind == "catch"))
                 {
                     var handler = attempt.Catches[int.Parse(scope.Key!, CultureInfo.InvariantCulture)];
-                    if (handler.Exception != null) yield return handler.Exception;
-                    if (handler.FaultType != null) yield return handler.FaultType;
+
+                    if (handler.Exception != null)
+                        yield return handler.Exception;
+
+                    if (handler.FaultType != null)
+                        yield return handler.FaultType;
                 }
+
                 break;
             case SagaStepDocument saga:
                 foreach (var scope in saga.ChildScopes().Where(scope => scope.Kind == "catch"))
                 {
                     var handler = saga.OnError[int.Parse(scope.Key!, CultureInfo.InvariantCulture)];
-                    if (handler.Exception != null) yield return handler.Exception;
-                    if (handler.FaultType != null) yield return handler.FaultType;
-                    if (handler.CompensateUpTo != null) yield return handler.CompensateUpTo;
+
+                    if (handler.Exception != null)
+                        yield return handler.Exception;
+
+                    if (handler.FaultType != null)
+                        yield return handler.FaultType;
+
+                    if (handler.CompensateUpTo != null)
+                        yield return handler.CompensateUpTo;
                 }
+
                 break;
         }
+
         var choices = step switch
         {
             ParallelStepDocument parallel => parallel.Combine,
             ForEachStepDocument { Parallel: { } parallel } => parallel.Combine,
             _ => Enumerable.Empty<JoinCombinerDocument>()
         };
+
         foreach (var choice in choices)
         {
             yield return choice.PropertyType;
             yield return choice.Combiner;
         }
-        if (step is ForEachStepDocument { Parallel.ResultType: { } result }) yield return result;
+
+        if (step is ForEachStepDocument { Parallel.ResultType: { } result })
+            yield return result;
     }
 
     private sealed partial class Translation(WorkflowDocument document, string path, WorkflowSourceOptions options)
@@ -169,27 +255,40 @@ public static partial class WorkflowSourceTranslator
             foreach (var import in document.Imports.Catalogs.Concat(document.Imports.Workflows))
                 if (!options.ResolvedImports.Contains(import))
                     throw Error(document.Imports, $"Import '{import}' requires publishing to resolve and pin its package or workflow");
+
             foreach (var parameter in document.Steps.Values.SelectMany(template => template.Parameters.Values))
             {
                 ParameterType(parameter);
-                if (parameter.Default != null) ParameterValue(parameter, Literal(parameter.Default, parameter), parameter.Default);
+
+                if (parameter.Default != null)
+                    ParameterValue(parameter, Literal(parameter.Default, parameter), parameter.Default);
             }
+
             var workflow = document.Workflow;
             var name = workflow.Name!;
             var data = Type(workflow.DataType!, workflow, "dataType");
             var className = options.ClassName ?? ClassName(path);
+
             if (!SyntaxFacts.IsValidIdentifier(className) || SyntaxFactory.ParseName(options.Namespace).ContainsDiagnostics)
                 throw Error(workflow, "Invalid generated class or namespace");
+
             Line("// <auto-generated/>");
             Line("#nullable enable");
-            foreach (var imported in ImportedNamespaces) Line($"using {imported};");
+
+            foreach (var imported in ImportedNamespaces)
+                Line($"using {imported};");
+
             Line($"namespace {options.Namespace};");
             Line($"public static class {className}");
             Line("{");
             Line("    public static WorkflowDefinition Build()");
             Line("    {");
             var initial = document.Definitions.FirstOrDefault();
-            var rootDeclarations = initial is not (RenderTemplateStepDocument or ActivityStepDocument or ActivityReferenceStepDocument or UseStepDocument or UseTypeStepDocument) && (workflow.Input != null || workflow.Output != null || workflow.RequiresScopes.Count > 0);
+
+            var rootDeclarations =
+                initial is not (RenderTemplateStepDocument or ActivityStepDocument or ActivityReferenceStepDocument or UseStepDocument
+                    or UseTypeStepDocument) && (workflow.Input != null || workflow.Output != null || workflow.RequiresScopes.Count > 0);
+
             if (rootDeclarations)
             {
                 Line($"var declarations = Workflow.Create<{data}>({Quote(name)}, {workflow.Version});");
@@ -198,16 +297,21 @@ public static partial class WorkflowSourceTranslator
                 Requirements("declarations");
                 Line("var declared = declarations.Build();");
             }
+
             Locate(workflow, "dataType");
-            Line(initial is RenderTemplateStepDocument or ActivityStepDocument or ActivityReferenceStepDocument or UseStepDocument or UseTypeStepDocument
+
+            Line(initial is RenderTemplateStepDocument or ActivityStepDocument or ActivityReferenceStepDocument or UseStepDocument
+                or UseTypeStepDocument
                 ? $"var builder0 = Workflow.Create<{data}>({Quote(name)}, {workflow.Version});"
                 : $"var builder0 = new WorkflowBuilder<{data}, object>({(rootDeclarations ? "declared.Steps" : "new()")}, {Quote(name)}, {workflow.Version}{(rootDeclarations ? ", declaredInputs: declared.DeclaredInputs, declaredOutputs: declared.DeclaredOutputs" : "")});");
+
             if (!rootDeclarations)
             {
                 Declarations(workflow.Input, "Input", "builder0");
                 Declarations(workflow.Output, "Output", "builder0");
                 Requirements("builder0");
             }
+
             void Requirements(string builder)
             {
                 foreach (var type in workflow.RequiresScopes)
@@ -216,45 +320,65 @@ public static partial class WorkflowSourceTranslator
                     Line($"{builder}.RequiresScope<{Type(type, workflow, "requiresScopes")}>();");
                 }
             }
+
             void Declarations(IReadOnlyList<string>? members, string direction, string builder)
             {
-                if (members == null) return;
+                if (members == null)
+                    return;
+
                 Locate(workflow, direction.ToLowerInvariant());
                 Line($"{builder}.{direction}({string.Join(", ", members.Select(member => "data => data." + Member(member, workflow)))});");
             }
+
             foreach (var demand in document.Demands)
             {
                 Locate(demand);
                 var inherit = demand.Inherit ? "true" : "false";
+
                 Line(demand.From != null
                     ? $"builder0.DemandFrom({Quote(demand.Key)}, ctx => {Expression(demand.From)}, inherit: {inherit});"
                     : $"builder0.Demand({Quote(demand.Key)}, {(demand.Value == null ? "null" : Quote(demand.Value))}, inherit: {inherit});");
             }
+
             var last = Steps(document.Definitions, "builder0", "root");
             Line("#line default");
             Line($"var definition = {last}.Build();");
             Line($"definition.Description = {Quote(workflow.Description ?? "")};");
             Line($"definition.Tags = new string[] {{ {string.Join(", ", workflow.Tags.Select(Quote))} }};");
-            if (workflow.Icon != null) Line($"definition.Icon = {Quote(workflow.Icon)};");
-            if (workflow.Category != null) Line($"definition.Category = {Quote(workflow.Category)};");
-            if (workflow.DisplayName != null) Line($"definition.DisplayName = {Quote(workflow.DisplayName)};");
+
+            if (workflow.Icon != null)
+                Line($"definition.Icon = {Quote(workflow.Icon)};");
+
+            if (workflow.Category != null)
+                Line($"definition.Category = {Quote(workflow.Category)};");
+
+            if (workflow.DisplayName != null)
+                Line($"definition.DisplayName = {Quote(workflow.DisplayName)};");
+
             Line("return definition;");
             Line("    }");
             Line("}");
+
             return _source.ToString();
         }
 
         private string ParameterType(TemplateParameterDocument parameter)
         {
-            if (string.IsNullOrWhiteSpace(parameter.Type)) return "";
+            if (string.IsNullOrWhiteSpace(parameter.Type))
+                return "";
+
             if (parameter.Type is not ("string" or "bool" or "int" or "long" or "double" or "decimal"))
-                throw Error(parameter, $"Template parameter type '{parameter.Type}' requires publishing; local templates support string, bool, int, long, double and decimal", "type");
+                throw Error(parameter,
+                    $"Template parameter type '{parameter.Type}' requires publishing; local templates support string, bool, int, long, double and decimal",
+                    "type");
+
             return parameter.Type;
         }
 
         private string ParameterValue(TemplateParameterDocument parameter, string expression, object? constant)
         {
             var type = ParameterType(parameter);
+
             var valid = constant == null || type.Length == 0 || type switch
             {
                 "string" => constant is string,
@@ -265,7 +389,10 @@ public static partial class WorkflowSourceTranslator
                 "decimal" => constant is int or long or decimal,
                 _ => false
             };
-            if (!valid) throw Error(parameter, $"Template argument or default does not match type '{type}'", "type");
+
+            if (!valid)
+                throw Error(parameter, $"Template argument or default does not match type '{type}'", "type");
+
             return type.Length == 0 ? expression : $"({type})({expression})";
         }
 
@@ -273,47 +400,69 @@ public static partial class WorkflowSourceTranslator
             string previousType = "object", WorkflowDocumentScope builderScope = WorkflowDocumentScope.Workflow, bool faultExit = false)
         {
             var index = 0;
+
             foreach (var step in steps)
             {
                 var id = string.IsNullOrEmpty(step.Id) ? scope + "/" + index :
                     _templatePrefix == null ? step.Id : _templatePrefix + "/" + step.Id;
+
                 index++;
-                if (string.IsNullOrWhiteSpace(id) || !_ids.Add(id)) throw Error(step, $"Invalid or duplicate step ID '{id}'");
+
+                if (string.IsNullOrWhiteSpace(id) || !_ids.Add(id))
+                    throw Error(step, $"Invalid or duplicate step ID '{id}'");
+
                 var next = "builder" + ++_next;
                 Locate(step);
+
                 switch (step)
                 {
                     case FlowchartStepDocument graph:
                         Flowchart(graph, builder, next, id, previousType);
+
                         break;
                     case StateMachineStepDocument machine:
                         StateMachine(machine, builder, next, id, previousType);
+
                         break;
                     case TransitionStepDocument transition:
                         Line($"var {next} = {builder}.Transition({Destination(transition.To)});");
+
                         break;
                     case RenderTemplateStepDocument render:
                         var selected = render.Template.Split('@');
+
                         var selectedTemplate = options.Templates.Values.Where(item => item.Key == selected[0] &&
                                 (selected.Length == 1 || item.Version.ToString(CultureInfo.InvariantCulture) == selected[1]))
                             .OrderByDescending(item => item.Version).FirstOrDefault();
+
                         var renderModel = selectedTemplate?.ModelType ?? render.ModelType!;
                         var renderVersion = selectedTemplate?.Version ?? int.Parse(selected[1], CultureInfo.InvariantCulture);
                         var renderType = "global::IxIFlow.Templates.RenderTemplate<" + Type(renderModel, render, "modelType") + ">";
                         Locate(render, "template");
                         Line($"var {next} = {builder}.Step<{renderType}>(setup => {{");
-                        Line($"setup.Input(act => act.Template).From(ctx => new global::IxIFlow.Templates.TemplateReference({Quote(selected[0])}, {renderVersion}));");
-                        Locate(render.Model, render.Model is PathExpressionDocument ? "path" : render.Model is ConstantExpressionDocument ? "value" : null);
+
+                        Line(
+                            $"setup.Input(act => act.Template).From(ctx => new global::IxIFlow.Templates.TemplateReference({Quote(selected[0])}, {renderVersion}));");
+
+                        Locate(render.Model,
+                            render.Model is PathExpressionDocument ? "path" : render.Model is ConstantExpressionDocument ? "value" : null);
+
                         Line($"setup.Input(act => act.Model).From(ctx => {Expression(render.Model)});");
+
                         if (render.Culture != null)
                         {
-                            Locate(render.Culture, render.Culture is PathExpressionDocument ? "path" : render.Culture is ConstantExpressionDocument ? "value" : null);
+                            Locate(render.Culture,
+                                render.Culture is PathExpressionDocument ? "path" :
+                                render.Culture is ConstantExpressionDocument ? "value" : null);
+
                             Line($"setup.Input(act => act.Culture).From(ctx => {Expression(render.Culture)});");
                         }
+
                         Mappings([], render.Output);
                         StepPolicies(render.OnError);
                         Line("});");
                         previousType = renderType;
+
                         break;
                     case ScopeStepDocument scopeStep:
                         var scopeType = Type(scopeStep.Activity, scopeStep, "activity");
@@ -322,66 +471,96 @@ public static partial class WorkflowSourceTranslator
                         Line($"var {next} = {builder}.Scope<{scopeType}>(setup => {{");
                         Defaults(scopeStep.Defaults, scopeStep.Input, scopeStep);
                         Mappings(scopeStep.Input, scopeStep.Output);
+
                         if (scopeStep.Retry != null)
                         {
                             Locate(scopeStep.Retry);
                             Line($"setup.Retry({Retry(scopeStep.Retry)});");
                         }
+
                         if (scopeStep.Threading != null)
                         {
                             Locate(scopeStep, "threading");
-                            Line($"setup.Threading(ScopeThreading.{(scopeStep.Threading == "threadAffine" ? "ThreadAffine" : "AnyThread")});");
+
+                            Line(
+                                $"setup.Threading(ScopeThreading.{(scopeStep.Threading == "threadAffine" ? "ThreadAffine" : "AnyThread")});");
                         }
+
                         Line($"}}, {scopeBody} => {{");
                         Steps(scopeStep.ChildScopes().Single().Steps, scopeBody, id + "/scope", scopeType, builderScope);
                         Line("});");
                         previousType = scopeType;
+
                         break;
                     case ActivityStepDocument activity:
-                        Activity(activity.Activity, activity.Defaults, activity.Input, activity.Output, activity, builder, next, previousType, builderScope);
+                        Activity(activity.Activity, activity.Defaults, activity.Input, activity.Output, activity, builder, next,
+                            previousType, builderScope);
+
                         if (HasSetup(activity) || builderScope != WorkflowDocumentScope.SagaHandler)
                             previousType = Type(activity.Activity, activity, "activity");
+
                         break;
                     case ActivityReferenceStepDocument reference:
                         var template = document.Activities[reference.Ref];
-                        Activity(template.Activity, template.Defaults, template.Input, template.Output, template, builder, next, previousType, builderScope);
+
+                        Activity(template.Activity, template.Defaults, template.Input, template.Output, template, builder, next,
+                            previousType, builderScope);
+
                         if (HasSetup(template) || builderScope != WorkflowDocumentScope.SagaHandler)
                             previousType = Type(template.Activity, template, "activity");
+
                         break;
                     case CancellationScopeStepDocument cancellation:
                         var forward = "body" + _next;
                         var cleanup = "cancelled" + _next;
                         Line($"var {next} = {builder}.CancellationScope({forward} => {{");
+
                         Steps(cancellation.Steps, forward, id + "/steps", previousType,
                             builderScope == WorkflowDocumentScope.SagaHandler ? WorkflowDocumentScope.Catch : builderScope);
+
                         Line($"}}, {cleanup} => {{");
                         Steps(cancellation.OnCancelled, cleanup, id + "/onCancelled", previousType);
                         Line("});");
+
                         break;
                     case SequenceStepDocument sequence:
                         Container(builder, next, id, sequence.Steps, previousType);
+
                         break;
                     case StepReferenceStepDocument stepReference:
                         var block = document.Steps[stepReference.Ref];
-                        if (!_templates.Add(stepReference.Ref)) throw Error(step, $"Recursive step template '{stepReference.Ref}'");
+
+                        if (!_templates.Add(stepReference.Ref))
+                            throw Error(step, $"Recursive step template '{stepReference.Ref}'");
+
                         var saved = new Dictionary<string, string>(_arguments);
                         var supplied = stepReference.Arguments.ToDictionary(pair => pair.Key, pair => Expression(pair.Value));
                         _arguments.Clear();
+
                         foreach (var parameter in block.Parameters)
                             if (supplied.TryGetValue(parameter.Key, out var value))
                                 _arguments[parameter.Key] = ParameterValue(parameter.Value, value,
                                     (stepReference.Arguments[parameter.Key] as ConstantExpressionDocument)?.Value);
-                            else if (parameter.Value.Default is { } fallback) _arguments[parameter.Key] = ParameterValue(parameter.Value, Literal(fallback, parameter.Value), fallback);
-                            else if (parameter.Value.Required) throw Error(step, $"Missing template argument '{parameter.Key}'");
+                            else if (parameter.Value.Default is { } fallback)
+                                _arguments[parameter.Key] = ParameterValue(parameter.Value, Literal(fallback, parameter.Value), fallback);
+                            else if (parameter.Value.Required)
+                                throw Error(step, $"Missing template argument '{parameter.Key}'");
+
                         foreach (var pair in supplied)
-                            if (!block.Parameters.ContainsKey(pair.Key)) throw Error(step, $"Unknown template argument '{pair.Key}'");
+                            if (!block.Parameters.ContainsKey(pair.Key))
+                                throw Error(step, $"Unknown template argument '{pair.Key}'");
+
                         var savedPrefix = _templatePrefix;
                         _templatePrefix = id;
                         Container(builder, next, id, block.Steps, previousType);
                         _templatePrefix = savedPrefix;
                         _arguments.Clear();
-                        foreach (var pair in saved) _arguments[pair.Key] = pair.Value;
+
+                        foreach (var pair in saved)
+                            _arguments[pair.Key] = pair.Value;
+
                         _templates.Remove(stepReference.Ref);
+
                         break;
                     case ConditionalStepDocument condition:
                         Line($"var {next} = {builder}.If(ctx => {Expression(condition.Condition)}, then => {{");
@@ -389,31 +568,39 @@ public static partial class WorkflowSourceTranslator
                         Line("}, @else => {");
                         Steps(condition.Else, "@else", id + "/else", previousType);
                         Line("});");
+
                         break;
                     case ForEachStepDocument each:
                         ForEach(each, builder, next, id, previousType);
+
                         break;
                     case WaitStepDocument wait:
                         Wait(wait, builder, next, id, previousType, builderScope);
                         previousType = Type(wait.Event, wait, "event");
+
                         break;
                     case ParallelStepDocument parallel:
                         Parallel(parallel, builder, next, id, previousType);
+
                         break;
                     case LoopStepDocument loop:
                         Loop(loop, builder, next, id, previousType);
+
                         break;
                     case TryStepDocument attempt:
                         Try(attempt, builder, next, id, previousType);
+
                         break;
                     case SagaStepDocument saga:
                         Saga(saga, builder, next, id, previousType);
+
                         break;
                     case AssignStepDocument assignment:
                         Locate(assignment.To, "path");
                         Line($"var {next} = {builder}.Assign(target: ctx => {Expression(assignment.To)},");
                         Locate(assignment.Value, assignment.Value is PathExpressionDocument ? "path" : null);
                         Line($"value: ctx => {Expression(assignment.Value)});");
+
                         break;
                     case ThrowStepDocument raised:
                         var exceptionType = Type(raised.Exception, raised, "exception");
@@ -421,100 +608,152 @@ public static partial class WorkflowSourceTranslator
                         Line($"var {next} = {builder}.Throw<{exceptionType}>(");
                         Locate(raised, "value");
                         Line($"ctx => {Expression(raised.Value)});");
+
                         break;
                     case RethrowStepDocument:
                         Line($"var {next} = {builder}.Rethrow();");
+
                         break;
                     case SwitchStepDocument outcome:
                         Switch(outcome, builder, next, id, previousType, builderScope);
+
                         break;
                     case DelayStepDocument delay:
                         Locate(delay, "duration");
                         Line($"var {next} = {builder}.Delay({Duration(delay.Duration)});");
+
                         break;
                     case ResultStepDocument result:
                         Locate(result, "value");
                         Line($"var {next} = {builder}.Result(valueExpression: ctx => {Expression(result.Value)});");
+
                         break;
                     case UseTypeStepDocument typedInline:
                         if (options.RequireResolvedTypes &&
                             (!options.WorkflowIdentities.TryGetValue(typedInline.WorkflowType, out var inlineIdentity) ||
-                             string.IsNullOrWhiteSpace(inlineIdentity.Name) || inlineIdentity.Version < 1))
-                            throw Error(typedInline, "Workflow class requires [Workflow(\"Name\", Version = n)] with a nonblank name and positive version", "workflowType");
+                                string.IsNullOrWhiteSpace(inlineIdentity.Name) || inlineIdentity.Version < 1))
+                            throw Error(typedInline,
+                                "Workflow class requires [Workflow(\"Name\", Version = n)] with a nonblank name and positive version",
+                                "workflowType");
+
                         var inlineType = Type(typedInline.WorkflowType, typedInline, "workflowType");
-                        var inlineData = Type(options.WorkflowDataTypes.TryGetValue(typedInline.WorkflowType, out var inlineInferred) ? inlineInferred :
-                            typedInline.DataType ?? throw Error(typedInline, "Cannot infer IWorkflow<T>; supply dataType or a resolved workflow type contract", "workflowType"), typedInline, "dataType");
+
+                        var inlineData =
+                            Type(
+                                options.WorkflowDataTypes.TryGetValue(typedInline.WorkflowType, out var inlineInferred)
+                                    ? inlineInferred
+                                    : typedInline.DataType ?? throw Error(typedInline,
+                                        "Cannot infer IWorkflow<T>; supply dataType or a resolved workflow type contract", "workflowType"),
+                                typedInline, "dataType");
+
                         Locate(typedInline, "workflowType");
                         Line($"var {next} = {builder}.Use<{inlineType}, {inlineData}>(setup => {{");
                         Mappings(typedInline.Input, typedInline.Output);
                         Line("});");
                         previousType = inlineData;
+
                         break;
                     case UseStepDocument inline:
                         var inlineReference = inline.Workflow;
-                        var recipe = options.Workflows[inlineReference.Name + (inlineReference.Version == null ? "" : "@" + inlineReference.Version)];
-                        if (recipe.EntryType == null || recipe.AssemblyName == null || recipe.BundleDigest == null || recipe.StructureHash == null || recipe.ContractHash == null)
+
+                        var recipe = options.Workflows[
+                            inlineReference.Name + (inlineReference.Version == null ? "" : "@" + inlineReference.Version)];
+
+                        if (recipe.EntryType == null || recipe.AssemblyName == null || recipe.BundleDigest == null ||
+                            recipe.StructureHash == null || recipe.ContractHash == null)
                             throw Error(inlineReference, "Published inline composition requires a verified executable entry and pin");
+
                         var usedData = Type(recipe.DataType, inlineReference);
                         Locate(inline, "workflow");
+
                         Line($"var {next} = {builder}.Use<{usedData}>(() => global::{recipe.EntryType}.Build(), " +
                             $"new WorkflowInlinePin({Quote(inlineReference.Name)}, {recipe.Version}, {Quote(recipe.StructureHash)}, {Quote(recipe.ContractHash)}) " +
                             $"{{ BundleDigest = new ArtifactDigest({Quote(recipe.BundleDigest)}), EntryType = {Quote(recipe.EntryType)}, AssemblyName = {Quote(recipe.AssemblyName)} }}, setup => {{");
+
                         Mappings(inline.Input, inline.Output);
                         Line("});");
                         previousType = usedData;
+
                         break;
                     case InvokeWorkflowTypeStepDocument typedInvocation:
                         if (options.RequireResolvedTypes &&
                             (!options.WorkflowIdentities.TryGetValue(typedInvocation.WorkflowType, out var identity) ||
-                             string.IsNullOrWhiteSpace(identity.Name) || identity.Version < 1))
-                            throw Error(typedInvocation, "Workflow class requires [Workflow(\"Name\", Version = n)] with a nonblank name and positive version", "workflowType");
+                                string.IsNullOrWhiteSpace(identity.Name) || identity.Version < 1))
+                            throw Error(typedInvocation,
+                                "Workflow class requires [Workflow(\"Name\", Version = n)] with a nonblank name and positive version",
+                                "workflowType");
+
                         var workflowType = Type(typedInvocation.WorkflowType!, typedInvocation, "workflowType");
-                        var childData = Type(options.WorkflowDataTypes.TryGetValue(typedInvocation.WorkflowType, out var inferred) ? inferred :
-                            typedInvocation.DataType ?? throw Error(typedInvocation, "Cannot infer IWorkflow<T>; supply dataType or a resolved workflow type contract", "workflowType"), typedInvocation, "dataType");
+
+                        var childData =
+                            Type(
+                                options.WorkflowDataTypes.TryGetValue(typedInvocation.WorkflowType, out var inferred)
+                                    ? inferred
+                                    : typedInvocation.DataType ?? throw Error(typedInvocation,
+                                        "Cannot infer IWorkflow<T>; supply dataType or a resolved workflow type contract", "workflowType"),
+                                typedInvocation, "dataType");
+
                         Locate(typedInvocation, "workflowType");
                         Line($"var {next} = {builder}.Invoke<{workflowType}, {childData}>(setup => {{");
                         Mappings(typedInvocation.Input, typedInvocation.Output);
                         StepPolicies(typedInvocation.OnError);
+
                         if (!typedInvocation.CancelWithParent)
                         {
                             Locate(typedInvocation, "cancelWithParent");
                             Line("setup.CancelWithParent(false);");
                         }
+
                         Line("});");
                         previousType = childData;
+
                         break;
                     case InvokeWorkflowStepDocument invocation:
                         var childReference = invocation.Workflow;
                         var childName = childReference.Name!;
                         var lookup = childName + (childReference.Version == null ? "" : "@" + childReference.Version);
                         var child = options.Workflows[lookup];
-                        var pin = child.ContractJson != null ? $"WorkflowContract.Parse({Quote(child.ContractJson)})" :
-                            $"WorkflowDefinitionValidator.GetContract(new WorkflowDefinition {{ WorkflowDataType = typeof({Type(child.DataType, childReference)}), DeclaredInputs = {Names(child.Inputs)}, DeclaredOutputs = {Names(child.Outputs)} }})";
-                        Line($"var {next} = {builder}.Invoke<{Type(child.DataType, childReference)}>({Quote(childName)}, {child.Version}, {pin}, setup => {{");
+
+                        var pin = child.ContractJson != null
+                            ? $"WorkflowContract.Parse({Quote(child.ContractJson)})"
+                            : $"WorkflowDefinitionValidator.GetContract(new WorkflowDefinition {{ WorkflowDataType = typeof({Type(child.DataType, childReference)}), DeclaredInputs = {Names(child.Inputs)}, DeclaredOutputs = {Names(child.Outputs)} }})";
+
+                        Line(
+                            $"var {next} = {builder}.Invoke<{Type(child.DataType, childReference)}>({Quote(childName)}, {child.Version}, {pin}, setup => {{");
+
                         Mappings(invocation.Input, invocation.Output);
                         StepPolicies(invocation.OnError);
+
                         if (!invocation.CancelWithParent)
                         {
                             Locate(invocation, "cancelWithParent");
                             Line("setup.CancelWithParent(false);");
                         }
+
                         Line("});");
                         previousType = Type(child.DataType, childReference);
+
                         break;
-                    default: throw Error(step, $"Unsupported step kind '{step.Kind}'");
+                    default:
+                        throw Error(step, $"Unsupported step kind '{step.Kind}'");
                 }
+
                 Line($"{next}.WithId({Quote(id)}, {Quote(path)}, {Math.Max(1, step.Location.Line)});");
-                if (step.Name != null) Line($"{next}.Named({Quote(step.Name)});");
+
+                if (step.Name != null)
+                    Line($"{next}.Named({Quote(step.Name)});");
+
                 // Try and Saga retain their incoming previous type. Their policy facets are not
                 // exit builders; keep the enclosing lexical callback for a subsequent body exit.
-                if (!faultExit || _faultBindings.Count == 0 || step is not (TryStepDocument or SagaStepDocument)) builder = next;
+                if (!faultExit || _faultBindings.Count == 0 || step is not (TryStepDocument or SagaStepDocument))
+                    builder = next;
             }
+
             return builder;
         }
 
-        private static string Names(IReadOnlyList<string>? names) => names == null ? "null" :
-            "new string[] { " + string.Join(", ", names.Select(Quote)) + " }";
+        private static string Names(IReadOnlyList<string>? names) =>
+            names == null ? "null" : "new string[] { " + string.Join(", ", names.Select(Quote)) + " }";
 
         private void Container(string builder, string next, string id, IEnumerable<WorkflowStepDocument> children, string previousType)
         {
@@ -534,62 +773,87 @@ public static partial class WorkflowSourceTranslator
             Line($"var {next} = {builder}.ForEach(itemsExpression: ctx => {selector}, ({body}, {handle}) => {{");
             _items.Add(alias, handle);
             var last = Steps(step.Steps, body, id + "/body", previousType, faultExit: true);
+
             if (step.Result is { } result)
             {
                 Locate(result);
-                Line($"{last}.Result(valueExpression: ctx => {Expression(result)}).WithId({Quote(id + "/result")}, {Quote(path)}, {Math.Max(1, result.Location.Line)});");
+
+                Line(
+                    $"{last}.Result(valueExpression: ctx => {Expression(result)}).WithId({Quote(id + "/result")}, {Quote(path)}, {Math.Max(1, result.Location.Line)});");
             }
+
             _items.Remove(alias);
             Line("}, setup => {");
             Line($"setup.As({Quote(alias)});");
+
             if (step.Parallel is { } parallel)
             {
                 Line($"setup.Parallel({parallel.MaxConcurrency?.ToString(CultureInfo.InvariantCulture)});");
+
                 switch (parallel.Join)
                 {
-                    case "all": break;
-                    case "any": Line("setup.WaitAny();"); break;
+                    case "all":
+                        break;
+                    case "any":
+                        Line("setup.WaitAny();");
+
+                        break;
                     case "conditionally":
                         var resultType = Type(parallel.ResultType!, parallel, "resultType");
                         _workflowRoot = "data";
                         var condition = Expression(parallel.Condition!);
                         _workflowRoot = "ctx.WorkflowData";
                         Line($"setup.WaitConditionally<{resultType}>(completeWhenExpression: (data, results) => {condition});");
+
                         break;
-                    default: throw new InvalidOperationException($"Declared parallel join '{parallel.Join}' has no translation");
+                    default:
+                        throw new InvalidOperationException($"Declared parallel join '{parallel.Join}' has no translation");
                 }
             }
-            if (step.Parallel is { } join) Combiners(join.Combine, "setup");
+
+            if (step.Parallel is { } join)
+                Combiners(join.Combine, "setup");
+
             if (step.Into is { } into)
             {
                 Locate(into);
                 Line($"setup.Into(ctx => {Expression(into)});");
             }
+
             Line("});");
         }
 
         private void Activity(string type, Dictionary<string, object?> defaults, List<InputMappingDocument> inputs,
-            List<OutputMappingDocument> outputs, DocumentNode node, string builder, string next, string previousType, WorkflowDocumentScope scope)
+            List<OutputMappingDocument> outputs, DocumentNode node, string builder, string next, string previousType,
+            WorkflowDocumentScope scope)
         {
             Locate(node, "activity");
             var activityType = Type(type!, node, "activity");
             var request = node as RequestStepDocument;
+
             if (scope == WorkflowDocumentScope.SagaHandler && !HasSetup(node))
             {
                 Line($"var {next} = {builder}.Step<{activityType}>();");
+
                 return;
             }
+
             Line($"var {next} = {builder}.{(request == null ? "Step" : "Request")}<{activityType}>(" +
                 (request == null ? "" : Quote(request.Key!) + ", ") + "setup => {");
+
             Defaults(defaults, inputs, node);
             Mappings(inputs, outputs);
-            if (node is ActivityStepDocument activity) SagaSetup(activity, activityType, previousType);
+
+            if (node is ActivityStepDocument activity)
+                SagaSetup(activity, activityType, previousType);
+
             if (request?.Subject != null)
             {
                 Locate(request, "subject");
                 Line($"}}, subjectExpression: ctx => {Expression(request.Subject)});");
             }
-            else Line("});");
+            else
+                Line("});");
         }
 
         private void Defaults(Dictionary<string, object?> defaults, List<InputMappingDocument> inputs, DocumentNode node)
@@ -613,11 +877,17 @@ public static partial class WorkflowSourceTranslator
                 var targetPrefix = $"{setup}.Input(act => act.";
                 var target = Member(input.Target!, input);
                 Line(targetPrefix + target + ")", targetPrefix.Length, target.Length);
-                Locate(input.From, input.From is ConstantExpressionDocument ? "value" : input.From is PathExpressionDocument ? "path" : null);
+
+                Locate(input.From,
+                    input.From is ConstantExpressionDocument ? "value" : input.From is PathExpressionDocument ? "path" : null);
+
                 var fromPrefix = $".From({(inputContext == null ? "ctx" : "(" + inputContext + " ctx)")} => ";
                 var expression = Expression(input.From);
-                Line(fromPrefix + expression + ");", input.From is ConstantExpressionDocument ? fromPrefix.Length : (int?)null, expression.Length);
+
+                Line(fromPrefix + expression + ");", input.From is ConstantExpressionDocument ? fromPrefix.Length : (int?)null,
+                    expression.Length);
             }
+
             foreach (var output in outputs)
             {
                 Locate(output, "source");
@@ -629,15 +899,18 @@ public static partial class WorkflowSourceTranslator
             }
         }
 
-        private string Label(ExpressionDocument node) => node is ConstantExpressionDocument { Value: null } ? "null" :
-            "SwitchLabel.Value(() => " + Expression(node) + ")";
+        private string Label(ExpressionDocument node) => node is ConstantExpressionDocument { Value: null }
+            ? "null"
+            : "SwitchLabel.Value(() => " + Expression(node) + ")";
 
         private string Expression(ExpressionDocument node, string? eventName = null)
         {
             switch (node)
             {
-                case ConstantExpressionDocument constant: return Literal(constant.Value, node);
-                case PathExpressionDocument expression: return Rewrite(expression.Path, node, eventName);
+                case ConstantExpressionDocument constant:
+                    return Literal(constant.Value, node);
+                case PathExpressionDocument expression:
+                    return Rewrite(expression.Path, node, eventName);
                 case BinaryExpressionDocument binary:
                     var symbol = binary.Operator switch
                     {
@@ -646,11 +919,14 @@ public static partial class WorkflowSourceTranslator
                         "add" => "+", "subtract" => "-", "multiply" => "*", "divide" => "/",
                         _ => throw new InvalidOperationException($"Declared binary operator '{binary.Operator}' has no translation")
                     };
+
                     return "(" + Expression(binary.Left, eventName) + " " + symbol + " " + Expression(binary.Right, eventName) + ")";
                 case FunctionExpressionDocument function:
                     var asset = document.Code[function.Function];
+
                     return Rewrite(asset.Source, asset, eventName);
-                default: throw Error(node, "Unsupported expression kind");
+                default:
+                    throw Error(node, "Unsupported expression kind");
             }
         }
 
@@ -658,16 +934,22 @@ public static partial class WorkflowSourceTranslator
         {
             // Tokenization keeps strings, comments and already escaped identifiers intact.
             var tokens = SyntaxFactory.ParseTokens(code).Select(token => token.IsKind(SyntaxKind.EventKeyword)
-                ? SyntaxFactory.Identifier(token.LeadingTrivia, "@event", token.TrailingTrivia) : token);
+                ? SyntaxFactory.Identifier(token.LeadingTrivia, "@event", token.TrailingTrivia)
+                : token);
+
             var expression = SyntaxFactory.ParseExpression(string.Concat(tokens.Select(token => token.ToFullString())));
-            if (expression.ContainsDiagnostics) throw Error(node, "Invalid C# expression: " + code);
-            return new ContextNames(_arguments, _items, _faultBindings.Count > 0, eventName, _workflowRoot, _previousRoot, document.Workflow.DataType, options.Members).Visit(expression)!.NormalizeWhitespace().ToFullString();
+
+            if (expression.ContainsDiagnostics)
+                throw Error(node, "Invalid C# expression: " + code);
+
+            return new ContextNames(_arguments, _items, _faultBindings.Count > 0, eventName, _workflowRoot, _previousRoot,
+                document.Workflow.DataType, options.Members).Visit(expression)!.NormalizeWhitespace().ToFullString();
         }
 
         private string PayloadLiteral(object? value, DocumentNode node) => value switch
         {
-            IDictionary<string, object?> properties => "new() { " + string.Join(", ", properties.Select(
-                pair => Member(pair.Key, node) + " = " + PayloadLiteral(pair.Value, node))) + " }",
+            IDictionary<string, object?> properties => "new() { " + string.Join(", ",
+                properties.Select(pair => Member(pair.Key, node) + " = " + PayloadLiteral(pair.Value, node))) + " }",
             IEnumerable<object?> items => "[" + string.Join(", ", items.Select(item => PayloadLiteral(item, node))) + "]",
             _ => Literal(value, node)
         };
@@ -679,7 +961,8 @@ public static partial class WorkflowSourceTranslator
             bool flag => flag ? "true" : "false",
             long integer => integer.ToString(CultureInfo.InvariantCulture) + (integer is > int.MaxValue or < int.MinValue ? "L" : ""),
             int integer => integer.ToString(CultureInfo.InvariantCulture),
-            double number when !double.IsNaN(number) && !double.IsInfinity(number) => number.ToString("R", CultureInfo.InvariantCulture) + "d",
+            double number when !double.IsNaN(number) && !double.IsInfinity(number) => number.ToString("R", CultureInfo.InvariantCulture) +
+                "d",
             decimal number => number.ToString(CultureInfo.InvariantCulture) + "m",
             _ => throw Error(node, "Constants must be scalar C# values")
         };
@@ -687,13 +970,16 @@ public static partial class WorkflowSourceTranslator
         private string Type(string key, DocumentNode node, string? member = null)
         {
             var name = options.Types.TryGetValue(key, out var mapped) ? mapped : key;
+
             if (SyntaxFactory.ParseTypeName(name).ContainsDiagnostics)
                 throw Error(node, $"Invalid C# type '{name}'; resolve catalog keys before translation", member);
+
             return name;
         }
 
         private string Member(string name, DocumentNode node) => SyntaxFacts.IsValidIdentifier(name)
-            ? name : throw Error(node, $"Invalid C# property '{name}'");
+            ? name
+            : throw Error(node, $"Invalid C# property '{name}'");
 
         private void Locate(DocumentNode node, string? member = null)
         {
@@ -701,6 +987,7 @@ public static partial class WorkflowSourceTranslator
             Line($"// {path}:{Math.Max(1, location.Line)}");
             _nextLocation = location;
         }
+
         private void Line(string text, int? anchorOffset = null, int anchorLength = 1)
         {
             if (_nextLocation is { } location)
@@ -708,19 +995,26 @@ public static partial class WorkflowSourceTranslator
                 _nextLocation = null;
                 var line = Math.Max(1, location.Line);
                 var column = Math.Max(1, location.Column);
+
                 // Without a token correspondence, map the entire generated span to the
                 // YAML node instead of leaking a generated C# character offset.
                 var offset = anchorOffset is { } start ? start + 1 : text.Length + 1;
+
                 // Enhanced #line spans carry the YAML column as well as its line.
-                _source.Append($"#line ({line}, {column}) - ({line}, {column + Math.Max(1, anchorOffset == null ? 1 : anchorLength)}) {offset} \"{path}\"\n");
+                _source.Append(
+                    $"#line ({line}, {column}) - ({line}, {column + Math.Max(1, anchorOffset == null ? 1 : anchorLength)}) {offset} \"{path}\"\n");
             }
+
             _source.Append(text).Append('\n');
         }
+
         private WorkflowSourceException Error(DocumentNode node, string message, string? member = null)
         {
             var location = member != null && node.Members.TryGetValue(member, out var found) ? found : node.Location;
+
             return new WorkflowSourceException(message, path, Math.Max(1, location.Line), Math.Max(1, location.Column));
         }
+
         private static bool HasSetup(DocumentNode node) => node switch
         {
             ActivityStepDocument activity => activity is RequestStepDocument || activity.Defaults.Count > 0 ||
@@ -733,6 +1027,7 @@ public static partial class WorkflowSourceTranslator
         {
             var parallel = "parallel" + _next;
             Line($"var {next} = {builder}.Parallel({parallel} => {{");
+
             for (var index = 0; index < step.Branches.Count; index++)
             {
                 var branch = step.Branches[index];
@@ -742,20 +1037,29 @@ public static partial class WorkflowSourceTranslator
                 Steps(branch.Steps, body, id + "/branches/" + index, previousType);
                 Line("});");
             }
+
             Locate(step, "join");
+
             switch (step.Join)
             {
-                case "all": break;
-                case "any": Line($"{parallel}.WaitAny();"); break;
+                case "all":
+                    break;
+                case "any":
+                    Line($"{parallel}.WaitAny();");
+
+                    break;
                 case "conditionally":
                     var condition = step.Condition!;
                     Locate(condition);
                     _workflowRoot = "data";
                     Line($"{parallel}.WaitConditionally(completeWhenExpression: data => {Expression(condition)});");
                     _workflowRoot = "ctx.WorkflowData";
+
                     break;
-                default: throw new InvalidOperationException($"Declared parallel join '{step.Join}' has no translation");
+                default:
+                    throw new InvalidOperationException($"Declared parallel join '{step.Join}' has no translation");
             }
+
             Combiners(step.Combine, parallel);
             Line("});");
         }
@@ -777,9 +1081,12 @@ public static partial class WorkflowSourceTranslator
         {
             var body = "loop" + _next;
             Locate(step, "condition");
+
             if (step is WhileDoStepDocument)
                 Line($"var {next} = {builder}.WhileDo(conditionExpression: ctx => {Expression(step.Condition)}, configure: {body} => {{");
-            else Line($"var {next} = {builder}.DoWhile({body} => {{");
+            else
+                Line($"var {next} = {builder}.DoWhile({body} => {{");
+
             Steps(step.Steps, body, id + "/body", previousType);
             Locate(step, "condition");
             Line(step is WhileDoStepDocument ? "});" : $"}}, conditionExpression: ctx => {Expression(step.Condition)});");
@@ -791,11 +1098,14 @@ public static partial class WorkflowSourceTranslator
             Line($"var {next} = {builder}.Try({body} => {{");
             Steps(step.Steps, body, id + "/try", previousType);
             Line("})");
+
             for (var index = 0; index < step.Catches.Count; index++)
             {
                 var handler = step.Catches[index];
+
                 if (handler.Id is { } handlerId && (string.IsNullOrWhiteSpace(handlerId) || !_ids.Add(handlerId)))
                     throw Error(handler, $"Invalid or duplicate step ID '{handlerId}'");
+
                 var caught = "caught" + ++_next;
                 Locate(handler);
                 Line($".Catch{FaultTypes(handler.Exception, handler.FaultType, handler)}({caught} => {{");
@@ -804,6 +1114,7 @@ public static partial class WorkflowSourceTranslator
                 _faultBindings.Pop();
                 Line($"}}, id: {(handler.Id == null ? "null" : Quote(handler.Id))})");
             }
+
             if (step.Finally != null)
             {
                 var cleanup = "cleanup" + ++_next;
@@ -812,6 +1123,7 @@ public static partial class WorkflowSourceTranslator
                 Steps(step.Finally, cleanup, id + "/finally", previousType);
                 Line("})");
             }
+
             Line(";");
         }
 
@@ -821,6 +1133,7 @@ public static partial class WorkflowSourceTranslator
             {
                 return "";
             }
+
             return "<" + Type(exception!, node, "exception") +
                 (fault == null ? "" : ", " + Type(fault!, node, "faultType")) + ">";
         }
@@ -831,47 +1144,71 @@ public static partial class WorkflowSourceTranslator
             Line($"var {next} = {builder}.Saga({body} => {{");
             Steps(step.Steps, body, id + "/steps", previousType, WorkflowDocumentScope.Saga);
             Line("})");
+
             for (var index = 0; index < step.OnError.Count; index++)
             {
                 var handler = step.OnError[index];
+
                 if (handler.Id is { } handlerId && (string.IsNullOrWhiteSpace(handlerId) || !_ids.Add(handlerId)))
                     throw Error(handler, $"Invalid or duplicate step ID '{handlerId}'");
+
                 var error = "error" + ++_next;
                 Locate(handler);
                 Line($".OnError{FaultTypes(handler.Exception, handler.FaultType, handler)}({error} => {{");
                 _faultBindings.Push((id + "/onError/" + index, "saga", handler.FaultType ?? "IxIFlow.Core.EmptyFault"));
                 var last = Steps(handler.Steps, error, id + "/onError/" + index, previousType, WorkflowDocumentScope.SagaHandler);
                 _faultBindings.Pop();
+
                 if (handler.Compensate != null || handler.CompensateUpTo != null)
                 {
                     Locate(handler, handler.CompensateUpTo != null ? "compensateUpTo" : "compensate");
+
                     var compensation = handler.CompensateUpTo != null
                         ? "CompensateUpTo<" + Type(handler.CompensateUpTo, handler, "compensateUpTo") + ">()"
-                        : handler.Compensate == "all" ? "Compensate()" : "CompensateNone()";
+                        : handler.Compensate == "all"
+                            ? "Compensate()"
+                            : "CompensateNone()";
+
                     var continuation = "continuation" + ++_next;
                     Line($"var {continuation} = {last}.{compensation};");
                     Locate(handler, "then");
+
                     switch (handler.Then)
                     {
-                        case null: break;
+                        case null:
+                            break;
                         case "continue":
-                            Line($"{continuation}.ThenContinue({(handler.IgnoreCompensationErrors ? "true" : "false")});"); break;
-                        case "terminate": Line($"{continuation}.ThenTerminate();"); break;
+                            Line($"{continuation}.ThenContinue({(handler.IgnoreCompensationErrors ? "true" : "false")});");
+
+                            break;
+                        case "terminate":
+                            Line($"{continuation}.ThenTerminate();");
+
+                            break;
                         case "retry":
-                            Line($"{continuation}.ThenRetry({(handler.Retry == null ? "3" : Retry(handler.Retry))});"); break;
-                        default: throw new InvalidOperationException($"Declared saga continuation '{handler.Then}' has no translation");
+                            Line($"{continuation}.ThenRetry({(handler.Retry == null ? "3" : Retry(handler.Retry))});");
+
+                            break;
+                        default:
+                            throw new InvalidOperationException($"Declared saga continuation '{handler.Then}' has no translation");
                     }
                 }
+
                 Line($"}}, id: {(handler.Id == null ? "null" : Quote(handler.Id))})");
             }
+
             Line(";");
         }
 
-        private void Switch(SwitchStepDocument step, string builder, string next, string id, string previousType, WorkflowDocumentScope builderScope)
+        private void Switch(SwitchStepDocument step, string builder, string next, string id, string previousType,
+            WorkflowDocumentScope builderScope)
         {
             var outcomes = "outcomes" + _next;
             Locate(step, "value");
-            Line($"var {next} = {builder}.Switch{(step.ValueType == null ? "" : "<" + Type(step.ValueType, step, "valueType") + ">")}(ctx => {Expression(step.Value)}, {outcomes} => {{");
+
+            Line(
+                $"var {next} = {builder}.Switch{(step.ValueType == null ? "" : "<" + Type(step.ValueType, step, "valueType") + ">")}(ctx => {Expression(step.Value)}, {outcomes} => {{");
+
             for (var index = 0; index < step.Cases.Count; index++)
             {
                 var branch = step.Cases[index];
@@ -881,6 +1218,7 @@ public static partial class WorkflowSourceTranslator
                 Steps(branch.Steps, body, id + "/case/" + index, previousType, builderScope);
                 Line("});");
             }
+
             if (step.Default != null)
             {
                 var body = "defaultOutcome" + ++_next;
@@ -889,6 +1227,7 @@ public static partial class WorkflowSourceTranslator
                 Steps(step.Default, body, id + "/default", previousType, builderScope);
                 Line("});");
             }
+
             Line("});");
         }
 
@@ -897,22 +1236,34 @@ public static partial class WorkflowSourceTranslator
             var eventType = Type(step.Event!, step, "event");
             var named = step as WaitForStepDocument;
             var key = named == null ? ((SuspendStepDocument)step).Reason : named.Key!;
-            if (key.Length == 0) key = id;
+
+            if (key.Length == 0)
+                key = id;
+
             Locate(step, "event");
+
             Line($"var {next} = {builder}.{(named == null ? "Suspend" : "WaitFor")}<{eventType}>({Quote(key)}, " +
-                (step.ResumeCondition == null ? "null" : (named == null && (scope == WorkflowDocumentScope.Saga || _faultBindings.Count == 0) ? "resumeExpression: " : "matchesExpression: ") +
+                (step.ResumeCondition == null
+                    ? "null"
+                    : (named == null && (scope == WorkflowDocumentScope.Saga || _faultBindings.Count == 0)
+                        ? "resumeExpression: "
+                        : "matchesExpression: ") +
                     "(evt, ctx) => " + Expression(step.ResumeCondition, "evt")) + ", configure: setup => {");
+
             if (step.DefaultPayload != null)
             {
                 Locate(step, "defaultPayload");
                 Line($"setup.DefaultPayload({PayloadLiteral(step.DefaultPayload, step)});");
             }
+
             Mappings(step.Input, step.Output);
+
             if (step.Timeout != null)
             {
                 Locate(step, "timeout");
                 Line($"setup.TimeoutAfter({Duration(step.Timeout)});");
             }
+
             if (step.OnTimeout != null)
             {
                 var body = "timeout" + ++_next;
@@ -921,6 +1272,7 @@ public static partial class WorkflowSourceTranslator
                 Steps(step.OnTimeout, body, id + "/timeout", previousType, faultExit: true);
                 Line("});");
             }
+
             Line("});");
         }
 
@@ -931,18 +1283,26 @@ public static partial class WorkflowSourceTranslator
                 Locate(undo, "activity");
                 var activity = Type(undo.Activity!, undo, "activity");
                 var data = Type(document.Workflow.DataType, document.Workflow, "dataType");
+
                 if (undo.ReplyType != null)
                 {
                     var reply = Type(undo.ReplyType!, undo, "replyType");
-                    Line($"setup.CompensateWith<{activity}, {reply}>((IRequestCompensationActivityBuilder<{data}, {activity}, {activityType}, {reply}> compensation) => {{");
+
+                    Line(
+                        $"setup.CompensateWith<{activity}, {reply}>((IRequestCompensationActivityBuilder<{data}, {activity}, {activityType}, {reply}> compensation) => {{");
                 }
                 else if (undo.PreviousActivity != null)
                 {
                     var previous = Type(undo.PreviousActivity!, undo, "previousActivity");
-                    Line($"setup.CompensateWith<{activity}, {previous}>((ICompensationActivityBuilder<{data}, {activity}, {previousType}, {previous}> compensation) => {{");
+
+                    Line(
+                        $"setup.CompensateWith<{activity}, {previous}>((ICompensationActivityBuilder<{data}, {activity}, {previousType}, {previous}> compensation) => {{");
                 }
-                else Line($"setup.CompensateWith<{activity}>(compensation => {{");
+                else
+                    Line($"setup.CompensateWith<{activity}>(compensation => {{");
+
                 Mappings(undo.Input, undo.Output, "compensation", undo.PreviousActivity == null ? null : $"WorkflowContext<{data}>");
+
                 if (undo.PreviousActivity != null)
                 {
                     _previousRoot = "ctx";
@@ -950,8 +1310,10 @@ public static partial class WorkflowSourceTranslator
                     _previousRoot = "ctx.PreviousStep";
                     Mappings(undo.PreviousCompensationInput, [], "compensation", Type(undo.PreviousActivity, undo, "previousActivity"));
                 }
+
                 Line("});");
             }
+
             StepPolicies(step.OnError);
         }
 
@@ -961,6 +1323,7 @@ public static partial class WorkflowSourceTranslator
             {
                 Locate(policy, "then");
                 var exception = policy.Exception == null ? "" : "<" + Type(policy.Exception!, policy, "exception") + ">";
+
                 var action = policy.Then switch
                 {
                     "retry" => "ThenRetry(" + (policy.Retry == null ? "3" : Retry(policy.Retry)) + ")",
@@ -968,6 +1331,7 @@ public static partial class WorkflowSourceTranslator
                     "ignore" => "ThenIgnore()",
                     _ => throw new InvalidOperationException($"Declared step error action '{policy.Then}' has no translation")
                 };
+
                 Line($"setup.OnError{exception}(error => error.{action});");
             }
         }
@@ -976,19 +1340,28 @@ public static partial class WorkflowSourceTranslator
         {
             var initial = Duration(policy.InitialInterval);
             var maximum = Duration(policy.MaximumInterval);
-            return $"new RetryPolicy {{ MaximumAttempts = {policy.MaximumAttempts}, InitialInterval = {initial}, MaximumInterval = {maximum}, BackoffCoefficient = {Literal(policy.BackoffCoefficient, policy)} }}";
+
+            return
+                $"new RetryPolicy {{ MaximumAttempts = {policy.MaximumAttempts}, InitialInterval = {initial}, MaximumInterval = {maximum}, BackoffCoefficient = {Literal(policy.BackoffCoefficient, policy)} }}";
         }
 
         private static string Duration(string value)
         {
             var duration = TimeSpan.ParseExact(value, "c", CultureInfo.InvariantCulture);
+
             return "TimeSpan.FromTicks(" + duration.Ticks.ToString(CultureInfo.InvariantCulture) + "L)";
         }
-
     }
 
-    private sealed class ContextNames(IReadOnlyDictionary<string, string> arguments,
-        IReadOnlyDictionary<string, string> items, bool hasFault, string? eventName, string workflowRoot, string previousRoot, string dataType, IDictionary<string, string> members) : CSharpSyntaxRewriter
+    private sealed class ContextNames(
+        IReadOnlyDictionary<string, string> arguments,
+        IReadOnlyDictionary<string, string> items,
+        bool hasFault,
+        string? eventName,
+        string workflowRoot,
+        string previousRoot,
+        string dataType,
+        IDictionary<string, string> members) : CSharpSyntaxRewriter
     {
         public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
         {
@@ -997,32 +1370,41 @@ public static partial class WorkflowSourceTranslator
                 if (node.ArgumentList.Arguments.Count != 1 || node.ArgumentList.Arguments[0].Expression is not IdentifierNameSyntax alias ||
                     !items.TryGetValue(alias.Identifier.ValueText, out var handle))
                     throw new InvalidOperationException("index(alias) requires one in-scope ForEach item alias");
+
                 return SyntaxFactory.ParseExpression("ctx.Index(" + handle + ")").WithTriviaFrom(node);
             }
+
             return base.VisitInvocationExpression(node);
         }
 
         public override SyntaxNode? VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
         {
             var visited = (MemberAccessExpressionSyntax)base.VisitMemberAccessExpression(node)!;
+
             return node.Expression is IdentifierNameSyntax root && root.Identifier.ValueText == "workflow" &&
                 members.TryGetValue(dataType + "." + node.Name.Identifier.ValueText, out var member)
-                ? visited.WithName(SyntaxFactory.IdentifierName(member).WithTriviaFrom(visited.Name)) : visited;
+                    ? visited.WithName(SyntaxFactory.IdentifierName(member).WithTriviaFrom(visited.Name))
+                    : visited;
         }
 
         public override SyntaxNode? VisitIdentifierName(IdentifierNameSyntax node)
         {
-            if (node.Parent is MemberAccessExpressionSyntax member && member.Name == node) return node;
+            if (node.Parent is MemberAccessExpressionSyntax member && member.Name == node)
+                return node;
+
             var name = node.Identifier.ValueText;
+
             var replacement = name switch
             {
                 "workflow" => workflowRoot, "previousStep" => previousRoot,
-                "fault" => hasFault ? "ctx.Fault" : throw new InvalidOperationException("The fault root is outside its lexical scope"), "currentStep" => "ctx.CurrentStep",
+                "fault" => hasFault ? "ctx.Fault" : throw new InvalidOperationException("The fault root is outside its lexical scope"),
+                "currentStep" => "ctx.CurrentStep",
                 "reply" => "ctx.Reply", "answered" => "ctx.Answered", "previousCompensation" => "ctx",
                 "event" => eventName ?? "ctx.ResumeEvent",
                 _ => items.TryGetValue(name, out var handle) ? "ctx.Item(" + handle + ")"
                     : arguments.TryGetValue(name, out var argument) ? "(" + argument + ")" : null
             };
+
             return replacement == null ? node : SyntaxFactory.ParseExpression(replacement).WithTriviaFrom(node);
         }
     }

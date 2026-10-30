@@ -6,61 +6,129 @@ using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Debugging;
 
-internal sealed class DebugAdapterService(IWorkflowOperations operations, DebugEndpoint endpoint,
+internal sealed class DebugAdapterService(
+    IWorkflowOperations operations,
+    DebugEndpoint endpoint,
     ILogger<DebugAdapterService> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var sessions = new List<Task>();
         TcpListener? listener = null;
+
         try
         {
-            if (endpoint.Address != null)
-            {
-                listener = new(endpoint.Address, endpoint.Port);
-                listener.Start();
-            }
             while (!stoppingToken.IsCancellationRequested)
             {
-                Stream connection;
-                if (listener != null)
+                try
                 {
-                    var client = await listener.AcceptTcpClientAsync(stoppingToken);
-                    client.NoDelay = true;
-                    connection = client.GetStream();
+                    if (endpoint.Address != null && listener == null)
+                    {
+                        var candidate = new TcpListener(endpoint.Address, endpoint.Port);
+
+                        try
+                        {
+                            candidate.Start();
+                        }
+                        catch
+                        {
+                            candidate.Stop();
+
+                            throw;
+                        }
+
+                        listener = candidate;
+                        endpoint.Bound?.Invoke((System.Net.IPEndPoint)candidate.LocalEndpoint);
+                    }
+
+                    Stream connection;
+
+                    if (listener != null)
+                    {
+                        var client = await listener.AcceptTcpClientAsync(stoppingToken);
+
+                        try
+                        {
+                            client.NoDelay = true;
+                            connection = client.GetStream();
+                        }
+                        catch
+                        {
+                            client.Dispose();
+
+                            throw;
+                        }
+                    }
+                    else
+                    {
+                        var pipe = new NamedPipeServerStream(endpoint.PipeName!, PipeDirection.InOut,
+                            NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
+                            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+
+                        try
+                        {
+                            await pipe.WaitForConnectionAsync(stoppingToken);
+                        }
+                        catch
+                        {
+                            pipe.Dispose();
+
+                            throw;
+                        }
+
+                        connection = pipe;
+                    }
+
+                    sessions.RemoveAll(t => t.IsCompleted);
+
+                    if (sessions.Count >= endpoint.MaxConcurrentSessions)
+                        connection.Dispose();
+                    else
+                        sessions.Add(ServeAsync(connection, stoppingToken));
                 }
-                else
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
-                    var pipe = new NamedPipeServerStream(endpoint.PipeName!, PipeDirection.InOut,
-                        NamedPipeServerStream.MaxAllowedServerInstances, PipeTransmissionMode.Byte,
-                        PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-                    try { await pipe.WaitForConnectionAsync(stoppingToken); }
-                    catch { pipe.Dispose(); throw; }
-                    connection = pipe;
+                    break;
                 }
-                sessions.RemoveAll(t => t.IsCompleted);
-                sessions.Add(ServeAsync(connection, stoppingToken));
+                catch (Exception error)
+                {
+                    logger.LogWarning(error, "Could not accept an IxIFlow debug connection; retrying");
+                    listener?.Stop();
+                    listener = null;
+                    endpoint.Bound?.Invoke(null);
+
+                    // Bound retries when the endpoint is temporarily unavailable.
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), stoppingToken);
+                }
             }
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
         finally
         {
             listener?.Stop();
+            endpoint.Bound?.Invoke(null);
             await Task.WhenAll(sessions);
         }
     }
 
     private async Task ServeAsync(Stream connection, CancellationToken stoppingToken)
     {
-        await using (connection)
+        try
         {
-            try
+            await using (connection)
             {
                 using var session = new DebugAdapterSession(operations, endpoint, endpoint.PipeName != null);
                 await session.RunAsync(connection, connection, stoppingToken);
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-            catch (Exception) { logger.LogWarning("An IxIFlow debug connection ended unexpectedly"); }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception error)
+        {
+            logger.LogWarning(error, "An IxIFlow debug connection ended unexpectedly");
         }
     }
 }

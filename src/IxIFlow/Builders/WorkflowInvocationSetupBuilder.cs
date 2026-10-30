@@ -8,7 +8,7 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Workflow invocation builder for first step (no previous step access)
 /// </summary>
-public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(WorkflowStep step)
+internal class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(WorkflowStep step)
     : IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>
     where TWorkflowData : class
     where TInvokedData : class
@@ -19,6 +19,7 @@ public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(Workflo
         where TException : Exception
     {
         StepErrorHandler.Add(_step, handler);
+
         return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(_step);
     }
 
@@ -29,6 +30,7 @@ public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(Workflo
     public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> CancelWithParent(bool cancel)
     {
         _step.CancelWithParent = cancel;
+
         return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(_step);
     }
 
@@ -54,7 +56,7 @@ public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(Workflo
 /// <summary>
 ///     Workflow invocation builder for subsequent steps (with previous step access)
 /// </summary>
-public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(WorkflowStep step)
+internal class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(WorkflowStep step)
     : IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>
     where TWorkflowData : class
     where TInvokedData : class
@@ -63,10 +65,12 @@ public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPrevio
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
     internal WorkflowStep Step => _step;
 
-    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> OnError<TException>(Action<IStepErrorHandler<TException>> handler)
+    public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> OnError<TException>(
+        Action<IStepErrorHandler<TException>> handler)
         where TException : Exception
     {
         StepErrorHandler.Add(_step, handler);
+
         return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(_step);
     }
 
@@ -86,6 +90,7 @@ public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPrevio
     public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> CancelWithParent(bool cancel)
     {
         _step.CancelWithParent = cancel;
+
         return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(_step);
     }
 
@@ -120,17 +125,17 @@ public class WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPrevio
     {
         return new WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty>(_step, property);
     }
+
     IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty2>
         IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.Output<TProperty2>(
             Expression<Func<TInvokedData, TProperty2>> property) =>
         new WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty2>(_step, property);
-
 }
 
 /// <summary>
 ///     Input builder for first step workflow invocation (no previous step)
 /// </summary>
-public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty>(
+internal class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty>(
     WorkflowStep step,
     Expression<Func<TInvokedData, TProperty>> propertyExpression)
     : IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty>
@@ -142,10 +147,12 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
 
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
 
-    public IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty> OnError<TException>(Action<IStepErrorHandler<TException>> handler)
+    public IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty> OnError<TException>(
+        Action<IStepErrorHandler<TException>> handler)
         where TException : Exception
     {
         StepErrorHandler.Add(_step, handler);
+
         return this;
     }
 
@@ -153,13 +160,17 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         OnError<Exception>(error => handler(error));
 
 
-    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.OnError<TException>(Action<IStepErrorHandler<TException>> handler) => OnError(handler);
-    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.OnError(Action<IStepErrorHandler> handler) => OnError(handler);
+    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.
+        OnError<TException>(Action<IStepErrorHandler<TException>> handler) => OnError(handler);
+
+    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.OnError(
+        Action<IStepErrorHandler> handler) => OnError(handler);
 
     /// <inheritdoc/>
     public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> CancelWithParent(bool cancel)
     {
         _step.CancelWithParent = cancel;
+
         return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(_step);
     }
 
@@ -178,7 +189,9 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         // Create wrapped function for object context
         Func<object, object?> wrappedFunction = context =>
         {
-            if (context is WorkflowContext<TWorkflowData> typedContext) return compiledFunction(typedContext);
+            if (context is WorkflowContext<TWorkflowData> typedContext)
+                return compiledFunction(typedContext);
+
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}>, got {context.GetType().Name}");
         };
@@ -217,7 +230,9 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
 
     private string GetPropertyName<T>(Expression<Func<TInvokedData, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException(
             "Property expression must be a member access expression",
             nameof(propertyExpression));
@@ -227,7 +242,7 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
 /// <summary>
 ///     Input builder for subsequent step workflow invocation (with previous step access)
 /// </summary>
-public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData>(
+internal class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData>(
     WorkflowStep step,
     Expression<Func<TInvokedData, TProperty>> propertyExpression)
     : IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData>
@@ -240,14 +255,17 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
 
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
 
-    public IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError<TException>(Action<IStepErrorHandler<TException>> handler)
+    public IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError<TException>(
+        Action<IStepErrorHandler<TException>> handler)
         where TException : Exception
     {
         StepErrorHandler.Add(_step, handler);
+
         return this;
     }
 
-    public IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError(Action<IStepErrorHandler> handler) =>
+    public IWorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError(
+        Action<IStepErrorHandler> handler) =>
         OnError<Exception>(error => handler(error));
 
     IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>
@@ -259,14 +277,19 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         OnError(handler);
 
 
+    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>
+        IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>.OnError<TException>(
+            Action<IStepErrorHandler<TException>> handler) => OnError(handler);
 
-    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>.OnError<TException>(Action<IStepErrorHandler<TException>> handler) => OnError(handler);
-    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>.OnError(Action<IStepErrorHandler> handler) => OnError(handler);
+    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>
+        IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>.OnError(Action<IStepErrorHandler> handler) =>
+        OnError(handler);
 
     /// <inheritdoc/>
     public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData> CancelWithParent(bool cancel)
     {
         _step.CancelWithParent = cancel;
+
         return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(_step);
     }
 
@@ -291,6 +314,7 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
         {
             if (context is WorkflowContext<TWorkflowData, TPreviousStepData> typedContext)
                 return compiledFunction(typedContext);
+
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}, {typeof(TPreviousStepData).Name}>, got {context.GetType().Name}");
         };
@@ -349,7 +373,9 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
 
     private string GetPropertyName<T>(Expression<Func<TInvokedData, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException(
             "Property expression must be a member access expression",
             nameof(propertyExpression));
@@ -359,7 +385,7 @@ public class WorkflowInvocationSetupInputBuilder<TWorkflowData, TInvokedData, TP
 /// <summary>
 ///     Output builder for workflow invocation property mappings
 /// </summary>
-public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty>(
+internal class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty>(
     WorkflowStep step,
     Expression<Func<TInvokedData, TProperty>> propertyExpression)
     : IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty>
@@ -371,10 +397,12 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
 
     private readonly WorkflowStep _step = step ?? throw new ArgumentNullException(nameof(step));
 
-    public IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty> OnError<TException>(Action<IStepErrorHandler<TException>> handler)
+    public IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty> OnError<TException>(
+        Action<IStepErrorHandler<TException>> handler)
         where TException : Exception
     {
         StepErrorHandler.Add(_step, handler);
+
         return this;
     }
 
@@ -382,13 +410,17 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
         OnError<Exception>(error => handler(error));
 
 
-    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.OnError<TException>(Action<IStepErrorHandler<TException>> handler) => OnError(handler);
-    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.OnError(Action<IStepErrorHandler> handler) => OnError(handler);
+    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.
+        OnError<TException>(Action<IStepErrorHandler<TException>> handler) => OnError(handler);
+
+    IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>.OnError(
+        Action<IStepErrorHandler> handler) => OnError(handler);
 
     /// <inheritdoc/>
     public IWorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData> CancelWithParent(bool cancel)
     {
         _step.CancelWithParent = cancel;
+
         return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData>(_step);
     }
 
@@ -410,6 +442,7 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
             if (context is WorkflowContext<TWorkflowData> typedContext && value is TProperty typedValue)
                 compiledAssignment(typedContext, typedValue);
             else if (context is WorkflowContext<TWorkflowData> typedContext2 && value == null)
+
                 // Handle null values gracefully
                 compiledAssignment(typedContext2, default!);
             else
@@ -495,12 +528,15 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
             Expression.Lambda<Action<WorkflowContext<TWorkflowData>, TProperty>>(
                 assignment, contextParameter,
                 valueParameter);
+
         return lambda.Compile();
     }
 
     private string GetPropertyName<T>(Expression<Func<TInvokedData, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException(
             "Property expression must be a member access expression",
             nameof(propertyExpression));
@@ -508,10 +544,11 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
 }
 
 /// <summary>Output mapping with the previous step's setup context.</summary>
-public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData>(
-    WorkflowStep step, Expression<Func<TInvokedData, TProperty>> property)
+internal class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData>(
+    WorkflowStep step,
+    Expression<Func<TInvokedData, TProperty>> property)
     : WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(step),
-      IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData>
+        IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData>
     where TWorkflowData : class
     where TInvokedData : class
     where TPreviousStepData : class
@@ -520,8 +557,10 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
         Action<IStepErrorHandler<TException>> handler) where TException : Exception
     {
         StepErrorHandler.Add(step, handler);
+
         return this;
     }
+
     public new IWorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData> OnError(
         Action<IStepErrorHandler> handler) => OnError<Exception>(error => handler(error));
 
@@ -529,6 +568,7 @@ public class WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, T
         Expression<Func<WorkflowContext<TWorkflowData>, TProperty>> destination)
     {
         new WorkflowInvocationSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty>(step, property).To(destination);
+
         return new WorkflowInvocationSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(step);
     }
 }

@@ -8,6 +8,7 @@ public sealed record Assignment(LambdaExpression Target, LambdaExpression Value,
 {
     /// <summary>The structural CLR path; computed indices are represented by [].</summary>
     public string? TargetPath => MemberPath.Of(Target);
+
     internal Action<object>? Apply { get; set; }
     internal Delegate? TargetBehavior { get; set; }
     internal Delegate? ValueBehavior { get; set; }

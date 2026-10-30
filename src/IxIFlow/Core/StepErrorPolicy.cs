@@ -26,7 +26,7 @@ public enum StepErrorAction
 /// <summary>
 /// Information about step-level error handlers
 /// </summary>
-public class StepErrorHandlerInfo
+internal class StepErrorHandlerInfo
 {
     /// <summary>
     /// The exception type this handler can handle

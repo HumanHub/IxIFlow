@@ -19,9 +19,11 @@ public sealed class WorkflowAttribute(string name) : Attribute
         var identity = workflowType.GetCustomAttribute<WorkflowAttribute>(inherit: false)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Workflow class '{workflowType.FullName}' requires [Workflow(\"Name\", Version = n)]");
+
         if (string.IsNullOrWhiteSpace(identity.Name) || identity.Version < 1)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Workflow class '{workflowType.FullName}' requires a nonblank name and positive version in [Workflow]");
+
         return identity;
     }
 }

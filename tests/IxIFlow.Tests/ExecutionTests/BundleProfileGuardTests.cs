@@ -4,7 +4,7 @@ using IxIFlow.Tests.Infrastructure;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
-/// <summary>A process without a shared compatibility profile neither publishes nor hosts bundles (F-02, D-49).</summary>
+/// <summary>A process without a shared compatibility profile neither publishes nor hosts bundles.</summary>
 [Trait("Feature", "registration")]
 public sealed class BundleProfileGuardTests
 {

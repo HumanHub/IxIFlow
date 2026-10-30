@@ -23,15 +23,21 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
         await using var services = Services();
         var client = services.GetRequiredService<IWorkflowClient>();
         var builder = new WorkflowBuilder<Data, object>([], "WaitInputs").Step<Prepare>();
+
         void Configure(IxIFlow.Builders.Interfaces.ISuspendSetupBuilder<Data, Answer, Prepare> wait)
         {
-            if (payload != null) wait.DefaultPayload(payload);
+            if (payload != null)
+                wait.DefaultPayload(payload);
+
             wait.Input(answer => answer.Customer).From(ctx => ctx.WorkflowData.Customer);
             wait.Input(answer => answer.Value).From(ctx => ctx.PreviousStep.Value);
             wait.Output(answer => answer.Customer).To(ctx => ctx.WorkflowData.Customer);
         }
-        var definition = (suspend ? builder.Suspend<Answer>("review", configure: Configure)
+
+        var definition = (suspend
+            ? builder.Suspend<Answer>("review", configure: Configure)
             : builder.WaitFor<Answer>("review", configure: Configure)).Build();
+
         var started = await client.RunAsync(definition, new Data { Customer = "Ada" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var wait = Assert.Single(await client.GetOpenWaitsAsync(new(InstanceId: started.InstanceId)));
@@ -39,7 +45,10 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
         Assert.Equal("Ada", suggestion.Customer);
         Assert.Equal(17, suggestion.Value);
         Assert.Equal(hasDefault ? "keep" : "", suggestion.Note);
-        if (payload != null) Assert.Equal("default", payload.Customer);
+
+        if (payload != null)
+            Assert.Equal("default", payload.Customer);
+
         var answered = await client.ReplyAsync(wait.Token, new Answer { Customer = "submitted" });
         Assert.Equal(WorkflowExecutionStatus.Success, answered.Status);
         Assert.Equal("submitted", Assert.IsType<Data>(answered.WorkflowData).Customer);
@@ -50,18 +59,22 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
     {
         _reads = 0;
         _failReads = false;
+
         var definition = new WorkflowBuilder<Data, object>([], "SavedWaitInputs")
             .WaitFor<Answer>("review", configure: wait => wait.Input(answer => answer.Customer)
                 .From(ctx => Observe(ctx.WorkflowData.Customer))).Build();
+
         var registry = new WorkflowCatalog();
         string instanceId;
         string? json;
+
         await using (var services = Services(true, registry))
         {
             var client = services.GetRequiredService<IWorkflowClient>();
             instanceId = (await client.RunAsync(definition, new Data { Customer = "Ada" })).InstanceId;
             var savedWait = Assert.Single(await client.GetOpenWaitsAsync(new(InstanceId: instanceId)));
             json = savedWait.DefaultPayloadJson;
+
             // Seed an interrupted execution with the already evaluated checkpoint and wait.
             // Creation claims the new ID; an idle instance cannot be reclaimed to fabricate a crash.
             var store = services.GetRequiredService<IWorkflowStateRepository>();
@@ -71,14 +84,23 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
             instanceId = instance.InstanceId = Guid.NewGuid().ToString("N");
             instance.Revision = 0;
             instance.Incarnation = Guid.NewGuid();
-            var lease = (await store.TryAcquireExecutionLeaseAsync(instanceId, token, TimeSpan.FromMinutes(1), await StoreTestSupport.ClaimAsync(services)))!;
+
+            var lease = (await store.TryAcquireExecutionLeaseAsync(instanceId, token, TimeSpan.FromMinutes(1),
+                await StoreTestSupport.ClaimAsync(services)))!;
+
             instance.Status = WorkflowStatus.Running;
+
             Assert.Equal(WorkflowCommitStatus.Applied,
                 (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, lease.Epoch, instance.Revision,
-                    openedWaits: [new OpenedWait(savedWait.WaitId, savedWait.Kind, savedWait.Key, savedWait.EventType, null,
-                        DefaultPayloadJson: savedWait.DefaultPayloadJson is { } value ? StoredJson.Inline(value) : null)]))).Status);
+                    openedWaits:
+                    [
+                        new OpenedWait(savedWait.WaitId, savedWait.Kind, savedWait.Key, savedWait.EventType, null,
+                            DefaultPayloadJson: savedWait.DefaultPayloadJson is { } value ? StoredJson.Inline(value) : null)
+                    ]))).Status);
+
             Assert.True((await store.ReleaseExecutionLeaseAsync(instanceId, token)).Released);
         }
+
         Assert.Equal(1, _reads);
         _failReads = true;
         await using var reopened = Services(true, registry);
@@ -89,8 +111,10 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
         Assert.Equal(json, wait.DefaultPayloadJson);
         Assert.Equal("Ada", JsonSerializer.Deserialize<Answer>(json!)!.Customer);
         Assert.Equal(1, _reads);
+
         Assert.Equal(WorkflowExecutionStatus.Success,
             (await recoveredClient.ReplyAsync(wait.Token, new Answer())).Status);
+
         Assert.Equal(1, _reads);
     }
 
@@ -107,16 +131,22 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
     {
         await using var services = Services(sqlite);
         var client = services.GetRequiredService<IWorkflowClient>();
+
         var definition = new WorkflowBuilder<Data, object>([], "RequestSuggestion",
                 1 + (hasDefault ? 1 : 0) + (timeout ? 2 : 0))
             .Request<Ask>("review")
             .WaitFor<Answer>("review", configure: wait =>
             {
-                if (hasDefault) wait.DefaultPayload(new Answer { Note = "keep" });
+                if (hasDefault)
+                    wait.DefaultPayload(new Answer { Note = "keep" });
+
                 wait.Input(answer => answer.Customer).From(ctx => ctx.WorkflowData.Customer);
                 wait.Input(answer => answer.Value).From(ctx => ctx.PreviousStep.Value);
-                if (timeout) wait.TimeoutAfter(TimeSpan.FromDays(1)).OnTimeout(body => body.Step<Prepare>());
+
+                if (timeout)
+                    wait.TimeoutAfter(TimeSpan.FromDays(1)).OnTimeout(body => body.Step<Prepare>());
             }).Build();
+
         var started = await client.RunAsync(definition, new Data { Customer = "Ada" });
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var inbox = (IWorkflowInbox)services.GetRequiredService<IWorkflowStateRepository>();
@@ -127,6 +157,7 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
         Assert.Equal(hasDefault ? "keep" : "", suggestion.Note);
         Assert.Equal(timeout, wait.DeadlineUtc != null);
         Assert.Equal(wait.DefaultPayloadJson, (await inbox.GetWaitAsync(started.InstanceId, wait.WaitId))!.DefaultPayloadJson);
+
         Assert.Equal(WorkflowExecutionStatus.Success,
             (await client.ReplyAsync(ReplyToken.Create(started.InstanceId, wait.WaitId), new Answer { Value = 99 })).Status);
     }
@@ -136,8 +167,10 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
     {
         var first = new WorkflowBuilder<Data, object>([], "Fingerprint").WaitFor<Answer>("review", configure: wait => wait
             .Input(answer => answer.Value).From(ctx => ctx.WorkflowData.Value)).Build();
+
         var second = new WorkflowBuilder<Data, object>([], "Fingerprint").WaitFor<Answer>("review", configure: wait => wait
             .Input(answer => answer.Value).From(ctx => ctx.WorkflowData.Value + 1)).Build();
+
         Assert.NotEqual(new WorkflowScopeCatalog(first).StructureHash, new WorkflowScopeCatalog(second).StructureHash);
     }
 
@@ -147,6 +180,7 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
         var error = Assert.Throws<WorkflowEngineException>(() => new WorkflowBuilder<Data, object>([], "ImpureWait")
             .WaitFor<Answer>("review", configure: wait => wait.Input(answer => answer.Value)
                 .From(_ => DateTime.UtcNow.Hour)).Build());
+
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.Contains("DateTime.UtcNow", error.Message);
     }
@@ -155,9 +189,11 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
     public async Task MappingFailureFailsTheStepWithoutOpeningAWait()
     {
         await using var services = Services();
+
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(
             new WorkflowBuilder<Data, object>([], "FailedWaitInput").WaitFor<Answer>("review", configure: wait => wait
                 .Input(answer => answer.Value).From(ctx => 10 / ctx.WorkflowData.Value)).WithId("failed-wait").Build(), new Data());
+
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("zero", result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(await services.GetRequiredService<IWorkflowClient>().GetOpenWaitsAsync(new(InstanceId: result.InstanceId)));
@@ -168,6 +204,7 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
     {
         Assert.Throws<WorkflowEngineException>(() => new WorkflowBuilder<Data, object>([], "MissingWaitInput")
             .WaitFor<RequiredAnswer>("review", configure: wait => wait.Input(answer => answer.Value).From(_ => 1)).Build());
+
         new WorkflowBuilder<Data, object>([], "CompleteWaitInput").WaitFor<RequiredAnswer>("review", configure: wait => wait
             .DefaultPayload(new RequiredAnswer { Customer = "default" })
             .Input(answer => answer.Value).From(_ => 1)).Build();
@@ -177,10 +214,12 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
     public async Task ARequiredMemberMappedToNullFailsTheStep()
     {
         await using var services = Services();
+
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(
             new WorkflowBuilder<Data, object>([], "NullSuggestion")
                 .WaitFor<RequiredAnswer>("review", configure: wait => wait.Input(answer => answer.Customer)
                     .From(ctx => (string?)null)).Build(), new Data());
+
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("required", result.ErrorMessage!);
     }
@@ -190,19 +229,26 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
     {
         Assert.Throws<WorkflowEngineException>(() => new WorkflowBuilder<Data, object>([], "ReadOnlyWaitInput")
             .WaitFor<FixedAnswer>("review", configure: wait => wait.Input(answer => answer.Value).From(_ => 1)).Build());
+
         var steps = new List<WorkflowStep>();
+
         var builder = new WorkflowBuilder<Data, object>(steps, "WrongType")
             .WaitFor<Answer>("review", configure: wait => wait.Input(answer => answer.Value).From(_ => 1));
+
         steps[0].InputMappings[0].Expression = (System.Linq.Expressions.Expression<Func<string>>)(() => "wrong");
         Assert.Throws<WorkflowEngineException>(() => builder.Build());
     }
 
     private static int _reads;
     private static bool _failReads;
+
     private static string Observe(string value)
     {
         _reads++;
-        if (_failReads) throw new InvalidOperationException("Suggestion evaluated again");
+
+        if (_failReads)
+            throw new InvalidOperationException("Suggestion evaluated again");
+
         return value;
     }
 
@@ -210,8 +256,13 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
     {
         var services = new ServiceCollection().AddLogging();
         var builder = services.AddIxIFlow();
-        if (sqlite) builder.UseSqlite(SqliteTestDatabase<WaitInputMappingTests>.ConnectionString);
-        if (registry != null) services.AddSingleton<IWorkflowCatalog>(registry);
+
+        if (sqlite)
+            builder.UseSqlite(SqliteTestDatabase<WaitInputMappingTests>.ConnectionString);
+
+        if (registry != null)
+            services.AddSingleton<IWorkflowCatalog>(registry);
+
         return services.BuildServiceProvider();
     }
 
@@ -220,28 +271,46 @@ public sealed class WaitInputMappingTests : IClassFixture<SqliteTestDatabase<Wai
         public string Customer { get; set; } = "";
         public int Value { get; set; }
     }
+
     public sealed class Answer
     {
         public string Customer { get; set; } = "";
         public string Note { get; set; } = "";
         public int Value { get; set; }
     }
+
     public sealed class RequiredAnswer
     {
         [Required] public string? Customer { get; set; }
         public int Value { get; set; }
     }
-    public sealed class FixedAnswer { public int Value { get; private set; } }
+
+    public sealed class FixedAnswer
+    {
+        public int Value { get; private set; }
+    }
+
     public sealed class Prepare : IAsyncActivity
     {
         public int Value { get; set; }
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Value = 17; return Task.CompletedTask; }
+        {
+            Value = 17;
+
+            return Task.CompletedTask;
+        }
     }
+
     public sealed class Ask : IRequestActivity<Answer>
     {
         public int Value { get; set; }
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Value = 23; return Task.CompletedTask; }
+        {
+            Value = 23;
+
+            return Task.CompletedTask;
+        }
     }
 }

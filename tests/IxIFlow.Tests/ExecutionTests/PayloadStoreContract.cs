@@ -3,7 +3,8 @@ using IxIFlow.Core;
 
 namespace IxIFlow.Tests.ExecutionTests;
 
-internal sealed class PayloadStoreContract(IPayloadStore store,
+internal sealed class PayloadStoreContract(
+    IPayloadStore store,
     Func<PayloadReference, byte[], Task> corrupt)
 {
     private static readonly byte[] Body = Encoding.UTF8.GetBytes("{\"value\":\"é\"}");
@@ -42,12 +43,14 @@ internal sealed class PayloadStoreContract(IPayloadStore store,
         var reference = await store.PutAsync("\"pin\""u8.ToArray());
         var pinned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         var write = store.InTransactionAsync(async (tx, ct) =>
         {
             await tx.PinAsync(Owner, reference, ct);
             pinned.SetResult();
             await finish.Task;
         }).AsTask();
+
         await pinned.Task.WaitAsync(TimeSpan.FromSeconds(30));
         var collection = store.CollectAsync(reference, TimeSpan.Zero).AsTask();
         Assert.False(collection.IsCompleted);
@@ -57,8 +60,10 @@ internal sealed class PayloadStoreContract(IPayloadStore store,
         Assert.NotNull(await store.GetAsync(reference));
         await store.InTransactionAsync((tx, ct) => tx.ReleaseAsync(Owner, ct));
         Assert.True(await store.CollectAsync(reference, TimeSpan.Zero));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => store.InTransactionAsync(
-            (tx, ct) => tx.PinAsync(Owner, reference, ct)).AsTask());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            store.InTransactionAsync((tx, ct) => tx.PinAsync(Owner, reference, ct)).AsTask());
+
         Assert.Null(await store.GetAsync(reference));
     }
 
@@ -68,6 +73,7 @@ internal sealed class PayloadStoreContract(IPayloadStore store,
         var reference = await store.PutAsync(body);
         Assert.True(await store.CollectAsync(reference, TimeSpan.Zero));
         Assert.Null(await store.GetAsync(reference));
+
         // A deleted body can be put and pinned again.
         Assert.Equal(reference, await store.PutAsync(body));
         await store.InTransactionAsync((tx, ct) => tx.PinAsync(Owner, reference, ct));
@@ -91,11 +97,13 @@ internal sealed class PayloadStoreContract(IPayloadStore store,
         Assert.False(await store.CollectAsync(child, TimeSpan.Zero));
         Assert.False(await store.CollectAsync(grandchild, TimeSpan.Zero));
         var inbox = new PayloadOwner("inbox", "instance/event");
+
         await store.InTransactionAsync(async (tx, ct) =>
         {
             await tx.PinAsync(Owner, reference, ct);
             await tx.PinAsync(inbox, reference, ct);
         });
+
         await store.InTransactionAsync((tx, ct) => tx.ReleaseAsync(Owner, ct));
         Assert.False(await store.CollectAsync(reference, TimeSpan.Zero));
         Assert.False(await store.CollectAsync(child, TimeSpan.Zero));
@@ -110,11 +118,14 @@ internal sealed class PayloadStoreContract(IPayloadStore store,
     private async Task RollbackPins()
     {
         var reference = await store.PutAsync("\"rollback\""u8.ToArray());
+
         await Assert.ThrowsAsync<IOException>(() => store.InTransactionAsync(async (tx, ct) =>
         {
             await tx.PinAsync(Owner, reference, ct);
+
             throw new IOException("referencing transaction failed");
         }).AsTask());
+
         Assert.True(await store.CollectAsync(reference, TimeSpan.Zero));
     }
 
@@ -123,20 +134,25 @@ internal sealed class PayloadStoreContract(IPayloadStore store,
         var leaf = await store.PutAsync("leaf"u8.ToArray());
         var body = "transactional-body"u8.ToArray();
         var reference = PayloadReference.Of(body);
+
         await Assert.ThrowsAsync<IOException>(() => store.InTransactionAsync(async (tx, ct) =>
         {
             Assert.Equal(reference, await tx.PutAsync(body, [leaf], ct));
             await tx.PinAsync(Owner, reference, ct);
+
             throw new IOException("referencing transaction failed");
         }).AsTask());
+
         Assert.Null(await store.GetAsync(reference));
         Assert.True(await store.CollectAsync(leaf, TimeSpan.Zero));
+
         await store.InTransactionAsync(async (tx, ct) =>
         {
-            await tx.PutAsync("leaf"u8.ToArray(), ct: ct);
+            await tx.PutAsync("leaf"u8.ToArray(), cancellationToken: ct);
             await tx.PutAsync(body, [leaf], ct);
             await tx.PinAsync(Owner, reference, ct);
         });
+
         Assert.False(await store.CollectAsync(reference, TimeSpan.Zero));
         Assert.False(await store.CollectAsync(leaf, TimeSpan.Zero));
         Assert.Equal(body, (await store.GetAsync(reference))!.Value.ToArray());
@@ -164,15 +180,17 @@ internal sealed class PayloadStoreContract(IPayloadStore store,
         // Fixtures configure a 1 KiB put limit, so the boundary is cheap on every backend.
         var body = Enumerable.Repeat((byte)' ', 1024).ToArray();
         Assert.Equal(1024, (await store.PutAsync(body)).Bytes);
-        Assert.Equal(WorkflowErrorKind.ResourceExhausted, (await Assert.ThrowsAsync<WorkflowEngineException>(
-            () => store.PutAsync(new byte[1025]).AsTask())).Kind);
+
+        Assert.Equal(WorkflowErrorKind.ResourceExhausted,
+            (await Assert.ThrowsAsync<WorkflowEngineException>(() => store.PutAsync(new byte[1025]).AsTask())).Kind);
     }
 
     private async Task Corruption()
     {
         var body = "\"corrupt\""u8.ToArray();
         var reference = await store.PutAsync(body);
-        var changed = body.ToArray(); changed[1] ^= 1;
+        var changed = body.ToArray();
+        changed[1] ^= 1;
         await corrupt(reference, changed);
         await Assert.ThrowsAsync<InvalidDataException>(() => store.GetAsync(reference).AsTask());
         await corrupt(reference, body[..^1]);

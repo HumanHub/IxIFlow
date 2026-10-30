@@ -91,6 +91,7 @@ public sealed class CancelPayment : IAsyncActivity
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Cancelled = true;
+
         return Task.CompletedTask;
     }
 }

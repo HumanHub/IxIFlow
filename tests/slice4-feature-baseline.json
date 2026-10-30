@@ -1,0 +1,63 @@
+{
+  "IxIFlow.Tests": {
+    "waits": 153,
+    "recovery": 138,
+    "templates": 26,
+    "authoring": 227,
+    "saga": 112,
+    "registration": 335,
+    "documents": 16,
+    "control-flow": 274,
+    "host": 223,
+    "durability": 679,
+    "scopes": 168,
+    "tracing": 111,
+    "try": 94,
+    "children": 96,
+    "timers": 63
+  },
+  "IxIFlow.Analyzers.Tests": {
+    "authoring": 68,
+    "untagged": 14,
+    "scopes": 4
+  },
+  "IxIFlow.Conformance": {
+    "authoring": 79,
+    "control-flow": 84,
+    "untagged": 120,
+    "registration": 66,
+    "cancellation": 5,
+    "scopes": 51,
+    "templates": 69,
+    "recovery": 1,
+    "waits": 3,
+    "durability": 34,
+    "host": 1,
+    "try": 5
+  },
+  "IxIFlow.ExecutionContract.Tests": {
+    "host": 19,
+    "untagged": 3,
+    "durability": 1,
+    "children": 1
+  },
+  "IxIFlow.Generators.Tests": {
+    "authoring": 80,
+    "documents": 21,
+    "untagged": 180,
+    "registration": 2,
+    "templates": 1,
+    "scopes": 8
+  },
+  "IxIFlow.Samples.Tests": {
+    "control-flow": 1,
+    "cancellation": 1,
+    "untagged": 45,
+    "authoring": 1,
+    "templates": 1,
+    "durability": 1,
+    "scopes": 1,
+    "host": 1,
+    "try": 1
+  }
+}

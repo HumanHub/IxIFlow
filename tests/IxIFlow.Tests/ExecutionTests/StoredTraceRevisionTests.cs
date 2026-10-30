@@ -23,7 +23,7 @@ public sealed class StoredTraceRevisionTests : IClassFixture<SqliteTestDatabase<
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlServerKeepsCommitMetadataAcrossPagingRetriesAndInboxAppends() =>
-        Verify(new SqlWorkflowStateRepository(SqlTestDatabase<StoredTraceRevisionTests>.ConnectionString));
+        Verify(new SqlServerWorkflowStateRepository(SqlTestDatabase<StoredTraceRevisionTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
@@ -32,15 +32,24 @@ public sealed class StoredTraceRevisionTests : IClassFixture<SqliteTestDatabase<
 
     private static async Task Verify(IWorkflowStateRepository store)
     {
-        var instance = new WorkflowInstance { InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "TraceRevisions",
-            ExecutionStateJson = StoreTestSupport.CheckpointJson, Status = WorkflowStatus.Running };
+        var instance = new WorkflowInstance
+        {
+            InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "TraceRevisions",
+            ExecutionStateJson = StoreTestSupport.CheckpointJson, Status = WorkflowStatus.Running
+        };
+
         var epoch = (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch;
+
         var first = CheckpointCommit.Create(instance, epoch, 0, traceEntries:
-        [new() { EntryType = TraceEntryType.ActivityStarted }, new() { EntryType = TraceEntryType.ActivityCompleted }]);
+            [new() { EntryType = TraceEntryType.ActivityStarted }, new() { EntryType = TraceEntryType.ActivityCompleted }]);
+
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(first)).Status);
         Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(first)).Status);
         var page = Assert.Single(await store.GetTraceAsync(instance.InstanceId, limit: 1));
-        Assert.Equal(1, page.Revision); Assert.Equal(2, page.CommitEndSequence); Assert.Equal(WorkflowStatus.Running, page.CommitStatus);
+        Assert.Equal(1, page.Revision);
+        Assert.Equal(2, page.CommitEndSequence);
+        Assert.Equal(WorkflowStatus.Running, page.CommitStatus);
+
         // Responses own their mutable entries; storage must not retain the caller's graph.
         page.Entry.ActivityName = "caller mutation";
         Assert.Empty((await store.GetTraceAsync(instance.InstanceId))[0].Entry.ActivityName);
@@ -50,20 +59,28 @@ public sealed class StoredTraceRevisionTests : IClassFixture<SqliteTestDatabase<
         Assert.Equal(2, (await store.GetTraceAsync(instance.InstanceId)).Count);
         instance = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
         instance.Status = WorkflowStatus.Completed;
+
         var last = CheckpointCommit.Create(instance, epoch, instance.Revision, traceEntries:
             [new() { EntryType = TraceEntryType.WorkflowCompleted }]);
+
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(last)).Status);
         var completed = Assert.Single(await store.GetTraceAsync(instance.InstanceId, afterSequence: 2));
-        Assert.Equal(3, completed.Sequence); Assert.Equal(3, completed.Revision);
-        Assert.Equal(3, completed.CommitEndSequence); Assert.Equal(WorkflowStatus.Completed, completed.CommitStatus);
+        Assert.Equal(3, completed.Sequence);
+        Assert.Equal(3, completed.Revision);
+        Assert.Equal(3, completed.CommitEndSequence);
+        Assert.Equal(WorkflowStatus.Completed, completed.CommitStatus);
         var refused = await store.AppendEventAsync(new WorkflowEvent(instance.InstanceId, "late", "late", "{}", Key: "late"));
         Assert.Equal(EventAppendStatus.Closed, refused.Status);
         var inbox = Assert.Single(await store.GetTraceAsync(instance.InstanceId, afterSequence: 3));
-        Assert.Equal(4, inbox.Sequence); Assert.Equal(3, inbox.Revision);
-        Assert.Null(inbox.CommitEndSequence); Assert.Null(inbox.CommitStatus); Assert.Equal(TraceClock.Store, inbox.Entry.Clock);
+        Assert.Equal(4, inbox.Sequence);
+        Assert.Equal(3, inbox.Revision);
+        Assert.Null(inbox.CommitEndSequence);
+        Assert.Null(inbox.CommitStatus);
+        Assert.Equal(TraceClock.Store, inbox.Entry.Clock);
         Assert.Equal(TraceEntryType.EventRefused, inbox.Entry.EntryType);
         var roundTrip = JsonSerializer.Deserialize<StoredTraceEntry>(JsonSerializer.Serialize(completed))!;
-        Assert.Equal(completed.Revision, roundTrip.Revision); Assert.Equal(completed.CommitEndSequence, roundTrip.CommitEndSequence);
+        Assert.Equal(completed.Revision, roundTrip.Revision);
+        Assert.Equal(completed.CommitEndSequence, roundTrip.CommitEndSequence);
         Assert.Equal(completed.CommitStatus, roundTrip.CommitStatus);
     }
 
@@ -75,9 +92,12 @@ public sealed class StoredTraceRevisionTests : IClassFixture<SqliteTestDatabase<
     {
         var path = Path.Combine(Path.GetTempPath(), $"ixiflow-trace-schema-{Guid.NewGuid():N}.db");
         var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ConnectionString;
+
         try
         {
-            await using (var store = new SqliteWorkflowStateRepository(connectionString)) await store.GetTraceAsync("absent");
+            await using (var store = new SqliteWorkflowStateRepository(connectionString))
+                await store.GetTraceAsync("absent");
+
             await using (var connection = new SqliteConnection(connectionString))
             {
                 await connection.OpenAsync();
@@ -85,10 +105,14 @@ public sealed class StoredTraceRevisionTests : IClassFixture<SqliteTestDatabase<
                 command.CommandText = $"ALTER TABLE ixiflow_workflow_traces DROP COLUMN {column}";
                 await command.ExecuteNonQueryAsync();
             }
+
             await using var old = new SqliteWorkflowStateRepository(connectionString);
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => old.GetTraceAsync("absent"));
             Assert.Contains("earlier build", error.Message);
         }
-        finally { File.Delete(path); }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 }

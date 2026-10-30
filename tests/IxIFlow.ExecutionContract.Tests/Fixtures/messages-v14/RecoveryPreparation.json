@@ -1,0 +1,1 @@
+{"ReactivatedContinuations":["root"],"PendingCancellation":{"ReasonCode":"cancel","Description":"reason","RequestedAt":"2026-10-29T12:00:00Z","RequestedBy":"operator","Metadata":{"number":42}},"ClearOperatorStop":true,"Released":true,"Actor":"operator","ReactivateWaitingActivities":false}

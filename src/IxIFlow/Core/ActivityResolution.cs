@@ -31,7 +31,9 @@ public sealed class ActivityResolution
     {
         ArgumentNullException.ThrowIfNull(outputProperties);
         ArgumentException.ThrowIfNullOrWhiteSpace(note);
-        return new ActivityResolution(ActivityResolutionKind.Completed, outputProperties, note, decidedBy, expectedPolicyAttemptId: expectedPolicyAttemptId);
+
+        return new ActivityResolution(ActivityResolutionKind.Completed, outputProperties, note, decidedBy,
+            expectedPolicyAttemptId: expectedPolicyAttemptId);
     }
 
     /// <summary>Records the observed result of a child workflow invocation.</summary>
@@ -40,14 +42,17 @@ public sealed class ActivityResolution
     {
         ArgumentNullException.ThrowIfNull(childWorkflowData);
         ArgumentException.ThrowIfNullOrWhiteSpace(note);
+
         return new ActivityResolution(ActivityResolutionKind.Completed,
-            new Dictionary<string, object?>(), note, decidedBy, invocationResult: childWorkflowData, expectedPolicyAttemptId: expectedPolicyAttemptId);
+            new Dictionary<string, object?>(), note, decidedBy, invocationResult: childWorkflowData,
+            expectedPolicyAttemptId: expectedPolicyAttemptId);
     }
 
     /// <summary>Records an observed failure without executing the activity again.</summary>
     public static ActivityResolution Failed(string message, string? decidedBy = null, string? expectedPolicyAttemptId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(message);
+
         return new ActivityResolution(ActivityResolutionKind.Failed,
             new Dictionary<string, object?>(), message, decidedBy,
             new InvalidOperationException(message), expectedPolicyAttemptId: expectedPolicyAttemptId);
@@ -57,6 +62,7 @@ public sealed class ActivityResolution
     public static ActivityResolution Failed(Exception error, string? decidedBy = null, string? expectedPolicyAttemptId = null)
     {
         ArgumentNullException.ThrowIfNull(error);
+
         return new ActivityResolution(ActivityResolutionKind.Failed,
             new Dictionary<string, object?>(), error.Message, decidedBy, error, expectedPolicyAttemptId: expectedPolicyAttemptId);
     }

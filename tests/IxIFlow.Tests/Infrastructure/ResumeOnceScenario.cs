@@ -20,23 +20,27 @@ internal static class ResumeOnceScenario
         var counter = new ResumeCounter();
         using var firstHost = CreateHost(firstRepository, registry, counter);
         using var secondHost = CreateHost(secondRepository, registry, counter);
+
         var definition = Workflow.Create<ResumeOnceData>("ResumeOnce")
             .Step<ResumeOnceSeedActivity>()
             .WaitFor<ResumeOnceApproval>("approval")
             .Step<CountResumeActivity>()
             .WaitFor<ResumeOnceApproval>("approval")
             .Build();
+
         await registry.RegisterWorkflowAsync(definition);
         var firstEngine = firstHost.GetRequiredService<IWorkflowClient>();
         var secondEngine = secondHost.GetRequiredService<IWorkflowClient>();
 
         var started = await firstEngine.RunAsync(definition, new ResumeOnceData(),
             new WorkflowOptions { InstanceId = instanceId });
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         await Task.WhenAll(
             firstEngine.ResumeAsync(instanceId, "approval", new ResumeOnceApproval(), "delivery-1"),
             secondEngine.ResumeAsync(instanceId, "approval", new ResumeOnceApproval(), "delivery-1"));
+
         Assert.Equal(1, counter.Count);
         Assert.Equal(WorkflowStatus.Suspended, (await firstRepository.GetWorkflowInstanceAsync(instanceId))!.Status);
 
@@ -46,6 +50,7 @@ internal static class ResumeOnceScenario
 
         var completed = await secondEngine.ResumeAsync(
             instanceId, "approval", new ResumeOnceApproval(), "delivery-2");
+
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, counter.Count);
     }
@@ -62,6 +67,7 @@ internal static class ResumeOnceScenario
         services.AddSingleton(counter);
         services.AddTransient<ResumeOnceSeedActivity>();
         services.AddTransient<CountResumeActivity>();
+
         return services.BuildServiceProvider();
     }
 }
@@ -92,6 +98,7 @@ public sealed class CountResumeActivity(ResumeCounter counter) : IAsyncActivity
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         counter.Increment();
+
         return Task.CompletedTask;
     }
 }

@@ -68,8 +68,10 @@ workflow generation. Explicitly selecting one as an `IxIFlowWorkflow` reports IX
 ```csharp
 var draft = await catalog.SaveDefinitionAsync(
     new WorkflowDraft("Example", 1, WorkflowDraftKinds.Workflow, yaml), expected: null, actor: "author");
+
 var report = await publisher.ValidateAsync(draft, cancellationToken);
 var result = await publisher.PublishAsync(draft.Id, actor: "publisher", cancellationToken: cancellationToken);
+
 if (result.Success)
 {
     WorkflowVersion workflow = result.Workflow!;
@@ -106,3 +108,5 @@ HTTP admission defaults to two concurrent uploads and covers reading, expansion,
 Unexpected errors have fixed public text and are logged on the server (publication logs carry the attempt ID). Generic conflicts, artifacts, bounds and timeouts use PUB040/041/042/043; PUB009 through PUB013 retain their callee/inline meanings. The AspNetCore route group supplies policy/scope validation, preconditions, scoped outcome projections and verified downloads. The group also exposes template preview, template/step catalog reads, activity/template sources, package withdrawal/holders and the NuGet read subset; see the [HTTP guide](../../docs/publishing-http.md).
 
 [PublishedArtifacts](../../samples/IxIFlow.Samples/PublishedArtifacts.cs) publishes templates with `renderTemplate` and both `use` and `useType`. Typed callees must be registered as code-defined catalog versions before the caller is published. The resulting caller carries verified inline executable payloads and template bindings, and cold execution does not resolve packages or live template versions.
+
+HTTP NuGet feed resolutions share a process-wide credential gate for the full resolution. This isolates NuGet credential state between callers; HTTP resolutions are serialized even when upload admission allows several requests. Folder-feed resolutions do not take this gate.

@@ -8,8 +8,8 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// Branch copies and the join see the workflow data as System.Text.Json does (D-14, spec E-01, E-03,
-/// E-07): computed properties are not branch data, polymorphic values are merged whole, a property left
+/// Branch copies and the join see the workflow data as System.Text.Json does: computed properties are not branch data, polymorphic values
+/// are merged whole, a property left
 /// out when null reads back null, state with no setter must be read back into its object, and a merge the
 /// data type refuses fails the join, which a <c>Catch</c> handles, with the data left as it was.
 /// </summary>
@@ -21,6 +21,7 @@ public sealed class ParallelDataContractTests
     public async Task AComputedPropertyIsNotBranchData()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Signed>("ComputedCount")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -54,6 +55,7 @@ public sealed class ParallelDataContractTests
 
         var refused = Assert.Throws<WorkflowEngineException>(() => Define(parallel: true));
         Assert.Contains("'Tags' has no setter", refused.Message);
+
         // Without branches nothing is copied, so the same data type is fine.
         Define(parallel: false);
     }
@@ -63,6 +65,7 @@ public sealed class ParallelDataContractTests
     public async Task AnObjectWithNoSetterThatIsReadBackIntoItselfIsMergedInPlace()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Populated>("PopulatedTotals")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -86,6 +89,7 @@ public sealed class ParallelDataContractTests
     public async Task APolymorphicValueIsMergedWholeAndMayChangeItsType()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Drawing>("ReplacedFigure")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -128,6 +132,7 @@ public sealed class ParallelDataContractTests
     public async Task APropertyLeftOutWhenNullStaysNullThroughABranchCopy()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Sparse>("OmittedNulls")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -154,6 +159,7 @@ public sealed class ParallelDataContractTests
     public async Task AMergeTheDataTypeRefusesFailsTheJoinAndLeavesTheDataAsItWas()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Bounds>("RefusedMerge")
             .Step<Noop>()
             .Try(attempt => attempt.Parallel(parallel => parallel
@@ -179,6 +185,7 @@ public sealed class ParallelDataContractTests
     public async Task AMergeTheParentsObjectRefusesIsUndoneAndFailsTheJoin()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Sealable>("RefusedApply")
             .Step<Seal>(step => step.Output(activity => activity.Sealed).To(ctx => ctx.WorkflowData.Sealed))
             .Try(attempt => attempt.Parallel(parallel => parallel
@@ -205,6 +212,7 @@ public sealed class ParallelDataContractTests
     public async Task ACombinedValueIsReadBackWithTheRestOfTheMerge()
     {
         using var services = Services();
+
         // The plain value comes first, so applying the merge in its order would take High=40 while Low is
         // still 0, then Low=50; only reading the whole merge back, combined value included, refuses it.
         var definition = Workflow.Create<SummedBounds>("RefusedCombination")
@@ -231,6 +239,7 @@ public sealed class ParallelDataContractTests
     public async Task ASetterThatChangesItsObjectAndThenRefusesIsUndoneToo()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Capped>("AssignThenRefuse")
             .Step<SetNumber>(step => step
                 .Input(activity => activity.Value).From(_ => 5)
@@ -258,6 +267,7 @@ public sealed class ParallelDataContractTests
     public async Task DataThatRefusesToBePutBackIsAnEngineFailure()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Latching>("RefusedRestore")
             .Step<Seal>(step => step.Output(activity => activity.Sealed).To(ctx => ctx.WorkflowData.Watched))
             .Try(attempt => attempt.Parallel(parallel => parallel
@@ -284,6 +294,7 @@ public sealed class ParallelDataContractTests
     public async Task ACombinedValueIsNotCheckedAgainstTheDataAtTheFork()
     {
         using var services = Services();
+
         var definition = Workflow.Create<CombinedBounds>("CombinedBesideItsBound")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -311,6 +322,7 @@ public sealed class ParallelDataContractTests
     public async Task AReplacedValueIsPutBackEvenWhenItsTypeCallsTheTwoEqual()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Account>("EqualButReplaced")
             .Step<Seal>(step => step.Output(activity => activity.Sealed).To(ctx => ctx.WorkflowData.Sealed))
             .Try(attempt => attempt.Parallel(parallel => parallel
@@ -335,6 +347,7 @@ public sealed class ParallelDataContractTests
     public async Task AReplacedStructIsPutBackEvenWhenItsTypeCallsTheTwoEqual()
     {
         using var services = Services();
+
         var definition = Workflow.Create<StructAccount>("EqualStructsReplaced")
             .Step<Seal>(step => step.Output(activity => activity.Sealed).To(ctx => ctx.WorkflowData.Sealed))
             .Try(attempt => attempt.Parallel(parallel => parallel
@@ -379,6 +392,7 @@ public sealed class ParallelDataContractTests
     public async Task ACombinerInsideADictionarysValuesMergesItsBranches()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Regions>("CountsPerRegion")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -403,6 +417,7 @@ public sealed class ParallelDataContractTests
     public async Task TheMergeIsAppliedInTheOrderTheReadBackValidatedIt()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Budget>("DeclarationOrder")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -434,6 +449,7 @@ public sealed class ParallelDataContractTests
     public async Task ACombinedValueIsWrittenAsItsPropertyWritesIt()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Lenient>("OwnNumberHandling")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -465,6 +481,7 @@ public sealed class ParallelDataContractTests
                     .Input(activity => activity.Value).From(_ => 3)
                     .Output(activity => activity.Value).To(ctx => ((SquareShape)ctx.WorkflowData.Shape).Spec.Width))))
             .Build();
+
         // A member one of the types does not serialize is refused: the cast is not kept, so the join
         // could not tell which one the write is for.
         Assert.Contains("not serialized with the workflow data in every type", Assert.Throws<WorkflowEngineException>(() =>
@@ -522,6 +539,7 @@ public sealed class ParallelDataContractTests
                         .Input(activity => activity.Value).From(_ => "x")
                         .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Items[0].Scratch))))
                 .Build()).Message);
+
         Assert.Contains("which a join sets whole but which has no setter", Assert.Throws<WorkflowEngineException>(() =>
             Workflow.Create<Priced>("GetOnlyWholeValue").Step<Noop>()
                 .Parallel(parallel => parallel.WaitAny()
@@ -529,11 +547,13 @@ public sealed class ParallelDataContractTests
                         .Input(activity => activity.Value).From(_ => 3)
                         .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Total.Amount))))
                 .Build()).Message);
+
         // A populated list with a setter still reads back its initializer's items.
         Assert.Contains("'Tags' is read back by adding", Assert.Throws<WorkflowEngineException>(() =>
             Workflow.Create<PopulatedTags>("PopulatedWithSetter").Step<Noop>()
                 .Parallel(parallel => parallel.Do(only => only.Step<Noop>()))
                 .Build()).Message);
+
         // Under WaitAny nothing is compared, so a target the rules cannot name is allowed.
         Workflow.Create<Held>("UnnamedTargetUnderWaitAny").Step<Noop>()
             .Parallel(parallel => parallel.WaitAny()
@@ -548,6 +568,7 @@ public sealed class ParallelDataContractTests
     public async Task AnImmutableDictionaryIsMergedWhole()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Mapped>("ImmutableMap")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -572,6 +593,7 @@ public sealed class ParallelDataContractTests
     public async Task AnObjectWhoseConstructorSetsItsStateIsMergedWhole()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Owned>("ReplacedOwner")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -600,12 +622,16 @@ public sealed class ParallelDataContractTests
         // keep what its initializer put in it.
         Assert.Contains("'Items[].Tags' has no setter",
             Assert.Throws<WorkflowEngineException>(() => Branched<TaggedItems>()).Message);
+
         Assert.Contains("'Totals.Tags' has no setter",
             Assert.Throws<WorkflowEngineException>(() => Branched<CombinedTotals>()).Message);
+
         Assert.Contains("'Seeds' is read back by adding",
             Assert.Throws<WorkflowEngineException>(() => Branched<Seeded>()).Message);
+
         // A combiner inside a value merged whole never applies.
         Assert.Contains("never applies", Assert.Throws<WorkflowEngineException>(() => Branched<Lines>()).Message);
+
         // What the serializer ignores is not branch data at all.
         Branched<Cached>();
     }
@@ -632,6 +658,7 @@ public sealed class ParallelDataContractTests
     public async Task APropertyLeftOutWhenNullStaysNullAfterARecovery()
     {
         var store = new InMemoryWorkflowStateRepository();
+
         var definition = Workflow.Create<Sparse>("OmittedNullsRecovered")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -642,7 +669,9 @@ public sealed class ParallelDataContractTests
             .Step<Record>(step => step
                 .Input(activity => activity.Value).From(ctx => (ctx.WorkflowData.Note ?? "null") + "|" + ctx.WorkflowData.Other))
             .Build();
+
         string instanceId;
+
         using (var first = Services(store))
             instanceId = (await Engine(first).RunAsync(definition, new Sparse { Note = null })).InstanceId;
 
@@ -659,11 +688,14 @@ public sealed class ParallelDataContractTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+
         if (store != null)
             services.AddSingleton(store);
+
         services.AddSingleton<Seen>();
         services.AddTransient<Record>();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -671,8 +703,7 @@ public sealed class ParallelDataContractTests
 
     public sealed class Signed
     {
-        [Combine<Append<string>>]
-        public List<string> Signatures { get; set; } = [];
+        [Combine<Append<string>>] public List<string> Signatures { get; set; } = [];
 
         public int Count => Signatures.Count;
     }
@@ -761,16 +792,14 @@ public sealed class ParallelDataContractTests
             set => _name = Sealed ? throw new InvalidOperationException("The record is sealed") : value;
         }
 
-        [JsonIgnore]
-        public bool Sealed { get; set; }
+        [JsonIgnore] public bool Sealed { get; set; }
     }
 
     public sealed class SummedBounds
     {
         private int _high = 100;
 
-        [Combine<Sum<int>>]
-        public int Low { get; set; }
+        [Combine<Sum<int>>] public int Low { get; set; }
 
         public int High
         {
@@ -792,13 +821,13 @@ public sealed class ParallelDataContractTests
             set
             {
                 _count = value;
+
                 if (value > Max)
                     throw new ArgumentOutOfRangeException(nameof(Count), "Count is over Max");
             }
         }
 
-        [JsonIgnore]
-        public int Max { get; set; } = int.MaxValue;
+        [JsonIgnore] public int Max { get; set; } = int.MaxValue;
     }
 
     /// <summary>First can be set once; Second refuses any change on the parent's object.</summary>
@@ -815,6 +844,7 @@ public sealed class ParallelDataContractTests
             {
                 if (_latched)
                     throw new InvalidOperationException("First is latched");
+
                 _first = value;
                 _latched = value.Length > 0 && Watched;
             }
@@ -826,8 +856,7 @@ public sealed class ParallelDataContractTests
             set => _second = Watched && value.Length > 0 ? throw new InvalidOperationException("Second is fixed") : value;
         }
 
-        [JsonIgnore]
-        public bool Watched { get; set; }
+        [JsonIgnore] public bool Watched { get; set; }
     }
 
     public sealed class CombinedBounds
@@ -853,8 +882,7 @@ public sealed class ParallelDataContractTests
     {
         public string Name { get; set; } = "";
 
-        [JsonIgnore]
-        public string Scratch { get; set; } = "";
+        [JsonIgnore] public string Scratch { get; set; } = "";
     }
 
     /// <summary>The total is computed from a field, so a copy does not need to read it back.</summary>
@@ -911,8 +939,7 @@ public sealed class ParallelDataContractTests
             set => _name = Sealed ? throw new InvalidOperationException("The account is sealed") : value;
         }
 
-        [JsonIgnore]
-        public bool Sealed { get; set; }
+        [JsonIgnore] public bool Sealed { get; set; }
     }
 
     /// <summary>The name may not change once the account is sealed; the primary entry is a struct.</summary>
@@ -928,8 +955,7 @@ public sealed class ParallelDataContractTests
             set => _name = Sealed ? throw new InvalidOperationException("The account is sealed") : value;
         }
 
-        [JsonIgnore]
-        public bool Sealed { get; set; }
+        [JsonIgnore] public bool Sealed { get; set; }
     }
 
     /// <summary>Entries are equal when their IDs are, whatever their amounts.</summary>
@@ -984,8 +1010,7 @@ public sealed class ParallelDataContractTests
 
     public sealed class Row
     {
-        [Combine<Sum<int>>]
-        public int Count { get; set; }
+        [Combine<Sum<int>>] public int Count { get; set; }
     }
 
     /// <summary>What is spent may never exceed the base and the extra together.</summary>
@@ -1014,8 +1039,7 @@ public sealed class ParallelDataContractTests
     {
         public int Version { get; set; } = 1;
 
-        [Combine<FirstWins<Totals>>]
-        public Totals Totals { get; set; } = new();
+        [Combine<FirstWins<Totals>>] public Totals Totals { get; set; } = new();
     }
 
     public sealed class Board
@@ -1042,8 +1066,7 @@ public sealed class ParallelDataContractTests
     {
         public int Radius { get; set; }
 
-        [JsonIgnore]
-        public string Note { get; set; } = "";
+        [JsonIgnore] public string Note { get; set; } = "";
     }
 
     public sealed class SquareSpec
@@ -1098,8 +1121,7 @@ public sealed class ParallelDataContractTests
 
     public sealed class CombinedTotals
     {
-        [Combine<FirstWins<TagTotals>>]
-        public TagTotals Totals { get; set; } = new();
+        [Combine<FirstWins<TagTotals>>] public TagTotals Totals { get; set; } = new();
     }
 
     public sealed class TagTotals
@@ -1120,19 +1142,16 @@ public sealed class ParallelDataContractTests
 
     public sealed class Line
     {
-        [Combine<Sum<int>>]
-        public int Total { get; set; }
+        [Combine<Sum<int>>] public int Total { get; set; }
     }
 
     public sealed class Cached
     {
         public string Other { get; set; } = "";
 
-        [JsonIgnore]
-        public string Scratch { get; set; } = "";
+        [JsonIgnore] public string Scratch { get; set; } = "";
 
-        [JsonIgnore]
-        public TagTotals Cache { get; set; } = new();
+        [JsonIgnore] public TagTotals Cache { get; set; } = new();
     }
 
     public sealed class Go;
@@ -1143,7 +1162,11 @@ public sealed class ParallelDataContractTests
 
         public IReadOnlyList<string> Values
         {
-            get { lock (_values) return _values.ToArray(); }
+            get
+            {
+                lock (_values)
+                    return _values.ToArray();
+            }
         }
 
         public void Add(string value)
@@ -1160,6 +1183,7 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             seen.Add(Value);
+
             return Task.CompletedTask;
         }
     }
@@ -1172,6 +1196,7 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Signatures = [.. Signatures, Name];
+
             return Task.CompletedTask;
         }
     }
@@ -1199,6 +1224,7 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Figure = new Square { Side = 2 };
+
             return Task.CompletedTask;
         }
     }
@@ -1210,6 +1236,7 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Home = new Address { City = "Lyon", Zip = null };
+
             return Task.CompletedTask;
         }
     }
@@ -1221,6 +1248,7 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Sealed = true;
+
             return Task.CompletedTask;
         }
     }
@@ -1232,6 +1260,7 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Map = Map.Add("b", 2);
+
             return Task.CompletedTask;
         }
     }
@@ -1243,6 +1272,7 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Primary = new Entry(1, 2);
+
             return Task.CompletedTask;
         }
     }
@@ -1254,6 +1284,7 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Primary = new Entity(1, 2);
+
             return Task.CompletedTask;
         }
     }
@@ -1266,6 +1297,7 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Totals = new Totals { A = Count, B = Count };
+
             return Task.CompletedTask;
         }
     }
@@ -1277,6 +1309,7 @@ public sealed class ParallelDataContractTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Owner = new Person("new");
+
             return Task.CompletedTask;
         }
     }

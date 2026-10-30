@@ -12,6 +12,7 @@ internal static class OutboxStoreContract
         var publisher = "expired-" + Guid.NewGuid().ToString("N");
         await store.RegisterPublisherAsync(publisher, [OutboxEvent.WorkflowCompleted]);
         var instance = await CompleteAsync(store);
+
         try
         {
             var claimed = await Claim(store, publisher, "actual-owner");
@@ -19,14 +20,23 @@ internal static class OutboxStoreContract
             var before = (await store.GetDeliveryAsync(claimed.Event.Id, publisher))!;
             Assert.True(before.LeaseUntilUtc <= before.StoreNowUtc);
             Assert.Equal("actual-owner", before.LeaseToken);
+
             Assert.False(await store.RenewDeliveryLeaseAsync(claimed.Event.Id, publisher,
                 claimed.LeaseToken!, TimeSpan.FromMinutes(1)));
+
             Assert.Equal(before, (await store.GetDeliveryAsync(claimed.Event.Id, publisher))! with { StoreNowUtc = before.StoreNowUtc });
-            foreach (var result in new[] { OutboxPublishResult.Delivered(), OutboxPublishResult.RetryLater("offline"),
-                         OutboxPublishResult.GiveUp("gone", disablePublisher: true) })
+
+            foreach (var result in new[]
+                     {
+                         OutboxPublishResult.Delivered(), OutboxPublishResult.RetryLater("offline"),
+                         OutboxPublishResult.GiveUp("gone", disablePublisher: true)
+                     })
             {
                 Assert.False(await store.SettleDeliveryAsync(claimed.Event.Id, publisher, claimed.LeaseToken!, result));
-                Assert.Equal(before, (await store.GetDeliveryAsync(claimed.Event.Id, publisher))! with { StoreNowUtc = before.StoreNowUtc });
+
+                Assert.Equal(before,
+                    (await store.GetDeliveryAsync(claimed.Event.Id, publisher))! with { StoreNowUtc = before.StoreNowUtc });
+
                 Assert.Null((await store.GetPublisherAsync(publisher))!.DisabledAtUtc);
             }
         }
@@ -44,14 +54,17 @@ internal static class OutboxStoreContract
         var observer = "observer-" + Guid.NewGuid().ToString("N");
         await store.RegisterPublisherAsync(absent, [OutboxEvent.WorkflowCompleted]);
         await store.RegisterPublisherAsync(observer, [OutboxEvent.WorkflowCompleted]);
+
         async Task<OutboxDelivery> CompleteAndObserve()
         {
             var instance = await CompleteAsync(store);
             var observed = await Claim(store, observer);
             Assert.Equal(instance.InstanceId, observed.Event.InstanceId);
             Assert.True(await store.SettleDeliveryAsync(observed.Event.Id, observer, "owner", OutboxPublishResult.Delivered()));
+
             return (await store.GetDeliveryAsync(observed.Event.Id, absent))!;
         }
+
         var old = new[] { await CompleteAndObserve(), await CompleteAndObserve() };
         var ids = old.Select(d => d.Event.InstanceId).ToArray();
         var tombstones = TimeSpan.FromDays(90);
@@ -59,6 +72,7 @@ internal static class OutboxStoreContract
         var skipped = await store.PurgeAsync(TimeSpan.FromMinutes(1), tombstones, 1);
         Assert.Equal(0, skipped.InstancesRemoved);
         Assert.Equal(2, skipped.SkippedUnattemptedByPublisher[absent]);
+
         foreach (var delivery in old)
         {
             var pending = (await store.GetDeliveryAsync(delivery.Event.Id, absent))!;
@@ -76,6 +90,7 @@ internal static class OutboxStoreContract
         Assert.Single(swept, d => d!.Status == OutboxDeliveryStatus.GivenUp);
         Assert.Single(swept, d => d!.Status == OutboxDeliveryStatus.Pending);
         await store.PurgeAsync(keepInstances, tombstones, 1);
+
         foreach (var delivery in old)
         {
             var givenUp = (await store.GetDeliveryAsync(delivery.Event.Id, absent))!;
@@ -86,10 +101,12 @@ internal static class OutboxStoreContract
             Assert.Null(givenUp.LeaseToken);
             Assert.Null(givenUp.LeaseUntilUtc);
         }
+
         Assert.Null((await store.GetPublisherAsync(absent))!.DisabledAtUtc);
         Assert.Equal(OutboxDeliveryStatus.Pending, (await store.GetDeliveryAsync(fresh.Event.Id, absent))!.Status);
         Assert.Equal(1, (await store.PurgeAsync(TimeSpan.FromMinutes(1), tombstones, 1)).InstancesRemoved);
         Assert.Equal(1, (await store.PurgeAsync(TimeSpan.FromMinutes(1), tombstones, 1)).InstancesRemoved);
+
         foreach (var delivery in old)
         {
             Assert.Null(await store.GetWorkflowInstanceAsync(delivery.Event.InstanceId));
@@ -152,6 +169,7 @@ internal static class OutboxStoreContract
         var instance = await CompleteAsync(store);
         var pending = await Claim(store, "removed");
         await store.UnregisterPublisherAsync("removed");
+
         // Unregistering is a durable administrative state, kept with its actor and time.
         var removed = Assert.IsType<OutboxPublisherState>(await store.GetPublisherAsync("removed"));
         Assert.Equal("host", removed.UnregisteredBy);
@@ -176,12 +194,20 @@ internal static class OutboxStoreContract
         {
             var name = "race-" + i;
             var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
             var registration = Task.Run(async () =>
             {
                 await gate.Task;
                 await store.RegisterPublisherAsync(name, [OutboxEvent.WorkflowCompleted], replayRetained: true);
             });
-            var completion = Task.Run(async () => { await gate.Task; return await CompleteAsync(store); });
+
+            var completion = Task.Run(async () =>
+            {
+                await gate.Task;
+
+                return await CompleteAsync(store);
+            });
+
             gate.SetResult();
             await Task.WhenAll(registration, completion);
             var delivery = await Claim(store, name);
@@ -193,11 +219,18 @@ internal static class OutboxStoreContract
 
     internal static async Task<WorkflowInstance> CompleteAsync(IWorkflowStateRepository store)
     {
-        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"),
-            WorkflowName = "OutboxContract", WorkflowVersion = 1, Status = WorkflowStatus.Completed };
-        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N"));
+        var instance = new WorkflowInstance
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"),
+            WorkflowName = "OutboxContract", WorkflowVersion = 1, Status = WorkflowStatus.Completed
+        };
+
+        var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0,
+            Guid.NewGuid().ToString("N"));
+
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
         Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
+
         return instance;
     }
 
@@ -219,8 +252,10 @@ internal static class OutboxStoreContract
         Assert.Equal("offline", retry.LastError);
         Assert.Equal(OutboxDeliveryStatus.Pending, retry.Status);
         Assert.InRange(retry.NextAttemptAtUtc, beforeSettlement.AddSeconds(5), retry.StoreNowUtc.AddSeconds(5));
+
         if (repository is InMemoryWorkflowStateRepository or SqliteWorkflowStateRepository)
             Assert.Equal(beforeSettlement.AddSeconds(5), retry.NextAttemptAtUtc);
+
         Assert.Empty(await store.ClaimDeliveriesAsync("primary", "early", TimeSpan.FromSeconds(30), 10));
         Assert.Empty(await store.ClaimDeliveriesAsync("secondary", "again", TimeSpan.FromSeconds(30), 10));
         await advance(retry, TimeSpan.FromSeconds(5));
@@ -231,8 +266,10 @@ internal static class OutboxStoreContract
         Assert.True(await store.SettleDeliveryAsync(first.Event.Id, "primary", "owner", OutboxPublishResult.RetryLater("still offline")));
         retry = (await store.GetDeliveryAsync(first.Event.Id, "primary"))!;
         Assert.InRange(retry.NextAttemptAtUtc, beforeSettlement.AddSeconds(10), retry.StoreNowUtc.AddSeconds(10));
+
         if (repository is InMemoryWorkflowStateRepository or SqliteWorkflowStateRepository)
             Assert.Equal(beforeSettlement.AddSeconds(10), retry.NextAttemptAtUtc);
+
         await advance(retry, TimeSpan.FromSeconds(10));
         var third = await Claim(store, "primary");
         Assert.Equal(3, third.Attempts);
@@ -248,11 +285,14 @@ internal static class OutboxStoreContract
         IWorkflowOutbox store, Func<OutboxDelivery, TimeSpan, Task> advance)
     {
         var instance = await CompleteAsync(repository);
+
         var competing = await Task.WhenAll(
             store.ClaimDeliveriesAsync("primary", "dead-a", TimeSpan.FromSeconds(30), 10),
             store.ClaimDeliveriesAsync("primary", "dead-b", TimeSpan.FromSeconds(30), 10));
+
         var dead = Assert.Single(competing.SelectMany(batch => batch));
         var deadToken = dead.LeaseToken!;
+
         // The external send succeeded, but the host died before recording its acknowledgment.
         var received = new List<string> { dead.Event.Id };
         Assert.Empty(await store.ClaimDeliveriesAsync("primary", "new", TimeSpan.FromSeconds(30), 10));
@@ -270,8 +310,13 @@ internal static class OutboxStoreContract
         Assert.False(await store.RenewDeliveryLeaseAsync(dead.Event.Id, "primary", deadToken, TimeSpan.FromSeconds(30)));
         var beforeStaleSettlement = (await store.GetDeliveryAsync(dead.Event.Id, "primary"))!;
         Assert.False(await store.SettleDeliveryAsync(dead.Event.Id, "primary", deadToken, OutboxPublishResult.Delivered()));
+
         Assert.Equal(beforeStaleSettlement, (await store.GetDeliveryAsync(dead.Event.Id, "primary"))!
-            with { StoreNowUtc = beforeStaleSettlement.StoreNowUtc });
+            with
+            {
+                StoreNowUtc = beforeStaleSettlement.StoreNowUtc
+            });
+
         Assert.True(await store.SettleDeliveryAsync(dead.Event.Id, "primary", "new", OutboxPublishResult.Delivered()));
         var other = await Claim(store, "secondary");
         Assert.True(await store.SettleDeliveryAsync(other.Event.Id, "secondary", "owner", OutboxPublishResult.Delivered()));
@@ -286,28 +331,43 @@ internal static class OutboxStoreContract
             ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = "Outbox", Status = WorkflowStatus.Completed
         };
+
         var grant = await StoreTestSupport.LeaseAsync(repository, original.InstanceId);
+
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(original, grant.Epoch, 0))).Status);
+
         await repository.DeleteWorkflowInstanceAsync(original.InstanceId);
-        var replacement = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = original.InstanceId,
-            WorkflowName = "Replacement", Status = WorkflowStatus.Completed };
+
+        var replacement = new WorkflowInstance
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = original.InstanceId,
+            WorkflowName = "Replacement", Status = WorkflowStatus.Completed
+        };
+
         Assert.NotNull(await repository.GetTombstoneAsync(original.InstanceId));
+
         Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(async () =>
             await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(replacement, grant.Epoch, 0)))).Kind);
+
         await expireTombstone(original.InstanceId);
         Assert.Null(await repository.GetTombstoneAsync(original.InstanceId));
+
         Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(
-            CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(repository, replacement.InstanceId)).Epoch, 0, Guid.NewGuid().ToString("N")))).Status);
+            CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(repository, replacement.InstanceId)).Epoch, 0,
+                Guid.NewGuid().ToString("N")))).Status);
+
         foreach (var name in new[] { "primary", "secondary" })
         {
             var pending = await store.ClaimDeliveriesAsync(name, "owner", TimeSpan.FromSeconds(30), 10);
             Assert.Equal(2, pending.Count);
             Assert.Equal(2, pending.Select(d => d.Event.Id).Distinct().Count());
             Assert.All(pending, d => Assert.Equal(original.InstanceId, d.Event.InstanceId));
+
             foreach (var delivery in pending)
                 Assert.True(await store.SettleDeliveryAsync(delivery.Event.Id, name, "owner", OutboxPublishResult.Delivered()));
         }
+
         await repository.DeleteWorkflowInstanceAsync(original.InstanceId);
     }
 
@@ -316,8 +376,10 @@ internal static class OutboxStoreContract
     {
         var instance = await CompleteAsync(repository);
         var gone = await Claim(store, "primary");
+
         Assert.True(await store.SettleDeliveryAsync(gone.Event.Id, "primary", "owner",
             OutboxPublishResult.GiveUp("HTTP 410 Gone", disablePublisher: true)));
+
         await store.RegisterPublisherAsync("primary", [OutboxEvent.WorkflowCompleted]);
         var state = (await store.GetPublisherAsync("primary"))!;
         Assert.NotNull(state.DisabledAtUtc);
@@ -326,11 +388,13 @@ internal static class OutboxStoreContract
         var future = await CompleteAsync(repository);
         var secondary = await store.ClaimDeliveriesAsync("secondary", "owner", TimeSpan.FromSeconds(30), 10);
         Assert.Equal(2, secondary.Count);
+
         foreach (var item in secondary)
         {
             Assert.True(await store.SettleDeliveryAsync(item.Event.Id, "secondary", "owner", OutboxPublishResult.Delivered()));
             Assert.Equal(OutboxDeliveryStatus.GivenUp, (await store.GetDeliveryAsync(item.Event.Id, "primary"))!.Status);
         }
+
         await repository.DeleteWorkflowInstanceAsync(instance.InstanceId);
         await repository.DeleteWorkflowInstanceAsync(future.InstanceId);
     }

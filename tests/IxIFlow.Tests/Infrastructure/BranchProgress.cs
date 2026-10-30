@@ -12,14 +12,17 @@ public static class BranchProgress
     {
         var saved = await repository.GetWorkflowInstanceAsync(instanceId)
             ?? throw new InvalidOperationException($"Instance '{instanceId}' was not saved");
+
         var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);
         checkpoint.RootData = JsonSerializer.Deserialize<T>(saved.WorkflowDataJson.InlineText)!;
         var continuation = checkpoint.Continuations.Single(item => item.ParentJoinId == null);
+
         foreach (var index in branchPath)
         {
             var join = checkpoint.Joins.Single(item => item.ParentContinuationId == continuation.Id);
             continuation = checkpoint.BranchesOf(join)[index];
         }
+
         return (T)checkpoint.DataOf(continuation);
     }
 }

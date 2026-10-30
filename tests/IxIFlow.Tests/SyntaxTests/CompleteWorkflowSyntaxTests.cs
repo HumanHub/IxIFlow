@@ -15,70 +15,67 @@ public class CompleteWorkflowSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("CompleteWorkflowAllPatternsTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
-                .Step<CheckInventoryAsyncActivity>(setup => setup
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Step<CheckInventoryAsyncActivity>(setup => setup
+                .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                .Input(act => act.IsOrderValid).From(ctx => ctx.PreviousStep.IsValid)
+                .Output(act => act.InStock).To(ctx => ctx.WorkflowData.InventoryStatus))
+            .Try(tryBlock =>
+            {
+                tryBlock.Step<CalculatePricingAsyncActivityMock>(setup => setup
                     .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                    .Input(act => act.IsOrderValid).From(ctx => ctx.PreviousStep.IsValid)
-                    .Output(act => act.InStock).To(ctx => ctx.WorkflowData.InventoryStatus))
-
-                .Try(tryBlock =>
+                    .Input(act => act.InStock).From(ctx => ctx.PreviousStep.InStock)
+                    .Output(act => act.FinalPrice).To(ctx => ctx.WorkflowData.FinalPrice));
+            })
+            .Catch<PricingException, MessageFault>(catchBlock =>
+            {
+                catchBlock.Step<UseDefaultPricingAsyncActivity>(setup => setup
+                    .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                    .Input(act => act.SomeMessage).From(ctx => ctx.Fault.Message)
+                    .Output(act => act.DefaultPrice).To(ctx => ctx.WorkflowData.FinalPrice));
+            })
+            .Catch<Exception, MessageFault>(catchBlock =>
+            {
+                catchBlock.Step<UseDefaultPricingAsyncActivity>(setup => setup
+                    .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                    .Input(act => act.SomeMessage).From(ctx => ctx.Fault.Message)
+                    .Output(act => act.DefaultPrice).To(ctx => ctx.WorkflowData.FinalPrice));
+            })
+            .If(ctx => ctx.WorkflowData.FinalPrice > 1000,
+                then =>
                 {
-                    tryBlock.Step<CalculatePricingAsyncActivityMock>(setup => setup
-                        .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                        .Input(act => act.InStock).From(ctx => ctx.PreviousStep.InStock)
-                        .Output(act => act.FinalPrice).To(ctx => ctx.WorkflowData.FinalPrice));
+                    then.Suspend<ApprovalEventData>("High value order requires approval",
+                        (evt, ctx) => evt.OrderId == ctx.WorkflowData.OrderId && evt.Approved,
+                        setup => setup
+                            .Input(act => act.ProductId).From(ctx => ctx.PreviousStep.ProductId)
+                            .Output(act => act.Approved).To(ctx => ctx.WorkflowData.Approved)
+                    );
+
+                    // For now, just process the order directly
+                    then.Step<ProcessOrderAsyncActivity>(setup => setup
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
+                },
+                @else =>
+                {
+                    @else.Step<ProcessOrderAsyncActivity>(setup => setup
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
                 })
-                .Catch<PricingException, MessageFault>(catchBlock =>
-                {
-                    catchBlock.Step<UseDefaultPricingAsyncActivity>(setup => setup
-                        .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                        .Input(act => act.SomeMessage).From(ctx => ctx.Fault.Message)
-                        .Output(act => act.DefaultPrice).To(ctx => ctx.WorkflowData.FinalPrice));
-                })
-                .Catch<Exception, MessageFault>(catchBlock =>
-                {
-                    catchBlock.Step<UseDefaultPricingAsyncActivity>(setup => setup
-                        .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                        .Input(act => act.SomeMessage).From(ctx => ctx.Fault.Message)
-                        .Output(act => act.DefaultPrice).To(ctx => ctx.WorkflowData.FinalPrice));
-                })
 
-                .If(ctx => ctx.WorkflowData.FinalPrice > 1000,
-                    then =>
-                    {
-                        then.Suspend<ApprovalEventData>("High value order requires approval",
-                             (evt, ctx) => evt.OrderId == ctx.WorkflowData.OrderId && evt.Approved,
-                             setup => setup
-                                 .Input(act=>act.ProductId).From(ctx=>ctx.PreviousStep.ProductId)
-                                 .Output(act=>act.Approved).To(ctx=>ctx.WorkflowData.Approved)
-                             );
-
-                        // For now, just process the order directly
-                        then.Step<ProcessOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                            .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
-                    },
-                    @else =>
-                    {
-                        @else.Step<ProcessOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                            .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
-                    })
-
-                // Handle saga termination with Try/Catch
-                .Try(tryBlock =>
-                {
-                    // TODO: Saga pattern not implemented yet
-                    tryBlock.Saga(saga =>
+            // Handle saga termination with Try/Catch
+            .Try(tryBlock =>
+            {
+                // TODO: Saga pattern not implemented yet
+                tryBlock.Saga(saga =>
                     {
                         saga.Step<ChargePaymentAsyncActivity>(setup => setup
                                 .Input(act => act.Amount).From(ctx => ctx.WorkflowData.FinalPrice)
                                 .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                                 .OnError<PaymentException>(handler => handler.ThenRetry(3))
                                 .CompensateWith<RefundPaymentAsyncActivity>())
-
                             .Step<ReserveInventoryAsyncActivity>(setup => setup
                                 .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
                                 .Input(act => act.InStock).From(ctx => !string.IsNullOrEmpty(ctx.PreviousStep.TransactionId))
@@ -86,7 +83,6 @@ public class CompleteWorkflowSyntaxTests
                                 .OnError<InventoryException>(handler => handler.ThenRetry(3))
                                 .CompensateWith<ReleaseInventoryAsyncActivity>(x => x
                                     .Input(s => s.ReservationId).From(chargePayment => chargePayment.CurrentStep.ReservationId)))
-
                             .Step<CreateShipmentAsyncActivity>(setup => setup
                                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                                 .Input(act => act.ReservationId)
@@ -114,82 +110,82 @@ public class CompleteWorkflowSyntaxTests
                         error
                             .Compensate(); // Compensate successful steps
                     });
-                })
-                 .Catch<SagaTerminatedException, MessageFault>(catchBlock =>
-                 {
-                     catchBlock
-                         .Step<HandleSagaFailureAsyncActivity>(setup => setup
-                             .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
-                             .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandled))
-                         .Parallel(parallel =>
-                         {
-                             parallel
-                                 .Do(emailBranch =>
-                                 {
-                                     emailBranch.Step<SendEmailAsyncActivity>(setup => setup
-                                         .Input(act => act.EmailAddress).From(ctx => ctx.WorkflowData.CustomerEmail)
-                                         .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                                         .Output(act => act.EmailSent).To(ctx => ctx.WorkflowData.EmailStatus));
-                                 })
-                                 .Do(smsBranch =>
-                                 {
-                                     smsBranch.Step<SendSmsAsyncActivity>(setup => setup
-                                         .Input(act => act.PhoneNumber).From(ctx => ctx.WorkflowData.CustomerPhone)
-                                         .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                                         .Output(act => act.SmsSent).To(ctx => ctx.WorkflowData.SmsStatus));
-                                 });
-                         });
-                 })
-                .Catch<Exception, MessageFault>(catchBlock =>
-                {
-                    catchBlock
-                        .Step<HandleSagaFailureAsyncActivity>(setup => setup
-                            .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
-                            .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandled))
-                     .Parallel(parallel =>
-                     {
-                         parallel
-                             .Do(emailBranch =>
-                             {
-                                 emailBranch.Step<SendEmailAsyncActivity>(setup => setup
-                                     .Input(act => act.EmailAddress).From(ctx => ctx.WorkflowData.CustomerEmail)
-                                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                                     .Output(act => act.EmailSent).To(ctx => ctx.WorkflowData.EmailStatus));
-                             })
-                             .Do(smsBranch =>
-                             {
-                                 smsBranch.Step<SendSmsAsyncActivity>(setup => setup
-                                     .Input(act => act.PhoneNumber).From(ctx => ctx.WorkflowData.CustomerPhone)
-                                     .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                                     .Output(act => act.SmsSent).To(ctx => ctx.WorkflowData.SmsStatus));
-                             });
-                     });
-                })
+            })
+            .Catch<SagaTerminatedException, MessageFault>(catchBlock =>
+            {
+                catchBlock
+                    .Step<HandleSagaFailureAsyncActivity>(setup => setup
+                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
+                        .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandled))
+                    .Parallel(parallel =>
+                    {
+                        parallel
+                            .Do(emailBranch =>
+                            {
+                                emailBranch.Step<SendEmailAsyncActivity>(setup => setup
+                                    .Input(act => act.EmailAddress).From(ctx => ctx.WorkflowData.CustomerEmail)
+                                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                                    .Output(act => act.EmailSent).To(ctx => ctx.WorkflowData.EmailStatus));
+                            })
+                            .Do(smsBranch =>
+                            {
+                                smsBranch.Step<SendSmsAsyncActivity>(setup => setup
+                                    .Input(act => act.PhoneNumber).From(ctx => ctx.WorkflowData.CustomerPhone)
+                                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                                    .Output(act => act.SmsSent).To(ctx => ctx.WorkflowData.SmsStatus));
+                            });
+                    });
+            })
+            .Catch<Exception, MessageFault>(catchBlock =>
+            {
+                catchBlock
+                    .Step<HandleSagaFailureAsyncActivity>(setup => setup
+                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
+                        .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandled))
+                    .Parallel(parallel =>
+                    {
+                        parallel
+                            .Do(emailBranch =>
+                            {
+                                emailBranch.Step<SendEmailAsyncActivity>(setup => setup
+                                    .Input(act => act.EmailAddress).From(ctx => ctx.WorkflowData.CustomerEmail)
+                                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                                    .Output(act => act.EmailSent).To(ctx => ctx.WorkflowData.EmailStatus));
+                            })
+                            .Do(smsBranch =>
+                            {
+                                smsBranch.Step<SendSmsAsyncActivity>(setup => setup
+                                    .Input(act => act.PhoneNumber).From(ctx => ctx.WorkflowData.CustomerPhone)
+                                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                                    .Output(act => act.SmsSent).To(ctx => ctx.WorkflowData.SmsStatus));
+                            });
+                    });
+            })
 
-                 // Continue with regular activities after payment processing
-                 .Parallel(parallel =>
-                 {
-                     parallel
-                         .Do(emailBranch =>
-                         {
-                             emailBranch.Step<SendConfirmationAsyncActivity>(setup => setup
-                                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                                 .Input(act => act.ShipmentId).From(ctx => ctx.WorkflowData.ShipmentId)
-                                 .Input(act => act.ProcessedData).From(ctx => ctx.WorkflowData.ProcessedOrder)
-                                 .Output(act => act.ConfirmationSent).To(ctx => ctx.WorkflowData.EmailStatus));
-                         })
-                         .Do(smsBranch =>
-                         {
-                             smsBranch.Step<SendSmsAsyncActivity>(setup => setup
-                                 .Input(act => act.PhoneNumber).From(ctx => ctx.WorkflowData.CustomerPhone)
-                                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                                 .Output(act => act.SmsSent).To(ctx => ctx.WorkflowData.SmsStatus));
-                         });
-                 })
-                .Step<UpdateAnalyticsAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Success).From(ctx => ctx.WorkflowData.ErrorHandled == false)
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            // Continue with regular activities after payment processing
+            .Parallel(parallel =>
+            {
+                parallel
+                    .Do(emailBranch =>
+                    {
+                        emailBranch.Step<SendConfirmationAsyncActivity>(setup => setup
+                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                            .Input(act => act.ShipmentId).From(ctx => ctx.WorkflowData.ShipmentId)
+                            .Input(act => act.ProcessedData).From(ctx => ctx.WorkflowData.ProcessedOrder)
+                            .Output(act => act.ConfirmationSent).To(ctx => ctx.WorkflowData.EmailStatus));
+                    })
+                    .Do(smsBranch =>
+                    {
+                        smsBranch.Step<SendSmsAsyncActivity>(setup => setup
+                            .Input(act => act.PhoneNumber).From(ctx => ctx.WorkflowData.CustomerPhone)
+                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                            .Output(act => act.SmsSent).To(ctx => ctx.WorkflowData.SmsStatus));
+                    });
+            })
+            .Step<UpdateAnalyticsAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Success).From(ctx => ctx.WorkflowData.ErrorHandled == false)
+                .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
             .Build();
 
         // Assert
@@ -205,19 +201,19 @@ public class CompleteWorkflowSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("CompleteSequentialTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
-                .Step<CheckInventoryAsyncActivity>(setup => setup
-                    .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                    .Input(act => act.IsOrderValid)
-                    .From(ctx => ctx.PreviousStep.IsValid) // ValidateOrderAsyncActivity.IsValid
-                    .Output(act => act.InStock).To(ctx => ctx.WorkflowData.InventoryStatus))
-                .Step<UpdateAnalyticsAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Success)
-                    .From(ctx => ctx.PreviousStep.InStock) // CheckInventoryAsyncActivity.InStock
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Step<CheckInventoryAsyncActivity>(setup => setup
+                .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                .Input(act => act.IsOrderValid)
+                .From(ctx => ctx.PreviousStep.IsValid) // ValidateOrderAsyncActivity.IsValid
+                .Output(act => act.InStock).To(ctx => ctx.WorkflowData.InventoryStatus))
+            .Step<UpdateAnalyticsAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Success)
+                .From(ctx => ctx.PreviousStep.InStock) // CheckInventoryAsyncActivity.InStock
+                .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
             .Build();
 
         // Assert - Verify workflow definition was created successfully
@@ -233,38 +229,38 @@ public class CompleteWorkflowSyntaxTests
     {
         // Arrange & Act - This test verifies that try/catch with conditionals compile correctly
         var definition = Workflow.Create<OrderWorkflowData>("TryCatchConditionalTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
-                .Try(tryBlock =>
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Try(tryBlock =>
+            {
+                tryBlock.Step<CalculatePricingAsyncActivityMock>(setup => setup
+                    .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                    .Input(act => act.InStock)
+                    .From(ctx => ctx.PreviousStep.IsValid) // ValidateOrderAsyncActivity.IsValid
+                    .Output(act => act.FinalPrice).To(ctx => ctx.WorkflowData.FinalPrice));
+            })
+            .Catch<PricingException, MessageFault>(catchBlock =>
+            {
+                catchBlock.Step<UseDefaultPricingAsyncActivity>(setup => setup
+                    .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                    .Input(act => act.SomeMessage).From(ctx => ctx.Fault.Message) // Exception message access
+                    .Output(act => act.DefaultPrice).To(ctx => ctx.WorkflowData.FinalPrice));
+            })
+            .If(ctx => ctx.WorkflowData.FinalPrice > 1000,
+                then =>
                 {
-                    tryBlock.Step<CalculatePricingAsyncActivityMock>(setup => setup
-                        .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                        .Input(act => act.InStock)
-                        .From(ctx => ctx.PreviousStep.IsValid) // ValidateOrderAsyncActivity.IsValid
-                        .Output(act => act.FinalPrice).To(ctx => ctx.WorkflowData.FinalPrice));
-                })
-                .Catch<PricingException, MessageFault>(catchBlock =>
+                    then.Step<ProcessOrderAsyncActivity>(setup => setup
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
+                },
+                @else =>
                 {
-                    catchBlock.Step<UseDefaultPricingAsyncActivity>(setup => setup
-                        .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                        .Input(act => act.SomeMessage).From(ctx => ctx.Fault.Message) // Exception message access
-                        .Output(act => act.DefaultPrice).To(ctx => ctx.WorkflowData.FinalPrice));
+                    @else.Step<ProcessValidOrderAsyncActivity>(setup => setup
+                        .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.ValidationResult).From(ctx => ctx.WorkflowData.ValidationResult)
+                        .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
                 })
-                .If(ctx => ctx.WorkflowData.FinalPrice > 1000,
-                    then =>
-                    {
-                        then.Step<ProcessOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                            .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
-                    },
-                    @else =>
-                    {
-                        @else.Step<ProcessValidOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)
-                            .Input(act => act.ValidationResult).From(ctx => ctx.WorkflowData.ValidationResult)
-                            .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
-                    })
             .Build();
 
         // Assert
@@ -277,36 +273,36 @@ public class CompleteWorkflowSyntaxTests
     {
         // Arrange & Act - This test verifies that parallel execution compiles correctly
         var definition = Workflow.Create<OrderWorkflowData>("ParallelExecutionTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
-
-                 .Parallel(parallel =>
-                 {
-                     parallel
-                         .Do(emailBranch =>
-                         {
-                             emailBranch.Step<SendEmailAsyncActivity>(setup => setup
-                                 .Input(act => act.EmailAddress).From(ctx => ctx.WorkflowData.CustomerEmail)
-                                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                                 .Output(act => act.EmailSent).To(ctx => ctx.WorkflowData.EmailStatus));
-                         })
-                         .Do(smsBranch =>
-                         {
-                             smsBranch.Step<SendSmsAsyncActivity>(setup => setup
-                                 .Input(act => act.PhoneNumber).From(ctx => ctx.WorkflowData.CustomerPhone)
-                                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                                 .Output(act => act.SmsSent).To(ctx => ctx.WorkflowData.SmsStatus));
-                         });
-                 })
-                .Step<VerifyNotificationsAsyncActivity>(setup => setup
-                    .Input(act => act.EmailStatus).From(ctx => ctx.WorkflowData.EmailStatus)
-                    .Input(act => act.SmsStatus).From(ctx => ctx.WorkflowData.SmsStatus)
-                    .Output(act => act.AllNotificationsSent).To(ctx => ctx.WorkflowData.NotificationComplete))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Parallel(parallel =>
+            {
+                parallel
+                    .Do(emailBranch =>
+                    {
+                        emailBranch.Step<SendEmailAsyncActivity>(setup => setup
+                            .Input(act => act.EmailAddress).From(ctx => ctx.WorkflowData.CustomerEmail)
+                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                            .Output(act => act.EmailSent).To(ctx => ctx.WorkflowData.EmailStatus));
+                    })
+                    .Do(smsBranch =>
+                    {
+                        smsBranch.Step<SendSmsAsyncActivity>(setup => setup
+                            .Input(act => act.PhoneNumber).From(ctx => ctx.WorkflowData.CustomerPhone)
+                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                            .Output(act => act.SmsSent).To(ctx => ctx.WorkflowData.SmsStatus));
+                    });
+            })
+            .Step<VerifyNotificationsAsyncActivity>(setup => setup
+                .Input(act => act.EmailStatus).From(ctx => ctx.WorkflowData.EmailStatus)
+                .Input(act => act.SmsStatus).From(ctx => ctx.WorkflowData.SmsStatus)
+                .Output(act => act.AllNotificationsSent).To(ctx => ctx.WorkflowData.NotificationComplete))
             .Build();
 
         // Assert
         Assert.NotNull(definition);
+
         // Assert.Equal(3, definition.Steps.Count); // ValidateOrder + Parallel + VerifyNotifications
     }
 
@@ -315,27 +311,26 @@ public class CompleteWorkflowSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("WorkflowStructureTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
-                .Try(tryBlock =>
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
+            .Try(tryBlock =>
+            {
+                tryBlock.Step<ProcessOrderAsyncActivity>(setup => setup
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId));
+            })
+            .Catch<Exception, MessageFault>(catchBlock =>
+            {
+                catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
+                    .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message));
+            })
+            .Parallel(parallel =>
+            {
+                parallel.Do(branch =>
                 {
-                    tryBlock.Step<ProcessOrderAsyncActivity>(setup => setup
-                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId));
-                })
-                .Catch<Exception, MessageFault>(catchBlock =>
-                {
-                    catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
-                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message));
-                })
-
-             .Parallel(parallel =>
-             {
-                 parallel.Do(branch =>
-                 {
-                     branch.Step<SendEmailAsyncActivity>(setup => setup
-                         .Input(act => act.EmailAddress).From(ctx => ctx.WorkflowData.CustomerEmail));
-                 });
-             })
+                    branch.Step<SendEmailAsyncActivity>(setup => setup
+                        .Input(act => act.EmailAddress).From(ctx => ctx.WorkflowData.CustomerEmail));
+                });
+            })
             .Build();
 
         // Assert - Verify step types and structure
@@ -354,24 +349,24 @@ public class CompleteWorkflowSyntaxTests
     {
         // Arrange & Act - Test that chained exception handling compiles correctly
         var definition = Workflow.Create<OrderWorkflowData>("ChainedExceptionHandlingTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
-                .Try(tryBlock =>
-                {
-                    tryBlock.Step<RiskyAsyncActivity>(setup => setup
-                        .Input(act => act.Data).From(ctx => ctx.WorkflowData.OrderId));
-                })
-                .Catch<PricingException, MessageFault>(catchBlock =>
-                {
-                    catchBlock.Step<BusinessErrorHandlerAsyncActivity>(setup => setup
-                        .Input(act => act.BusinessErrors).From(ctx => ctx.WorkflowData.ValidationErrors));
-                })
-                .Catch<Exception, MessageFault>(catchBlock =>
-                {
-                    catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
-                        .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
-                        .Input(act => act.WorkflowId).From(ctx => ctx.WorkflowData.WorkflowId));
-                })
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
+            .Try(tryBlock =>
+            {
+                tryBlock.Step<RiskyAsyncActivity>(setup => setup
+                    .Input(act => act.Data).From(ctx => ctx.WorkflowData.OrderId));
+            })
+            .Catch<PricingException, MessageFault>(catchBlock =>
+            {
+                catchBlock.Step<BusinessErrorHandlerAsyncActivity>(setup => setup
+                    .Input(act => act.BusinessErrors).From(ctx => ctx.WorkflowData.ValidationErrors));
+            })
+            .Catch<Exception, MessageFault>(catchBlock =>
+            {
+                catchBlock.Step<ErrorLoggingAsyncActivity>(setup => setup
+                    .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
+                    .Input(act => act.WorkflowId).From(ctx => ctx.WorkflowData.WorkflowId));
+            })
             .Build();
 
         // Assert
@@ -386,32 +381,32 @@ public class CompleteWorkflowSyntaxTests
     {
         // Arrange & Act - Test that nested parallel execution in conditional compiles
         var definition = Workflow.Create<OrderWorkflowData>("NestedParallelInConditionalTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
-                .If(ctx => ctx.WorkflowData.ValidationResult,
-                    then =>
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
+            .If(ctx => ctx.WorkflowData.ValidationResult,
+                then =>
+                {
+                    then.Parallel(parallel =>
                     {
-                        then.Parallel(parallel =>
-                        {
-                            parallel
-                                .Do(branch1 =>
-                                {
-                                    branch1.Step<SendEmailAsyncActivity>(setup => setup
-                                        .Input(act => act.EmailAddress).From(ctx => ctx.WorkflowData.CustomerEmail));
-                                })
-                                .Do(branch2 =>
-                                {
-                                    branch2.Step<SendSmsAsyncActivity>(setup => setup
-                                        .Input(act => act.PhoneNumber).From(ctx => ctx.WorkflowData.CustomerPhone));
-                                });
-                        });
-                    },
-                    @else =>
-                    {
-                        @else.Step<RejectOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId));
-                    })
+                        parallel
+                            .Do(branch1 =>
+                            {
+                                branch1.Step<SendEmailAsyncActivity>(setup => setup
+                                    .Input(act => act.EmailAddress).From(ctx => ctx.WorkflowData.CustomerEmail));
+                            })
+                            .Do(branch2 =>
+                            {
+                                branch2.Step<SendSmsAsyncActivity>(setup => setup
+                                    .Input(act => act.PhoneNumber).From(ctx => ctx.WorkflowData.CustomerPhone));
+                            });
+                    });
+                },
+                @else =>
+                {
+                    @else.Step<RejectOrderAsyncActivity>(setup => setup
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId));
+                })
             .Build();
 
         // Assert

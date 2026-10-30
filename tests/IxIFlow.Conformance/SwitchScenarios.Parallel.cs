@@ -8,7 +8,8 @@ public sealed partial class SwitchScenarios
     {
         [Theory]
         [MemberData(nameof(Compositions))]
-        public Task SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(string profile, string shape, string fault, string authoring) =>
+        public Task SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(string profile, string shape, string fault,
+            string authoring) =>
             SwitchScenarios.SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(profile, shape, fault, authoring);
 
         public static IEnumerable<object[]> Compositions =>
@@ -21,7 +22,8 @@ public sealed partial class SwitchScenarios
     {
         [Theory]
         [MemberData(nameof(Compositions))]
-        public Task SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(string profile, string shape, string fault, string authoring) =>
+        public Task SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(string profile, string shape, string fault,
+            string authoring) =>
             SwitchScenarios.SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(profile, shape, fault, authoring);
 
         public static IEnumerable<object[]> Compositions =>
@@ -34,7 +36,8 @@ public sealed partial class SwitchScenarios
     {
         [Theory]
         [MemberData(nameof(Compositions))]
-        public Task SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(string profile, string shape, string fault, string authoring) =>
+        public Task SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(string profile, string shape, string fault,
+            string authoring) =>
             SwitchScenarios.SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(profile, shape, fault, authoring);
 
         public static IEnumerable<object[]> Compositions =>
@@ -47,7 +50,8 @@ public sealed partial class SwitchScenarios
     {
         [Theory]
         [MemberData(nameof(Compositions))]
-        public Task SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(string profile, string shape, string fault, string authoring) =>
+        public Task SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(string profile, string shape, string fault,
+            string authoring) =>
             SwitchScenarios.SavedSwitchCasesRecoverInsideEveryCompositionAndSagaCompensates(profile, shape, fault, authoring);
 
         public static IEnumerable<object[]> Compositions =>

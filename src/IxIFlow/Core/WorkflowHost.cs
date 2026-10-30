@@ -22,7 +22,7 @@ namespace IxIFlow.Core;
 /// stores. Container disposal alone does not ensure this order. Both shutdown paths wait for
 /// admitted runs, execution claims and then their lingering scopes, with a ten-second release bound after
 /// cancellation and a warning if it expires; resources can remain in use after that timeout.
-/// Synchronous <see cref="Dispose"/> only requests cancellation and does not wait for release.
+/// Synchronous <see cref="Dispose"/> requests cancellation and starts cleanup without waiting for release.
 /// </remarks>
 public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDisposable
 {
@@ -31,23 +31,30 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
     private readonly IServiceScopeFactory _scopes;
     private readonly HostSettings _settings;
     private readonly SemaphoreSlim _slots;
+
     private readonly object _lock = new();
+
     // An instance with an entry has one item admitted; the queue holds the items behind it.
     private readonly Dictionary<string, Queue<WorkItem>> _instances = new(StringComparer.Ordinal);
+
     // Every admitted item until it finishes, added under the lock that admits it, so a stopping
     // host waits for all of them.
     private readonly HashSet<WorkItem> _admitted = [];
+
     // Claims remain admitted through lease disposal, including claims from operations without a slot.
     private readonly HashSet<TaskCompletionSource> _claims = [];
+
     // Runs that ended while inline calls were still using their scope; each holds its slot until
     // the last of those calls ends.
     private readonly Dictionary<WorkItem, Task> _lingering = [];
+
     // Callers waiting for work on an instance to finish, by instance.
     private readonly Dictionary<string, SettledSignal> _settled = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _awaiters = new(StringComparer.Ordinal);
 
     // Handlers enqueue subscription changes only. They run under the host lock to preserve ordering.
     internal event Action<string, bool>? AwaitingChanged;
+
     // Always report capacity; only newly available execution capacity should wake recovery.
     internal event Action<bool>? FreeSlotsChanged;
     internal Func<string, CancellationToken, Task>? AwaitSubscriptionAsync;
@@ -60,37 +67,53 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         lock (_lock)
         {
             AwaitingChanged += observer;
-            foreach (var id in _awaiters.Keys) observer(id, true);
+
+            foreach (var id in _awaiters.Keys)
+                observer(id, true);
         }
     }
 
     // A new coordinator link replays this snapshot, acknowledges subscriptions, then rereads the store.
     internal IReadOnlyList<string> AwaitedInstances
     {
-        get { lock (_lock) return _awaiters.Keys.ToArray(); }
+        get
+        {
+            lock (_lock)
+                return _awaiters.Keys.ToArray();
+        }
     }
 
     internal void NotifyCompletion(string instanceId)
     {
         SettledSignal? signal;
-        lock (_lock) _settled.Remove(instanceId, out signal);
+
+        lock (_lock)
+            _settled.Remove(instanceId, out signal);
+
         signal?.Source.TrySetResult();
     }
+
     private readonly CancellationTokenSource _draining = new();
     private readonly CancellationTokenSource _stopped = new();
     private readonly Lazy<Task> _disposal;
+    private bool _resourcesDisposed;
+
     private bool _accepting = true;
+
     // Instances this host saved with a later runnable time, earliest first, and one timer for the
-    // earliest (C-12). Work saved by other hosts, and anything lost here, is found by the poll.
+    // earliest. Work saved by other hosts, and anything lost here, is found by the poll.
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
     private readonly ILogger<SensitiveDiagnostics>? _sensitiveDiagnostics;
     private readonly InspectionRedactionPolicy _inspectionPolicy;
+
     private readonly SortedSet<(DateTime Due, string InstanceId)> _due = new(Comparer<(DateTime Due, string InstanceId)>
         .Create((left, right) => left.Due != right.Due
             ? left.Due.CompareTo(right.Due)
             : string.CompareOrdinal(left.InstanceId, right.InstanceId)));
+
     private readonly Dictionary<string, DateTime> _dueOf = new(StringComparer.Ordinal);
+
     // Resumes that found the instance owned or failed, by instance, for their backoff.
     private readonly Dictionary<string, int> _resumeRetries = new(StringComparer.Ordinal);
     private const int MaxResumeRetries = 6;
@@ -109,9 +132,11 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         _logger = logger ?? NullLogger<WorkflowHost>.Instance;
         _sensitiveDiagnostics = sensitiveDiagnostics;
         _inspectionPolicy = inspectionPolicy ?? InspectionRedactionPolicy.Default;
+
         // DI captures this instance as both WorkflowHost and IHostedService. Share the entire
         // operation, including its release bound and warning, across concurrent/repeated disposal.
-        _disposal = new Lazy<Task>(DisposeAsyncCore);
+        _disposal = new Lazy<Task>(() => DisposeAsyncCore());
+
         // The timer must not carry the context of whoever first scheduled something: its callbacks
         // would then look like calls from inside that run.
         using (ExecutionContextFlow.SuppressIfNeeded())
@@ -123,47 +148,59 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
 
     // Start the store call under the shutdown lock. A caller can have passed slot admission long
     // before reaching this boundary, or be an inline call in a draining run.
-    internal Task<WorkflowExecutionLease?> ClaimExecutionAsync(Func<Task<WorkflowExecutionLease?>> claim)
+    internal Task<WorkflowExecutionLease?> ClaimExecutionAsync(Func<Task<WorkflowExecutionLease?>> claim,
+        CancellationToken cancellationToken = default)
     {
         lock (_lock)
         {
             if (!_accepting)
                 return Task.FromCanceled<WorkflowExecutionLease?>(new CancellationToken(true));
+
             var done = NewSignal();
             _claims.Add(done);
-            return AcquireAndTrackAsync(claim, done);
+
+            return AcquireAndTrackAsync(claim, done, cancellationToken: cancellationToken);
         }
     }
 
     private async Task<WorkflowExecutionLease?> AcquireAndTrackAsync(
-        Func<Task<WorkflowExecutionLease?>> claim, TaskCompletionSource done)
+        Func<Task<WorkflowExecutionLease?>> claim, TaskCompletionSource done, CancellationToken cancellationToken = default)
     {
         var handedOff = false;
+
         try
         {
             var owner = await claim().ConfigureAwait(false);
-            if (owner == null) return null;
+
+            if (owner == null)
+                return null;
+
             lock (_lock)
             {
                 if (_accepting)
                 {
                     handedOff = true;
-                    _ = CompleteClaimAsync(owner, done);
+                    _ = CompleteClaimAsync(owner, done, cancellationToken: cancellationToken);
+
                     return owner;
                 }
             }
+
             // The store cannot cancel a claim already sent. Never hand a late grant to a run:
             // release it while shutdown is still waiting for this claim.
             await owner.DisposeAsync().ConfigureAwait(false);
+
             throw new OperationCanceledException(new CancellationToken(true));
         }
         finally
         {
-            if (!handedOff) CompleteClaim(done);
+            if (!handedOff)
+                CompleteClaim(done);
         }
     }
 
-    private async Task CompleteClaimAsync(WorkflowExecutionLease owner, TaskCompletionSource done)
+    private async Task CompleteClaimAsync(WorkflowExecutionLease owner, TaskCompletionSource done,
+        CancellationToken cancellationToken = default)
     {
         await owner.ReleaseCompleted.ConfigureAwait(false);
         CompleteClaim(done);
@@ -171,7 +208,9 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
 
     private void CompleteClaim(TaskCompletionSource done)
     {
-        lock (_lock) _claims.Remove(done);
+        lock (_lock)
+            _claims.Remove(done);
+
         done.TrySetResult();
     }
 
@@ -185,6 +224,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         {
             if (!_accepting)
                 return;
+
             SetDueLocked(instanceId, dueUtc);
         }
     }
@@ -200,6 +240,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
             if (!_accepting)
                 return;
         }
+
         DispatchResume(instanceId);
     }
 
@@ -213,6 +254,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
     {
         if (_dueOf.Remove(instanceId, out var previous))
             _due.Remove((previous, instanceId));
+
         _dueOf[instanceId] = dueUtc;
         _due.Add((dueUtc, instanceId));
         ArmLocked();
@@ -224,6 +266,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         lock (_lock)
         {
             _resumeRetries.Remove(instanceId);
+
             if (_dueOf.Remove(instanceId, out var previous))
             {
                 _due.Remove((previous, instanceId));
@@ -237,30 +280,39 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
     {
         if (_timer == null)
             return;
+
         if (_due.Count == 0)
         {
             _timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             _armedFor = null;
+
             return;
         }
+
         var next = _due.Min.Due;
+
         if (_armedFor == next)
             return;
+
         _armedFor = next;
         var delay = next - _time.GetUtcNow().UtcDateTime;
+
         // A timer cannot wait arbitrarily long; a far time is re-armed when the timer fires.
         delay = delay < TimeSpan.Zero ? TimeSpan.Zero
             : delay > TimeSpan.FromHours(1) ? TimeSpan.FromHours(1) : delay;
+
         _timer.Change(delay, Timeout.InfiniteTimeSpan);
     }
 
     private void ResumeDue()
     {
         var due = new List<string>();
+
         lock (_lock)
         {
             _armedFor = null;
             var now = _time.GetUtcNow().UtcDateTime;
+
             while (_due.Count > 0 && _due.Min.Due <= now)
             {
                 var entry = _due.Min;
@@ -268,9 +320,11 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
                 _dueOf.Remove(entry.InstanceId);
                 due.Add(entry.InstanceId);
             }
+
             if (_accepting)
                 ArmLocked();
         }
+
         foreach (var instanceId in due)
             DispatchResume(instanceId);
     }
@@ -279,6 +333,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
     private async Task ResumeAsync(string instanceId)
     {
         WorkflowExecutionResult? result = null;
+
         try
         {
             result = await RunAsync(instanceId, (client, _, token) => client.RecoverAsync(instanceId, token),
@@ -291,8 +346,10 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         }
         catch (Exception error)
         {
-            _inspectionPolicy.Log(_logger, _sensitiveDiagnostics, LogLevel.Error, error, "Could not resume workflow {InstanceId} at its runnable time", instanceId);
+            _inspectionPolicy.Log(_logger, _sensitiveDiagnostics, LogLevel.Error, error,
+                "Could not resume workflow {InstanceId} at its runnable time", instanceId);
         }
+
         lock (_lock)
         {
             // An owner held it, or the resume failed: look again after a backoff, a few times. An
@@ -303,6 +360,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
                 var attempt = _resumeRetries.GetValueOrDefault(instanceId);
                 _resumeRetries[instanceId] = attempt + 1;
                 var backoff = TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Min(attempt, 5))));
+
                 // A time saved since this resume was dispatched is newer; it stands.
                 if (_accepting && !_dueOf.ContainsKey(instanceId))
                     SetDueLocked(instanceId, _time.GetUtcNow().UtcDateTime + backoff);
@@ -322,17 +380,36 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         if (CurrentRun.Value is { } current && current.TryEnter())
         {
             run = RunInlineAsync(current, operation, cancellationToken);
+
             return true;
         }
+
         run = null;
+
         return false;
     }
 
     internal static void RetainScopeWork(Task task)
     {
-        if (CurrentRun.Value is not { } context || !context.TryEnter()) return;
+        if (CurrentRun.Value is not { } context || !context.TryEnter())
+            return;
+
         _ = ReleaseAsync();
-        async Task ReleaseAsync() { try { await task.ConfigureAwait(false); } catch { } finally { await context.ExitAsync(); } }
+
+        async Task ReleaseAsync()
+        {
+            try
+            {
+                await task.ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+            finally
+            {
+                await context.ExitAsync();
+            }
+        }
     }
 
     // An inline call stops with its caller or with the host, whichever comes first.
@@ -343,6 +420,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         try
         {
             using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _stopped.Token);
+
             return await operation(current.Client, current.Control, stop.Token);
         }
         finally
@@ -361,11 +439,16 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         {
             if (!_settled.TryGetValue(instanceId, out var signal))
                 _settled[instanceId] = signal = new SettledSignal();
+
             signal.Watchers++;
             var watchers = _awaiters.GetValueOrDefault(instanceId);
             _awaiters[instanceId] = watchers + 1;
-            if (watchers == 0) AwaitingChanged?.Invoke(instanceId, true);
+
+            if (watchers == 0)
+                AwaitingChanged?.Invoke(instanceId, true);
+
             settled = signal.Source.Task;
+
             return new SettledWatch(this, instanceId, signal);
         }
     }
@@ -375,12 +458,15 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         lock (_lock)
         {
             var remaining = _awaiters[instanceId] - 1;
+
             if (remaining == 0)
             {
                 _awaiters.Remove(instanceId);
                 AwaitingChanged?.Invoke(instanceId, false);
             }
-            else _awaiters[instanceId] = remaining;
+            else
+                _awaiters[instanceId] = remaining;
+
             if (--signal.Watchers == 0 && _settled.TryGetValue(instanceId, out var current) && current == signal)
                 _settled.Remove(instanceId);
         }
@@ -397,38 +483,49 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
     {
         if (ScopeOperation.Current.Value is { Active: true })
             throw new InvalidOperationException("Return from the scope callback before re-entering workflow execution");
+
         // A run's context stays with activities that outlive it; once it is closed their calls queue.
         if (TryRunInline(operation, cancellationToken, out var inline))
             return inline;
 
         var item = new WorkItem<T>(instanceId, operation, cancellationToken, recoveryProbe);
         var start = false;
+
         lock (_lock)
         {
             if (!_accepting)
                 return Task.FromCanceled<T>(new CancellationToken(true));
+
             if (instanceId != null && _instances.TryGetValue(instanceId, out var queue))
                 queue.Enqueue(item);
             else
             {
                 if (instanceId != null)
                     _instances[instanceId] = new Queue<WorkItem>();
+
                 _admitted.Add(item);
                 start = true;
             }
         }
+
         item.WatchCaller();
+
         if (start)
             Dispatch(item);
+
         return item.Completion.Task;
     }
 
     /// <summary>Runs an operation that needs no slot, such as a read, in its own scope.</summary>
-    internal async Task<T> ReadAsync<T>(Func<SlotClient, Task<T>> operation)
+    internal async Task<T> ReadAsync<T>(Func<SlotClient, Task<T>> operation, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (TryRunInline((client, _, _) => operation(client), CancellationToken.None, out var inline))
             return await inline;
+
         await using var scope = _scopes.CreateAsyncScope();
+
         return await operation(scope.ServiceProvider.GetRequiredService<SlotClient>());
     }
 
@@ -441,17 +538,21 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
             _ = Task.Run(() => ExecuteAsync(item));
     }
 
-    private async Task ExecuteAsync(WorkItem item)
+    private async Task ExecuteAsync(WorkItem item, CancellationToken cancellationToken = default)
     {
         var slotTaken = false;
         var executionCapacityAvailable = !item.RecoveryProbe;
+
         try
         {
             if (item.IsSettled)
                 return;
+
             using var stop = CancellationTokenSource.CreateLinkedTokenSource(item.CallerToken, _stopped.Token);
+
             using (var waiting = CancellationTokenSource.CreateLinkedTokenSource(stop.Token, _draining.Token))
                 await _slots.WaitAsync(waiting.Token);
+
             slotTaken = true;
             FreeSlotsChanged?.Invoke(false);
             item.MarkStarted();
@@ -459,6 +560,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
             RunContext? context = null;
             RunControl? control = null;
             CancellationTokenRegistration recycleRegistration = default;
+
             try
             {
                 control = scope.ServiceProvider.GetRequiredService<RunControl>();
@@ -471,12 +573,15 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
                 var client = scope.ServiceProvider.GetRequiredService<SlotClient>();
                 context = new RunContext(client, control);
                 CurrentRun.Value = context;
+                ExecutionWork.Retainer.Value = RetainScopeWork;
                 await item.RunAsync(client, control, stop.Token);
             }
             finally
             {
                 executionCapacityAvailable |= control?.ExecutionClaimed == true;
                 CurrentRun.Value = null;
+                ExecutionWork.Retainer.Value = null;
+
                 if (context == null)
                 {
                     recycleRegistration.Dispose();
@@ -487,9 +592,12 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
                     // Inline calls still running in the scope, from work the run left behind, keep the
                     // scope and the slot until the last of them ends; a stopping host waits for them.
                     var released = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
                     lock (_lock)
                         _lingering.Add(item, released.Task);
+
                     slotTaken = false;
+
                     await context.CloseAsync(async () =>
                     {
                         try
@@ -501,8 +609,10 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
                         {
                             _slots.Release();
                             FreeSlotsChanged?.Invoke(executionCapacityAvailable);
+
                             lock (_lock)
                                 _lingering.Remove(item);
+
                             released.TrySetResult();
                         }
                     });
@@ -520,6 +630,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
                 _slots.Release();
                 FreeSlotsChanged?.Invoke(executionCapacityAvailable);
             }
+
             item.Complete();
             Finish(item);
         }
@@ -543,28 +654,35 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
     {
         WorkItem? next = null;
         SettledSignal? settled = null;
+
         lock (_lock)
         {
             _admitted.Remove(item);
+
             if (item.InstanceId != null && _instances.TryGetValue(item.InstanceId, out var queue))
             {
                 // Items whose callers gave up are skipped.
                 while (queue.Count > 0 && next == null)
                 {
                     var candidate = queue.Dequeue();
+
                     if (!candidate.IsSettled)
                         next = candidate;
                 }
+
                 if (next == null)
                     _instances.Remove(item.InstanceId);
                 else
                     _admitted.Add(next);
             }
+
             if (item.InstanceId != null && _settled.Remove(item.InstanceId, out var signal))
                 settled = signal;
         }
+
         item.Done.TrySetResult();
         settled?.Source.TrySetResult();
+
         if (next != null)
             Dispatch(next);
     }
@@ -578,8 +696,9 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
     /// </summary>
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        var cleanup = WaitForCleanupAsync(StopAccepting());
-        _draining.Cancel();
+        var cleanup = WaitForCleanupAsync(StopAccepting(cancellationToken: cancellationToken), cancellationToken: cancellationToken);
+        CancelStopSource(_draining);
+
         try
         {
             await cleanup.WaitAsync(_settings.DrainTimeout, cancellationToken).ConfigureAwait(false);
@@ -590,8 +709,9 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
-        _stopped.Cancel();
-        await WaitForReleaseAsync(cleanup).ConfigureAwait(false);
+
+        CancelStopSource(_stopped);
+        await WaitForReleaseAsync(cleanup, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -601,34 +721,69 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
     public void Dispose()
     {
         StopAccepting();
-        _draining.Cancel();
-        _stopped.Cancel();
+        CancelStopSource(_draining);
+        CancelStopSource(_stopped);
+        _ = _disposal.Value;
+    }
+
+    private void CancelStopSource(CancellationTokenSource source)
+    {
+        lock (_lock)
+        {
+            if (!_resourcesDisposed)
+                source.Cancel();
+        }
+    }
+
+    private void DisposeResources()
+    {
+        lock (_lock)
+        {
+            if (_resourcesDisposed)
+                return;
+
+            _resourcesDisposed = true;
+            _slots.Dispose();
+            _draining.Dispose();
+            _stopped.Dispose();
+        }
     }
 
     ValueTask IAsyncDisposable.DisposeAsync() => new(_disposal.Value);
 
-    private async Task DisposeAsyncCore()
+    private async Task DisposeAsyncCore(CancellationToken cancellationToken = default)
     {
-        var cleanup = WaitForCleanupAsync(StopAccepting());
-        _draining.Cancel();
-        _stopped.Cancel();
+        var cleanup = WaitForCleanupAsync(StopAccepting(cancellationToken: cancellationToken), cancellationToken: cancellationToken);
+        CancelStopSource(_draining);
+        CancelStopSource(_stopped);
+
         // Cancellation only requests shutdown. Wait for scopes and store connections to release,
         // bounded as in StopAsync so work that ignores cancellation cannot hold disposal forever.
-        await WaitForReleaseAsync(cleanup).ConfigureAwait(false);
+        _ = cleanup.ContinueWith(task =>
+            {
+                _ = task.Exception;
+                DisposeResources();
+            }, CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+        await WaitForReleaseAsync(cleanup, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task WaitForCleanupAsync(Task[] admitted)
+    private async Task WaitForCleanupAsync(Task[] admitted, CancellationToken cancellationToken = default)
     {
         await Task.WhenAll(admitted).ConfigureAwait(false);
+
         // A run can become lingering after StopAccepting's snapshot. All admitted runs have now
         // closed their contexts, so no more scopes can enter _lingering after this snapshot.
         Task[] lingering;
+
         lock (_lock)
             lingering = _lingering.Values.ToArray();
+
         await Task.WhenAll(lingering).ConfigureAwait(false);
     }
 
-    private async Task WaitForReleaseAsync(Task cleanup)
+    private async Task WaitForReleaseAsync(Task cleanup, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -637,30 +792,37 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         catch (TimeoutException)
         {
             int remaining, claims;
+
             lock (_lock)
             {
                 remaining = _admitted.Union(_lingering.Keys).Count();
                 claims = _claims.Count;
             }
-            _logger.LogWarning("Workflow host {HostName} has {RunCount} runs and {ClaimCount} execution claims still releasing scopes after {Timeout}",
+
+            _logger.LogWarning(
+                "Workflow host {HostName} has {RunCount} runs and {ClaimCount} execution claims still releasing scopes after {Timeout}",
                 _settings.Name, remaining, claims, ReleaseTimeout);
         }
     }
 
-    private Task[] StopAccepting()
+    private Task[] StopAccepting(CancellationToken cancellationToken = default)
     {
         var cancelled = new List<WorkItem>();
         Task[] running;
+
         lock (_lock)
         {
             _accepting = false;
+
             foreach (var queue in _instances.Values)
                 while (queue.Count > 0)
                     cancelled.Add(queue.Dequeue());
+
             // Lingering runs are awaited separately once the admitted runs finish.
             running = _admitted.Select(item => item.Done.Task)
                 .Concat(_debugWakes.Values.Select(done => done.Task))
                 .Concat(_claims.Select(done => done.Task)).ToArray();
+
             // Due instances stay runnable in the store for the next host.
             _due.Clear();
             _dueOf.Clear();
@@ -668,8 +830,10 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
             _timer?.Dispose();
             _timer = null;
         }
+
         foreach (var item in cancelled)
             item.Cancel();
+
         return running;
     }
 
@@ -704,7 +868,9 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
             {
                 if (_closed)
                     return false;
+
                 _inFlight++;
+
                 return true;
             }
         }
@@ -712,11 +878,13 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         public ValueTask ExitAsync()
         {
             Func<ValueTask>? release = null;
+
             lock (_lock)
             {
                 if (--_inFlight == 0 && _closed)
                     (release, _release) = (_release, null);
             }
+
             return release?.Invoke() ?? ValueTask.CompletedTask;
         }
 
@@ -726,12 +894,15 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
             lock (_lock)
             {
                 _closed = true;
+
                 if (_inFlight > 0)
                 {
                     _release = release;
+
                     return ValueTask.CompletedTask;
                 }
             }
+
             return release();
         }
     }
@@ -769,6 +940,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
 
         /// <summary>Completes when the host has finished with the item, run or not.</summary>
         public TaskCompletionSource Done { get; } = NewSignal();
+
         public abstract bool IsSettled { get; }
         public virtual bool RecoveryProbe => false;
         public abstract Task RunAsync(SlotClient client, RunControl control, CancellationToken token);
@@ -792,9 +964,11 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         protected void StopWatchingCaller() => _callerRegistration.Dispose();
     }
 
-    private sealed class WorkItem<T>(string? instanceId,
+    private sealed class WorkItem<T>(
+        string? instanceId,
         Func<SlotClient, RunControl, CancellationToken, Task<T>> operation,
-        CancellationToken callerToken, bool recoveryProbe) : WorkItem(instanceId, callerToken)
+        CancellationToken callerToken,
+        bool recoveryProbe) : WorkItem(instanceId, callerToken)
     {
         private T? _result;
         private Exception? _error;
@@ -825,6 +999,7 @@ public sealed partial class WorkflowHost : IHostedService, IDisposable, IAsyncDi
         public override void Complete()
         {
             StopWatchingCaller();
+
             if (_error is OperationCanceledException canceled)
                 Completion.TrySetCanceled(canceled.CancellationToken);
             else if (_error != null)

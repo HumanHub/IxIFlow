@@ -13,8 +13,9 @@ internal static class PostgreSqlPeriodicPlan
     {
         var method = store.GetType().GetMethod("BeginTransactionAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var kind = Enum.Parse(method.GetParameters()[1].ParameterType, operation);
-        var transaction = (await (ValueTask<DbTransaction?>)method.Invoke(store, [connection, kind])!)!;
+        var transaction = (await (ValueTask<DbTransaction?>)method.Invoke(store, [connection, kind, CancellationToken.None])!)!;
         Assert.Equal("off", await connection.ExecuteScalarAsync<string>("SHOW jit", transaction: transaction));
+
         return transaction;
     }
 }

@@ -21,6 +21,7 @@ public sealed partial class StateMachineScenarios
         var fault = new FaultRepository(repository);
         await using var services = Services(store, fault, probe: probe);
         var client = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ReplySuggestionData>("StateReplySuggestion" + recover)
             .StateMachine(m => m.Start("a").State("a", s => s
                 .Entry(e => e.Request<Ask>("answer", a => a.Input(x => x.Name).From(c => "answer")))
@@ -30,6 +31,7 @@ public sealed partial class StateMachineScenarios
                     .Output(x => x.Number).To(c => c.WorkflowData.Divisor)
                     .When(c => c.WorkflowData.Divisor > 0, "end")
                     .When(c => c.PreviousStep.Number < 0, "end")))).Build();
+
         var idle = await client.RunAsync(definition, new ReplySuggestionData { Divisor = 1 });
         Assert.Equal(WorkflowExecutionStatus.Suspended, idle.Status);
         var token = probe.Tokens["answer"];
@@ -42,17 +44,25 @@ public sealed partial class StateMachineScenarios
         Assert.Equal(1, JsonSerializer.Deserialize<Signal>(change.DefaultPayloadJson!.InlineText)!.Number);
 
         var interrupted = false;
+
         fault.FailCommit = instance =>
         {
             if (!recover || ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations[0].Status != ContinuationStatus.Waiting ||
-                JsonSerializer.Deserialize<ReplySuggestionData>(instance.WorkflowDataJson.InlineText)!.Divisor != 0) return false;
+                JsonSerializer.Deserialize<ReplySuggestionData>(instance.WorkflowDataJson.InlineText)!.Divisor != 0)
+                return false;
+
             interrupted = true;
+
             return true;
         };
+
         WorkflowExecutionResult rearmed;
+
         if (recover)
         {
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.ResumeAsync(idle.InstanceId, "change", new Signal()));
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+                client.ResumeAsync(idle.InstanceId, "change", new Signal()));
+
             Assert.Equal(WorkflowErrorKind.Infrastructure, error.Kind);
             Assert.IsType<IOException>(error.InnerException);
             Assert.True(interrupted);
@@ -63,10 +73,15 @@ public sealed partial class StateMachineScenarios
             fault.FailCommit = _ => false;
             rearmed = await client.RecoverAsync(idle.InstanceId);
         }
-        else rearmed = await client.ResumeAsync(idle.InstanceId, "change", new Signal());
+        else
+            rearmed = await client.ResumeAsync(idle.InstanceId, "change", new Signal());
+
         Assert.True(rearmed.Status == WorkflowExecutionStatus.Suspended, rearmed.ErrorMessage);
         Assert.Equal(0, Assert.IsType<ReplySuggestionData>(rearmed.WorkflowData).Divisor);
-        if (!recover) EventAssert.Consumed(rearmed);
+
+        if (!recover)
+            EventAssert.Consumed(rearmed);
+
         Assert.Equal(token, probe.Tokens["answer"]);
         var waits = await repository.GetOpenWaitsAsync(new(InstanceId: idle.InstanceId));
         Assert.Equal(2, waits.Count);

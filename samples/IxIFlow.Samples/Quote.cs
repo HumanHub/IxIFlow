@@ -34,6 +34,7 @@ public sealed class AddFee : IAsyncActivity
     {
         Amount += Fee;
         Receipt = "Quote for " + Customer;
+
         return Task.CompletedTask;
     }
 }
@@ -41,8 +42,7 @@ public sealed class AddFee : IAsyncActivity
 [WorkflowActivity("samples.label")]
 public sealed class Label : IAsyncActivity
 {
-    [ActivityInputOutput]
-    public string Value { get; set; } = "";
+    [ActivityInputOutput] public string Value { get; set; } = "";
 
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
         Task.CompletedTask;

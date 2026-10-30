@@ -31,6 +31,7 @@ public sealed class AssignTests
             .Assign(ctx => ctx.WorkflowData.Wide, ctx => ctx.WorkflowData.Count)
             .Assign(ctx => ctx.WorkflowData.List, ctx => new List<int> { 16, 17 })
             .Assign(ctx => ctx.WorkflowData.Previous, ctx => ctx.PreviousStep.Number).WithId("last").Named("Last write").Build();
+
         await using var services = Services();
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -49,7 +50,10 @@ public sealed class AssignTests
         Assert.Equal(7, data.Previous);
         var trace = await services.GetRequiredService<IWorkflowOperations>().GetTraceAsync(result.InstanceId);
         Assert.Equal(13, trace.Count(entry => entry.Entry.EntryType == TraceEntryType.DataAssigned));
-        Assert.DoesNotContain("private-key", JsonSerializer.Serialize(trace.Where(entry => entry.Entry.EntryType == TraceEntryType.DataAssigned)));
+
+        Assert.DoesNotContain("private-key",
+            JsonSerializer.Serialize(trace.Where(entry => entry.Entry.EntryType == TraceEntryType.DataAssigned)));
+
         Assert.DoesNotContain(trace, entry => entry.Entry.EntryType == TraceEntryType.ActivityStarted && entry.Entry.StepId != "root/0");
         Assert.Equal("WorkflowData.Previous", definition.StepTable.Single(row => row.AuthorId == "last").Assignment!.Target);
         Assert.Equal("Last write", definition.StepTable.Last().Name);
@@ -60,6 +64,7 @@ public sealed class AssignTests
     {
         var definition = Workflow.Create<Observed>("Order")
             .Assign(ctx => ctx.WorkflowData.Values[ctx.WorkflowData.Position].Point.X, ctx => ctx.WorkflowData.Replacement).Build();
+
         var data = new Observed();
         var context = new WorkflowContext<Observed, object> { WorkflowData = data };
         definition.Steps.Single().Assignment!.Apply!(context);
@@ -73,6 +78,7 @@ public sealed class AssignTests
         var definition = Workflow.Create<Data>("PopulateAssign").Assign(ctx => ctx.WorkflowData.Populated.Count, ctx => 5)
             .Parallel(p => p.Do(b => b.Assign(ctx => ctx.WorkflowData.Count, ctx => 20))
                 .Do(b => b.Assign(ctx => ctx.WorkflowData.Nested.Count, ctx => 21))).Build();
+
         await using var services = Services();
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -94,11 +100,15 @@ public sealed class AssignTests
     public void RejectsNonWorkflowAndNonSerializedLocations(string shape, string diagnostic)
     {
         var captured = new Data();
+
         var error = Assert.Throws<WorkflowEngineException>(() =>
         {
-            if (shape == "unpopulated") return Workflow.Create<UnpopulatedData>("BadAssign")
-                .Assign(ctx => ctx.WorkflowData.Unpopulated.Count, ctx => 1).Build();
+            if (shape == "unpopulated")
+                return Workflow.Create<UnpopulatedData>("BadAssign")
+                    .Assign(ctx => ctx.WorkflowData.Unpopulated.Count, ctx => 1).Build();
+
             var b = Workflow.Create<Data>("BadAssign").Step<Seed>();
+
             return (shape switch
             {
                 "previous" => b.Assign(ctx => ctx.PreviousStep.Number, ctx => 1),
@@ -111,6 +121,7 @@ public sealed class AssignTests
                 _ => b.Assign(ctx => ctx.WorkflowData.Ignored, ctx => 1)
             }).Build();
         });
+
         Assert.Contains(diagnostic, error.Message);
         Assert.Contains("AssignTests.cs", error.Message);
     }
@@ -121,6 +132,7 @@ public sealed class AssignTests
         var b = Workflow.Create<Data>("BadValue").Assign(ctx => ctx.WorkflowData.Count, ctx => 1).Build();
         var clone = b.Steps[0].Clone();
         clone.Assignment = clone.Assignment! with { Value = (Expression<Func<WorkflowContext<Data, object>, string>>)(ctx => "wrong") };
+
         Assert.Contains("ASSIGN003", Assert.Throws<WorkflowEngineException>(() =>
             new WorkflowBuilder<Data, object>([clone], "BadValue").Build()).Message);
     }
@@ -134,11 +146,16 @@ public sealed class AssignTests
     {
         var definition = Workflow.Create<Data>("AssignFailure").Step<Seed>().Try(b =>
         {
-            if (failure == "null") b.Assign(ctx => ctx.WorkflowData.Missing!.Count, ctx => 1);
-            else if (failure == "index") b.Assign(ctx => ctx.WorkflowData.Array[5], ctx => 1);
-            else if (failure == "key") b.Assign(ctx => ctx.WorkflowData.Structs["absent"].Point.X, ctx => 1);
-            else b.Assign(ctx => ctx.WorkflowData.Reject, ctx => 1);
+            if (failure == "null")
+                b.Assign(ctx => ctx.WorkflowData.Missing!.Count, ctx => 1);
+            else if (failure == "index")
+                b.Assign(ctx => ctx.WorkflowData.Array[5], ctx => 1);
+            else if (failure == "key")
+                b.Assign(ctx => ctx.WorkflowData.Structs["absent"].Point.X, ctx => 1);
+            else
+                b.Assign(ctx => ctx.WorkflowData.Reject, ctx => 1);
         }).Catch<Exception, Fault>(c => c.Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.Fault.Message)).Build();
+
         await using var services = Services();
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -164,31 +181,70 @@ public sealed class AssignTests
             .Catch<InvalidOperationException, Fault>(c =>
             {
                 void Body(ICatchWorkflowBuilder<Data, Fault, Seed> b) => b.Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.Fault.Message);
+
                 switch (shape)
                 {
-                    case "sequence": c.Sequence(Body); break;
-                    case "if": c.If(ctx => true, Body); break;
-                    case "switch": c.Switch(ctx => ctx.Fault.Message, cases => cases.Case("outer", Body)); break;
-                    case "loop": c.WhileDo(ctx => ctx.WorkflowData.Text == "", Body); break;
-                    case "parallel": c.Parallel(p => p.Do(Body)); break;
-                    case "each": c.ForEach(ctx => ctx.WorkflowData.List, (b, item) => b.Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.Fault.Message + ctx.Index(item))); break;
-                    case "try-finally": c.Try(Body).Finally(Body); break;
-                    case "flowchart": c.Flowchart(g => g.Start("a").Node("a", b => b.Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.Fault.Message))); break;
-                    case "state": c.StateMachine(m => m.Start("a").State("a", s => s.Entry(b => b.Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.Fault.Message)).Immediately(t => t.Otherwise("done"))).State("done", s => s.Final())); break;
-                    default: c.Saga(s => s.Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.Fault.Message)); break;
+                    case "sequence":
+                        c.Sequence(Body);
+
+                        break;
+                    case "if":
+                        c.If(ctx => true, Body);
+
+                        break;
+                    case "switch":
+                        c.Switch(ctx => ctx.Fault.Message, cases => cases.Case("outer", Body));
+
+                        break;
+                    case "loop":
+                        c.WhileDo(ctx => ctx.WorkflowData.Text == "", Body);
+
+                        break;
+                    case "parallel":
+                        c.Parallel(p => p.Do(Body));
+
+                        break;
+                    case "each":
+                        c.ForEach(ctx => ctx.WorkflowData.List,
+                            (b, item) => b.Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.Fault.Message + ctx.Index(item)));
+
+                        break;
+                    case "try-finally":
+                        c.Try(Body).Finally(Body);
+
+                        break;
+                    case "flowchart":
+                        c.Flowchart(g => g.Start("a").Node("a", b => b.Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.Fault.Message)));
+
+                        break;
+                    case "state":
+                        c.StateMachine(m =>
+                            m.Start("a").State("a",
+                                s => s.Entry(b => b.Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.Fault.Message))
+                                    .Immediately(t => t.Otherwise("done"))).State("done", s => s.Final()));
+
+                        break;
+                    default:
+                        c.Saga(s => s.Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.Fault.Message));
+
+                        break;
                 }
+
                 c.WaitFor<Go>("saved").Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.WorkflowData.Text + "|" + ctx.Fault.Message);
             }).Build();
+
         var store = new InMemoryWorkflowStateRepository();
         var catalog = new WorkflowCatalog();
         await catalog.RegisterWorkflowAsync(definition);
         string id;
+
         await using (var services = Services(store, catalog))
         {
             var idle = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
             Assert.Equal(WorkflowExecutionStatus.Suspended, idle.Status);
             id = idle.InstanceId;
         }
+
         await using var recovered = Services(store, catalog);
         var run = await recovered.GetRequiredService<IWorkflowClient>().ResumeAsync(id, "saved", new Go());
         Assert.Equal(WorkflowExecutionStatus.Success, run.Status);
@@ -201,11 +257,16 @@ public sealed class AssignTests
         Assert.Contains("combiner", Assert.Throws<WorkflowEngineException>(() => new WorkflowBuilder<Data, object>([], "Overlap")
             .Parallel(p => p.Do(b => b.Assign(ctx => ctx.WorkflowData.Count, ctx => 1))
                 .Do(b => b.Try(t => t.Step<Seed>()).Finally(f => f.Assign(ctx => ctx.WorkflowData.Count, ctx => 2)))).Build()).Message);
+
         Assert.Contains("combiner", Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Data>("EachOverlap").Step<Seed>()
-            .ForEach(ctx => ctx.WorkflowData.List, (b, item) => b.Assign(ctx => ctx.WorkflowData.Count, ctx => ctx.Item(item)), s => s.Parallel()).Build()).Message);
+            .ForEach(ctx => ctx.WorkflowData.List, (b, item) => b.Assign(ctx => ctx.WorkflowData.Count, ctx => ctx.Item(item)),
+                s => s.Parallel()).Build()).Message);
+
         Assert.Contains("stores its results", Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Data>("IntoOverlap").Step<Seed>()
-            .ForEach(ctx => ctx.WorkflowData.List, (b, item) => b.Assign(ctx => ctx.WorkflowData.Results, ctx => new List<ItemResult<int>>())
+            .ForEach(ctx => ctx.WorkflowData.List, (b, item) => b
+                .Assign(ctx => ctx.WorkflowData.Results, ctx => new List<ItemResult<int>>())
                 .Result(ctx => ctx.Item(item)), s => s.Into<int>(ctx => ctx.WorkflowData.Results)).Build()).Message);
+
         Assert.Contains("ASSIGN001", Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Data>("ItemWrite").Step<Seed>()
             .ForEach(ctx => ctx.WorkflowData.Points, (b, item) => b.Assign(ctx => ctx.Item(item).Point.X, ctx => 1)).Build()).Message);
     }
@@ -215,24 +276,36 @@ public sealed class AssignTests
     {
         Assert.Contains("mutation", Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Data>("HiddenWrite")
             .Assign(ctx => ctx.WorkflowData.Removed, ctx => ctx.WorkflowData.List.Remove(1)).Build()).Message);
+
         var context = Expression.Parameter(typeof(WorkflowContext<Data, object>), "ctx");
         var count = Expression.Property(Expression.Property(context, "WorkflowData"), "Count");
-        var mutating = Expression.Lambda<Func<WorkflowContext<Data, object>, int>>(Expression.Assign(count, Expression.Constant(1)), context);
+
+        var mutating =
+            Expression.Lambda<Func<WorkflowContext<Data, object>, int>>(Expression.Assign(count, Expression.Constant(1)), context);
+
         Assert.Contains("assignment", Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Data>("TreeWrite")
             .Assign(ctx => ctx.WorkflowData.Count, mutating).Build()).Message);
+
         ItemScope<int>? captured = null;
+
         var builder = Workflow.Create<Data>("LeakedHandle").Step<Seed>()
             .ForEach(ctx => ctx.WorkflowData.List, (b, item) => captured = item);
-        Assert.Contains("outside", Assert.Throws<WorkflowEngineException>(() => builder.Assign(ctx => ctx.WorkflowData.Count, ctx => ctx.Item(captured!)).Build()).Message);
+
+        Assert.Contains("outside",
+            Assert.Throws<WorkflowEngineException>(() => builder.Assign(ctx => ctx.WorkflowData.Count, ctx => ctx.Item(captured!)).Build())
+                .Message);
     }
 
     [Fact]
     public void CloneAndHashRetainOriginalTreesAndIndexValueBodies()
     {
         WorkflowDefinition Definition(int index, bool plusZero) => Workflow.Create<Data>("AssignHash")
-            .Assign(ctx => ctx.WorkflowData.Array[index], plusZero ? ctx => ctx.WorkflowData.Count + 0 : ctx => ctx.WorkflowData.Count).Build();
+            .Assign(ctx => ctx.WorkflowData.Array[index], plusZero ? ctx => ctx.WorkflowData.Count + 0 : ctx => ctx.WorkflowData.Count)
+            .Build();
+
         var first = Definition(0, false);
         Assert.NotEqual(WorkflowDefinitionValidator.Inspect(first), WorkflowDefinitionValidator.Inspect(Definition(0, true)));
+
         // Captured values are deliberately excluded; literal indices are behavior.
         var literal = Workflow.Create<Data>("AssignHash").Assign(ctx => ctx.WorkflowData.Array[1], ctx => ctx.WorkflowData.Count).Build();
         Assert.NotEqual(WorkflowDefinitionValidator.Inspect(first), WorkflowDefinitionValidator.Inspect(literal));
@@ -244,12 +317,14 @@ public sealed class AssignTests
     }
 
     [Theory]
-    [InlineData(DebugStepKind.Into)] [InlineData(DebugStepKind.Over)]
+    [InlineData(DebugStepKind.Into)]
+    [InlineData(DebugStepKind.Over)]
     public async Task DebuggerSeesOldThenNewDataAndReplayStopsOnlyAtThePick(DebugStepKind kind)
     {
         var definition = Workflow.Create<Data>("AssignDebug").Step<Seed>().WaitFor<Go>("start")
             .Assign(ctx => ctx.WorkflowData.Count, ctx => ctx.WorkflowData.Count + 1).WithId("assign")
             .Assign(ctx => ctx.WorkflowData.Previous, ctx => ctx.WorkflowData.Count).WithId("after").Build();
+
         await using var services = Services();
         var client = services.GetRequiredService<IWorkflowClient>();
         var ops = services.GetRequiredService<IWorkflowOperations>();
@@ -276,11 +351,21 @@ public sealed class AssignTests
 
     private static ServiceProvider Services(IWorkflowStateRepository? store = null, IWorkflowCatalog? catalog = null)
     {
-        var services = new ServiceCollection().AddLogging().AddIxIFlow(o => { o.Debugging = true; o.PayloadThresholdBytes = 1; }).Services;
-        if (store != null) services.AddSingleton(store);
-        if (catalog != null) services.AddSingleton(catalog);
+        var services = new ServiceCollection().AddLogging().AddIxIFlow(o =>
+        {
+            o.Debugging = true;
+            o.PayloadThresholdBytes = 1;
+        }).Services;
+
+        if (store != null)
+            services.AddSingleton(store);
+
+        if (catalog != null)
+            services.AddSingleton(catalog);
+
         return services.BuildServiceProvider();
     }
+
     public sealed class Data
     {
         [JsonPropertyName("renamed")] public int Count { get; set; } = 1;
@@ -290,7 +375,10 @@ public sealed class AssignTests
         public string? Text { get; set; } = "";
         public Node Nested { get; set; } = new();
         public Node? Missing { get; set; }
-        [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)] public Node Populated { get; } = new();
+
+        [JsonObjectCreationHandling(JsonObjectCreationHandling.Populate)]
+        public Node Populated { get; } = new();
+
         public Box[] Points { get; set; } = [new()];
         public List<Box> Boxes { get; set; } = [new()];
         public IReadOnlyList<Node> ReferenceList { get; set; } = [new()];
@@ -303,24 +391,103 @@ public sealed class AssignTests
         [JsonIgnore] public int Ignored { get; set; }
         public int ReadOnly => 0;
         public Point ReadOnlyPoint => new();
-        public int Reject { get => 0; set { if (value != 0) throw new InvalidOperationException("reject"); } }
+
+        public int Reject
+        {
+            get => 0;
+            set
+            {
+                if (value != 0)
+                    throw new InvalidOperationException("reject");
+            }
+        }
     }
-    public sealed class UnpopulatedData { public Node Unpopulated { get; } = new(); }
-    public sealed class Node { public int Count { get; set; } public Box Value { get; set; } }
-    public struct Box { public Point Point { get; set; } }
-    public struct Point { public int X { get; set; } }
-    public sealed class Fault { public string Message { get; set; } = ""; }
-    public sealed class Go { }
+
+    public sealed class UnpopulatedData
+    {
+        public Node Unpopulated { get; } = new();
+    }
+
+    public sealed class Node
+    {
+        public int Count { get; set; }
+        public Box Value { get; set; }
+    }
+
+    public struct Box
+    {
+        public Point Point { get; set; }
+    }
+
+    public struct Point
+    {
+        public int X { get; set; }
+    }
+
+    public sealed class Fault
+    {
+        public string Message { get; set; } = "";
+    }
+
+    public sealed class Go
+    {
+    }
+
     public sealed class Seed : IAsyncActivity
-    { public int Number { get; set; } = 7; public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask; }
+    {
+        public int Number { get; set; } = 7;
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
     public sealed class Fail : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.FromException(new InvalidOperationException("outer")); }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.FromException(new InvalidOperationException("outer"));
+    }
+
     public sealed class Observed
     {
         [JsonIgnore] public List<string> Events { get; } = [];
         [JsonIgnore] public Box[] Stored { get; } = [new()];
-        public Box[] Values { get { Events.Add("receiver"); return Stored; } set { Events.Add("set"); } }
-        public int Position { get { Events.Add("index"); return 0; } set { } }
-        public int Replacement { get { Events.Add("value"); return 19; } set { } }
+
+        public Box[] Values
+        {
+            get
+            {
+                Events.Add("receiver");
+
+                return Stored;
+            }
+            set
+            {
+                Events.Add("set");
+            }
+        }
+
+        public int Position
+        {
+            get
+            {
+                Events.Add("index");
+
+                return 0;
+            }
+            set
+            {
+            }
+        }
+
+        public int Replacement
+        {
+            get
+            {
+                Events.Add("value");
+
+                return 19;
+            }
+            set
+            {
+            }
+        }
     }
 }

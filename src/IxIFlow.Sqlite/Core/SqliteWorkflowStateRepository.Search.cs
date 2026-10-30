@@ -1,4 +1,5 @@
 using Dapper;
+
 namespace IxIFlow.Core;
 
 public sealed partial class SqliteWorkflowStateRepository
@@ -9,9 +10,11 @@ public sealed partial class SqliteWorkflowStateRepository
     internal override string SearchLimitPrefix => "";
     internal override string SearchLimitSuffix => "LIMIT @Limit";
     internal override string SearchColumn(string name) => name;
+
     internal override string SearchValues(DynamicParameters parameters, string name, string[] values)
     {
         parameters.Add(name, values);
+
         return $"IN @{name}";
     }
 }

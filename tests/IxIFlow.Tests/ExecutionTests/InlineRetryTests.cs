@@ -15,14 +15,18 @@ public sealed class InlineRetryTests
     {
         var repository = new RetryRepository();
         var registry = new WorkflowCatalog();
+
         var definition = Workflow.Create<Caller>("InlineRetryRecovery").Use<Body, Data>(u => u
             .Input(x => x.Value).From(c => 13).Output(x => x.Value).To(c => c.WorkflowData.Result)).Build();
+
         var id = Guid.NewGuid().ToString("N");
+
         await using (var first = Services(repository, registry))
         {
             await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new Caller(), new() { InstanceId = id }));
         }
+
         var saved = (await repository.GetWorkflowInstanceAsync(id))!;
         var checkpoint = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(saved));
         Assert.Single(checkpoint.InlineFrames);
@@ -40,35 +44,63 @@ public sealed class InlineRetryTests
         services.AddIxIFlow(o => o.VerifyCheckpointParts = true);
         services.AddSingleton(repository);
         services.AddSingleton(registry);
+
         return services.BuildServiceProvider();
     }
-    private sealed class RetryRepository : InMemoryWorkflowStateRepository
+
+    private sealed class RetryRepository : TestWorkflowStateRepository
     {
         public bool FailSecondAttempt { get; set; } = true;
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
             var instance = commit.ReadInstance(commit.ReplacesParts ? null : await GetWorkflowInstanceAsync(commit.InstanceId));
             var checkpoint = ExecutionCheckpoint.Read(instance.ExecutionStateJson);
+
             if (FailSecondAttempt && checkpoint.Continuations.Any(c => c.PendingActivity?.Attempts.Count >= 2))
                 throw new IOException("Interrupted before the retry intent committed");
-            return await base.CommitWorkflowInstanceAsync(commit);
+
+            return await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
         }
     }
-    public sealed class Caller { public int Result { get; set; } }
-    public sealed class Data { public int Value { get; set; } }
+
+    public sealed class Caller
+    {
+        public int Result { get; set; }
+    }
+
+    public sealed class Data
+    {
+        public int Value { get; set; }
+    }
+
     public sealed class RetryOnce : IAsyncActivity
     {
         public int Value { get; set; }
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken)
         {
-            if (context.Attempt.Number == 1) throw new InvalidOperationException("retry");
+            if (context.Attempt.Number == 1)
+                throw new InvalidOperationException("retry");
+
             Value++;
+
             return Task.CompletedTask;
         }
     }
-    public sealed class Noop : IAsyncActivity { public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken) => Task.CompletedTask; }
-    [Workflow("RetryBody")] public sealed class Body : IWorkflow<Data>
-    { public void Build(IWorkflowBuilder<Data> b) => b.Step<Noop>().Saga(s => s.Step<RetryOnce>(a => a
-        .Input(x => x.Value).From(c => c.WorkflowData.Value).Output(x => x.Value).To(c => c.WorkflowData.Value)
-        .OnError<InvalidOperationException>(h => h.ThenRetry(new RetryPolicy(TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1), 1, 1))))); }
+
+    public sealed class Noop : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    [Workflow("RetryBody")]
+    public sealed class Body : IWorkflow<Data>
+    {
+        public void Build(IWorkflowBuilder<Data> b) => b.Step<Noop>().Saga(s => s.Step<RetryOnce>(a => a
+            .Input(x => x.Value).From(c => c.WorkflowData.Value).Output(x => x.Value).To(c => c.WorkflowData.Value)
+            .OnError<InvalidOperationException>(h =>
+                h.ThenRetry(new RetryPolicy(TimeSpan.FromMilliseconds(1), TimeSpan.FromMilliseconds(1), 1, 1)))));
+    }
 }

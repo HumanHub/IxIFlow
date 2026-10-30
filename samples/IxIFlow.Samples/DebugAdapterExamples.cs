@@ -20,10 +20,12 @@ public static class DebugAdapterExamples
         }).AddDebugging(o =>
         {
             o.NamedPipe("ixiflow-debug");
+
             o.Authorize = (request, cancellationToken) =>
                 policy.CanDebugAsync(request.Actor, request.InstanceId,
                     request.Operation, cancellationToken);
         });
+
         // end-snippet: register
     }
 }

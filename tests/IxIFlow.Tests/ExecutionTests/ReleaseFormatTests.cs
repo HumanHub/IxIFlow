@@ -15,7 +15,7 @@ public sealed class ReleaseFormatTests
 {
     public static TheoryData<int> PreReleaseVersions => new(Enumerable.Range(1, 14));
 
-    // Generated from the final pre-release writer's manifest for Waiting(), changing only Format.
+    // Derived from Fixtures/prerelease-manifest-format9.json by changing only the format number.
     // Reusing that complete shape with format 1 exercises the reset's possible namespace collision.
     public static TheoryData<int, string> PreReleaseHashes => new()
     {
@@ -36,6 +36,7 @@ public sealed class ReleaseFormatTests
     {
         var json = $$"""{"Runtime":"structured-v2","SchemaVersion":{{version}},"Continuations":"old shape"}""";
         Assert.False(ExecutionCheckpoint.IsStructured(json));
+
         foreach (var read in new Func<string, ExecutionCheckpoint>[] { ExecutionCheckpoint.Read, ExecutionCheckpoint.ReadTrunk })
         {
             var error = Assert.Throws<WorkflowEngineException>(() => read(json));
@@ -44,8 +45,10 @@ public sealed class ReleaseFormatTests
             Assert.Contains("expected 1.", error.Message);
             Assert.Contains("no migration", error.Message);
         }
+
         var envelopeError = Assert.Throws<WorkflowEngineException>(() =>
             JsonSerializer.Deserialize<WorkflowInstance>("{\"ExecutionStateJson\":" + json + "}"));
+
         Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, envelopeError.Kind);
         Assert.Contains("Unsupported execution checkpoint version", envelopeError.Message);
     }
@@ -92,9 +95,11 @@ public sealed class ReleaseFormatTests
         await store.RegisterWorkflowVersionAsync((await seed.GetWorkflowVersionAsync(definition.Name, definition.Version))!);
         var owner = await StoreTestSupport.LeaseAsync(store, instance.InstanceId);
         var waits = await seed.GetOpenWaitsAsync(new WaitQuery(InstanceId: instance.InstanceId));
+
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(instance, owner.Epoch, 0, openedWaits: waits.Select(wait =>
                 new OpenedWait(wait.WaitId, wait.Kind, wait.Key, wait.EventType, null, wait.DefaultPayloadJson)).ToArray()))).Status);
+
         await StoreTestSupport.ReleaseAsync(store, instance.InstanceId);
         using var target = Services(store);
         await target.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
@@ -117,14 +122,17 @@ public sealed class ReleaseFormatTests
         var hash = WorkflowDefinitionValidator.Inspect(definition);
         var store = new InMemoryWorkflowStateRepository();
         string id;
+
         using (var first = Services(store))
         {
             var suspended = await first.GetRequiredService<IWorkflowClient>().RunAsync(definition, new object());
             Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
             id = suspended.InstanceId;
         }
+
         var instance = (await store.GetWorkflowInstanceAsync(id))!;
         Assert.True(ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson));
+
         foreach (var read in new Func<string, ExecutionCheckpoint>[] { ExecutionCheckpoint.Read, ExecutionCheckpoint.ReadTrunk })
         {
             var checkpoint = read(instance.ExecutionStateJson);
@@ -132,6 +140,7 @@ public sealed class ReleaseFormatTests
             Assert.Equal(1, checkpoint.SchemaVersion);
             Assert.Equal(hash, checkpoint.StructureHash);
         }
+
         Assert.Equal(hash, (await store.GetWorkflowVersionAsync(definition.Name, definition.Version))!.StructureHash);
         using var second = Services(store);
         await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(Waiting());

@@ -19,14 +19,20 @@ internal static class ActivityFrameworkReferences
     {
         var assembly = typeof(ActivityFrameworkReferences).Assembly;
         var references = new SortedDictionary<string, PortableExecutableReference>(StringComparer.Ordinal);
+
         foreach (var resource in assembly.GetManifestResourceNames().Where(name => name.StartsWith(Prefix, StringComparison.Ordinal))
                      .Order(StringComparer.Ordinal))
         {
             using var stream = assembly.GetManifestResourceStream(resource)!;
-            references.Add(Path.GetFileNameWithoutExtension(resource[Prefix.Length..]), MetadataReference.CreateFromStream(stream, filePath: resource));
+
+            references.Add(Path.GetFileNameWithoutExtension(resource[Prefix.Length..]),
+                MetadataReference.CreateFromStream(stream, filePath: resource));
         }
+
         if (!references.ContainsKey("System.Runtime"))
-            throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "The .NET 10 activity compilation reference profile is missing");
+            throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure,
+                "The .NET 10 activity compilation reference profile is missing");
+
         return references;
     }
 
@@ -38,16 +44,24 @@ internal static class ActivityFrameworkReferences
         var directory = Path.Combine(Path.GetTempPath(), "IxIFlow.ActivityReferences", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var paths = new List<string>();
+
         void Cleanup()
         {
             try
             {
-                foreach (var path in paths) File.Delete(path);
+                foreach (var path in paths)
+                    File.Delete(path);
+
                 Directory.Delete(directory);
             }
-            catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
         }
+
         try
         {
             foreach (var name in References.Keys)
@@ -58,9 +72,16 @@ internal static class ActivityFrameworkReferences
                 using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
                 source.CopyTo(output);
             }
+
             AppDomain.CurrentDomain.ProcessExit += (_, _) => Cleanup();
+
             return paths.ToArray();
         }
-        catch { Cleanup(); throw; }
+        catch
+        {
+            Cleanup();
+
+            throw;
+        }
     }
 }

@@ -4,12 +4,14 @@ namespace IxIFlow.Core.Runtime;
 internal sealed class ExecutionSignals : IDisposable
 {
     private readonly Action<Guid> _close;
+
     internal ExecutionSignals(Guid assignmentId, Action<Guid> close)
     {
         AssignmentId = assignmentId;
         _close = close;
         AcquisitionToken = _acquisitionStop.Token;
     }
+
     private TaskCompletionSource _changed = NewSignal();
     private CancellationReason? _cancellation;
     private long _sequence;
@@ -21,25 +23,37 @@ internal sealed class ExecutionSignals : IDisposable
     private bool _closed;
     private WorkflowDebugState? _debug;
     public WorkflowDebugState? Debug => Volatile.Read(ref _debug);
+
     public void Deliver(DebugCommands message)
     {
-        if (message.AssignmentId != AssignmentId) return;
+        if (message.AssignmentId != AssignmentId)
+            return;
+
         while (true)
         {
             var previous = Debug;
-            if (previous != null && previous.Version >= message.State.Version && previous.PauseGeneration >= message.State.PauseGeneration) return;
-            if (Interlocked.CompareExchange(ref _debug, message.State, previous) != previous) continue;
+
+            if (previous != null && previous.Version >= message.State.Version && previous.PauseGeneration >= message.State.PauseGeneration)
+                return;
+
+            if (Interlocked.CompareExchange(ref _debug, message.State, previous) != previous)
+                continue;
+
             Pulse();
+
             return;
         }
     }
 
     internal CancellationToken AcquisitionToken { get; }
+
     internal void Close()
     {
         lock (_stopGate)
         {
-            if (_closed) return;
+            if (_closed)
+                return;
+
             _closed = true;
             _acquisitionStop.Dispose();
         }
@@ -47,7 +61,11 @@ internal sealed class ExecutionSignals : IDisposable
 
     private void StopAcquisition()
     {
-        lock (_stopGate) { if (!_closed) _acquisitionStop.Cancel(); }
+        lock (_stopGate)
+        {
+            if (!_closed)
+                _acquisitionStop.Cancel();
+        }
     }
 
     public Guid AssignmentId { get; }
@@ -61,7 +79,9 @@ internal sealed class ExecutionSignals : IDisposable
 
     public void Deliver(Cancel message)
     {
-        if (message.AssignmentId != AssignmentId) return;
+        if (message.AssignmentId != AssignmentId)
+            return;
+
         var changed = message.Kind switch
         {
             CancelKind.Ownership => Interlocked.Exchange(ref _ownershipLost, 1) == 0,
@@ -69,8 +89,12 @@ internal sealed class ExecutionSignals : IDisposable
             CancelKind.Workflow when message.Reason != null => Request(message.Reason),
             _ => false
         };
-        if (changed) Pulse();
-        if (message.Kind is CancelKind.Run or CancelKind.Ownership) StopAcquisition();
+
+        if (changed)
+            Pulse();
+
+        if (message.Kind is CancelKind.Run or CancelKind.Ownership)
+            StopAcquisition();
     }
 
     // The first request stands, except that a termination escalates an earlier graceful one.
@@ -79,30 +103,44 @@ internal sealed class ExecutionSignals : IDisposable
         while (true)
         {
             var current = Volatile.Read(ref _cancellation);
+
             if (current != null && (current.Mode == WorkflowControlMode.Terminate ||
-                                    reason.Mode != WorkflowControlMode.Terminate))
+                    reason.Mode != WorkflowControlMode.Terminate))
                 return false;
-            if (Interlocked.CompareExchange(ref _cancellation, reason, current) == current) return true;
+
+            if (Interlocked.CompareExchange(ref _cancellation, reason, current) == current)
+                return true;
         }
     }
 
     public void Deliver(Arrivals message)
     {
-        if (message.AssignmentId != AssignmentId) return;
+        if (message.AssignmentId != AssignmentId)
+            return;
+
         while (true)
         {
             var previous = InboxSequence;
-            if (message.InboxSequence <= previous) return;
-            if (Interlocked.CompareExchange(ref _sequence, message.InboxSequence, previous) != previous) continue;
+
+            if (message.InboxSequence <= previous)
+                return;
+
+            if (Interlocked.CompareExchange(ref _sequence, message.InboxSequence, previous) != previous)
+                continue;
+
             Pulse();
+
             return;
         }
     }
 
     public void Deliver(Recycle message)
     {
-        if (message.AssignmentId != AssignmentId) return;
-        if (Interlocked.Exchange(ref _recycle, 1) == 0) Pulse();
+        if (message.AssignmentId != AssignmentId)
+            return;
+
+        if (Interlocked.Exchange(ref _recycle, 1) == 0)
+            Pulse();
     }
 
     public void ThrowIfOwnershipLost()
@@ -114,7 +152,9 @@ internal sealed class ExecutionSignals : IDisposable
     public void ThrowIfStopped()
     {
         ThrowIfOwnershipLost();
-        if (RunCancelled) throw new RunCancelledException();
+
+        if (RunCancelled)
+            throw new RunCancelledException();
     }
 
     private void Pulse() => Interlocked.Exchange(ref _changed, NewSignal()).TrySetResult();

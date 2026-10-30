@@ -19,13 +19,16 @@ public static class DocumentationExamples
         // snippet: workflow-publication
         var draft = await catalog.SaveDefinitionAsync(
             new WorkflowDraft("Example", 1, WorkflowDraftKinds.Workflow, yaml), expected: null, actor: "author");
+
         var report = await publisher.ValidateAsync(draft, cancellationToken);
         var result = await publisher.PublishAsync(draft.Id, actor: "publisher", cancellationToken: cancellationToken);
+
         if (result.Success)
         {
             WorkflowVersion workflow = result.Workflow!;
             WorkflowPublicationReceipt receipt = result.Receipt!;
         }
+
         // end-snippet: workflow-publication
         return result;
     }
@@ -35,9 +38,10 @@ public static class DocumentationExamples
         string? actor, CancellationToken cancellationToken)
     {
         // snippet: package-ingestion
-        var ingestion = new PackageIngestion(catalog, artifacts, publisherOptions);
-        var candidate = await ingestion.ReadPackageAsync(stream, cancellationToken);
-        var receipt = await ingestion.StorePackageAsync(candidate, actor, cancellationToken);
+        var publisher = new WorkflowPublisher(catalog, artifacts, publisherOptions);
+        var candidate = await publisher.ReadPackageAsync(stream, cancellationToken);
+        var receipt = await publisher.StorePackageAsync(candidate, actor, cancellationToken);
+
         // end-snippet: package-ingestion
         return receipt;
     }
@@ -48,27 +52,32 @@ public static class DocumentationExamples
         services.AddHostedService(provider => new PackageIndexingService(
             provider.GetRequiredService<IWorkflowStateRepository>(),
             provider.GetRequiredService<IArtifactStore>(), publisherOptions));
+
         // end-snippet: package-indexing
     }
 
-    public static async Task RunHostedAsync()
+    public static async Task<WorkflowExecutionResult> RunHostedAsync()
     {
         // snippet: hosted-run
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddIxIFlow(options => options.Slots = 8);
         using var host = builder.Build();
         await host.StartAsync();
+        WorkflowExecutionResult result;
+
         try
         {
             var client = host.Services.GetRequiredService<IWorkflowClient>();
-            var result = await client.RunAsync(Quote.Definition(), new QuoteData());
+            result = await client.RunAsync(Quote.Definition(), new QuoteData());
             Console.WriteLine(result.Status);
         }
         finally
         {
             await host.StopAsync();
         }
+
         // end-snippet: hosted-run
+        return result;
     }
 
     public static void RegisterWebhook(IServiceCollection services, IConfiguration configuration)
@@ -79,6 +88,7 @@ public static class DocumentationExamples
             .AddWebhook(new WebhookEndpoint(
                 "orders", new Uri("https://receiver.example/workflow-events"),
                 configuration["Webhooks:Orders:Secret"]!, [OutboxEvent.WorkflowCompleted]));
+
         // end-snippet: webhook-registration
     }
 
@@ -86,6 +96,7 @@ public static class DocumentationExamples
     {
         var services = new ServiceCollection();
         services.AddLogging();
+
         // snippet: retention
         services.AddIxIFlow(options =>
         {
@@ -94,6 +105,7 @@ public static class DocumentationExamples
             options.RetentionScanInterval = TimeSpan.FromHours(1);
             options.RetentionBatchSize = 100;
         });
+
         // end-snippet: retention
         return services;
     }
@@ -104,6 +116,7 @@ public static class DocumentationExamples
         services.AddIxIFlow()
             .ConfigureOutbox(concurrency: 8)
             .AddOutboxPublisher<CompletionLog>();
+
         // end-snippet: publisher-registration
     }
 
@@ -114,6 +127,7 @@ public static class DocumentationExamples
                 .DefaultPayload(new ReviewAnswer { Customer = "Ada" })
                 .Output(answer => answer.Customer).To(ctx => ctx.WorkflowData.Customer))
             .Build();
+
     // end-snippet: discoverable-wait
 
     public static async Task<WorkflowExecutionResult> AnswerReviewAsync(IWorkflowClient client,
@@ -122,7 +136,9 @@ public static class DocumentationExamples
         // snippet: answer-review
         var waits = await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId));
         var wait = waits.Single();
+
         return await client.ReplyAsync(wait.Token, new ReviewAnswer { Customer = customer });
+
         // end-snippet: answer-review
     }
 }
@@ -138,9 +154,11 @@ public sealed class CompletionLog(ILogger<CompletionLog> logger) : IOutboxPublis
     {
         logger.LogInformation("Completion {EventId}: {Summary}",
             delivery.Event.Id, delivery.Event.DataJson);
+
         return Task.FromResult(OutboxPublishResult.Delivered());
     }
 }
+
 // end-snippet: completion-publisher
 
 // snippet: sensitive-member
@@ -149,4 +167,5 @@ public sealed class PaymentNote
     [Sensitive] public string CardNumber { get; set; } = "";
     public string Outcome { get; set; } = "";
 }
+
 // end-snippet: sensitive-member

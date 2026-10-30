@@ -4,8 +4,11 @@ using IxIFlow.Core;
 
 namespace IxIFlow.Templates;
 
-public sealed record TemplateVersionEntry(TemplateVersion Version, WorkflowDraftId? PublishedDraft,
-    DateTime PublishedAtUtc, string? PublishedBy);
+public sealed record TemplateVersionEntry(
+    TemplateVersion Version,
+    WorkflowDraftId? PublishedDraft,
+    DateTime PublishedAtUtc,
+    string? PublishedBy);
 
 /// <summary>Canonical content bytes. Publication receipts and audit never enter these bytes.</summary>
 public static class TemplateJson
@@ -19,6 +22,7 @@ public static class TemplateJson
     public static byte[] Serialize(TemplateVersion version)
     {
         ArgumentNullException.ThrowIfNull(version);
+
         return JsonSerializer.SerializeToUtf8Bytes(version, Options);
     }
 

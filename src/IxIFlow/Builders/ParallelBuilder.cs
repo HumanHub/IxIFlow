@@ -9,13 +9,13 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Builder for parallel execution branches with previous step data
 /// </summary>
-public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilder<TWorkflowData, TPreviousStepData>
+internal class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilder<TWorkflowData, TPreviousStepData>
     where TWorkflowData : class
     where TPreviousStepData : class
 {
     private readonly WorkflowStep _step;
 
-    public ParallelBuilder(WorkflowStep step)
+    internal ParallelBuilder(WorkflowStep step)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
         _step.ParallelBranches = new List<List<WorkflowStep>>();
@@ -26,6 +26,7 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
     public IParallelBuilder<TWorkflowData, TPreviousStepData> WaitAny()
     {
         SetJoinMode(ParallelJoinMode.WaitAny);
+
         return this;
     }
 
@@ -36,6 +37,7 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
     {
         var result = WaitConditionally(completeWhenExpression.Compile());
         _step.ParallelCompletionExpression = completeWhenExpression;
+
         return result;
     }
 
@@ -45,6 +47,7 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
         ArgumentNullException.ThrowIfNull(completeWhen);
         SetJoinMode(ParallelJoinMode.WaitConditionally);
         _step.ParallelCompletionCondition = data => completeWhen((TWorkflowData)data);
+
         return this;
     }
 
@@ -53,6 +56,7 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
         where TCombiner : ICombiner<TValue>, new()
     {
         Core.Runtime.BranchData.Choose(_step, property, typeof(TWorkflowData), typeof(TValue), typeof(TCombiner));
+
         return this;
     }
 
@@ -85,5 +89,4 @@ public class ParallelBuilder<TWorkflowData, TPreviousStepData> : IParallelBuilde
 
         return this;
     }
-
 }

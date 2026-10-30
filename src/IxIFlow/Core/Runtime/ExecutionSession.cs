@@ -1,23 +1,55 @@
 namespace IxIFlow.Core.Runtime;
 
 /// <summary>Executor-local state for one assignment, including its last acknowledged commit.</summary>
-internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, string instanceId,
-    long epoch, ExecutionLimits limits, bool canPark)
+internal sealed class ExecutionSession(
+    IExecutionHost host,
+    Guid assignmentId,
+    string instanceId,
+    long epoch,
+    ExecutionLimits limits,
+    bool canPark,
+    TimeProvider? time = null,
+    TimeProvider? resendTime = null)
 {
+    public TimeProvider Time { get; } = time ?? TimeProvider.System;
+
+    // Transport contention must drain even when durable workflow time is suspended.
+    public TimeProvider ResendTime { get; } = resendTime ?? time ?? TimeProvider.System;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Task, byte> _work = new();
+    internal Task RemainingWork => Task.WhenAll(_work.Keys);
+
+    internal void RetainWork(Task task)
+    {
+        _work.TryAdd(task, 0);
+
+        _ = task.ContinueWith(completed =>
+            {
+                _ = completed.Exception;
+                _work.TryRemove(completed, out _);
+            },
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
     private readonly PayloadBudget _budget = new(limits.MaxHydratedPayloadBytes);
     private CheckpointPayloads? _payloads;
     private PayloadReader? _reader;
+
     public CheckpointPayloads Payloads
     {
         get
         {
-            if (_payloads != null) return _payloads;
+            if (_payloads != null)
+                return _payloads;
+
             _payloads = new(Limits, _budget);
+
             if (Limits.PayloadThresholdBytes != 0 && SavedInstance?.SavedParts is { } parts)
                 _payloads.Known(CheckpointPayloads.References(SavedInstance.ExecutionStateJson, parts));
+
             return _payloads;
         }
     }
+
     public PayloadReader Reader => _reader ??= new(ReadPayloadAsync, _budget);
     public Guid AssignmentId { get; } = assignmentId;
     public string InstanceId { get; } = instanceId;
@@ -32,8 +64,10 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
     {
         var payloads = (commit.PreservesPayloadPins ? [] : Payloads.Pending)
             .Select(value => new PayloadBody(value.Identity, value.Encoded.ToArray(), value.Dependencies)).ToArray();
+
         var reply = await host.CheckpointAsync(new(AssignmentId, commit, payloads));
         Check(reply.AssignmentId, reply.Conflict);
+
         if (reply.Kind == CheckpointReplyKind.Ack)
         {
             LastAcknowledgedCommit = new(commit.CommitId, reply.Revision);
@@ -43,22 +77,29 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
             SavedInstance.WorkflowDataJson = parts.GetValueOrDefault(CheckpointParts.DataKey) ?? StoredJson.Inline("");
             SavedInstance.Saved(parts, reply.Revision);
             Payloads.Acknowledged();
+
             // The immutable commit already carries the complete owner set. Reusing it also avoids
             // reparsing the trunk and inline parts on every acknowledgement when claim check is off.
             Payloads.Known(commit.PayloadReferences);
         }
+
         return reply;
     }
 
     public async Task PrepareReadAsync(ExecutionCheckpoint checkpoint, ContinuationState continuation, WorkflowScopeCatalog scopes,
         bool restoreInputs = true)
     {
-        if (!NeedsHydration) return;
+        if (!NeedsHydration)
+            return;
+
         await PrepareDataReadAsync(checkpoint, continuation);
         await Reader.HydrateAsync(continuation.UnwindFailure);
         await Reader.HydrateAsync(continuation.DeferredFailure);
         await Reader.HydrateAsync(checkpoint.UnhandledError);
-        if (continuation.RuntimePrevious == null) await Reader.HydrateAsync(continuation.Previous);
+
+        if (continuation.RuntimePrevious == null)
+            await Reader.HydrateAsync(continuation.Previous);
+
         if (restoreInputs)
         {
             await Reader.HydrateAsync(continuation.PendingActivity);
@@ -66,7 +107,9 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
             await Reader.HydrateAsync(continuation.RetryInputs);
             await Reader.HydrateAsync(continuation.AcceptedWait);
         }
+
         await Reader.HydrateAsync(continuation.InheritedItems);
+
         foreach (var entry in checkpoint.Scopes.Where(entry => entry.ContinuationId == continuation.Id ||
                      ScopeRuntime.IdsOf(continuation).Contains(entry.Id) || continuation.PendingScopeCloses?.Contains(entry.Id) == true))
         {
@@ -74,80 +117,116 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
             await Reader.HydrateAsync(entry.Activity);
             await Reader.HydrateAsync(entry.CloseError);
         }
+
         // Bound replies and branch fires move by reference. Their eventual readers prepare
         // AcceptedWait or the parent's selected Graph.Fired.Event, without loading losing receipts.
         for (var index = 0; index < continuation.Stack.Count; index++)
         {
             var frame = continuation.Stack[index];
             await Reader.HydrateAsync(frame.CancellationState);
-            if (frame.Kind is FrameKind.CancellationHandler or FrameKind.Inline or FrameKind.SwitchCase or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen)
+
+            if (frame.Kind is FrameKind.CancellationHandler or FrameKind.Inline or FrameKind.SwitchCase or FrameKind.Node or FrameKind.Edge
+                or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen)
                 await Reader.HydrateAsync(frame.EntryPrevious);
+
             await Reader.HydrateAsync(frame.Graph?.Pending?.Event);
+
             // Reply matching does not read the selected fire while its parent is still Joining.
             // Keep it by reference until the parent dispatches Arm after the join settles.
-            if (restoreInputs) await Reader.HydrateAsync(frame.Graph?.Fired?.Event);
+            if (restoreInputs)
+                await Reader.HydrateAsync(frame.Graph?.Fired?.Event);
+
             if (frame.ForEachIndex is { } item && index > 0 && continuation.Stack[index - 1].ForEach is { } owner)
                 await Reader.ReadAsync(owner.Items[item]);
+
             if (restoreInputs && index == continuation.Stack.Count - 1 && frame.ForEach is { } list &&
                 (list.Joined || list.Next >= list.Items.Count))
                 await Reader.HydrateAsync(list.Results);
+
             // Compensation and error paths read the saved saga/try state, never queued list items.
             if (restoreInputs && frame.SagaState?.Phase == SagaPhase.Compensating)
                 await Reader.HydrateAsync(frame.SagaState);
+
             if (restoreInputs && frame.TryState?.Phase is TryPhase.Catch or TryPhase.Finally)
                 await Reader.HydrateAsync(frame.TryState);
-            if (frame.TryState?.Phase == TryPhase.Catch) await Reader.HydrateAsync(frame.TryState.Error);
+
+            if (frame.TryState?.Phase == TryPhase.Catch)
+                await Reader.HydrateAsync(frame.TryState.Error);
+
             if (frame.SagaState is { Phase: SagaPhase.Compensating, ErrorHandlerStarted: true })
                 await Reader.HydrateAsync(frame.SagaState.Error);
+
             if (restoreInputs && frame.SagaState is { Phase: SagaPhase.Forward, RetryCount: > 0 } saga &&
                 saga.AcceptedWaitCursor < saga.AcceptedWaits.Count)
             {
                 var current = continuation.Stack[^1];
                 var next = scopes.Steps(current.ScopeId).ElementAtOrDefault(current.NextStepIndex);
+
                 if (next != null && saga.AcceptedWaits[saga.AcceptedWaitCursor].StepId == scopes.Id(next))
                     await Reader.HydrateAsync(saga.AcceptedWaits[saga.AcceptedWaitCursor].Event);
             }
         }
+
         // A fault-aware expression in a fork may read a DTO owned by an ancestor continuation.
         {
             var ancestor = continuation;
+
             while (ancestor.ParentJoinId is { } faultJoin)
             {
                 var joinOwner = checkpoint.Joins.Single(join => join.Id == faultJoin);
                 ancestor = checkpoint.ContinuationById(joinOwner.ParentContinuationId)!;
+
                 foreach (var frame in ancestor.Stack)
                 {
-                    if (frame.TryState?.Phase == TryPhase.Catch) await Reader.HydrateAsync(frame.TryState.Error);
+                    if (frame.TryState?.Phase == TryPhase.Catch)
+                        await Reader.HydrateAsync(frame.TryState.Error);
+
                     if (frame.SagaState is { Phase: SagaPhase.Compensating, ErrorHandlerStarted: true })
                         await Reader.HydrateAsync(frame.SagaState.Error);
                 }
             }
         }
+
         if (continuation.ParentJoinId is { } joinId && continuation.Stack.Count == 1 &&
             continuation.Stack[0].NextStepIndex == scopes.Steps(continuation.Stack[0].ScopeId).Count &&
             checkpoint.Joins.Single(j => j.Id == joinId) is { Mode: ParallelJoinMode.WaitConditionally } join)
         {
             await PrepareDataReadAsync(checkpoint, checkpoint.ContinuationById(join.ParentContinuationId)!);
+
             foreach (var sibling in checkpoint.BranchesOf(join).Where(c => c.Status == ContinuationStatus.Completed))
                 await PrepareDataReadAsync(checkpoint, sibling);
+
             var parent = checkpoint.ContinuationById(join.ParentContinuationId)!;
-            foreach (var frame in parent.Stack) await Reader.HydrateAsync(frame.ForEach?.Results);
+
+            foreach (var frame in parent.Stack)
+                await Reader.HydrateAsync(frame.ForEach?.Results);
+
             await Reader.HydrateAsync(continuation.Stack[0].ForEachResult);
         }
     }
 
     public async Task PrepareDataReadAsync(ExecutionCheckpoint checkpoint, ContinuationState branch)
     {
-        if (!NeedsHydration) return;
+        if (!NeedsHydration)
+            return;
+
         foreach (var frame in branch.Stack.Where(f => f.Kind == FrameKind.Inline))
-            if (checkpoint.InlineFrames[frame.ActivationId] is { Runtime: null } state) await Reader.ReadAsync(state.Data);
-        if (branch.ParentJoinId == null || branch.Data != null) return;
+            if (checkpoint.InlineFrames[frame.ActivationId] is { Runtime: null } state)
+                await Reader.ReadAsync(state.Data);
+
+        if (branch.ParentJoinId == null || branch.Data != null)
+            return;
+
         var join = checkpoint.JoinOf(branch);
+
         if (join.DataFrameId is { } id)
         {
-            if (checkpoint.InlineFrames[id] is { Runtime: null } state) await Reader.ReadAsync(state.Data);
+            if (checkpoint.InlineFrames[id] is { Runtime: null } state)
+                await Reader.ReadAsync(state.Data);
         }
-        else await PrepareDataReadAsync(checkpoint, checkpoint.ForkParent(branch));
+        else
+            await PrepareDataReadAsync(checkpoint, checkpoint.ForkParent(branch));
+
         await Reader.HydrateAsync(branch.DataChanges);
     }
 
@@ -155,10 +234,13 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
     {
         if (reference.Bytes > Limits.MaxPayloadBytes || reference.Bytes > int.MaxValue)
             throw new PayloadHydrationLimitException(Limits.MaxPayloadBytes);
+
         var reply = await host.ReadPayloadAsync(new(AssignmentId, InstanceId, reference));
         Check(reply.AssignmentId, reply.Conflict);
+
         if (reply.Refusal is { } refusal)
             throw new WorkflowEngineException(refusal, $"Payload {reference.Digest} could not be read");
+
         return reply.Body ?? throw new InvalidDataException("Missing payload body");
     }
 
@@ -166,6 +248,7 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
     {
         var reply = await host.StartChildAsync(new(AssignmentId, InstanceId, Epoch, stepId, start, hash, contractHash));
         Check(reply.AssignmentId, reply.Conflict);
+
         return reply;
     }
 
@@ -173,6 +256,7 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
     {
         var reply = await host.ReadInboxAsync(new(AssignmentId, InstanceId, afterSequence, limit));
         Check(reply.AssignmentId, reply.Conflict);
+
         return reply.Page ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "Missing inbox page");
     }
 
@@ -180,6 +264,7 @@ internal sealed class ExecutionSession(IExecutionHost host, Guid assignmentId, s
     {
         var reply = await host.ReadWaitAsync(new(AssignmentId, InstanceId, waitId));
         Check(reply.AssignmentId, reply.Conflict);
+
         return reply.Wait;
     }
 

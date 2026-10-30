@@ -1,0 +1,37 @@
+root = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+csharp_preserve_single_line_statements = false
+csharp_preserve_single_line_blocks = false
+
+# Keep auto-properties compact; expand properties and accessors with bodies.
+resharper_csharp_place_abstract_accessorholder_on_single_line = true
+resharper_csharp_place_simple_accessorholder_on_single_line = false
+resharper_csharp_place_simple_accessor_on_single_line = false
+
+# One statement per line, including the body of an if/for/while without braces.
+resharper_csharp_place_simple_embedded_statement_on_same_line = never
+resharper_csharp_keep_existing_embedded_arrangement = false
+
+# Wrap long lines.
+resharper_csharp_max_line_length = 140
+resharper_csharp_wrap_lines = true
+
+# Preserve one blank line between logical paragraphs.
+resharper_csharp_keep_blank_lines_in_code = 1
+# Start section comments on a separate paragraph.
+resharper_csharp_blank_lines_before_single_line_comment = 1
+# Separate guard clauses from the work that follows them.
+resharper_csharp_blank_lines_after_control_transfer_statements = 1
+resharper_csharp_blank_lines_before_control_transfer_statements = 1
+# Separate loops, ifs, usings and other statements with child blocks.
+resharper_csharp_blank_lines_before_block_statements = 1
+resharper_csharp_blank_lines_after_block_statements = 1
+# Separate statements that span several lines, including an if or loop whose body is on the next line.
+resharper_csharp_blank_lines_before_multiline_statements = 1
+resharper_csharp_blank_lines_after_multiline_statements = 1
+# Continue wrapped call chains with a plain indent.
+resharper_csharp_align_multiline_calls_chain = false
+resharper_csharp_align_multiline_binary_expressions_chain = false

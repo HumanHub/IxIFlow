@@ -11,7 +11,7 @@ using static IxIFlow.Tests.ExecutionTests.ParallelForEachTests;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// An instance's state is stored as a trunk and parts (A-08): each branch, each <c>ForEach</c> list and stored result,
+/// An instance's state is stored as a trunk and parts: each branch, each <c>ForEach</c> list and stored result,
 /// and the workflow data are parts, and a commit writes only those that changed. Stores read them back whole, at one
 /// revision, or read the trunk and the data alone for a status.
 /// </summary>
@@ -26,12 +26,13 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlServerKeepsAnInstanceAsATrunkAndParts() =>
-        StoresAnInstanceAsATrunkAndPartsAsync(new SqlWorkflowStateRepository(SqlTestDatabase<CheckpointPartsTests>.ConnectionString));
+        StoresAnInstanceAsATrunkAndPartsAsync(new SqlServerWorkflowStateRepository(SqlTestDatabase<CheckpointPartsTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     public Task PostgreSqlKeepsAnInstanceAsATrunkAndParts() =>
-        StoresAnInstanceAsATrunkAndPartsAsync(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CheckpointPartsTests>.ConnectionString));
+        StoresAnInstanceAsATrunkAndPartsAsync(
+            new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CheckpointPartsTests>.ConnectionString));
 
     [Fact]
     [Trait("Category", "SqliteIntegration")]
@@ -49,7 +50,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task ASqlServerReadNeverMixesTwoCommits() =>
-        ReadsNeverMixTwoCommitsAsync(new SqlWorkflowStateRepository(SqlTestDatabase<CheckpointPartsTests>.ConnectionString));
+        ReadsNeverMixTwoCommitsAsync(new SqlServerWorkflowStateRepository(SqlTestDatabase<CheckpointPartsTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
@@ -74,10 +75,12 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
     public void FinishedItemsAreStoredInChunksAndAnItemChangesOne()
     {
         var root = new ContinuationState { Status = ContinuationStatus.Joining, Stack = [new ScopePosition { ScopeId = "root" }] };
+
         var state = new ForEachState
         {
             Items = Enumerable.Range(0, 2_000).Select(index => StoredJson.Inline($"{index}")).ToList(), Finished = [3, 600, 1_500]
         };
+
         root.Stack[0].ForEach = state;
         var checkpoint = new ExecutionCheckpoint { StructureHash = "finished-chunks", Continuations = [root] };
         var before = StoredCheckpoint.Split(checkpoint, StoredJson.Inline("{}"));
@@ -87,6 +90,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
 
         Assert.Equal([StoredCheckpoint.FinishedKey(state.Id, 1)],
             after.Parts.Where(part => before.Parts.GetValueOrDefault(part.Key) != part.Value).Select(part => part.Key));
+
         Assert.DoesNotContain("Finished\":", after.Trunk);
         var assembled = ExecutionCheckpoint.Read(StoredCheckpoint.AssembleState(after.Trunk, after.Parts));
         Assert.Equal([3, 600, 700, 1_500], assembled.Continuations[0].Stack[0].ForEach!.Finished!);
@@ -100,11 +104,13 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         var (state, data) = State(1, 1);
         var checkpoint = ExecutionCheckpoint.Read(state);
         var branch = checkpoint.Continuations[1];
+
         checkpoint.Waits.Add(new WaitState
         {
             ContinuationId = branch.Id, StepId = "root/0/branch/0/0", Key = "approval", EventType = "Approval",
             Timeout = TimeSpan.FromHours(1), DeadlineUtc = new DateTime(2026, 10, 16, 12, 0, 0, DateTimeKind.Utc)
         });
+
         var saved = StoredCheckpoint.Split(checkpoint, StoredJson.Inline(data), marks: checkpoint.TakeMarks()).Parts;
 
         checkpoint.Waits[0].DeadlineUtc = checkpoint.Waits[0].DeadlineUtc!.Value.AddMilliseconds(40);
@@ -122,19 +128,25 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
     {
         var root = new ContinuationState { Status = ContinuationStatus.Joining, Stack = [new ScopePosition { ScopeId = "root" }] };
         var join = new ParallelJoinState { StepId = "root/0", ParentContinuationId = root.Id };
+
         // Their IDs sort against the order they started in.
         var started = new[] { "z-first", "y-second", "x-third" };
+
         var checkpoint = new ExecutionCheckpoint
         {
             StructureHash = "branch-order",
             BranchesStarted = 3,
-            Continuations = [root, .. started.Select((id, index) => new ContinuationState
-            {
-                Id = id, ParentJoinId = join.Id, Sequence = index + 1,
-                Stack = [new ScopePosition { ScopeId = "root/0/branch/0" }]
-            })],
+            Continuations =
+            [
+                root, .. started.Select((id, index) => new ContinuationState
+                {
+                    Id = id, ParentJoinId = join.Id, Sequence = index + 1,
+                    Stack = [new ScopePosition { ScopeId = "root/0/branch/0" }]
+                })
+            ],
             Joins = [join]
         };
+
         var stored = StoredCheckpoint.Split(checkpoint, StoredJson.Inline("{}"));
 
         // A store may give the parts back in key order.
@@ -154,15 +166,21 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
     {
         var repository = new InMemoryWorkflowStateRepository();
         var (state, _) = State(1, 2);
+
         var instance = new WorkflowInstance
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "OutOfDate", Status = WorkflowStatus.Running,
             ExecutionStateJson = state, WorkflowDataJson = StoredJson.Inline("{\"Value\":\"A\"}")
         };
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0));
+
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance,
+            (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0));
+
         var read = (await repository.GetWorkflowInstanceAsync(instance.InstanceId))!;
         read.WorkflowDataJson = StoredJson.Inline("{\"Value\":\"B\"}");
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(read, (await StoreTestSupport.LeaseAsync(repository, read.InstanceId)).Epoch, 1));
+
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(read,
+            (await StoreTestSupport.LeaseAsync(repository, read.InstanceId)).Epoch, 1));
 
         read.Revision = 2;
         read.WorkflowDataJson = StoredJson.Inline("{\"Value\":\"A\"}");
@@ -180,15 +198,22 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
     {
         var repository = new InMemoryWorkflowStateRepository();
         var (state, _) = State(1, 2);
+
         WorkflowInstance Instance(string data) => new()
         {
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Renamed", Status = WorkflowStatus.Running,
             ExecutionStateJson = state, WorkflowDataJson = StoredJson.Inline(data)
         };
+
         var first = Instance("{\"Value\":\"A\"}");
         var second = Instance("{\"Value\":\"B\"}");
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first, (await StoreTestSupport.LeaseAsync(repository, first.InstanceId)).Epoch, 0));
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(second, (await StoreTestSupport.LeaseAsync(repository, second.InstanceId)).Epoch, 0));
+
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(first,
+            (await StoreTestSupport.LeaseAsync(repository, first.InstanceId)).Epoch, 0));
+
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(second,
+            (await StoreTestSupport.LeaseAsync(repository, second.InstanceId)).Epoch, 0));
+
         var read = (await repository.GetWorkflowInstanceAsync(first.InstanceId))!;
 
         read.InstanceId = second.InstanceId;
@@ -226,10 +251,12 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
 
         var unmarked = Assert.Throws<CheckpointVerificationException>(() =>
             StoredCheckpoint.Split(checkpoint, StoredJson.Inline(data), saved, checkpoint.TakeMarks(), verify: true));
+
         Assert.Contains(StoredCheckpoint.BranchKey(branch.Id), unmarked.Message);
         checkpoint.Touch(branch);
         var marked = StoredCheckpoint.Split(checkpoint, StoredJson.Inline(data), saved, checkpoint.TakeMarks(), verify: true);
         Assert.NotEqual(saved[StoredCheckpoint.BranchKey(branch.Id)], marked.Parts[StoredCheckpoint.BranchKey(branch.Id)]);
+
         Assert.Same(saved[StoredCheckpoint.BranchKey(checkpoint.Continuations[2].Id)],
             marked.Parts[StoredCheckpoint.BranchKey(checkpoint.Continuations[2].Id)]);
     }
@@ -241,6 +268,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository, new Outbox());
+
         var definition = Workflow.Create<Approvals>("TwoListsOneFrame")
             .Step<Noop>()
             .ForEach(ctx => ctx.WorkflowData.Signatures, (body, _) => body.Step<Noop>())
@@ -252,8 +280,10 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var whole = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
+
         var list = Assert.Single(ExecutionCheckpoint.Read(whole.ExecutionStateJson).Continuations[0].Stack,
             frame => frame.ForEach != null).ForEach!;
+
         Assert.Equal(["\"ann\"", "\"bob\"", "\"cid\""], list.Items.Select(value => value.InlineText));
     }
 
@@ -287,24 +317,31 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         var definition = Approvals($"StoredApprovals{Guid.NewGuid():N}");
         var started = await engine.RunAsync(definition, new Approvals { Approvers = ["ann", "bob", "cid"] });
         var instanceId = started.InstanceId;
+
         try
         {
             await engine.ReplyAsync(outbox.TokenOf("bob"), new Answer { Approved = true });
 
             var whole = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             var checkpoint = ExecutionCheckpoint.Read(whole.ExecutionStateJson);
+
             Assert.Equal(2, checkpoint.Continuations.Count(item => item.ParentJoinId != null &&
-                                                                   item.Status == ContinuationStatus.Waiting));
+                item.Status == ContinuationStatus.Waiting));
+
             var list = checkpoint.Continuations[0].Stack[^1].ForEach!;
             Assert.Equal(3, list.Items.Count);
             Assert.NotNull(list.Results![1]);
             Assert.Equal([1], list.Finished!);
+
             // Each join lists its branches again, in the order they started.
             var join = Assert.Single(checkpoint.Joins);
+
             Assert.Equal(checkpoint.Continuations.Where(item => item.ParentJoinId == join.Id).Select(item => item.Id),
                 join.ChildContinuationIds);
+
             Assert.Contains(whole.SavedParts!.Keys, key => key.StartsWith("f/", StringComparison.Ordinal));
             Assert.Contains(whole.SavedParts!.Keys, key => key.StartsWith("r/", StringComparison.Ordinal));
+
             // Split again, what was read gives the parts it was read from, so a recovery rewrites nothing that did not move.
             Assert.Equal(whole.SavedParts!.OrderBy(part => part.Key),
                 StoredCheckpoint.Split(checkpoint, whole.WorkflowDataJson).Parts.OrderBy(part => part.Key));
@@ -322,6 +359,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
             Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
             var ended = (await repository.GetWorkflowInstanceAsync(instanceId))!;
             Assert.Equal([CheckpointParts.DataKey], ended.SavedParts!.Keys);
+
             Assert.Equal([true, true, false],
                 JsonSerializer.Deserialize<Approvals>(ended.WorkflowDataJson.InlineText)!.Answers.Select(item => item.Value));
         }
@@ -329,13 +367,17 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         {
             await repository.DeleteWorkflowInstanceAsync(instanceId);
         }
+
         Assert.Null(await repository.GetWorkflowInstanceAsync(instanceId));
-        if (repository is SqlWorkflowStateRepository)
+
+        if (repository is SqlServerWorkflowStateRepository)
         {
             await using var connection = new SqlConnection(SqlTestDatabase<CheckpointPartsTests>.ConnectionString);
             await connection.OpenAsync();
+
             await using var count = new SqlCommand(
                 "SELECT COUNT(*) FROM dbo.IxIFlowWorkflowParts WHERE InstanceId = @InstanceId", connection);
+
             count.Parameters.AddWithValue("@InstanceId", instanceId);
             Assert.Equal(0, (int)(await count.ExecuteScalarAsync())!);
         }
@@ -348,40 +390,54 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         var instanceId = Guid.NewGuid().ToString("N");
         var states = new[] { State(1, 5), State(6, 5) };
         var expected = states.Select(state => Branches(state.ExecutionStateJson)).ToArray();
+
         var instance = new WorkflowInstance
-        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = instanceId, WorkflowName = "MixedReads", Status = WorkflowStatus.Running
         };
+
         try
         {
             using var stop = new CancellationTokenSource();
             var reads = 0;
+
             var reader = Task.Run(async () =>
             {
                 while (!stop.IsCancellationRequested)
                 {
                     if (await repository.GetWorkflowInstanceAsync(instanceId) is not { } read)
                         continue;
+
                     var branches = Branches(read.ExecutionStateJson);
+
                     Assert.True(expected.Any(state => state.SetEquals(branches)),
                         $"Read branches {string.Join(",", branches)} at revision {read.Revision}");
+
                     Assert.Equal(read.ExecutionStateJson.Contains("\"BranchesStarted\":5") ? "{\"First\":true}" : "{\"First\":false}",
                         read.WorkflowDataJson.InlineText);
+
                     reads++;
                 }
             });
+
             for (var revision = 0; revision < 60; revision++)
             {
                 var state = states[revision % 2];
                 instance.ExecutionStateJson = state.ExecutionStateJson;
                 instance.WorkflowDataJson = StoredJson.Inline(state.WorkflowDataJson);
                 instance.Revision = revision;
-                var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, revision);
+
+                var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch,
+                    revision);
+
                 Assert.Equal(WorkflowCommitStatus.Applied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
+
                 // The parts are known for the next revision, except before every tenth, which replaces them all.
                 if ((revision + 1) % 10 != 0)
                     instance.Saved(commit.ApplyParts(instance.PartsAt(revision)), revision + 1);
             }
+
             stop.Cancel();
             await reader;
             Assert.True(reads > 0);
@@ -397,20 +453,25 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
     {
         var root = new ContinuationState { Status = ContinuationStatus.Joining, Stack = [new ScopePosition { ScopeId = "root" }] };
         var join = new ParallelJoinState { StepId = "root/0", ParentContinuationId = root.Id };
+
         var checkpoint = new ExecutionCheckpoint
         {
             StructureHash = "mixed-reads",
             BranchesStarted = first + count - 1,
-            Continuations = [root, .. Enumerable.Range(first, count).Select(sequence => new ContinuationState
-            {
-                Id = $"branch-{sequence}",
-                ParentJoinId = join.Id,
-                Sequence = sequence,
-                Status = ContinuationStatus.Waiting,
-                Stack = [new ScopePosition { ScopeId = "root/0/branch/0" }]
-            })],
+            Continuations =
+            [
+                root, .. Enumerable.Range(first, count).Select(sequence => new ContinuationState
+                {
+                    Id = $"branch-{sequence}",
+                    ParentJoinId = join.Id,
+                    Sequence = sequence,
+                    Status = ContinuationStatus.Waiting,
+                    Stack = [new ScopePosition { ScopeId = "root/0/branch/0" }]
+                })
+            ],
             Joins = [join]
         };
+
         return (JsonSerializer.Serialize(checkpoint), first == 1 ? "{\"First\":true}" : "{\"First\":false}");
     }
 
@@ -437,6 +498,7 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         services.AddSingleton(outbox);
         services.AddTransient<Ask>();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -446,7 +508,9 @@ public sealed class CheckpointPartsTests : IClassFixture<SqliteTestDatabase<Chec
         public string Stamp
         {
             get => Guid.NewGuid().ToString("N");
-            set { }
+            set
+            {
+            }
         }
     }
 }

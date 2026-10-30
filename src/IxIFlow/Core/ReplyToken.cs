@@ -17,6 +17,7 @@ public static class ReplyToken
         InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(waitId);
         var json = JsonSerializer.SerializeToUtf8Bytes(new[] { Version, instanceId, waitId, subject });
+
         return Convert.ToBase64String(json).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     }
 
@@ -24,6 +25,7 @@ public static class ReplyToken
     public static string Digest(string subject)
     {
         ArgumentNullException.ThrowIfNull(subject);
+
         return Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(subject)));
     }
 
@@ -32,21 +34,29 @@ public static class ReplyToken
     {
         instanceId = waitId = "";
         subject = null;
+
         if (string.IsNullOrWhiteSpace(token) || token.Length > 2000)
             return false;
+
         try
         {
             if (token.Any(c => !char.IsAsciiLetterOrDigit(c) && c is not ('-' or '_')))
                 return false;
+
             var base64 = token.Replace('-', '+').Replace('_', '/');
             base64 = base64.PadRight(base64.Length + (4 - base64.Length % 4) % 4, '=');
             var bytes = Convert.FromBase64String(base64);
+
             if (Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_') != token)
                 return false;
+
             var parts = JsonSerializer.Deserialize<string?[]>(bytes);
+
             if (parts is not [Version, { Length: > 0 } instance, { Length: > 0 } wait, var digest])
                 return false;
+
             (instanceId, waitId, subject) = (instance, wait, digest);
+
             return true;
         }
         catch (Exception error) when (error is FormatException or JsonException or ArgumentException)

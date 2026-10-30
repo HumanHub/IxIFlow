@@ -20,30 +20,31 @@ namespace IxIFlow.Generators.Tests;
 
 [Trait("Feature", "authoring")]
 [Trait("Spec", "F-19")]
+
 // Each nested test class uses its own default xUnit collection. Shared helpers are stateless.
 public sealed partial class ActivityCompilationTests
 {
     private const string Source = """
-        # Kept verbatim in both the assembly and symbols.
-        activity: {key: acme.transform, version: 2, name: Transform, category: Test, icon: edit, designer: transform, description: Transform data}
-        usings: [System.Text]
-        input:
-          Value: {type: int, default: 3, required: true, label: Value, help: Input value, control: text}
-          Optional: {type: 'int?', default: null}
-          Words: {type: 'List<string?>[]'}
-          Text: {type: string, default: hello}
-        output:
-          Result: {type: int}
-        inOut:
-          Attempts: {type: int}
-        body: |2-
-          await Task.Yield();
-          cancellationToken.ThrowIfCancellationRequested();
-          Attempts++;
-          Result = Twice(Value);
-        declarations: |+
-          private static int Twice(int value) => value * 2;
-        """;
+                                  # Kept verbatim in both the assembly and symbols.
+                                  activity: {key: acme.transform, version: 2, name: Transform, category: Test, icon: edit, designer: transform, description: Transform data}
+                                  usings: [System.Text]
+                                  input:
+                                    Value: {type: int, default: 3, required: true, label: Value, help: Input value, control: text}
+                                    Optional: {type: 'int?', default: null}
+                                    Words: {type: 'List<string?>[]'}
+                                    Text: {type: string, default: hello}
+                                  output:
+                                    Result: {type: int}
+                                  inOut:
+                                    Attempts: {type: int}
+                                  body: |2-
+                                    await Task.Yield();
+                                    cancellationToken.ThrowIfCancellationRequested();
+                                    Attempts++;
+                                    Result = Twice(Value);
+                                  declarations: |+
+                                    private static int Twice(int value) => value * 2;
+                                  """;
 
     [Fact]
     public async Task GeneratedActivityHasIdentityDirectionsMetadataAndExecutes()
@@ -52,6 +53,7 @@ public sealed partial class ActivityCompilationTests
         Assert.True(result.Success, string.Join("\n", result.Diagnostics));
         Assert.Empty(result.Diagnostics);
         var context = new AssemblyLoadContext("activity-test", isCollectible: true);
+
         try
         {
             using var dll = new MemoryStream(result.Assembly);
@@ -91,7 +93,10 @@ public sealed partial class ActivityCompilationTests
             cancellation.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => instance.ExecuteAsync(null!, cancellation.Token));
         }
-        finally { context.Unload(); }
+        finally
+        {
+            context.Unload();
+        }
     }
 
     [Theory]
@@ -122,6 +127,7 @@ public sealed partial class ActivityCompilationTests
         Assert.Equal(first.Assembly, second.Assembly);
         Assert.Equal(first.Pdb, second.Pdb);
         var context = new AssemblyLoadContext("activity-source", isCollectible: true);
+
         try
         {
             var assembly = context.LoadFromStream(new MemoryStream(first.Assembly));
@@ -129,25 +135,39 @@ public sealed partial class ActivityCompilationTests
             using var memory = new MemoryStream();
             resource.CopyTo(memory);
             Assert.Equal(Encoding.UTF8.GetBytes(yaml), memory.ToArray());
+
             // The retrieved source remains a valid authoring document after a version edit.
             Assert.True(ActivityCompilation.Compile(Encoding.UTF8.GetString(memory.ToArray()).Replace("version: 2", "version: 3")).Success);
         }
-        finally { context.Unload(); }
+        finally
+        {
+            context.Unload();
+        }
+
         using var provider = MetadataReaderProvider.FromPortablePdbStream(new MemoryStream(first.Pdb));
         var reader = provider.GetMetadataReader();
-        var sources = reader.Documents.ToDictionary(handle => reader.GetString(reader.GetDocument(handle).Name), handle => EmbeddedSource(reader, handle));
+
+        var sources = reader.Documents.ToDictionary(handle => reader.GetString(reader.GetDocument(handle).Name),
+            handle => EmbeddedSource(reader, handle));
+
         Assert.Equal(Encoding.UTF8.GetBytes(yaml), sources[ActivityCompilation.SourceResourceName]);
-        var generated = ActivitySourceTranslator.Translate(Dsl.Documents.WorkflowYamlSerializer.ReadActivity(yaml), yaml, ActivityCompilation.SourceResourceName);
+
+        var generated = ActivitySourceTranslator.Translate(Dsl.Documents.WorkflowYamlSerializer.ReadActivity(yaml), yaml,
+            ActivityCompilation.SourceResourceName);
+
         Assert.Equal(Encoding.UTF8.GetBytes(generated), sources["activity.g.cs"]);
     }
 
     [Fact]
     public async Task ExceptionStackUsesLiteralBodyLine()
     {
-        const string yaml = "activity: {key: acme.fail, version: 1}\nbody: |4+\n    await Task.Yield();\n    throw new InvalidOperationException(\"expected\");\n";
+        const string yaml =
+            "activity: {key: acme.fail, version: 1}\nbody: |4+\n    await Task.Yield();\n    throw new InvalidOperationException(\"expected\");\n";
+
         var result = ActivityCompilation.Compile(yaml, "throw.activity.yaml");
         Assert.True(result.Success, string.Join("\n", result.Diagnostics));
         var context = new AssemblyLoadContext("activity-throw", isCollectible: true);
+
         try
         {
             var assembly = context.LoadFromStream(new MemoryStream(result.Assembly), new MemoryStream(result.Pdb));
@@ -156,7 +176,10 @@ public sealed partial class ActivityCompilationTests
             var frame = Assert.Single(new StackTrace(error, true).GetFrames(), item => item.GetFileName() == "throw.activity.yaml");
             Assert.Equal(4, frame.GetFileLineNumber());
         }
-        finally { context.Unload(); }
+        finally
+        {
+            context.Unload();
+        }
     }
 
     [Fact]
@@ -164,7 +187,10 @@ public sealed partial class ActivityCompilationTests
     {
         Assert.DoesNotContain(typeof(ActivityCompilationTests).Assembly.Location, ActivityCompilation.ReferencePaths());
         Assert.Contains(typeof(IAsyncActivity).Assembly.Location, ActivityCompilation.ReferencePaths());
-        var result = ActivityCompilation.Compile("activity: {key: acme.test, version: 1}\ninput: {Value: {type: IxIFlow.Generators.Tests.ActivityCompilationTests}}\nbody: |\n  await Task.Yield();");
+
+        var result = ActivityCompilation.Compile(
+            "activity: {key: acme.test, version: 1}\ninput: {Value: {type: IxIFlow.Generators.Tests.ActivityCompilationTests}}\nbody: |\n  await Task.Yield();");
+
         Assert.False(result.Success);
         Assert.Contains(result.Diagnostics, item => item.Stage == WorkflowPublishStage.Compile && item.Line == 2);
     }
@@ -174,7 +200,10 @@ public sealed partial class ActivityCompilationTests
     {
         var words = new[] { "a", "ab", "a1", "a-b", "ab-c", "a-bc", "a-b-c" };
         var keys = words.Concat(words.SelectMany(left => words.Select(right => left + "." + right))).ToArray();
-        Assert.Equal(keys.Length, keys.Select(key => new ActivityPackageIdentity(key, 1).MetadataTypeName).Distinct(StringComparer.Ordinal).Count());
+
+        Assert.Equal(keys.Length,
+            keys.Select(key => new ActivityPackageIdentity(key, 1).MetadataTypeName).Distinct(StringComparer.Ordinal).Count());
+
         var identity = new ActivityPackageIdentity("acme.send-email", 2);
         Assert.Equal("IxIFlow.Activities.Acme.SendEmail", identity.MetadataTypeName);
         Assert.Equal("acme.send-email", identity.PackageId);
@@ -188,48 +217,72 @@ public sealed partial class ActivityCompilationTests
     [Fact]
     public void ExplicitPreparedReferencesAreUsedAndBodyCannotDivergeFromSource()
     {
-        const string yaml = "activity: {key: acme.test, version: 1}\ninput: {Value: {type: IxIFlow.Generators.Tests.ActivityCompilationTests}}\nbody: |\n  await Task.Yield();";
+        const string yaml =
+            "activity: {key: acme.test, version: 1}\ninput: {Value: {type: IxIFlow.Generators.Tests.ActivityCompilationTests}}\nbody: |\n  await Task.Yield();";
+
         foreach (var options in new[]
                  {
                      new ActivityCompilationOptions { PackageReferencePaths = [typeof(ActivityCompilationTests).Assembly.Location] },
                      new ActivityCompilationOptions { SharedContractAssemblies = [typeof(ActivityCompilationTests).Assembly] }
                  })
             Assert.True(ActivityCompilation.Compile(yaml, options: options).Success);
+
         var document = Dsl.Documents.WorkflowYamlSerializer.ReadActivity(yaml);
-        Assert.Throws<WorkflowSourceException>(() => ActivitySourceTranslator.Translate(document with { Body = "throw new Exception();" }, yaml, "source.activity.yaml"));
+
+        Assert.Throws<WorkflowSourceException>(() =>
+            ActivitySourceTranslator.Translate(document with { Body = "throw new Exception();" }, yaml, "source.activity.yaml"));
     }
 
     private static void IntegralDefaultsConvertExactlyWithoutChangingAuthoredNumbers(string type, Type runtime)
     {
         var previous = CultureInfo.CurrentCulture;
         CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+
         try
         {
             var minimum = (IFormattable)runtime.GetField("MinValue")!.GetValue(null)!;
             var maximum = (IFormattable)runtime.GetField("MaxValue")!.GetValue(null)!;
-            var literals = new[] { "1e2", "100.0", minimum.ToString(null, CultureInfo.InvariantCulture) + ".0",
-                maximum.ToString(null, CultureInfo.InvariantCulture) + "e0", "100000000000000000000000000000000000000000000000000e-48" };
+
+            var literals = new[]
+            {
+                "1e2", "100.0", minimum.ToString(null, CultureInfo.InvariantCulture) + ".0",
+                maximum.ToString(null, CultureInfo.InvariantCulture) + "e0", "100000000000000000000000000000000000000000000000000e-48"
+            };
+
             var yaml = "activity: {key: acme.defaults, version: 1}\ninput:\n" + string.Join("\n", literals.Select((literal, index) =>
                 "  Value" + index + ": {type: '" + type + "', default: " + literal + "}")) + "\nbody: |\n  return;\n";
+
             var json = WorkflowJsonSerializer.Write(WorkflowYamlSerializer.ReadActivity(yaml));
+
             foreach (var document in new[] { WorkflowYamlSerializer.ReadActivity(yaml), WorkflowJsonSerializer.ReadActivity(json) })
             {
                 for (var index = 0; index < literals.Length; index++)
                     Assert.Equal(literals[index], Assert.IsType<DocumentNumber>(document.Input["Value" + index].Default).Literal);
+
                 var written = WorkflowYamlSerializer.Write(document);
                 Assert.All(literals, literal => Assert.Contains(literal, written));
                 using var serialized = System.Text.Json.JsonDocument.Parse(WorkflowJsonSerializer.Write(document));
+
                 for (var index = 0; index < literals.Length; index++)
-                    Assert.Equal(literals[index], serialized.RootElement.GetProperty("input").GetProperty("Value" + index).GetProperty("default").GetRawText());
+                    Assert.Equal(literals[index],
+                        serialized.RootElement.GetProperty("input").GetProperty("Value" + index).GetProperty("default").GetRawText());
+
                 var result = ActivityCompilation.Compile(written);
                 Assert.True(result.Success, string.Join("\n", result.Diagnostics));
                 Assert.Empty(result.Diagnostics);
                 var context = new AssemblyLoadContext("integral-defaults", isCollectible: true);
+
                 try
                 {
                     var activity = context.LoadFromStream(new MemoryStream(result.Assembly)).GetType("IxIFlow.Activities.Acme.Defaults")!;
-                    var expected = new[] { Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture), Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture),
-                        minimum, maximum, Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture) };
+
+                    var expected = new[]
+                    {
+                        Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture),
+                        Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture),
+                        minimum, maximum, Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture)
+                    };
+
                     for (var index = 0; index < literals.Length; index++)
                     {
                         var actual = activity.GetProperty("Value" + index)!.GetCustomAttribute<DefaultValueAttribute>()!.Value;
@@ -237,29 +290,46 @@ public sealed partial class ActivityCompilationTests
                         Assert.Equal(expected[index], actual);
                     }
                 }
-                finally { context.Unload(); }
+                finally
+                {
+                    context.Unload();
+                }
             }
         }
-        finally { CultureInfo.CurrentCulture = previous; }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
     }
 
     private static void FractionalAndOutOfRangeIntegralDefaultsAreRefused(string type, Type runtime)
     {
         var previous = CultureInfo.CurrentCulture;
         CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+
         try
         {
-            var minimum = BigInteger.Parse(Convert.ToString(runtime.GetField("MinValue")!.GetValue(null), CultureInfo.InvariantCulture)!, CultureInfo.InvariantCulture);
-            var maximum = BigInteger.Parse(Convert.ToString(runtime.GetField("MaxValue")!.GetValue(null), CultureInfo.InvariantCulture)!, CultureInfo.InvariantCulture);
-            foreach (var literal in new[] { "100.1", "1001e-1", (minimum - 1).ToString(CultureInfo.InvariantCulture) + ".0",
+            var minimum = BigInteger.Parse(Convert.ToString(runtime.GetField("MinValue")!.GetValue(null), CultureInfo.InvariantCulture)!,
+                CultureInfo.InvariantCulture);
+
+            var maximum = BigInteger.Parse(Convert.ToString(runtime.GetField("MaxValue")!.GetValue(null), CultureInfo.InvariantCulture)!,
+                CultureInfo.InvariantCulture);
+
+            foreach (var literal in new[]
+                     {
+                         "100.1", "1001e-1", (minimum - 1).ToString(CultureInfo.InvariantCulture) + ".0",
                          (maximum + 1).ToString(CultureInfo.InvariantCulture) + "e0", "1e400", "1e-400",
                          "\" " + (minimum - 1).ToString(CultureInfo.InvariantCulture) + " \"",
                          "\" " + (maximum + 1).ToString(CultureInfo.InvariantCulture) + " \"",
                          "\"0x1" + new string('0', System.Runtime.InteropServices.Marshal.SizeOf(runtime) * 2) + "\"",
-                         "\" 100.1 \"", "\"1e2\"", "\"100.0\"" })
+                         "\" 100.1 \"", "\"1e2\"", "\"100.0\""
+                     })
                 AssertInvalidNumericDefault(type, literal);
         }
-        finally { CultureInfo.CurrentCulture = previous; }
+        finally
+        {
+            CultureInfo.CurrentCulture = previous;
+        }
     }
 
     // Keep the original data catalog; disjoint widths expose the two large theories to xUnit parallelism.
@@ -268,9 +338,14 @@ public sealed partial class ActivityCompilationTests
 
     public static IEnumerable<object[]> IntegralTypes()
     {
-        foreach (var (type, runtime) in new[] { ("sbyte", typeof(sbyte)), ("byte", typeof(byte)), ("short", typeof(short)),
-                     ("ushort", typeof(ushort)), ("int", typeof(int)), ("uint", typeof(uint)), ("long", typeof(long)), ("ulong", typeof(ulong)) })
-            foreach (var declaredType in NumericTypeSpellings(type, runtime)) yield return [declaredType, runtime];
+        foreach (var (type, runtime) in new[]
+                 {
+                     ("sbyte", typeof(sbyte)), ("byte", typeof(byte)), ("short", typeof(short)),
+                     ("ushort", typeof(ushort)), ("int", typeof(int)), ("uint", typeof(uint)), ("long", typeof(long)),
+                     ("ulong", typeof(ulong))
+                 })
+        foreach (var declaredType in NumericTypeSpellings(type, runtime))
+            yield return [declaredType, runtime];
     }
 
     private static IEnumerable<string> NumericTypeSpellings(string alias, Type runtime) =>
@@ -285,12 +360,14 @@ public sealed partial class ActivityCompilationTests
         "@System /* escaped */ . @" + runtime.Name
     ];
 
-    public static IEnumerable<object[]> DecimalTypes() => NumericTypeSpellings("decimal", typeof(decimal)).Select(type => new object[] { type });
+    public static IEnumerable<object[]> DecimalTypes() =>
+        NumericTypeSpellings("decimal", typeof(decimal)).Select(type => new object[] { type });
 
     public static IEnumerable<object[]> FloatingTypes()
     {
         foreach (var (alias, runtime) in new[] { ("float", typeof(float)), ("double", typeof(double)) })
-            foreach (var type in NumericTypeSpellings(alias, runtime)) yield return [type, runtime];
+        foreach (var type in NumericTypeSpellings(alias, runtime))
+            yield return [type, runtime];
     }
 
     private static IEnumerable<ActivityDocument> ReadBoth(string yaml)
@@ -307,16 +384,22 @@ public sealed partial class ActivityCompilationTests
         Assert.Equal(literal, metadata.ConstructorArguments[1].Value);
         var value = property.GetCustomAttribute<DefaultValueAttribute>()!.Value;
         Assert.IsType(conversionType, value);
-        if (customNullable) Assert.Equal(literal, conversionType.GetProperty("Text")!.GetValue(value));
-        else Assert.Equal(Enum.Parse(conversionType, literal), value);
+
+        if (customNullable)
+            Assert.Equal(literal, conversionType.GetProperty("Text")!.GetValue(value));
+        else
+            Assert.Equal(Enum.Parse(conversionType, literal), value);
     }
 
     private static void AssertCompiledDefaults(string type, (string Literal, object Expected)[] defaults)
     {
         var typeScalar = System.Text.Json.JsonSerializer.Serialize(type);
+
         var yaml = "activity: {key: acme.defaults, version: 1}\ninput:\n" + string.Join("\n", defaults.Select((item, index) =>
             "  Value" + index + ": {type: " + typeScalar + ", default: " + item.Literal + "}")) + "\nbody: |\n  return;\n";
+
         var json = WorkflowJsonSerializer.Write(WorkflowYamlSerializer.ReadActivity(yaml));
+
         foreach (var document in new[] { WorkflowYamlSerializer.ReadActivity(yaml), WorkflowJsonSerializer.ReadActivity(json) })
         {
             Assert.Empty(ActivityDocumentValidator.Validate(document).Diagnostics);
@@ -324,9 +407,11 @@ public sealed partial class ActivityCompilationTests
             Assert.True(result.Success, string.Join("\n", result.Diagnostics));
             Assert.Empty(result.Diagnostics);
             var context = new AssemblyLoadContext("numeric-defaults", isCollectible: true);
+
             try
             {
                 var activity = context.LoadFromStream(new MemoryStream(result.Assembly)).GetType("IxIFlow.Activities.Acme.Defaults")!;
+
                 for (var index = 0; index < defaults.Length; index++)
                 {
                     var actual = activity.GetProperty("Value" + index)!.GetCustomAttribute<DefaultValueAttribute>()!.Value;
@@ -334,30 +419,44 @@ public sealed partial class ActivityCompilationTests
                     Assert.Equal(defaults[index].Expected, actual);
                 }
             }
-            finally { context.Unload(); }
+            finally
+            {
+                context.Unload();
+            }
         }
     }
 
     private static void AssertInvalidNumericDefault(string type, string literal)
     {
         var typeScalar = System.Text.Json.JsonSerializer.Serialize(type);
-        var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: " + typeScalar + ", default: " + literal + "}}\nbody: |\n  return;\n";
-        var json = "{\"activity\":{\"key\":\"acme.defaults\",\"version\":1},\"input\":{\"Value\":{\"type\":" + typeScalar + ",\"default\":" + literal + "}},\"body\":\"return;\\n\"}";
-        foreach (var (document, source) in new[] { (WorkflowYamlSerializer.ReadActivity(yaml), yaml), (WorkflowJsonSerializer.ReadActivity(json), json) })
+
+        var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: " + typeScalar + ", default: " + literal +
+            "}}\nbody: |\n  return;\n";
+
+        var json = "{\"activity\":{\"key\":\"acme.defaults\",\"version\":1},\"input\":{\"Value\":{\"type\":" + typeScalar +
+            ",\"default\":" + literal + "}},\"body\":\"return;\\n\"}";
+
+        foreach (var (document, source) in new[]
+                     { (WorkflowYamlSerializer.ReadActivity(yaml), yaml), (WorkflowJsonSerializer.ReadActivity(json), json) })
         {
             // Named types require compilation; document rules can refuse only unambiguous framework syntax.
             var errors = ActivityDocumentValidator.Validate(document).Diagnostics;
+
             Assert.All(errors, error =>
             {
                 Assert.Equal("ACTD010", error.Code);
                 Assert.Equal("input.Value.default", error.Path);
                 var location = DocumentModel.GetLocation(document, error.Path);
                 Assert.StartsWith(literal, source.Split('\n')[location.Line - 1].Substring(location.Column - 1));
-                var exception = Assert.Throws<WorkflowSourceException>(() => ActivitySourceTranslator.Translate(document, source, "default.yaml"));
+
+                var exception =
+                    Assert.Throws<WorkflowSourceException>(() => ActivitySourceTranslator.Translate(document, source, "default.yaml"));
+
                 Assert.StartsWith("ACTD010:", exception.Detail);
                 Assert.Equal(location.Line, exception.Line);
                 Assert.Equal(location.Column, exception.Column);
             });
+
             var written = WorkflowYamlSerializer.Write(document);
             var diagnostic = Assert.Single(ActivityCompilation.Compile(written, "default.yaml").Diagnostics);
             Assert.Equal("ACTD010", diagnostic.Code);
@@ -373,13 +472,18 @@ public sealed partial class ActivityCompilationTests
     {
         var item = Assert.Single(reader.GetCustomDebugInformation(document).Select(reader.GetCustomDebugInformation),
             item => reader.GetGuid(item.Kind) == new Guid("0e8a571b-6926-466e-b4ad-8ab04611f5fe"));
+
         var bytes = reader.GetBlobBytes(item.Value);
         var size = BitConverter.ToInt32(bytes, 0);
-        if (size == 0) return bytes[4..];
+
+        if (size == 0)
+            return bytes[4..];
+
         using var compressed = new DeflateStream(new MemoryStream(bytes, 4, bytes.Length - 4), CompressionMode.Decompress);
         using var output = new MemoryStream();
         compressed.CopyTo(output);
         Assert.Equal(size, output.Length);
+
         return output.ToArray();
     }
 }

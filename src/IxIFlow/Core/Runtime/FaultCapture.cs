@@ -28,9 +28,12 @@ internal static class FaultCapture
 
     internal static Exception ProjectionFailure(Exception error, Exception projection)
     {
-        while (projection is TargetInvocationException { InnerException: { } inner }) projection = inner;
+        while (projection is TargetInvocationException { InnerException: { } inner })
+            projection = inner;
+
         if (WorkflowEngineException.IsEngineFailure(projection) || projection is ResourceLimitExceededException)
             ExceptionDispatchInfo.Capture(projection).Throw();
+
         return new InvalidOperationException($"Fault projection for '{SerializedException.CatchType(error).Name}' failed: " +
             projection.Message, projection);
     }

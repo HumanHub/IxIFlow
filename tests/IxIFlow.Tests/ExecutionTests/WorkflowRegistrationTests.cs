@@ -16,6 +16,7 @@ public sealed class WorkflowRegistrationTests
     public async Task CustomNameIsPreservedWhenLookingUpRegisteredWorkflow(bool explicitDataType)
     {
         var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
+
         if (explicitDataType)
             services.RegisterWorkflow<NamedWorkflow, RegistrationData>();
         else
@@ -41,21 +42,26 @@ public sealed class WorkflowRegistrationTests
             services.AddSingleton<IWorkflowStateRepository>(repository);
             services.AddIxIFlow();
             services.RegisterWorkflow<NamedWorkflow>();
+
             return services.BuildServiceProvider();
         }
 
         string instanceId;
+
         using (var first = CreateProvider())
         {
             var definition = Assert.IsType<WorkflowDefinition>(await first.GetRequiredService<IWorkflowCatalog>()
                 .GetWorkflowDefinitionAsync("Customer approval", 3));
+
             var started = await first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new RegistrationData());
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
 
         using var second = CreateProvider();
+
         var resumed = await second.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "approval", new RegistrationEvent());
 
@@ -68,26 +74,34 @@ public sealed class WorkflowRegistrationTests
         var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         services.RegisterWorkflow<NamedWorkflow>();
         using var provider = services.BuildServiceProvider();
+
         var definition = Assert.IsType<WorkflowDefinition>(await provider.GetRequiredService<IWorkflowCatalog>()
-                .GetWorkflowDefinitionAsync("Customer approval", 3));
+            .GetWorkflowDefinitionAsync("Customer approval", 3));
+
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(definition, new RegistrationData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         var registry = provider.GetRequiredService<IWorkflowCatalog>();
-        await registry.RetireWorkflowVersionAsync(definition.Name, definition.Version, new CatalogMutationToken((await registry.GetWorkflowVersionAsync(definition.Name, definition.Version))!.LifecycleRevision));
+
+        await registry.RetireWorkflowVersionAsync(definition.Name, definition.Version,
+            new CatalogMutationToken((await registry.GetWorkflowVersionAsync(definition.Name, definition.Version))!.LifecycleRevision));
+
         var deactivated = await registry.GetWorkflowDefinitionAsync(definition.Name,
             definition.Version);
+
         Assert.NotNull(deactivated);
         Assert.Equal(definition.Id, deactivated.Id);
         Assert.Equal(definition.Steps.Count, deactivated.Steps.Count);
 
         var existingStart = await engine.RunAsync(definition,
             new RegistrationData(), new WorkflowOptions { InstanceId = started.InstanceId });
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, existingStart.Status);
 
         var resumed = await engine.ResumeAsync(started.InstanceId, "approval",
             new RegistrationEvent());
+
         Assert.True(resumed.Status == WorkflowExecutionStatus.Success, resumed.ErrorMessage);
 
         await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable, () =>
@@ -107,36 +121,45 @@ public sealed class WorkflowRegistrationTests
         bool explicitDataType, bool invokeByName, bool restartBeforeResume)
     {
         var repository = new InMemoryWorkflowStateRepository();
+
         ServiceProvider CreateProvider()
         {
             var services = new ServiceCollection().AddLogging();
             services.AddSingleton<IWorkflowStateRepository>(repository);
             services.AddIxIFlow();
+
             if (explicitDataType)
                 services.RegisterWorkflow<NamedWorkflow, RegistrationData>();
             else
                 services.RegisterWorkflow<NamedWorkflow>();
+
             return services.BuildServiceProvider();
         }
 
         var parentBuilder = IxIFlow.Builders.Workflow.Create<ParentData>(
                 $"Parent-{explicitDataType}-{invokeByName}")
             .Step<RegistrationActivity>();
+
         var parent = invokeByName
             ? parentBuilder.Invoke<RegistrationData>("Customer approval", 3, step => step
                 .Output(data => data.Completed).To(ctx => ctx.WorkflowData.ChildCompleted)).Build()
             : parentBuilder.Invoke<NamedWorkflow, RegistrationData>(step => step
                 .Output(data => data.Completed).To(ctx => ctx.WorkflowData.ChildCompleted)).Build();
+
         string instanceId;
         string childId;
+
         using (var first = CreateProvider())
         {
             var started = await first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(parent, new ParentData());
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
-            // The child takes its own approval (D-17).
+
+            // The child takes its own approval.
             childId = await repository.WaitingInstanceAsync("Customer approval", "approval");
+
             if (!restartBeforeResume)
             {
                 var engine = first.GetRequiredService<IWorkflowClient>();
@@ -148,26 +171,38 @@ public sealed class WorkflowRegistrationTests
         if (restartBeforeResume)
         {
             using var second = CreateProvider();
+
             await second.GetRequiredService<IWorkflowCatalog>()
                 .RegisterWorkflowAsync(parent);
+
             var engine = second.GetRequiredService<IWorkflowClient>();
             EventAssert.Consumed(await engine.ResumeAsync(childId, "approval", new RegistrationEvent()));
+
             AssertCompleted(await engine.AwaitAsync(instanceId, WorkflowAwaitCondition.Finished)
                 .WaitAsync(ChildRuns.Patience));
         }
 
         var parentInstance = await repository.GetWorkflowInstanceAsync(instanceId);
         Assert.Equal(WorkflowStatus.Completed, parentInstance?.Status);
-        var children = await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "Customer approval", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!));
+
+        var children =
+            await Task.WhenAll(
+                (await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "Customer approval", Limit: int.MaxValue))).Items
+                .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!));
+
         var child = Assert.Single(children);
         Assert.Equal(WorkflowStatus.Completed, child.Status);
         Assert.Equal(3, child.WorkflowVersion);
+
         Assert.True(System.Text.Json.JsonSerializer.Deserialize<RegistrationData>(
             child.WorkflowDataJson.InlineText)!.Completed);
+
         using var verification = CreateProvider();
+
         var registeredStructureHash = new WorkflowScopeCatalog(
             Assert.IsType<WorkflowDefinition>(await verification.GetRequiredService<IWorkflowCatalog>()
                 .GetWorkflowDefinitionAsync("Customer approval", 3))).StructureHash;
+
         Assert.Equal(registeredStructureHash,
             ExecutionCheckpoint.Read(child.ExecutionStateJson).StructureHash);
     }
@@ -184,11 +219,13 @@ public sealed class WorkflowRegistrationTests
         var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         services.RegisterWorkflow<NamedWorkflow>();
         using var provider = services.BuildServiceProvider();
+
         var parent = IxIFlow.Builders.Workflow.Create<ParentData>("Registered class parent")
             .Step<RegistrationActivity>()
             .Invoke<NamedWorkflow, RegistrationData>(step => step
                 .Output(data => data.Completed).To(ctx => ctx.WorkflowData.ChildCompleted))
             .Build();
+
         var engine = provider.GetRequiredService<IWorkflowClient>();
 
         var started = await engine.RunAsync(parent, new ParentData());
@@ -197,7 +234,11 @@ public sealed class WorkflowRegistrationTests
         var childId = await repository.WaitingInstanceAsync("Customer approval", "approval");
         EventAssert.Consumed(await engine.ResumeAsync(childId, "approval", new RegistrationEvent()));
         AssertCompleted(await engine.FinishedAsync(started));
-        var child = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "Customer approval", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        var child = Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "Customer approval", Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
         Assert.Equal(3, child.WorkflowVersion);
     }
 
@@ -206,12 +247,16 @@ public sealed class WorkflowRegistrationTests
     {
         var constructions = 0;
         var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
+
         services.AddTransient<NamedWorkflow>(_ =>
         {
             constructions++;
+
             return new NamedWorkflow();
         });
+
         using var provider = services.BuildServiceProvider();
+
         var parent = IxIFlow.Builders.Workflow.Create<ParentData>("Missing registration parent")
             .Step<RegistrationActivity>().Invoke<NamedWorkflow, RegistrationData>().Build();
 
@@ -220,7 +265,11 @@ public sealed class WorkflowRegistrationTests
 
         Assert.Contains("is not registered", error.Message);
         Assert.Equal(0, constructions);
-        Assert.Empty(await Task.WhenAll((await provider.GetRequiredService<IWorkflowStateRepository>().QueryInstancesAsync(new InstanceQuery(WorkflowName: nameof(NamedWorkflow), Limit: int.MaxValue))).Items.Select(async row => (await provider.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        Assert.Empty(await Task.WhenAll(
+            (await provider.GetRequiredService<IWorkflowStateRepository>()
+                .QueryInstancesAsync(new InstanceQuery(WorkflowName: nameof(NamedWorkflow), Limit: int.MaxValue))).Items.Select(async row =>
+                (await provider.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Fact]
@@ -230,6 +279,7 @@ public sealed class WorkflowRegistrationTests
         services.RegisterWorkflow<NamedWorkflow>();
         services.AddSingleton<IWorkflowCatalog>(new WorkflowCatalog());
         using var provider = services.BuildServiceProvider();
+
         var parent = IxIFlow.Builders.Workflow.Create<ParentData>("Missing catalog parent")
             .Step<RegistrationActivity>().Invoke<NamedWorkflow, RegistrationData>().Build();
 
@@ -237,7 +287,11 @@ public sealed class WorkflowRegistrationTests
             () => provider.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData()));
 
         Assert.Contains("Workflow definition not found: Customer approval v3", error.Message);
-        Assert.Empty(await Task.WhenAll((await provider.GetRequiredService<IWorkflowStateRepository>().QueryInstancesAsync(new InstanceQuery(WorkflowName: "Customer approval", Limit: int.MaxValue))).Items.Select(async row => (await provider.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        Assert.Empty(await Task.WhenAll(
+            (await provider.GetRequiredService<IWorkflowStateRepository>()
+                .QueryInstancesAsync(new InstanceQuery(WorkflowName: "Customer approval", Limit: int.MaxValue))).Items.Select(async row =>
+                (await provider.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     [Theory]
@@ -248,16 +302,19 @@ public sealed class WorkflowRegistrationTests
         var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         services.RegisterWorkflow<NamedWorkflow>();
         using var provider = services.BuildServiceProvider();
+
         WorkflowDefinition Parent(int version)
         {
             var builder = IxIFlow.Builders.Workflow.Create<ParentData>("Retired child parent", version)
                 .Step<RegistrationActivity>();
+
             return invokeByName
                 ? builder.Invoke<RegistrationData>("Customer approval", 3, step => step
                     .Output(data => data.Completed).To(ctx => ctx.WorkflowData.ChildCompleted)).Build()
                 : builder.Invoke<NamedWorkflow, RegistrationData>(step => step
                     .Output(data => data.Completed).To(ctx => ctx.WorkflowData.ChildCompleted)).Build();
         }
+
         var parent = Parent(1);
         var engine = provider.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(parent, new ParentData());
@@ -265,28 +322,43 @@ public sealed class WorkflowRegistrationTests
         var repository = provider.GetRequiredService<IWorkflowStateRepository>();
         var childId = await repository.WaitingInstanceAsync("Customer approval", "approval");
         var catalog = provider.GetRequiredService<IWorkflowCatalog>();
-        await catalog.RetireWorkflowVersionAsync(parent.Name, parent.Version, new CatalogMutationToken((await catalog.GetWorkflowVersionAsync(parent.Name, parent.Version))!.LifecycleRevision));
-        var retirement = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await catalog.RetireWorkflowVersionAsync("Customer approval", 3, new CatalogMutationToken((await catalog.GetWorkflowVersionAsync("Customer approval", 3))!.LifecycleRevision)));
+
+        await catalog.RetireWorkflowVersionAsync(parent.Name, parent.Version,
+            new CatalogMutationToken((await catalog.GetWorkflowVersionAsync(parent.Name, parent.Version))!.LifecycleRevision));
+
+        var retirement = await Assert.ThrowsAsync<WorkflowEngineException>(async () =>
+            await catalog.RetireWorkflowVersionAsync("Customer approval", 3,
+                new CatalogMutationToken((await catalog.GetWorkflowVersionAsync("Customer approval", 3))!.LifecycleRevision)));
+
         Assert.Equal(WorkflowErrorKind.InvalidState, retirement.Kind);
         Assert.Contains("unfinished parent", retirement.Message);
 
         EventAssert.Consumed(await engine.ResumeAsync(childId, "approval", new RegistrationEvent()));
         AssertCompleted(await engine.FinishedAsync(started));
-        await catalog.RetireWorkflowVersionAsync("Customer approval", 3, new CatalogMutationToken((await catalog.GetWorkflowVersionAsync("Customer approval", 3))!.LifecycleRevision));
+
+        await catalog.RetireWorkflowVersionAsync("Customer approval", 3,
+            new CatalogMutationToken((await catalog.GetWorkflowVersionAsync("Customer approval", 3))!.LifecycleRevision));
+
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => engine.RunAsync(Parent(2), new ParentData()));
+
         Assert.Contains("is deactivated", error.Message);
-        Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "Customer approval", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "Customer approval", Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     public sealed class RegistrationData
     {
         public bool Completed { get; set; }
     }
+
     public sealed class ParentData
     {
         public bool ChildCompleted { get; set; }
     }
+
     public sealed class RegistrationEvent;
 
     [IxIFlow.Core.Workflow("Customer approval", Version = 3)]
@@ -315,6 +387,7 @@ public sealed class WorkflowRegistrationTests
             CancellationToken cancellationToken = default)
         {
             Completed = true;
+
             return Task.CompletedTask;
         }
     }

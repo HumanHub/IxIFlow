@@ -11,9 +11,9 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
 /// Reference scenarios have an exact commit count and a ceiling on the bytes a commit carries, so a change that
-/// adds or loses commits, or grows them, fails here first (spec J-04). Commits happen only at effect
+/// adds or loses commits, or grows them, fails here first. Commits happen only at effect
 /// boundaries: the start, each activity start and end, a saved wait, a completed join and the end
-/// (spec A-04). A commit carries the instance's trunk and only the parts of its state that changed (A-08).
+/// . A commit carries the instance's trunk and only the parts of its state that changed.
 /// </summary>
 [Trait("Feature", "durability")]
 [Trait("Spec", "J-04")]
@@ -66,7 +66,7 @@ public sealed class CommitBudgetTests
         AssertBudget(commits, bytes, maxCommits: 12, maxBytes: 4700);
     }
 
-    // Branches that write save their changes in every commit until the join (D-14, spec E-01).
+    // Branches that write save their changes in every commit until the join.
     [Fact]
     [Trait("Spec", "E-01")]
     public async Task ParallelBranchesThatWrite()
@@ -95,7 +95,7 @@ public sealed class CommitBudgetTests
         Assert.True(store.TotalBytes <= 30000, $"{store.TotalBytes} bytes written in all; the ceiling is 30000");
     }
 
-    // D-34: an uninterrupted parallel ForEach with one activity per item and WaitAll takes 2N + 2 commits
+    // An uninterrupted parallel ForEach with one activity per item and WaitAll takes 2N + 2 commits
     // for N items, including the workflow's start and end.
     [Fact]
     [Trait("Spec", "E-12")]
@@ -112,15 +112,16 @@ public sealed class CommitBudgetTests
         var result = await Engine(services).RunAsync(definition, new ItemsData { Items = ["a", "b", "c"] });
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+
         // 2N + 2 for the ForEach and the workflow, and two for the activity before it.
         AssertBudget(store.Commits, store.MaxBytes, maxCommits: 2 * 3 + 2 + 2, maxBytes: 4900);
         Assert.True(store.TotalBytes <= 28000, $"{store.TotalBytes} bytes written in all; the ceiling is 28000");
     }
 
-    // J-04 at scale: a commit that moves an item carries the trunk and that item's branch, however many items
+    // At scale, a commit that moves an item carries the trunk and that item's branch, however many items
     // there are. Only three commits carry O(N): the start, whose data holds the list; the first after the fork, which
     // writes every item's branch; and the end, which completes the join, merging the items and deleting their
-    // branches. In all, the bytes stay under c·N.
+    // branches. In all, the bytes stay under cÂ·N.
     [Theory]
     [Trait("Spec", "E-12")]
     [InlineData(100)]
@@ -135,23 +136,28 @@ public sealed class CommitBudgetTests
 
         var store = new MeasuringStore();
         using var services = Services(store);
+
         var result = await Engine(services).RunAsync(definition,
             new ItemsData { Items = Enumerable.Range(0, items).Select(index => $"item-{index}").ToList() });
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var commits = store.Applied;
+
         // 2N + 2 for the ForEach and the workflow, and two for the activity before it.
         Assert.Equal(2 * items + 4, commits.Count);
         var fork = commits.ToList().FindIndex(commit => commit.PartsWritten > 2);
         Assert.True(fork > 0 && fork < commits.Count - 1, "The fork's branches are written by a commit of their own");
         var perItem = commits.Where((_, index) => index != 0 && index != fork && index != commits.Count - 1).ToArray();
         Assert.All(perItem, commit => Assert.Equal(0, commit.PartsDeleted));
+
         Assert.True(perItem.Max(commit => commit.Bytes) <= ItemCommitCeiling,
             $"An item's commit carried {perItem.Max(commit => commit.Bytes)} bytes; the ceiling is {ItemCommitCeiling}");
+
         // A commit writes what moved: at most one branch whose activity ended, one whose activity started, and the
         // chunk of finished items the ending one is in.
         Assert.True(perItem.Max(commit => commit.PartsWritten) <= 3,
             $"An item's commit wrote {perItem.Max(commit => commit.PartsWritten)} parts; only what moved");
+
         Assert.True(store.TotalBytes <= BytesPerItem * items,
             $"{store.TotalBytes} bytes written in all; the ceiling is {BytesPerItem} per item");
     }
@@ -192,8 +198,10 @@ public sealed class CommitBudgetTests
     {
         var store = new MeasuringStore();
         using var services = Services(store);
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<BudgetData>("BudgetChild").Step<WorkActivity>().Build());
+
         var definition = Workflow.Create<BudgetData>("BudgetParent")
             .Step<WorkActivity>()
             .Invoke<BudgetData>("BudgetChild", 1)
@@ -204,7 +212,7 @@ public sealed class CommitBudgetTests
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
 
         // Parent and child commits together. Starting the child adds no commit of its own: it rides in
-        // the parent's idle commit, and the child's completion in its terminal one (D-17). The parent's
+        // the parent's idle commit, and the child's completion in its terminal one. The parent's
         // checkpoint holds its wait for the child beside the invocation, the child's its parent link.
         AssertBudget(store.Commits, store.MaxBytes, maxCommits: 12, maxBytes: 2800);
     }
@@ -216,24 +224,29 @@ public sealed class CommitBudgetTests
         var time = new FakeTimeProvider();
         var store = new MeasuringStore(time);
         using var services = Services(store, time);
+
         var definition = Workflow.Create<BudgetData>("BudgetParkedRetry")
             .Step<WorkActivity>()
             .Saga(saga => saga.Step<FailOnceActivity>(step => step
                 .OnError<InvalidOperationException>(handler => handler.ThenRetry(new RetryPolicy(
                     TimeSpan.FromMilliseconds(1200), TimeSpan.FromMilliseconds(1200), 1, 1)))))
             .Build();
+
         var instanceId = Guid.NewGuid().ToString("N");
 
         var running = Engine(services).RunAsync(definition, new BudgetData(),
             new WorkflowOptions { InstanceId = instanceId });
+
         // The retry is parked once the instance is due later than now; then its backoff passes.
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
         while (await store.GetWorkflowInstanceAsync(instanceId) is not
-               { Status: WorkflowStatus.Running, RunnableAtUtc: { } due } || due <= time.GetUtcNow().UtcDateTime)
+                   { Status: WorkflowStatus.Running, RunnableAtUtc: { } due } || due <= time.GetUtcNow().UtcDateTime)
         {
             Assert.True(DateTime.UtcNow < deadline, "The retry was never parked");
             await Task.Delay(10);
         }
+
         time.Advance(TimeSpan.FromMilliseconds(1300));
         var result = await running.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -247,6 +260,7 @@ public sealed class CommitBudgetTests
     {
         var store = new MeasuringStore();
         using var services = Services(store);
+
         var definition = Workflow.Create<BudgetData>("BudgetWait")
             .Step<WorkActivity>()
             .WaitFor<Approval>("approval")
@@ -283,6 +297,7 @@ public sealed class CommitBudgetTests
         using var services = Services(store);
         var result = await Engine(services).RunAsync(definition, new BudgetData());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+
         return (store.Commits, store.MaxBytes);
     }
 
@@ -291,14 +306,17 @@ public sealed class CommitBudgetTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(store);
+
         if (time != null)
             services.AddSingleton(time);
+
         services.AddIxIFlow();
         services.AddTransient<WorkActivity>();
         services.AddTransient<CountActivity>();
         services.AddTransient<FailActivity>();
         services.AddTransient<FailOnceActivity>();
         services.AddSingleton<FailOnceProbe>();
+
         return services.BuildServiceProvider();
     }
 
@@ -323,11 +341,14 @@ public sealed class CommitBudgetTests
         public long MaxBytes => _applied.Max(commit => commit.Bytes);
         public long TotalBytes => _applied.Sum(commit => commit.Bytes);
 
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
-            var result = await base.CommitWorkflowInstanceAsync(commit);
+            var result = await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
+
             if (result.Status == WorkflowCommitStatus.Applied)
                 _applied.Enqueue((commit.StateBytes(), commit.Parts.Count, commit.DeletedParts.Count));
+
             return result;
         }
     }
@@ -372,6 +393,7 @@ public sealed class CommitBudgetTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Count++;
+
             return Task.CompletedTask;
         }
     }

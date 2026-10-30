@@ -28,15 +28,19 @@ public sealed class FetchQuote : IAsyncActivity
         Attempt = context.Attempt.Number;
         InvocationId = context.InvocationId;
         AttemptId = context.AttemptId;
+
         if (Attempt == 1)
         {
             context.Attempt.Note = "primary endpoint";
+
             throw new HttpRequestException("Primary unavailable");
         }
+
         var earlier = context.Attempt.Previous[^1];
         EarlierError = earlier.ErrorMessage!;
         EarlierNote = earlier.Note!.ToString()!;
         EarlierAttemptId = earlier.AttemptId;
+
         return Task.CompletedTask;
     }
 }

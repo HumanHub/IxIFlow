@@ -20,6 +20,7 @@ public sealed class AuthoringRegressionTests
         var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<RegistrationData>("Duplicate")
             .Step<RegistrationActivity>().WithId("same")
             .Sequence(body => body.Step<RegistrationActivity>().WithId("same")).WithId("container").Build());
+
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.Contains("Duplicate step ID 'same'", error.Message);
         Assert.Contains(nameof(AuthoringRegressionTests) + ".cs:", error.Message);
@@ -31,6 +32,7 @@ public sealed class AuthoringRegressionTests
     {
         var definition = Workflow.Create<RegistrationData>("Located")
             .Step<RegistrationActivity>().WithId("activity").Named("Explicit name").Build();
+
         var step = Assert.Single(definition.Steps);
         Assert.EndsWith(".cs", step.SourceLocation!.Split(':')[^2]);
         Assert.Contains(nameof(AuthoringRegressionTests), step.SourceLocation);
@@ -46,13 +48,16 @@ public sealed class AuthoringRegressionTests
             .Try(body => body.Step<SyntaxTests.WorkflowBuilderIdentityTests.StartActivity>())
             .Catch<InvalidOperationException>(body => body.Step<SyntaxTests.WorkflowBuilderIdentityTests.StartActivity>())
             .Build();
+
         const string expected = "9C7B5A8E4BD922A6D1874BECCB214C4F9D27EF7E66D73F6508BFC47A5F5AFB81";
         Assert.Equal(expected, new WorkflowScopeCatalog(definition).StructureHash);
+
         foreach (var step in ParallelRules.Flatten(definition.Steps))
         {
             step.Id = "located/" + step.Id;
             step.SourceLocation = "another.yaml:3";
         }
+
         Assert.Equal(expected, new WorkflowScopeCatalog(definition).StructureHash);
     }
 
@@ -60,17 +65,21 @@ public sealed class AuthoringRegressionTests
     public async Task DiRegisteredChildMustMatchTheRegistryStructureHash()
     {
         var registry = new WorkflowCatalog();
+
         await registry.RegisterWorkflowAsync(Workflow.Create<RegistrationData>("Customer approval", 3)
             .Step<RegistrationActivity>().Build());
+
         var services = new ServiceCollection().AddLogging().AddIxIFlow().Services;
         services.RegisterWorkflow<NamedWorkflow>();
         services.AddSingleton<IWorkflowCatalog>(registry);
         using var provider = services.BuildServiceProvider();
+
         var parent = Workflow.Create<ParentData>("Mismatch parent").Step<RegistrationActivity>()
             .Invoke<NamedWorkflow, RegistrationData>().Build();
 
         var error = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => provider.GetRequiredService<IWorkflowClient>().RunAsync(parent, new ParentData()));
+
         Assert.Contains("differs from its registered definition", error.Message);
     }
 
@@ -81,12 +90,17 @@ public sealed class AuthoringRegressionTests
     public async Task CompensationSavedValueMismatchesKeepTheInvalidStateMessage(bool previousCompensation)
     {
         var compensation = new CompensationActivityInfo { ActivityType = typeof(YamlMappingActivity) };
-        var builder = new CompensationActivityBuilder<RegressionData, YamlMappingActivity, MarkChildActivity, RegistrationActivity>(compensation);
+
+        var builder =
+            new CompensationActivityBuilder<RegressionData, YamlMappingActivity, MarkChildActivity, RegistrationActivity>(compensation);
+
         if (previousCompensation)
             builder.Input(activity => activity.Value).From((RegistrationActivity _) => "value");
         else
             builder.Input(activity => activity.Value).From((MarkChildActivity previous) => previous.Value);
+
         using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
+
         var request = new TypedActivityExecutionRequest<RegressionData, object>
         {
             ActivityType = typeof(YamlMappingActivity),
@@ -102,9 +116,12 @@ public sealed class AuthoringRegressionTests
                 WorkflowData = new()
             }
         };
+
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => provider.GetRequiredService<IActivityExecutor>()
             .PrepareTypedActivityAsync(request, true, "invocation", "attempt"));
+
         Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
+
         Assert.Contains("requires " + (previousCompensation ? nameof(RegistrationActivity) : nameof(MarkChildActivity)) +
             ", but saved value is " + nameof(RegressionApprovalEvent), error.Message);
     }
@@ -120,6 +137,7 @@ public sealed class AuthoringRegressionTests
             .Saga(body => body.Step<RegistrationActivity>().WithId("saga"))
             .OnError<Exception>(body => body.Step<RegistrationActivity>().WithId("error"))
             .Build();
+
         Assert.Equal("catch", definition.Steps[1].CatchBlocks[0].SequenceSteps[0].Id);
         Assert.Equal("saga", definition.Steps[2].SequenceSteps[0].Id);
         Assert.Equal("error", definition.Steps[2].CatchBlocks[0].SequenceSteps[0].Id);
@@ -130,10 +148,15 @@ public sealed class AuthoringRegressionTests
     {
         var request = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<RegistrationData>("Request")
             .Request<QuestionActivity>("question").WithId("request", "request.yaml", 8).Build());
+
         Assert.StartsWith("request.yaml:8:", request.Message);
+
         var each = Assert.Throws<WorkflowEngineException>(() => new WorkflowBuilder<ItemData, object>([], "Each")
-            .ForEach(ctx => ctx.WorkflowData.Values, (_, _) => { }, setup => setup.Into(ctx => ctx.WorkflowData.Results))
+            .ForEach(ctx => ctx.WorkflowData.Values, (_, _) =>
+            {
+            }, setup => setup.Into(ctx => ctx.WorkflowData.Results))
             .WithId("each", "each.yaml", 12).Build());
+
         Assert.StartsWith("each.yaml:12:", each.Message);
     }
 
@@ -145,34 +168,50 @@ public sealed class AuthoringRegressionTests
             Name = "Hand-built saga",
             Version = 1,
             WorkflowDataType = typeof(ItemData),
-            Steps = [new WorkflowStep
-            {
-                StepType = WorkflowStepType.Saga,
-                SequenceSteps = [new WorkflowStep { StepType = WorkflowStepType.Activity, ActivityType = typeof(RegistrationActivity) }],
-                CatchBlocks = [new WorkflowStep
+            Steps =
+            [
+                new WorkflowStep
                 {
-                    Name = "Handler", StepType = WorkflowStepType.CatchBlock, SourceLocation = "saga.yaml:21",
-                    StepMetadata = { ["SagaErrorConfig"] = new SagaErrorConfiguration
-                    {
-                        CompensationStrategy = CompensationStrategy.CompensateUpTo,
-                        CompensationTargetType = typeof(CompleteActivity),
-                        ContinuationAction = SagaContinuationAction.Continue
-                    } }
-                }]
-            }]
+                    StepType = WorkflowStepType.Saga,
+                    SequenceSteps =
+                        [new WorkflowStep { StepType = WorkflowStepType.Activity, ActivityType = typeof(RegistrationActivity) }],
+                    CatchBlocks =
+                    [
+                        new WorkflowStep
+                        {
+                            Name = "Handler", StepType = WorkflowStepType.CatchBlock, SourceLocation = "saga.yaml:21",
+                            StepMetadata =
+                            {
+                                ["SagaErrorConfig"] = new SagaErrorConfiguration
+                                {
+                                    CompensationStrategy = CompensationStrategy.CompensateUpTo,
+                                    CompensationTargetType = typeof(CompleteActivity),
+                                    ContinuationAction = SagaContinuationAction.Continue
+                                }
+                            }
+                        }
+                    ]
+                }
+            ]
         };
+
         var saga = Assert.Throws<WorkflowEngineException>(() => WorkflowDefinitionValidator.Validate(sagaDefinition));
         Assert.StartsWith("saga.yaml:21:", saga.Message);
         Assert.Contains("not a step of the saga", saga.Message);
+
         var definition = new WorkflowDefinition
         {
             Name = "Hand-built fixture", Version = 1, WorkflowDataType = typeof(ItemData),
-            Steps = [new WorkflowStep
-            {
-                Id = "incomplete", StepType = WorkflowStepType.WorkflowInvocation,
-                SourceLocation = "catalog.yaml:14"
-            }]
+            Steps =
+            [
+                new WorkflowStep
+                {
+                    Id = "incomplete", StepType = WorkflowStepType.WorkflowInvocation,
+                    SourceLocation = "catalog.yaml:14"
+                }
+            ]
         };
+
         var catalog = Assert.Throws<WorkflowEngineException>(() => WorkflowDefinitionValidator.Validate(definition));
         Assert.StartsWith("catalog.yaml:14:", catalog.Message);
     }
@@ -198,10 +237,12 @@ public sealed class AuthoringRegressionTests
             Into = new() { Path = "workflow.Results" },
             Steps = [new ActivityStepDocument { Id = "body", Activity = "missing" }]
         };
+
         var result = await YamlTestContracts.ValidateAsync(new()
         {
             Workflow = new() { Name = "Each", DataType = "data" }, Definitions = [each]
         }, YamlTestContracts.Create(("data", typeof(ItemData))));
+
         Assert.False(result.IsValid);
         Assert.Contains(result.Diagnostics, item => item.Path!.StartsWith("definitions[0]."));
         Assert.Contains(result.Diagnostics, item => item.Code == "STEP003" && item.Path == "definitions[0].steps[0].activity");
@@ -218,23 +259,30 @@ public sealed class AuthoringRegressionTests
         {
             Workflow = new() { Name = "Each", DataType = "data" },
             Code = new() { ["done"] = new() { Language = "csharp-expression", Source = "results.Count > 0" } },
-            Definitions = [new ForEachStepDocument
-            {
-                Id = "each", As = "number", Items = new PathExpressionDocument { Path = "workflow.Values" },
-                Result = new PathExpressionDocument { Path = "number" }, Into = new() { Path = "workflow.Results" },
-                Parallel = new()
+            Definitions =
+            [
+                new ForEachStepDocument
                 {
-                    Join = "conditionally", ResultType = "int",
-                    Condition = asset ? new FunctionExpressionDocument { Function = "done" } : new BinaryExpressionDocument
+                    Id = "each", As = "number", Items = new PathExpressionDocument { Path = "workflow.Values" },
+                    Result = new PathExpressionDocument { Path = "number" }, Into = new() { Path = "workflow.Results" },
+                    Parallel = new()
                     {
-                        Operator = "gt", Left = new PathExpressionDocument { Path = "results.Count" },
-                        Right = new ConstantExpressionDocument { Value = 0 }
+                        Join = "conditionally", ResultType = "int",
+                        Condition = asset
+                            ? new FunctionExpressionDocument { Function = "done" }
+                            : new BinaryExpressionDocument
+                            {
+                                Operator = "gt", Left = new PathExpressionDocument { Path = "results.Count" },
+                                Right = new ConstantExpressionDocument { Value = 0 }
+                            }
                     }
                 }
-            }]
+            ]
         };
+
         var result = await YamlTestContracts.ValidateAsync(document,
             YamlTestContracts.Create(("data", typeof(ItemData))));
+
         Assert.True(result.IsValid, string.Join(", ", result.Diagnostics));
     }
 
@@ -245,13 +293,17 @@ public sealed class AuthoringRegressionTests
         {
             Name = "Hand-built fixture", Version = 1,
             WorkflowDataType = typeof(RegistrationData),
-            Steps = [new WorkflowStep
-            {
-                Id = "hand-built", StepType = WorkflowStepType.Activity,
-                ActivityType = typeof(RegistrationActivity), WorkflowDataType = typeof(RegistrationData),
-                SourceLocation = "hand-built.yaml:17"
-            }]
+            Steps =
+            [
+                new WorkflowStep
+                {
+                    Id = "hand-built", StepType = WorkflowStepType.Activity,
+                    ActivityType = typeof(RegistrationActivity), WorkflowDataType = typeof(RegistrationData),
+                    SourceLocation = "hand-built.yaml:17"
+                }
+            ]
         };
+
         var error = Assert.Throws<WorkflowEngineException>(() => WorkflowDefinitionValidator.Validate(definition));
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.StartsWith("hand-built.yaml:17:", error.Message);
@@ -262,21 +314,27 @@ public sealed class AuthoringRegressionTests
     public void CatalogsReuseTheDefinitionRuleResultsWithoutRevisitingPurity()
     {
         var visits = new CountingCondition();
+
         var step = new WorkflowStep
         {
             Id = "condition", StepType = WorkflowStepType.Conditional, WorkflowDataType = typeof(RegistrationData),
             Runtime = WorkflowStepDelegates.Create<RegistrationData>(),
             ConditionExpression = System.Linq.Expressions.Expression.Lambda<Func<bool>>(visits)
         };
-        var definition = new WorkflowDefinition { Name = "Hand-built fixture", Version = 1, WorkflowDataType = typeof(RegistrationData), Steps = [step] };
+
+        var definition = new WorkflowDefinition
+            { Name = "Hand-built fixture", Version = 1, WorkflowDataType = typeof(RegistrationData), Steps = [step] };
+
         WorkflowDefinitionValidator.Validate(definition);
         var count = visits.Visits;
         Assert.Equal(1, count);
+
         System.Threading.Tasks.Parallel.For(0, 20, _ =>
         {
             WorkflowDefinitionValidator.Validate(definition);
             _ = new WorkflowScopeCatalog(definition).StructureHash.Length;
         });
+
         Assert.Equal(count, visits.Visits);
     }
 
@@ -290,6 +348,7 @@ public sealed class AuthoringRegressionTests
                 .If(_ => true, then => then.Step<CompleteActivity>(setup => setup
                     .Output(activity => activity.Completed).To(ctx => ctx.WorkflowData.Completed))))
             .Build();
+
         using var provider = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition, new RegistrationData());
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
@@ -302,13 +361,14 @@ public sealed class AuthoringRegressionTests
     {
         var definition = new WorkflowBuilder<FingerprintItems, object>([], "Captured items")
             .ForEach(ctx => ctx.WorkflowData.Values, (body, item) => body
-                .Step<FingerprintActivity>(setup => setup
-                    .Input(activity => activity.Value).From(ctx => ctx.Item(item))
-                    .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Total))
-                .Result(ctx => ctx.PreviousStep.Value),
+                    .Step<FingerprintActivity>(setup => setup
+                        .Input(activity => activity.Value).From(ctx => ctx.Item(item))
+                        .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Total))
+                    .Result(ctx => ctx.PreviousStep.Value),
                 setup => setup.Parallel(2).Into(ctx => ctx.WorkflowData.Results)
                     .Combine<int, Sum<int>>(data => data.Total))
             .Build();
+
         var structureHash = new WorkflowScopeCatalog(definition).StructureHash;
         Assert.True(structureHash == "D81A227D31B99E277F6170775C349291445E4C215CAFB9955652F684DEB3FD14", structureHash);
     }
@@ -320,25 +380,34 @@ public sealed class AuthoringRegressionTests
         public override Type Type => typeof(bool);
         public override bool CanReduce => true;
         public override System.Linq.Expressions.Expression Reduce() => System.Linq.Expressions.Expression.Constant(true);
+
         protected override System.Linq.Expressions.Expression VisitChildren(System.Linq.Expressions.ExpressionVisitor visitor)
         {
-            if (visitor.GetType().DeclaringType == typeof(ExpressionRules)) Visits++;
+            if (visitor.GetType().DeclaringType == typeof(ExpressionRules))
+                Visits++;
+
             return Reduce();
         }
     }
 
-    public struct StructFault { public string Message { get; set; } }
+    public struct StructFault
+    {
+        public string Message { get; set; }
+    }
+
     public sealed class ThrowInvalidActivity : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("caught");
     }
+
     public sealed class FingerprintItems
     {
         public List<int> Values { get; set; } = [];
         public List<ItemResult<int>> Results { get; set; } = [];
         public int Total { get; set; }
     }
+
     public sealed class FingerprintActivity : IAsyncActivity
     {
         public int Value { get; set; }
@@ -353,9 +422,13 @@ public sealed class AuthoringRegressionTests
             Workflow = new() { Name = "Version", DataType = "data" },
             Definitions = [new ActivityStepDocument { Activity = "mapping", ActivityVersion = "2.0" }]
         };
+
         var options = YamlTestContracts.Create(("data", typeof(ItemData)), ("mapping", typeof(YamlMappingActivity)));
         options.Activities["mapping"] = new("mapping", "1.0");
-        var error = await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() => IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, options));
+
+        var error = await Assert.ThrowsAsync<IxIFlow.Generators.WorkflowSourceException>(() =>
+            IxIFlow.Tests.Infrastructure.TestWorkflowCompilation.BuildAsync(document, options));
+
         Assert.Contains("requires version '1.0'", error.Message);
     }
 

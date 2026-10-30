@@ -5,23 +5,29 @@ namespace IxIFlow.Dsl.Documents;
 [Description("A workflow document with reusable templates, code assets and executable steps.")]
 public sealed record WorkflowDocument : DocumentNode
 {
-
     [Description("The document contract version.")]
     [DocumentValues("1.0")]
     public string SchemaVersion { get; init; } = "1.0";
+
     [Description("The workflow identity and data contract.")]
     [DocumentRequired]
     public WorkflowDefinitionDocument Workflow { get; init; } = new();
+
     [Description("Dependencies that publishing must resolve and pin.")]
     public WorkflowImportsDocument Imports { get; init; } = new();
+
     [Description("Reusable activity templates keyed by reference name.")]
     public Dictionary<string, ActivityTemplateDocument> Activities { get; init; } = new();
+
     [Description("Reusable step templates keyed by reference name.")]
     public Dictionary<string, StepTemplateDocument> Steps { get; init; } = new();
+
     [Description("Code assets keyed by function name.")]
     public Dictionary<string, CodeAssetDocument> Code { get; init; } = new();
+
     [Description("The workflow steps in execution order.")]
     public List<WorkflowStepDocument> Definitions { get; init; } = new();
+
     [Description("Placement constraints resolved once against the workflow start data.")]
     public List<WorkflowDemandDocument> Demands { get; init; } = [];
 }
@@ -32,25 +38,35 @@ public sealed record WorkflowDefinitionDocument : DocumentNode
     [Description("The name used to register and invoke the workflow.")]
     [DocumentRequired]
     public string Name { get; init; } = string.Empty;
+
     [Description("The positive workflow version.")]
     public int Version { get; init; } = 1;
+
     [Description("The workflow data CLR type or resolved catalog key.")]
     [DocumentRequired]
     public string DataType { get; init; } = string.Empty;
+
     [Description("Input members added to workflow markers; an empty list explicitly declares no convention inputs.")]
     public List<string>? Input { get; init; }
+
     [Description("Output members added to workflow markers; an empty list explicitly declares no convention outputs.")]
     public List<string>? Output { get; init; }
+
     [Description("Scope value types supplied by an enclosing inline caller; root starts and independent invocations are refused.")]
     public List<string> RequiresScopes { get; init; } = [];
+
     [Description("The display name stored on the workflow definition.")]
     public string? DisplayName { get; init; }
+
     [Description("The lowercase workflow icon token.")]
     public string? Icon { get; init; }
+
     [Description("The workflow category.")]
     public string? Category { get; init; }
+
     [Description("The description stored on the workflow definition.")]
     public string? Description { get; init; }
+
     [Description("Tags stored on the workflow definition.")]
     public string[] Tags { get; init; } = [];
 }
@@ -61,10 +77,13 @@ public sealed record WorkflowDemandDocument : DocumentNode
     [Description("The capability key.")]
     [DocumentRequired]
     public string Key { get; init; } = string.Empty;
+
     [Description("A literal capability value, or null for a key-only demand.")]
     public string? Value { get; init; }
+
     [Description("A pure expression evaluated against start data instead of a literal value.")]
     public ExpressionDocument? From { get; init; }
+
     [Description("Whether children inherit this residency constraint.")]
     public bool Inherit { get; init; }
 }
@@ -74,6 +93,7 @@ public sealed record WorkflowImportsDocument : DocumentNode
 {
     [Description("Activity catalog dependencies to resolve and pin.")]
     public List<string> Catalogs { get; init; } = [];
+
     [Description("Workflow dependencies to resolve and pin.")]
     public List<string> Workflows { get; init; } = [];
 }
@@ -84,12 +104,16 @@ public sealed record ActivityTemplateDocument : DocumentNode
     [Description("The activity CLR type or resolved catalog key.")]
     [DocumentRequired]
     public string Activity { get; init; } = string.Empty;
+
     [Description("The version that must match the resolved activity contract when supplied.")]
     public string ActivityVersion { get; init; } = string.Empty;
+
     [Description("Scalar activity input defaults overridden by explicit input mappings.")]
     public Dictionary<string, object?> Defaults { get; init; } = new();
+
     [Description("Mappings from expressions to activity inputs.")]
     public List<InputMappingDocument> Input { get; init; } = [];
+
     [Description("Mappings from activity outputs to workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
 }
@@ -99,6 +123,7 @@ public sealed record StepTemplateDocument : DocumentNode
 {
     [Description("Parameters bound from reference arguments or scalar defaults.")]
     public Dictionary<string, TemplateParameterDocument> Parameters { get; init; } = new();
+
     [Description("The steps expanded when the template is referenced.")]
     public List<WorkflowStepDocument> Steps { get; init; } = [];
 }
@@ -108,8 +133,10 @@ public sealed record TemplateParameterDocument : DocumentNode
 {
     [Description("The parameter type, with local support for string, bool, int, long, double and decimal.")]
     public string Type { get; init; } = string.Empty;
+
     [Description("Whether an argument must be supplied when no non-null default exists.")]
     public bool Required { get; init; }
+
     [Description("The scalar fallback used when an argument is omitted.")]
     public object? Default { get; init; }
 }
@@ -120,6 +147,7 @@ public sealed record CodeAssetDocument : DocumentNode
     [Description("The code language, which must be csharp-expression.")]
     [DocumentRequired]
     public string Language { get; init; } = string.Empty;
+
     [Description("The code source rewritten against the expression context.")]
     [DocumentRequired]
     public string Source { get; init; } = string.Empty;
@@ -130,8 +158,10 @@ public abstract record WorkflowStepDocument : DocumentNode
 {
     [Description("The stable step identifier, generated from its structural path when omitted.")]
     public string Id { get; init; } = string.Empty;
+
     [Description("The discriminator selecting the concrete step type.")]
     public string Kind { get; init; } = string.Empty;
+
     [Description("The explicit step name used by the fluent definition.")]
     public string? Name { get; init; }
 
@@ -142,53 +172,69 @@ public abstract record WorkflowStepDocument : DocumentNode
         {
             case ScopeStepDocument scope:
                 yield return ("scope", null, scope.Steps);
+
                 break;
             case FlowchartStepDocument:
             case StateMachineStepDocument:
                 foreach (var child in GraphChildScopes())
                     yield return (child.Kind, child.Key, child.Steps);
+
                 break;
             case CancellationScopeStepDocument cancellation:
                 yield return ("sequence", null, cancellation.Steps);
                 yield return ("cancelled", null, cancellation.OnCancelled);
+
                 break;
             case SequenceStepDocument sequence:
                 yield return ("sequence", null, sequence.Steps);
+
                 break;
             case ConditionalStepDocument condition:
                 yield return ("then", null, condition.Then);
                 yield return ("else", null, condition.Else);
+
                 break;
             case ForEachStepDocument each:
                 yield return ("foreach", null, each.Steps);
+
                 break;
             case WaitStepDocument { OnTimeout: { } timeout }:
                 yield return ("timeout", null, timeout);
+
                 break;
             case ParallelStepDocument { Branches: { } branches }:
                 for (var index = 0; index < branches.Count; index++)
                     yield return ("branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), branches[index].Steps);
+
                 break;
             case LoopStepDocument loop:
                 yield return ("loop", null, loop.Steps);
+
                 break;
             case TryStepDocument attempt:
                 yield return ("sequence", null, attempt.Steps);
+
                 for (var index = 0; index < attempt.Catches.Count; index++)
                     yield return ("catch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), attempt.Catches[index].Steps);
+
                 if (attempt.Finally != null)
                     yield return ("finally", null, attempt.Finally);
+
                 break;
             case SagaStepDocument saga:
                 yield return ("sequence", null, saga.Steps);
+
                 for (var index = 0; index < saga.OnError.Count; index++)
                     yield return ("catch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), saga.OnError[index].Steps);
+
                 break;
             case SwitchStepDocument outcome:
                 for (var index = 0; index < outcome.Cases.Count; index++)
                     yield return ("case", index.ToString(System.Globalization.CultureInfo.InvariantCulture), outcome.Cases[index].Steps);
+
                 if (outcome.Default != null)
                     yield return ("default", null, outcome.Default);
+
                 break;
         }
     }
@@ -207,20 +253,27 @@ public abstract record WorkflowStepDocument : DocumentNode
             {
                 var state = machine.States[i];
                 var path = $".states[{i}]";
+
                 yield return ("state", state.Key, state.Entry, path + ".entry", !state.Final);
-                if (state.Exit != null) yield return ("state", state.Key + "/exit", state.Exit, path + ".exit", false);
+
+                if (state.Exit != null)
+                    yield return ("state", state.Key + "/exit", state.Exit, path + ".exit", false);
+
                 for (var j = 0; j < state.Transitions.Count; j++)
                 {
                     var transition = state.Transitions[j];
                     var triggerPath = $"{path}.transitions[{j}]";
+
                     if (transition.Cases == null)
                         yield return ("state", state.Key + "/on/" + j + "/case/0", transition.Steps, triggerPath + ".steps", false);
                     else
                     {
                         // Keep both authored forms reachable; validation diagnoses their conflict.
                         yield return ("state", state.Key + "/on/" + j + "/steps", transition.Steps, triggerPath + ".steps", false);
+
                         for (var k = 0; k < transition.Cases.Count; k++)
-                            yield return ("state", state.Key + "/on/" + j + "/case/" + k, transition.Cases[k].Steps, $"{triggerPath}.cases[{k}].steps", false);
+                            yield return ("state", state.Key + "/on/" + j + "/case/" + k, transition.Cases[k].Steps,
+                                $"{triggerPath}.cases[{k}].steps", false);
                     }
                 }
             }
@@ -235,16 +288,22 @@ public record ActivityStepDocument : WorkflowStepDocument
     [Description("The activity CLR type or resolved catalog key.")]
     [DocumentRequired]
     public string Activity { get; init; } = string.Empty;
+
     [Description("The version that must match the resolved activity contract when supplied.")]
     public string ActivityVersion { get; init; } = string.Empty;
+
     [Description("Scalar activity input defaults overridden by explicit input mappings.")]
     public Dictionary<string, object?> Defaults { get; init; } = new();
+
     [Description("Mappings from expressions to activity inputs.")]
     public List<InputMappingDocument> Input { get; init; } = [];
+
     [Description("Mappings from activity outputs to workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
+
     [Description("The compensation configured for a saga activity or request.")]
     public List<CompensationDocument> Compensation { get; init; } = [];
+
     [Description("The ordered error policies configured for a saga activity or request.")]
     public List<StepErrorPolicyDocument> OnError { get; init; } = [];
 }
@@ -256,19 +315,26 @@ public sealed record ScopeStepDocument : WorkflowStepDocument
     [Description("The scope activity CLR type or resolved catalog key.")]
     [DocumentRequired]
     public string Activity { get; init; } = string.Empty;
+
     [Description("The version that must match the resolved activity contract when supplied.")]
     public string ActivityVersion { get; init; } = string.Empty;
+
     [Description("Scalar scope input defaults overridden by explicit input mappings.")]
     public Dictionary<string, object?> Defaults { get; init; } = new();
+
     [Description("Mappings to the scope's saved inputs.")]
     public List<InputMappingDocument> Input { get; init; } = [];
+
     [Description("Mappings from the outputs recorded on the first open.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
+
     [Description("The retry policy for opening and reopening the scope.")]
     public RetryPolicyDocument? Retry { get; init; }
+
     [Description("Optional threading requirement, which may strengthen the implementation's requirement.")]
     [DocumentValues("anyThread", "threadAffine", DiagnosticCode = "SCOPE005")]
     public string? Threading { get; init; }
+
     [Description("The body that uses the scope value.")]
     public List<WorkflowStepDocument> Steps { get; init; } = [];
 }
@@ -280,17 +346,23 @@ public sealed record RenderTemplateStepDocument : WorkflowStepDocument
     [Description("A constant template key, optionally followed by @version; publishing pins the version.")]
     [DocumentRequired]
     public string Template { get; set; } = string.Empty;
+
     [Description("The typed model rendered by the selected template.")]
     [DocumentRequired]
     public ExpressionDocument Model { get; init; } = null!;
+
     [Description("The optional culture name.")]
     public ExpressionDocument? Culture { get; init; }
+
     [Description("The model C# type; required with an explicit version when building without publishing.")]
     public string? ModelType { get; set; }
+
     [Description("Mappings from Rendered to workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
+
     [Description("Ordered saga error policies.")]
     public List<StepErrorPolicyDocument> OnError { get; init; } = [];
+
     [Description("Rendering has no compensation; a nonempty list is refused.")]
     public List<CompensationDocument> Compensation { get; init; } = [];
 }
@@ -311,6 +383,7 @@ public sealed record StepReferenceStepDocument : WorkflowStepDocument
     [Description("The key of a step template in steps.")]
     [DocumentRequired]
     public string Ref { get; init; } = string.Empty;
+
     [Description("Expressions bound to declared template parameters.")]
     public Dictionary<string, ExpressionDocument> Arguments { get; init; } = new();
 }
@@ -322,8 +395,10 @@ public sealed record ConditionalStepDocument : WorkflowStepDocument
     [Description("The Boolean expression selecting the then branch.")]
     [DocumentRequired]
     public ExpressionDocument Condition { get; init; } = new ConstantExpressionDocument();
+
     [Description("Steps executed when the condition is true.")]
     public List<WorkflowStepDocument> Then { get; init; } = [];
+
     [Description("Steps executed when the condition is false.")]
     public List<WorkflowStepDocument> Else { get; init; } = [];
 }
@@ -343,14 +418,19 @@ public sealed record ForEachStepDocument : WorkflowStepDocument
     [Description("The expression selecting the items to iterate.")]
     [DocumentRequired]
     public ExpressionDocument Items { get; init; } = new PathExpressionDocument();
+
     [Description("The item alias exposed to expressions in the loop body.")]
     public string As { get; init; } = "item";
+
     [Description("Parallel execution and join options when supplied.")]
     public ForEachParallelDocument? Parallel { get; init; }
+
     [Description("Steps executed for each item.")]
     public List<WorkflowStepDocument> Steps { get; init; } = [];
+
     [Description("The expression producing each item result.")]
     public ExpressionDocument? Result { get; init; }
+
     [Description("The workflow path receiving the list of item results.")]
     public PathExpressionDocument? Into { get; init; }
 }
@@ -360,13 +440,17 @@ public sealed record ForEachParallelDocument : DocumentNode
 {
     [Description("The positive maximum number of concurrent items when supplied.")]
     public int? MaxConcurrency { get; init; }
+
     [Description("The completion policy for parallel items.")]
     [DocumentValues("all", "any", "conditionally", DiagnosticCode = "EACH005")]
     public string Join { get; init; } = "all";
+
     [Description("The result CLR type required for a conditional join.")]
     public string? ResultType { get; init; }
+
     [Description("The completion expression required for a conditional join, with workflow and results in scope.")]
     public ExpressionDocument? Condition { get; init; }
+
     [Description("Combiner overrides used when merging parallel item outputs.")]
     public List<JoinCombinerDocument> Combine { get; init; } = [];
 }
@@ -377,16 +461,24 @@ public abstract record WaitStepDocument : WorkflowStepDocument
     [Description("The event CLR type or resolved catalog key.")]
     [DocumentRequired]
     public string Event { get; init; } = string.Empty;
+
     [Description("The optional expression deciding whether an event is accepted.")]
     public ExpressionDocument? ResumeCondition { get; init; }
-    [Description("The initial suggested event payload, overlaid with input mappings when the wait opens; never used as an answer automatically.")]
+
+    [Description(
+        "The initial suggested event payload, overlaid with input mappings when the wait opens; never used as an answer automatically.")]
     public object? DefaultPayload { get; init; }
-    [Description("Pure input mappings evaluated once against workflow data and the previous step when the wait opens, overlaid on defaultPayload or a new event instance and saved as the suggested payload.")]
+
+    [Description(
+        "Pure input mappings evaluated once against workflow data and the previous step when the wait opens, overlaid on defaultPayload or a new event instance and saved as the suggested payload.")]
     public List<InputMappingDocument> Input { get; init; } = [];
+
     [Description("Mappings from the event or reply to workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
+
     [Description("The positive invariant TimeSpan after which the wait times out.")]
     public string? Timeout { get; init; }
+
     [Description("The optional steps executed when the wait times out.")]
     public List<WorkflowStepDocument>? OnTimeout { get; init; }
 }
@@ -405,13 +497,17 @@ public sealed record InvokeWorkflowStepDocument : WorkflowStepDocument
 {
     [Description("Ordered invocation error policies; the first assignable exception match wins.")]
     public List<StepErrorPolicyDocument> OnError { get; init; } = [];
+
     [Description("Whether cancelling the invoking branch cancels the child and waits for it to finish.")]
     public bool CancelWithParent { get; init; } = true;
+
     [Description("The child workflow reference resolved before translation.")]
     [DocumentRequired]
     public WorkflowReferenceDocument Workflow { get; init; } = new();
+
     [Description("Mappings from expressions to child workflow inputs.")]
     public List<InputMappingDocument> Input { get; init; } = [];
+
     [Description("Mappings from child workflow outputs to workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
 }
@@ -423,8 +519,10 @@ public sealed record UseStepDocument : WorkflowStepDocument
     [Description("The published workflow reference resolved before translation.")]
     [DocumentRequired]
     public WorkflowReferenceDocument Workflow { get; init; } = new();
+
     [Description("Mappings from expressions to inline workflow inputs.")]
     public List<InputMappingDocument> Input { get; init; } = [];
+
     [Description("Mappings from inline workflow outputs to workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
 }
@@ -436,10 +534,13 @@ public sealed record UseTypeStepDocument : WorkflowStepDocument
     [Description("The CLR type implementing IWorkflow of dataType with a public parameterless constructor.")]
     [DocumentRequired]
     public string WorkflowType { get; init; } = string.Empty;
+
     [Description("The inline workflow data CLR type fallback when IWorkflow<T> cannot be inferred from resolved symbols.")]
     public string? DataType { get; init; }
+
     [Description("Mappings from expressions to inline workflow inputs.")]
     public List<InputMappingDocument> Input { get; init; } = [];
+
     [Description("Mappings from inline workflow outputs to workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
 }
@@ -450,6 +551,7 @@ public sealed record WorkflowReferenceDocument : DocumentNode
     [Description("The child workflow name to resolve.")]
     [DocumentRequired]
     public string Name { get; init; } = string.Empty;
+
     [Description("The requested workflow version, or the host-resolved version when omitted.")]
     public int? Version { get; set; }
 }
@@ -460,6 +562,7 @@ public sealed record InputMappingDocument : DocumentNode
     [Description("The CLR input property name.")]
     [DocumentRequired]
     public string Target { get; init; } = string.Empty;
+
     [Description("The expression supplying the input value.")]
     [DocumentRequired]
     public ExpressionDocument From { get; init; } = new ConstantExpressionDocument();
@@ -468,9 +571,11 @@ public sealed record InputMappingDocument : DocumentNode
 [Description("An output property mapped to a workflow path.")]
 public sealed record OutputMappingDocument : DocumentNode
 {
-    [Description("The CLR output property name, read from the activity, the wait event or the invoked child workflow data according to the step kind.")]
+    [Description(
+        "The CLR output property name, read from the activity, the wait event or the invoked child workflow data according to the step kind.")]
     [DocumentRequired]
     public string Source { get; init; } = string.Empty;
+
     [Description("The workflow path receiving the output value.")]
     [DocumentRequired]
     public PathExpressionDocument To { get; init; } = new();
@@ -505,9 +610,11 @@ public sealed record BinaryExpressionDocument : ExpressionDocument
     [DocumentRequired]
     [DocumentValues("eq", "ne", "and", "or", "gt", "ge", "lt", "le", "add", "subtract", "multiply", "divide", DiagnosticCode = "EXPR002")]
     public string Operator { get; init; } = string.Empty;
+
     [Description("The left operand expression.")]
     [DocumentRequired]
     public ExpressionDocument Left { get; init; } = new ConstantExpressionDocument();
+
     [Description("The right operand expression.")]
     [DocumentRequired]
     public ExpressionDocument Right { get; init; } = new ConstantExpressionDocument();
@@ -529,11 +636,14 @@ public sealed record ParallelStepDocument : WorkflowStepDocument
     [Description("The branches configured with Do, in declaration order.")]
     [DocumentRequired]
     public List<ParallelBranchDocument> Branches { get; init; } = [];
+
     [Description("The completion policy: all, any or conditionally.")]
     [DocumentValues("all", "any", "conditionally")]
     public string Join { get; init; } = "all";
+
     [Description("The expression over provisional merged workflow data required for a conditional join.")]
     public ExpressionDocument? Condition { get; init; }
+
     [Description("Combiner overrides used when merging branch outputs.")]
     public List<JoinCombinerDocument> Combine { get; init; } = [];
 }
@@ -551,9 +661,11 @@ public sealed record JoinCombinerDocument : DocumentNode
     [Description("The workflow data property merged by this combiner.")]
     [DocumentRequired]
     public PathExpressionDocument Property { get; init; } = new();
+
     [Description("The CLR type of the selected property.")]
     [DocumentRequired]
     public string PropertyType { get; init; } = string.Empty;
+
     [Description("The CLR type implementing ICombiner of the property type.")]
     [DocumentRequired]
     public string Combiner { get; init; } = string.Empty;
@@ -565,6 +677,7 @@ public abstract record LoopStepDocument : WorkflowStepDocument
     [Description("The Boolean loop condition.")]
     [DocumentRequired]
     public ExpressionDocument Condition { get; init; } = new ConstantExpressionDocument();
+
     [Description("Steps executed on each iteration.")]
     public List<WorkflowStepDocument> Steps { get; init; } = [];
 }
@@ -583,8 +696,10 @@ public sealed record TryStepDocument : WorkflowStepDocument
 {
     [Description("Steps executed in the try body.")]
     public List<WorkflowStepDocument> Steps { get; init; } = [];
+
     [Description("Ordered typed or catch-all handlers.")]
     public List<CatchDocument> Catches { get; init; } = [];
+
     [Description("The finally body; an empty list still declares a finally.")]
     public List<WorkflowStepDocument>? Finally { get; init; }
 }
@@ -594,10 +709,13 @@ public sealed record CatchDocument : DocumentNode
 {
     [Description("The stable handler block identifier, generated from its structural path when omitted.")]
     public string? Id { get; init; }
+
     [Description("The exception CLR type, or a catch-all when omitted.")]
     public string? Exception { get; init; }
+
     [Description("The saved fault CLR type for Catch of exception and fault.")]
     public string? FaultType { get; init; }
+
     [Description("Steps executed by the handler.")]
     public List<WorkflowStepDocument> Steps { get; init; } = [];
 }
@@ -608,6 +726,7 @@ public sealed record SagaStepDocument : WorkflowStepDocument
 {
     [Description("Saga activities, requests, waits and switch cases.")]
     public List<WorkflowStepDocument> Steps { get; init; } = [];
+
     [Description("Ordered typed or catch-all saga error handlers.")]
     public List<SagaErrorHandlerDocument> OnError { get; init; } = [];
 }
@@ -618,16 +737,22 @@ public sealed record CompensationDocument : DocumentNode
     [Description("The compensation activity CLR type or catalog key.")]
     [DocumentRequired]
     public string Activity { get; init; } = string.Empty;
+
     [Description("The reply type selecting the request-answer compensation overload.")]
     public string? ReplyType { get; init; }
+
     [Description("The earlier compensation activity type selecting the previous-chain overload.")]
     public string? PreviousActivity { get; init; }
+
     [Description("Inputs from workflow/currentStep, or reply/answered with replyType; workflow only with previousActivity.")]
     public List<InputMappingDocument> Input { get; init; } = [];
+
     [Description("Inputs from the incoming previous step in the previous-chain overload.")]
     public List<InputMappingDocument> PreviousStepInput { get; init; } = [];
+
     [Description("Inputs from the earlier compensation in the previous-chain overload.")]
     public List<InputMappingDocument> PreviousCompensationInput { get; init; } = [];
+
     [Description("Outputs mapped into workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
 }
@@ -637,10 +762,12 @@ public sealed record StepErrorPolicyDocument : DocumentNode
 {
     [Description("The exception CLR type, or a general handler when omitted.")]
     public string? Exception { get; init; }
+
     [Description("The action taken when this step fails.")]
     [DocumentRequired]
     [DocumentValues("retry", "terminate", "ignore")]
     public string Then { get; init; } = "retry";
+
     [Description("The optional retry policy; omission selects ThenRetry(3), supplied objects use RetryPolicy defaults.")]
     public RetryPolicyDocument? Retry { get; init; }
 }
@@ -650,10 +777,13 @@ public sealed record RetryPolicyDocument : DocumentNode
 {
     [Description("The maximum number of attempts.")]
     public int MaximumAttempts { get; init; } = 3;
+
     [Description("The initial retry interval as an invariant TimeSpan.")]
     public string InitialInterval { get; init; } = "00:00:01";
+
     [Description("The maximum retry interval as an invariant TimeSpan.")]
     public string MaximumInterval { get; init; } = "00:00:10";
+
     [Description("The exponential backoff coefficient.")]
     public double BackoffCoefficient { get; init; } = 2;
 }
@@ -663,22 +793,30 @@ public sealed record SagaErrorHandlerDocument : DocumentNode
 {
     [Description("The stable handler block identifier, generated from its structural path when omitted.")]
     public string? Id { get; init; }
+
     [Description("The exception CLR type, or a catch-all when omitted.")]
     public string? Exception { get; init; }
+
     [Description("The saved fault CLR type for a typed saga handler.")]
     public string? FaultType { get; init; }
+
     [Description("Activities and waits executed by the handler before its continuation.")]
     public List<WorkflowStepDocument> Steps { get; init; } = [];
+
     [Description("How much to undo: all or none. Use compensateUpTo to undo through an activity. Omission emits no undo call.")]
     [DocumentValues("all", "none")]
     public string? Compensate { get; init; }
+
     [Description("The saga activity type undone inclusively; selects the up-to compensation strategy.")]
     public string? CompensateUpTo { get; init; }
+
     [Description("What follows the undo: continue, terminate or retry. Omission rethrows the original error.")]
     [DocumentValues("continue", "terminate", "retry")]
     public string? Then { get; init; }
+
     [Description("The optional retry policy; omission selects ThenRetry(3), supplied objects use RetryPolicy defaults.")]
     public RetryPolicyDocument? Retry { get; init; }
+
     [Description("Whether ThenContinue ignores compensation errors.")]
     public bool IgnoreCompensationErrors { get; init; }
 }
@@ -690,6 +828,7 @@ public sealed record AssignStepDocument : WorkflowStepDocument
     [Description("A writable workflow path, including pure list indices and dictionary keys. Use index(alias) for an iteration position.")]
     [DocumentRequired]
     public PathExpressionDocument To { get; init; } = new();
+
     [Description("The pure replacement value. May read workflow, previousStep, lexical items and fault.")]
     [DocumentRequired]
     public ExpressionDocument Value { get; init; } = new ConstantExpressionDocument();
@@ -702,6 +841,7 @@ public sealed record ThrowStepDocument : WorkflowStepDocument
     [Description("The concrete business exception type returned by the factory.")]
     [DocumentRequired]
     public string Exception { get; init; } = string.Empty;
+
     [Description("The pure expression constructing the exception, including constructor arguments and initializers.")]
     [DocumentRequired]
     public ExpressionDocument Value { get; init; } = new ConstantExpressionDocument();
@@ -717,11 +857,14 @@ public sealed record SwitchStepDocument : WorkflowStepDocument
 {
     [Description("Optional selector CLR type when inference is ambiguous, including null or a base type.")]
     public string? ValueType { get; init; }
+
     [Description("The expression selecting a typed value.")]
     [DocumentRequired]
     public ExpressionDocument Value { get; init; } = new ConstantExpressionDocument();
+
     [Description("Ordered typed labels and case bodies.")]
     public List<SwitchCaseDocument> Cases { get; init; } = [];
+
     [Description("The body selected when no label matches.")]
     public List<WorkflowStepDocument>? Default { get; init; }
 }
@@ -732,6 +875,7 @@ public sealed record SwitchCaseDocument : DocumentNode
     [Description("The label expression evaluated at build time and passed to Case.")]
     [DocumentRequired]
     public ExpressionDocument Value { get; init; } = new ConstantExpressionDocument();
+
     [Description("Saga steps executed for this label.")]
     public List<WorkflowStepDocument> Steps { get; init; } = [];
 }
@@ -752,6 +896,7 @@ public sealed record RequestStepDocument : ActivityStepDocument
     [Description("The name pairing this request with exactly one WaitFor in the same body.")]
     [DocumentRequired]
     public string Key { get; init; } = string.Empty;
+
     [Description("The optional subject expression computed when request inputs are captured.")]
     public ExpressionDocument? Subject { get; init; }
 }
@@ -780,15 +925,20 @@ public sealed record InvokeWorkflowTypeStepDocument : WorkflowStepDocument
 {
     [Description("Ordered invocation error policies; the first assignable exception match wins.")]
     public List<StepErrorPolicyDocument> OnError { get; init; } = [];
+
     [Description("The CLR type implementing IWorkflow of dataType.")]
     [DocumentRequired]
     public string WorkflowType { get; init; } = string.Empty;
+
     [Description("The child workflow data CLR type fallback when IWorkflow<T> cannot be inferred from resolved symbols.")]
     public string? DataType { get; init; }
+
     [Description("Whether cancelling the invoking branch cancels the child and waits for it to finish.")]
     public bool CancelWithParent { get; init; } = true;
+
     [Description("Mappings from expressions to child workflow inputs.")]
     public List<InputMappingDocument> Input { get; init; } = [];
+
     [Description("Mappings from child workflow outputs to workflow data.")]
     public List<OutputMappingDocument> Output { get; init; } = [];
 }
@@ -800,6 +950,7 @@ public sealed record CancellationScopeStepDocument : WorkflowStepDocument
     [Description("The forward body in execution order.")]
     [DocumentRequired]
     public List<WorkflowStepDocument> Steps { get; init; } = [];
+
     [Description("Cleanup run when this unfinished body is cancelled.")]
     [DocumentRequired]
     public List<WorkflowStepDocument> OnCancelled { get; init; } = [];

@@ -15,5 +15,9 @@ public sealed record DataEditRequest(long ExpectedRevision, DataEditTarget Targe
 public sealed record DataEditResult(string InstanceId, string EditId, long Revision, DataEditTarget Target);
 
 /// <summary>Mandatory audit facts, committed atomically with the edit and its receipt.</summary>
-public sealed record DataEditedTrace(string Actor, string EditId, DataEditTarget Target, long Revision,
+public sealed record DataEditedTrace(
+    string Actor,
+    string EditId,
+    DataEditTarget Target,
+    long Revision,
     IReadOnlyList<IReadOnlyList<string>> Paths) : TracePayload;

@@ -21,12 +21,18 @@ public sealed record PayloadOwner(string Kind, string Id);
 public interface IPayloadStore
 {
     ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> utf8Json,
-        IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken ct = default);
-    ValueTask<ReadOnlyMemory<byte>?> GetAsync(PayloadReference reference, CancellationToken ct = default);
-    ValueTask<bool> CollectAsync(PayloadReference reference, TimeSpan grace, CancellationToken ct = default);
+        IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken cancellationToken = default);
+
+    ValueTask<ReadOnlyMemory<byte>?> GetAsync(PayloadReference reference, CancellationToken cancellationToken = default);
+    ValueTask<bool> CollectAsync(PayloadReference reference, TimeSpan grace, CancellationToken cancellationToken = default);
+
     /// <summary>Finds possible unpinned bodies; CollectAsync rechecks eligibility before deleting.</summary>
-    ValueTask<IReadOnlyList<PayloadReference>> FindCollectionCandidatesAsync(int limit, TimeSpan grace, CancellationToken ct = default);
-    ValueTask InTransactionAsync(Func<IPayloadTransaction, CancellationToken, ValueTask> action, CancellationToken ct = default);
+    ValueTask<IReadOnlyList<PayloadReference>> FindCollectionCandidatesAsync(int limit, TimeSpan grace,
+        CancellationToken cancellationToken = default);
+
+    ValueTask InTransactionAsync(Func<IPayloadTransaction, CancellationToken, ValueTask> action,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Enlists pins in an existing referencing database transaction; does not commit or dispose it.</summary>
     IPayloadTransaction Enlist(DbTransaction transaction);
 }
@@ -40,15 +46,20 @@ public interface IPayloadStore
 public interface IPayloadTransaction
 {
     DbTransaction? DatabaseTransaction { get; }
+
     /// <summary>Records a body and its dependency closure in this referencing transaction.</summary>
     ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> utf8Json,
-        IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken ct = default);
+        IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken cancellationToken = default);
+
     /// <summary>Acquires checkpoint payload locks before instance locks, without changing pins.</summary>
-    ValueTask LockAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default);
-    ValueTask PinAsync(PayloadOwner owner, PayloadReference reference, CancellationToken ct = default);
+    ValueTask LockAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken cancellationToken = default);
+
+    ValueTask PinAsync(PayloadOwner owner, PayloadReference reference, CancellationToken cancellationToken = default);
+
     /// <summary>Replaces only this owner's pins, writing the differences and including dependency closures.</summary>
-    ValueTask ReplaceAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken ct = default);
-    ValueTask ReleaseAsync(PayloadOwner owner, CancellationToken ct = default);
+    ValueTask ReplaceAsync(PayloadOwner owner, IReadOnlyList<PayloadReference> references, CancellationToken cancellationToken = default);
+
+    ValueTask ReleaseAsync(PayloadOwner owner, CancellationToken cancellationToken = default);
 }
 
 public sealed class PayloadStoreSettings
@@ -57,6 +68,7 @@ public sealed class PayloadStoreSettings
     public const long DefaultMaxPayloadBytes = 64L * 1024 * 1024;
     public long MaxPayloadBytes { get; }
     public long PayloadThresholdBytes { get; }
+
     public PayloadStoreSettings(long maxPayloadBytes = DefaultMaxPayloadBytes, long payloadThresholdBytes = DefaultPayloadThresholdBytes)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxPayloadBytes);
@@ -64,8 +76,10 @@ public sealed class PayloadStoreSettings
         MaxPayloadBytes = maxPayloadBytes;
         PayloadThresholdBytes = payloadThresholdBytes;
     }
+
     public void ValidateLength(long length)
     {
-        if (length > MaxPayloadBytes) throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "MaxPayloadBytes exceeded");
+        if (length > MaxPayloadBytes)
+            throw new WorkflowEngineException(WorkflowErrorKind.ResourceExhausted, "MaxPayloadBytes exceeded");
     }
 }

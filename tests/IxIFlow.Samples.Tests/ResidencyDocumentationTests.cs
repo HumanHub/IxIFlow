@@ -1,6 +1,6 @@
 namespace IxIFlow.Samples.Tests;
 
-/// <summary>The residency guidance stays in the published documentation (spec H-07).</summary>
+/// <summary>The residency guidance stays in the published documentation.</summary>
 [Trait("Spec", "H-07")]
 public sealed class ResidencyDocumentationTests
 {
@@ -13,7 +13,11 @@ public sealed class ResidencyDocumentationTests
         Assert.Contains("Demands place compute only", section);
         Assert.Contains("not where its data is stored", section);
         Assert.Contains("live in the one state store shared by the cluster", section);
-        Assert.Contains("Full data residency therefore requires a separate store, and a separate cluster of hosts, coordinators and store, per region", section);
+
+        Assert.Contains(
+            "Full data residency therefore requires a separate store, and a separate cluster of hosts, coordinators and store, per region",
+            section);
+
         Assert.Contains("does not select a database, move data between stores, partition a shared store by region", section);
     }
 
@@ -30,6 +34,7 @@ public sealed class ResidencyDocumentationTests
         var start = markdown.IndexOf(heading, StringComparison.Ordinal);
         Assert.True(start >= 0, $"Missing section '{heading}'");
         var end = markdown.IndexOf("\n## ", start + heading.Length, StringComparison.Ordinal);
+
         return end < 0 ? markdown[start..] : markdown[start..end];
     }
 
@@ -38,6 +43,7 @@ public sealed class ResidencyDocumentationTests
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory != null; directory = directory.Parent)
             if (File.Exists(Path.Combine(directory.FullName, "IxIFlow.sln")))
                 return directory.FullName;
+
         throw new DirectoryNotFoundException("Cannot find the repository containing the documentation");
     }
 }

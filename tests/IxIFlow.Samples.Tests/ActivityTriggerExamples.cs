@@ -11,10 +11,13 @@ public sealed class ActivityTriggerExamples
     [Fact]
     public async Task DocumentedActivityTriggerMapsAndChoosesItsDestination()
     {
-        var collection = new ServiceCollection().AddLogging(); collection.AddIxIFlow();
+        var collection = new ServiceCollection().AddLogging();
+        collection.AddIxIFlow();
         await using var services = collection.BuildServiceProvider();
+
         var result = await services.GetRequiredService<IWorkflowClient>()
             .RunAsync(ActivityTriggers.Definition(), new ActivityTriggers.Review());
+
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.True(Assert.IsType<ActivityTriggers.Review>(result.WorkflowData).Approved);
     }

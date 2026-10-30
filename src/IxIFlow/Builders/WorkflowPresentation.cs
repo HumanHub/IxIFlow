@@ -13,6 +13,7 @@ internal sealed class WorkflowPresentation
     internal string? Icon;
     internal string? Category;
     internal string[] Tags = [];
+
     internal void Apply(WorkflowDefinition definition)
     {
         definition.DisplayName = DisplayName;

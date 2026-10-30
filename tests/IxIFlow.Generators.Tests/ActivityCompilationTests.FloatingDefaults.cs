@@ -34,22 +34,34 @@ public sealed partial class ActivityCompilationTests
         {
             var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: " + type +
                 ", default: " + literal + "}}\nbody: |\n  return;\n";
+
             var json = "{\"activity\":{\"key\":\"acme.defaults\",\"version\":1},\"input\":{\"Value\":{\"type\":\"" + type +
                 "\",\"default\":" + literal + "}},\"body\":\"return;\\n\"}";
-            foreach (var document in new[] { Dsl.Documents.WorkflowYamlSerializer.ReadActivity(yaml), Dsl.Documents.WorkflowJsonSerializer.ReadActivity(json) })
+
+            foreach (var document in new[]
+                     {
+                         Dsl.Documents.WorkflowYamlSerializer.ReadActivity(yaml), Dsl.Documents.WorkflowJsonSerializer.ReadActivity(json)
+                     })
             {
                 var writtenJson = Dsl.Documents.WorkflowJsonSerializer.Write(document);
                 using var parsed = System.Text.Json.JsonDocument.Parse(writtenJson);
                 Assert.Equal(literal, parsed.RootElement.GetProperty("input").GetProperty("Value").GetProperty("default").GetRawText());
-                var writtenYaml = Dsl.Documents.WorkflowYamlSerializer.Write(Dsl.Documents.WorkflowJsonSerializer.ReadActivity(writtenJson));
+
+                var writtenYaml =
+                    Dsl.Documents.WorkflowYamlSerializer.Write(Dsl.Documents.WorkflowJsonSerializer.ReadActivity(writtenJson));
+
                 Assert.Contains(literal, writtenYaml);
                 var result = ActivityCompilation.Compile(writtenYaml);
                 Assert.True(result.Success, string.Join("\n", result.Diagnostics));
                 var context = new AssemblyLoadContext("exact-default", isCollectible: true);
+
                 try
                 {
                     var assembly = context.LoadFromStream(new MemoryStream(result.Assembly));
-                    var actual = assembly.GetType("IxIFlow.Activities.Acme.Defaults")!.GetProperty("Value")!.GetCustomAttribute<DefaultValueAttribute>()!.Value;
+
+                    var actual = assembly.GetType("IxIFlow.Activities.Acme.Defaults")!.GetProperty("Value")!
+                        .GetCustomAttribute<DefaultValueAttribute>()!.Value;
+
                     object expected = type switch
                     {
                         "decimal" => decimal.Parse(literal, System.Globalization.CultureInfo.InvariantCulture),
@@ -57,9 +69,13 @@ public sealed partial class ActivityCompilationTests
                         "double" => double.Parse(literal, System.Globalization.CultureInfo.InvariantCulture),
                         _ => float.Parse(literal, System.Globalization.CultureInfo.InvariantCulture)
                     };
+
                     Assert.Equal(expected, actual);
                 }
-                finally { context.Unload(); }
+                finally
+                {
+                    context.Unload();
+                }
             }
         }
 
@@ -76,7 +92,8 @@ public sealed partial class ActivityCompilationTests
         [InlineData("double", "\"NaN\"")]
         [InlineData("float", "\"Infinity\"")]
         [InlineData("double?", "\"-Infinity\"")]
-        public void NonFiniteFloatingDefaultsAreRefusedThroughBothReaders(string type, string literal) => AssertInvalidNumericDefault(type, literal);
+        public void NonFiniteFloatingDefaultsAreRefusedThroughBothReaders(string type, string literal) =>
+            AssertInvalidNumericDefault(type, literal);
 
         [Theory]
         [InlineData("double", "1.7976931348623157e308")]
@@ -89,22 +106,32 @@ public sealed partial class ActivityCompilationTests
         [InlineData("float?", "-1.401298464324817e-45")]
         public void FiniteFloatingBoundariesKeepTheirTypedValues(string type, string literal)
         {
-            var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: '" + type + "', default: " + literal + "}}\nbody: |\n  return;\n";
+            var yaml = "activity: {key: acme.defaults, version: 1}\ninput: {Value: {type: '" + type + "', default: " + literal +
+                "}}\nbody: |\n  return;\n";
+
             var json = WorkflowJsonSerializer.Write(WorkflowYamlSerializer.ReadActivity(yaml));
+
             foreach (var document in new[] { WorkflowYamlSerializer.ReadActivity(yaml), WorkflowJsonSerializer.ReadActivity(json) })
             {
                 var result = ActivityCompilation.Compile(WorkflowYamlSerializer.Write(document));
                 Assert.True(result.Success, string.Join("\n", result.Diagnostics));
                 Assert.Empty(result.Diagnostics);
                 var context = new AssemblyLoadContext("floating-boundary", isCollectible: true);
+
                 try
                 {
                     var activity = context.LoadFromStream(new MemoryStream(result.Assembly)).GetType("IxIFlow.Activities.Acme.Defaults")!;
                     var actual = activity.GetProperty("Value")!.GetCustomAttribute<DefaultValueAttribute>()!.Value;
-                    if (type.StartsWith("double", StringComparison.Ordinal)) Assert.Equal(double.Parse(literal, CultureInfo.InvariantCulture), Assert.IsType<double>(actual));
-                    else Assert.Equal(float.Parse(literal, CultureInfo.InvariantCulture), Assert.IsType<float>(actual));
+
+                    if (type.StartsWith("double", StringComparison.Ordinal))
+                        Assert.Equal(double.Parse(literal, CultureInfo.InvariantCulture), Assert.IsType<double>(actual));
+                    else
+                        Assert.Equal(float.Parse(literal, CultureInfo.InvariantCulture), Assert.IsType<float>(actual));
                 }
-                finally { context.Unload(); }
+                finally
+                {
+                    context.Unload();
+                }
             }
         }
 
@@ -113,9 +140,12 @@ public sealed partial class ActivityCompilationTests
         public void FloatingTypeSyntaxCannotBypassFiniteConversion(string type, Type runtime)
         {
             AssertCompiledDefaults(type, [("1e2", Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture))]);
+
             foreach (var literal in new[] { "1e400", "-1e400", "\"NaN\"", "\"Infinity\"", "\"-Infinity\"" })
                 AssertInvalidNumericDefault(type, literal);
-            if (runtime == typeof(float)) AssertInvalidNumericDefault(type, "1e39");
+
+            if (runtime == typeof(float))
+                AssertInvalidNumericDefault(type, "1e39");
         }
 
         [Theory]
@@ -128,6 +158,5 @@ public sealed partial class ActivityCompilationTests
             AssertCompiledDefaults(type, [("1e2", Convert.ChangeType(100, runtime, CultureInfo.InvariantCulture))]);
             AssertInvalidNumericDefault(type, invalid);
         }
-
     }
 }

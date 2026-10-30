@@ -9,8 +9,8 @@ using Microsoft.Extensions.Time.Testing;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// Every wait has its own engine-issued ID, listed with a token that answers only that wait (D-03,
-/// D-14, D-33). An event addressed by key satisfies only a wait that was open when it arrived, so
+/// Every wait has its own engine-issued ID, listed with a token that answers only that wait. An event addressed by key satisfies only a
+/// wait that was open when it arrived, so
 /// nothing sent earlier is carried over to a later wait.
 /// </summary>
 [Trait("Feature", "waits")]
@@ -32,9 +32,11 @@ public sealed class AddressedWaitTests
         Assert.NotNull(wait.DeadlineUtc);
         Assert.True(ReplyToken.TryRead(wait.Token, out var instanceId, out var waitId, out _));
         Assert.Equal((started.InstanceId, wait.WaitId), (instanceId, waitId));
+
         // Other instances' waits are listed by key too, and a key nobody waits for lists nothing.
         Assert.Contains(await engine.GetOpenWaitsAsync(new WaitQuery(Key: "approval")),
             item => item.WaitId == wait.WaitId);
+
         Assert.Empty(await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId, Key: "other")));
     }
 
@@ -44,18 +46,22 @@ public sealed class AddressedWaitTests
     {
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             ApprovalWorkflow("ChildApproval", null));
-        // The child's own wait is listed; its parent's wait for the child is never listed (D-17).
+
+        // The child's own wait is listed; its parent's wait for the child is never listed.
         await engine.RunAsync(Workflow.Create<LoopData>("ParentOfChildApproval")
             .Step<StartActivity>()
             .Invoke<LoopData>("ChildApproval", 1)
             .Build(), new LoopData());
+
         await services.GetRequiredService<IWorkflowStateRepository>().WaitingInstanceAsync("ChildApproval", "approval");
         await engine.RunAsync(ApprovalWorkflow("SecondApproval", null), new LoopData());
 
         var listed = new List<OpenWait>();
         string? after = null;
+
         while (await engine.GetOpenWaitsAsync(new WaitQuery(Key: "approval", AfterWaitRef: after, Limit: 1)) is
                [var wait])
         {
@@ -107,9 +113,12 @@ public sealed class AddressedWaitTests
         var time = new FakeTimeProvider();
         using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var started = await engine.RunAsync(
             ApprovalWorkflow("ShortApproval", TimeSpan.FromMinutes(1)), new LoopData());
+
         var wait = Assert.Single(await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
+
         // The host's timer runs the timeout once the deadline has passed.
         time.Advance(TimeSpan.FromMinutes(2));
         await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
@@ -129,6 +138,7 @@ public sealed class AddressedWaitTests
         var time = new FakeTimeProvider();
         using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<LoopData>("TimedOutWhileAnotherWaits")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -137,17 +147,22 @@ public sealed class AddressedWaitTests
                     .OnTimeout(path => path.Step<StartActivity>())))
                 .Do(branch => branch.WaitFor<Approval>("final")))
             .Build();
+
         var started = await engine.RunAsync(definition, new LoopData());
+
         var expired = Assert.Single(
             await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId, Key: "approval")));
+
         // The host's timer closes the first wait; the other branch keeps the instance waiting.
         time.Advance(TimeSpan.FromMinutes(2));
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
         while ((await engine.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId, Key: "approval"))).Count > 0)
         {
             Assert.True(DateTime.UtcNow < deadline, "The timed-out wait was never closed");
             await Task.Delay(20);
         }
+
         // The timeout's own pass may still be running; the reply is sent once the instance is idle again.
         await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Idle).WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -182,10 +197,12 @@ public sealed class AddressedWaitTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var gate = services.GetRequiredService<StepGate>();
+
         var definition = Workflow.Create<LoopData>("GatedThenWaits")
             .Step<GatedActivity>()
             .WaitFor<Approval>("approval")
             .Build();
+
         var started = await engine.StartAsync(definition, new LoopData());
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -207,7 +224,9 @@ public sealed class AddressedWaitTests
 
         await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest,
             () => engine.ReplyAsync("not-a-token", new Approval()));
+
         var unknown = ReplyToken.Create(Guid.NewGuid().ToString("N"), "wait");
+
         await EngineAssert.FailsAsync(WorkflowErrorKind.InvalidRequest,
             () => engine.ReplyAsync(unknown, new Approval()));
     }
@@ -228,7 +247,7 @@ public sealed class AddressedWaitTests
     }
 
     // An event sent again under its ID, as a redelivered message would be, is answered with its first outcome and
-    // changes nothing: the next iteration's wait stays open, and only a new event answers it (D-02, D-33).
+    // changes nothing: the next iteration's wait stays open, and only a new event answers it.
     [Fact]
     [Trait("Spec", "D-02")]
     public async Task AnEventSentAgainUnderItsIdDoesNotAnswerTheNextIterationsWait()
@@ -293,11 +312,14 @@ public sealed class AddressedWaitTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+
         if (time != null)
             services.AddSingleton(time);
+
         services.AddSingleton<StepGate>();
         services.AddTransient<GatedActivity>();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -327,6 +349,7 @@ public sealed class AddressedWaitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Result = Count + 1;
+
             return Task.CompletedTask;
         }
     }

@@ -24,6 +24,7 @@ public sealed record WorkflowEvent(
 {
     public long? PayloadThresholdBytes { get; init; }
     public IReadOnlyList<PayloadReference> PayloadDependencies { get; init; } = [];
+
     /// <summary>
     /// SHA-256 of the type, key, target wait, subject and payload, each a separate JSON string. An
     /// event ID sent again with another hash is a different event and is refused. CloudEvents set
@@ -32,6 +33,7 @@ public sealed record WorkflowEvent(
     public byte[] ContentHash()
     {
         InstanceIds.Validate(InstanceId);
+
         return SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(Source == null
             ? new[] { EventType, Key, TargetWaitId, Subject, PayloadJson }
             : new[] { InstanceId, Source, EventId })));
@@ -43,14 +45,22 @@ public sealed record WorkflowEvent(
         InstanceIds.Validate(InstanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(EventId);
         ArgumentException.ThrowIfNullOrWhiteSpace(EventType);
+
+        foreach (var value in new[] { EventId, EventType, Key, TargetWaitId, Subject, Source })
+            if (value != null)
+                RuntimeIdentifiers.ValidateText(value);
+
         ArgumentNullException.ThrowIfNull(PayloadJson);
         ArgumentNullException.ThrowIfNull(PayloadDependencies);
         ArgumentOutOfRangeException.ThrowIfNegative(PayloadThresholdBytes ?? 0);
+
         if (DeliveryIdentity != null && (DeliveryIdentity.Length != 64 || !DeliveryIdentity.All(Uri.IsHexDigit)) ||
             DeliveryRetention is { } retention && (retention <= TimeSpan.Zero || retention > CheckpointCommit.MaxDuration))
             throw new ArgumentException("Invalid delivery identity or retention");
+
         if (InstanceId.Length > 100 || EventId.Length > 100 || TargetWaitId?.Length > 100 || Subject?.Length > 100)
             throw new ArgumentException("Instance, event and wait IDs and subjects are at most 100 characters");
+
         if (EventType.Length > 400 || Key?.Length > 400)
             throw new ArgumentException("Event types and keys are at most 400 characters");
     }
@@ -117,7 +127,10 @@ public enum EventAppendStatus
 /// The acknowledgement of an append. <see cref="MadeRunnable"/> is true when the append made a
 /// running or suspended instance due now.
 /// </summary>
-public sealed record EventAppendResult(EventAppendStatus Status, long Sequence = 0, bool MadeRunnable = false,
+public sealed record EventAppendResult(
+    EventAppendStatus Status,
+    long Sequence = 0,
+    bool MadeRunnable = false,
     EventRejection? Rejection = null)
 {
     /// <summary>The original append's claimable change, also returned on duplicate delivery.</summary>
@@ -192,7 +205,10 @@ public sealed record StoredWorkflowEvent(
     string? Subject = null);
 
 /// <summary>How a commit settles one pending event: consumed by a wait, or rejected with a reason.</summary>
-public sealed record EventSettlement(string EventId, EventOutcome Outcome, string? WaitId = null,
+public sealed record EventSettlement(
+    string EventId,
+    EventOutcome Outcome,
+    string? WaitId = null,
     EventRejection? Rejection = null);
 
 /// <summary>What kind of wait a waits-table row is.</summary>
@@ -229,7 +245,12 @@ public enum WaitCloseReason
 /// when it has a <paramref name="Timeout"/>, with a deadline: the store's time at that commit plus the
 /// timeout.
 /// </summary>
-public sealed record OpenedWait(string WaitId, WaitKind Kind, string Key, string EventType, TimeSpan? Timeout,
+public sealed record OpenedWait(
+    string WaitId,
+    WaitKind Kind,
+    string Key,
+    string EventType,
+    TimeSpan? Timeout,
     StoredJson? DefaultPayloadJson = null);
 
 /// <summary>
@@ -250,6 +271,7 @@ public sealed record ClosedWait(string WaitId, WaitCloseReason Reason);
 public sealed record ChildStart(string ChildInstanceId, string Payload, string ParentWaitId)
 {
     private readonly string _payload = Payload;
+
     public string Payload
     {
         get => _payload;
@@ -261,9 +283,12 @@ public sealed record ChildStart(string ChildInstanceId, string Payload, string P
     }
 
     public Guid Incarnation { get; init; } = Guid.NewGuid();
+
     internal IReadOnlyList<PayloadReference> PayloadReferences => Child is { } child
         ? Runtime.CheckpointPayloads.References(child.ExecutionStateJson,
-            new Dictionary<string, StoredJson> { [CheckpointParts.DataKey] = child.WorkflowDataJson }) : [];
+            new Dictionary<string, StoredJson> { [CheckpointParts.DataKey] = child.WorkflowDataJson })
+        : [];
+
     private readonly WorkflowInstance? _child = Read(Payload);
 
     /// <summary>
@@ -299,7 +324,11 @@ public sealed record ChildCancellation(string ChildInstanceId, CancellationReaso
 /// The completion a child's terminal commit appends to its parent's inbox, addressed to the parent's
 /// wait for it. The child's commit applies whatever becomes of it.
 /// </summary>
-public sealed record ParentNotice(string ParentInstanceId, string ParentWaitId, string EventId, string EventType,
+public sealed record ParentNotice(
+    string ParentInstanceId,
+    string ParentWaitId,
+    string EventId,
+    string EventType,
     string PayloadJson)
 {
     public IReadOnlyList<PayloadReference> PayloadDependencies { get; init; } = [];
@@ -372,7 +401,7 @@ public interface IWorkflowInbox
     /// event makes a running or suspended instance runnable in the same step; a stopped one waits for
     /// its release.
     /// </summary>
-    Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent);
+    Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Pending events after <paramref name="afterSequence"/>, in arrival order, how far the page reads,
@@ -380,23 +409,24 @@ public interface IWorkflowInbox
     /// time. The read is ordered against appends to the instance: an event appended meanwhile is on the
     /// page or received after the page's time.
     /// </summary>
-    Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit);
+    Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit, CancellationToken cancellationToken = default);
 
     /// <summary>One event and its outcome, or null.</summary>
-    Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId);
+    Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId, CancellationToken cancellationToken = default);
 
     /// <summary>One wait, open or closed, or null.</summary>
-    Task<StoredWait?> GetWaitAsync(string instanceId, string waitId);
+    Task<StoredWait?> GetWaitAsync(string instanceId, string waitId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Open waits that match the query, ordered by wait ID. Delays and execution deadlines are listed
     /// only when the query names their kind.
     /// </summary>
-    Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query);
+    Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The inbox sequence of each instance that exists, read in one call, so a host can tell its busy
     /// owners that events arrived.
     /// </summary>
-    Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds);
+    Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(IReadOnlyCollection<string> instanceIds,
+        CancellationToken cancellationToken = default);
 }

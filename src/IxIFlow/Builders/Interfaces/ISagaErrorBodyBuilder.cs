@@ -13,11 +13,15 @@ public interface ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> target,
         Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TValue>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     /// <summary>Raises a business exception constructed from the current context.</summary>
-    ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Throw<TException>(Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TException>> value,
+    ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Throw<TException>(
+        Expression<Func<FaultContext<TWorkflowData, TFault, TPreviousStepData>, TException>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
+
     /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
-    ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+    ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "",
+        [CallerLineNumber] int sourceLine = 0);
 
     ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> CancellationScope(
         Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> body,
@@ -30,13 +34,16 @@ public interface ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Identifies the preceding step and its source.</summary>
-    ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+    ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "",
+        [CallerLineNumber] int sourceLine = 0);
 
-    ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Step<TActivity>([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData> Step<TActivity>([CallerFilePath] string sourcePath = "",
+        [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     ISagaErrorBodyBuilder<TWorkflowData, TFault, TActivity> Step<TActivity>(
-        Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<ICatchActivitySetupBuilder<TWorkflowData, TActivity, TFault, TPreviousStepData>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -44,13 +51,14 @@ public interface ISagaErrorBodyBuilder<TWorkflowData, TFault, TPreviousStepData>
     ISagaErrorBodyBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
         string key,
         Expression<Func<TEvent, FaultContext<TWorkflowData, TFault, TPreviousStepData>, bool>>? matchesExpression = null,
-        Action<IFaultSuspendSetupBuilder<TWorkflowData, TFault, TEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<IFaultSuspendSetupBuilder<TWorkflowData, TFault, TEvent, TPreviousStepData>>? configure = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TEvent : class;
 
     ISagaErrorBodyBuilder<TWorkflowData, TFault, TEvent> WaitFor<TEvent>(
         string key,
         Func<TEvent, FaultContext<TWorkflowData, TFault, TPreviousStepData>, bool>? matches = null,
-        Action<IFaultSuspendSetupBuilder<TWorkflowData, TFault, TEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<IFaultSuspendSetupBuilder<TWorkflowData, TFault, TEvent, TPreviousStepData>>? configure = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TEvent : class;
-
 }

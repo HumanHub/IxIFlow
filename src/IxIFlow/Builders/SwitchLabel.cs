@@ -13,6 +13,7 @@ public static class SwitchLabel
     {
         var site = new WorkflowStep { Name = "Switch label", SourceLocation = sourcePath + ":" + sourceLine };
         ExpressionRules.CheckLabel(site, expression);
+
         return expression.Compile()();
     }
 }

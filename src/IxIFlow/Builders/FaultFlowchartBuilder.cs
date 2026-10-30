@@ -12,6 +12,7 @@ public sealed class FaultFlowchartBuilder<TData, TFault, TPrevious> where TPrevi
     private readonly WorkflowStep _graph;
 
     private readonly Func<List<WorkflowStep>, ICatchWorkflowBuilder<TData, TFault, TPrevious>> _body;
+
     internal FaultFlowchartBuilder(WorkflowStep graph, Func<List<WorkflowStep>, ICatchWorkflowBuilder<TData, TFault, TPrevious>> body) =>
         (_graph, _body) = (graph, body);
 
@@ -19,6 +20,7 @@ public sealed class FaultFlowchartBuilder<TData, TFault, TPrevious> where TPrevi
     public FaultFlowchartBuilder<TData, TFault, TPrevious> Start(string key)
     {
         _graph.GraphStart = key;
+
         return this;
     }
 
@@ -35,6 +37,7 @@ public sealed class FaultFlowchartBuilder<TData, TFault, TPrevious> where TPrevi
         node.Steps.Add(decision);
         edges?.Invoke(new(node, decision));
         _graph.GraphNodes.Add(node);
+
         return this;
     }
 
@@ -49,6 +52,7 @@ public sealed class FaultFlowchartBuilder<TData, TFault, TPrevious> where TPrevi
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         _graph.GraphNodes[^1].Name = name;
+
         return this;
     }
 
@@ -76,6 +80,7 @@ public sealed class FaultFlowchartEdges<TData, TFault, TPrevious> where TPreviou
         var edge = Add(to, sourcePath, sourceLine);
         edge.ConditionExpression = whenExpression;
         edge.CompiledCondition = context => evaluate((FaultContext<TData, TFault, TPrevious>)context);
+
         return this;
     }
 
@@ -90,6 +95,7 @@ public sealed class FaultFlowchartEdges<TData, TFault, TPrevious> where TPreviou
         _decision.SwitchEquals = (left, right) => EqualityComparer<TValue>.Default.Equals((TValue)left!, (TValue)right!);
         _decision.OutcomeExpression = switchExpression;
         _decision.OutcomeSelector = context => evaluate((FaultContext<TData, TFault, TPrevious>)context);
+
         return new(this);
     }
 
@@ -98,6 +104,7 @@ public sealed class FaultFlowchartEdges<TData, TFault, TPrevious> where TPreviou
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         Add(to, sourcePath, sourceLine).IsDefault = true;
+
         return this;
     }
 
@@ -106,6 +113,7 @@ public sealed class FaultFlowchartEdges<TData, TFault, TPrevious> where TPreviou
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         Add(to, sourcePath, sourceLine);
+
         return this;
     }
 
@@ -117,7 +125,9 @@ public sealed class FaultFlowchartEdges<TData, TFault, TPrevious> where TPreviou
             WorkflowDataType = typeof(TData), PreviousStepDataType = typeof(TPrevious),
             Runtime = WorkflowStepDelegates.Create<TData, TPrevious>().ForFault<TFault>(), SourceLocation = path + ":" + line
         };
+
         _node.Edges.Add([edge]);
+
         return edge;
     }
 }
@@ -133,6 +143,7 @@ public sealed class FaultFlowchartCases<TData, TFault, TPrevious, TValue> where 
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         _edges.Add(to, sourcePath, sourceLine).EdgeLabel = value;
+
         return this;
     }
 
@@ -141,6 +152,7 @@ public sealed class FaultFlowchartCases<TData, TFault, TPrevious, TValue> where 
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         _edges.Otherwise(to, sourcePath, sourceLine);
+
         return this;
     }
 }

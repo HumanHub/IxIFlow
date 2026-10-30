@@ -6,6 +6,7 @@ public static class SqliteTestFiles
     public static Task DeleteAsync(string folder)
     {
         Directory.Delete(folder, recursive: true);
+
         return Task.CompletedTask;
     }
 }

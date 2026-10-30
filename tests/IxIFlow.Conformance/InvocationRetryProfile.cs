@@ -20,7 +20,9 @@ internal sealed class InvocationRetryProfile : IAsyncDisposable
     public TimeProvider Clock { get; }
     public WorkflowCatalog Catalog { get; } = new();
     public InvocationRetryRecoveryScenarios.Ledger Ledger { get; } = new();
+
     public TimeSpan Delay => TimeSpan.FromSeconds(2);
+
     // Includes SQL poll/claim, coordinator notification and checkpoint latency. Only delays
     // the condition actually has to elapse belong in the budget (not an unconsumed backoff).
     internal static TimeSpan Patience(TimeSpan delay = default) => delay + TimeSpan.FromMinutes(2);
@@ -29,15 +31,23 @@ internal sealed class InvocationRetryProfile : IAsyncDisposable
     {
         var bound = Patience(delay);
         using var patience = new CancellationTokenSource(bound);
-        try { return await client.AwaitAsync(id, WorkflowAwaitCondition.Finished, patience.Token); }
+
+        try
+        {
+            return await client.AwaitAsync(id, WorkflowAwaitCondition.Finished, patience.Token);
+        }
         catch (OperationCanceledException error) when (patience.IsCancellationRequested)
-        { throw new TimeoutException($"Instance '{id}' did not finish within {bound} (scenario delay {delay}).", error); }
+        {
+            throw new TimeoutException($"Instance '{id}' did not finish within {bound} (scenario delay {delay}).", error);
+        }
     }
 
     public static async Task<InvocationRetryProfile> Create(string profile)
     {
         TimeProvider clock = profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite
-            ? new FakeTimeProvider(DateTimeOffset.UtcNow) : TimeProvider.System;
+            ? new FakeTimeProvider(DateTimeOffset.UtcNow)
+            : TimeProvider.System;
+
         return new(await StoreProfiles.CreateAsync(profile, clock), clock);
     }
 
@@ -46,22 +56,32 @@ internal sealed class InvocationRetryProfile : IAsyncDisposable
     {
         var store = Database.NewRepository(Clock);
         var services = new ServiceCollection().AddLogging();
-        services.AddIxIFlow(options => { options.Debugging = true; options.VerifyCheckpointParts = true; options.ParkRetriesLongerThan = TimeSpan.Zero; });
+
+        services.AddIxIFlow(options =>
+        {
+            options.Debugging = true;
+            options.VerifyCheckpointParts = true;
+            options.ParkRetriesLongerThan = TimeSpan.Zero;
+        });
+
         configure?.Invoke(services);
         services.AddSingleton(Clock);
         services.AddSingleton<IWorkflowCatalog>(catalog ?? Catalog);
         services.AddSingleton(Ledger);
         InvocationRetryPark? parking = holdRetries ? new() : null;
+
         if (parking != null)
         {
             fault ??= new();
             fault.Parking = parking;
         }
+
         services.AddSingleton(fault == null ? store : WithFault(store, fault));
         Database.ConfigureHost(services);
         var host = new Host(services.BuildServiceProvider(), store, Database, parking);
         _hosts.Add(host);
         await Database.StartHostLinksAsync(host.Services);
+
         return host;
     }
 
@@ -70,6 +90,7 @@ internal sealed class InvocationRetryProfile : IAsyncDisposable
         var proxy = DispatchProxy.Create<IWorkflowStateRepository, InvocationRetryFault>();
         ((InvocationRetryFault)(object)proxy).State = fault;
         fault.Inner = store;
+
         return proxy;
     }
 
@@ -78,6 +99,7 @@ internal sealed class InvocationRetryProfile : IAsyncDisposable
     internal static DateTime RetryDeadline(WorkflowInstance saved)
     {
         var retryAt = Assert.Single(ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords.Values).RetryAfterUtc!.Value;
+
         // The store stamps WakeAfter independently of the run's estimated retry deadline.
         // Recovery must be past both, even when the stamp is a little earlier than the estimate.
         return saved.RunnableAtUtc is { } wakeAt && wakeAt > retryAt ? wakeAt : retryAt;
@@ -89,15 +111,22 @@ internal sealed class InvocationRetryProfile : IAsyncDisposable
         {
             if (deadline >= fake.GetUtcNow().UtcDateTime)
                 fake.Advance(deadline - fake.GetUtcNow().UtcDateTime + TimeSpan.FromMilliseconds(1));
+
             return;
         }
+
         // Eligibility also checks workflow capabilities, pins and leases. Sample only the store's
         // clock here: the caller will recover the instance with the real host's placement snapshot.
         async Task<DateTime> StoreNow() => (await store.GetPendingEventsAsync(id, 0, 0)).StoreTimeUtc
             ?? throw new InvalidOperationException("The store did not return its clock");
+
         var now = await StoreNow().WaitAsync(Patience());
-        if (now >= deadline) return;
+
+        if (now >= deadline)
+            return;
+
         using var patience = new CancellationTokenSource(Patience(deadline - now));
+
         while (now < deadline)
         {
             await Task.Delay(25, patience.Token);
@@ -107,17 +136,22 @@ internal sealed class InvocationRetryProfile : IAsyncDisposable
 
     public static async Task<WorkflowInstance> Until(IWorkflowStateRepository store, string id,
         Func<WorkflowInstance, bool> predicate, TimeSpan delay = default,
-        [CallerArgumentExpression(nameof(predicate))] string condition = "")
+        [CallerArgumentExpression(nameof(predicate))]
+        string condition = "")
     {
         var bound = Patience(delay);
         using var patience = new CancellationTokenSource(bound);
         WorkflowInstance? saved = null;
+
         try
         {
             while (true)
             {
                 saved = await store.GetWorkflowInstanceAsync(id).WaitAsync(patience.Token);
-                if (saved != null && predicate(saved)) return saved;
+
+                if (saved != null && predicate(saved))
+                    return saved;
+
                 await Task.Delay(25, patience.Token);
             }
         }
@@ -131,11 +165,16 @@ internal sealed class InvocationRetryProfile : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        foreach (var host in _hosts) await host.DisposeAsync();
+        foreach (var host in _hosts)
+            await host.DisposeAsync();
+
         await Database.DisposeAsync();
     }
 
-    internal sealed class Host(ServiceProvider services, IWorkflowStateRepository store, ProfileStore database,
+    internal sealed class Host(
+        ServiceProvider services,
+        IWorkflowStateRepository store,
+        ProfileStore database,
         InvocationRetryPark? parking) : IAsyncDisposable
     {
         private bool _disposed;
@@ -145,16 +184,21 @@ internal sealed class InvocationRetryProfile : IAsyncDisposable
         public IWorkflowOperations Operations => services.GetRequiredService<IWorkflowOperations>();
         public Task<WorkflowInstance> Parked(string id, int retries = 1) => parking!.Wait(id, retries);
         public void ReleaseRetry() => parking!.Release();
+
         public async ValueTask DisposeAsync()
         {
-            if (_disposed) return;
+            if (_disposed)
+                return;
+
             _disposed = true;
             var stopped = services.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
             parking?.Close();
             await stopped;
             await database.StopHostLinksAsync(services);
             await services.DisposeAsync();
-            if (store is IAsyncDisposable disposable) await disposable.DisposeAsync();
+
+            if (store is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
         }
     }
 }
@@ -169,34 +213,53 @@ internal sealed class InvocationRetryPark
         public TaskCompletionSource<WorkflowInstance> Saved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Released { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+
     private readonly ConcurrentDictionary<(string Id, int Retries), Stop> _stops = new();
     private bool _closed;
 
     public async Task<WorkflowInstance> Wait(string id, int retries = 1)
     {
-        try { return await _stops.GetOrAdd((id, retries), _ => new()).Saved.Task.WaitAsync(InvocationRetryProfile.Patience()); }
+        try
+        {
+            return await _stops.GetOrAdd((id, retries), _ => new()).Saved.Task.WaitAsync(InvocationRetryProfile.Patience());
+        }
         catch (TimeoutException error)
-        { throw new TimeoutException($"Instance '{id}' did not commit a park for retry {retries}.", error); }
+        {
+            throw new TimeoutException($"Instance '{id}' did not commit a park for retry {retries}.", error);
+        }
     }
 
     public async Task Observe(IWorkflowStateRepository store, CheckpointCommit commit, WorkflowCommitResult result)
     {
-        if (!commit.Parks || !result.Parked) return;
+        if (!commit.Parks || !result.Parked)
+            return;
+
         var saved = (await store.GetWorkflowInstanceAsync(commit.InstanceId))!;
         var record = ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords.Values.SingleOrDefault();
-        if (record?.RetryAfterUtc == null) return;
+
+        if (record?.RetryAfterUtc == null)
+            return;
+
         var stop = _stops.GetOrAdd((commit.InstanceId, record.ScheduledRetries), _ => new());
         stop.Saved.TrySetResult(saved);
-        if (Volatile.Read(ref _closed)) stop.Released.TrySetResult();
+
+        if (Volatile.Read(ref _closed))
+            stop.Released.TrySetResult();
+
         await stop.Released.Task;
     }
 
     public void Release()
     {
-        foreach (var stop in _stops.Values.Where(stop => stop.Saved.Task.IsCompleted)) stop.Released.TrySetResult();
+        foreach (var stop in _stops.Values.Where(stop => stop.Saved.Task.IsCompleted))
+            stop.Released.TrySetResult();
     }
 
-    public void Close() { Volatile.Write(ref _closed, true); Release(); }
+    public void Close()
+    {
+        Volatile.Write(ref _closed, true);
+        Release();
+    }
 }
 
 public class InvocationRetryFault : DispatchProxy
@@ -218,13 +281,24 @@ public class InvocationRetryFault : DispatchProxy
     protected override object? Invoke(MethodInfo? method, object?[]? args)
     {
         var state = State!;
+
         if (method!.Name == nameof(IWorkflowStateRepository.TryAcquireExecutionLeaseAsync) &&
             Interlocked.Exchange(ref state.RefuseNextClaim, 0) == 1)
             return Task.FromResult<ExecutionLeaseGrant?>(null);
+
         if (method!.Name == nameof(IWorkflowStateRepository.CommitWorkflowInstanceAsync))
             return state.Commit((CheckpointCommit)args![0]!);
-        try { return method.Invoke(state.Inner, args); }
-        catch (TargetInvocationException error) { ExceptionDispatchInfo.Capture(error.InnerException!).Throw(); throw; }
+
+        try
+        {
+            return method.Invoke(state.Inner, args);
+        }
+        catch (TargetInvocationException error)
+        {
+            ExceptionDispatchInfo.Capture(error.InnerException!).Throw();
+
+            throw;
+        }
     }
 
     private async Task<WorkflowCommitResult> Commit(CheckpointCommit commit)
@@ -232,33 +306,61 @@ public class InvocationRetryFault : DispatchProxy
         if (Remaining > 0 && RejectPayload != null && Replacement(commit))
         {
             Captured ??= commit;
-            try { return await Inner.CommitWorkflowInstanceAsync(RejectPayload(commit)); }
-            finally { Failed(); }
+
+            try
+            {
+                return await Inner.CommitWorkflowInstanceAsync(RejectPayload(commit));
+            }
+            finally
+            {
+                Failed();
+            }
         }
+
         if (Remaining > 0 && Before?.Invoke(commit) == true)
         {
             Failed();
+
             throw new IOException("injected before invocation commit");
         }
+
         var result = await Inner.CommitWorkflowInstanceAsync(commit);
-        if (Parking != null) await Parking.Observe(Inner, commit, result);
-        lock (Commits) Commits.Add(commit);
-        if (Observe?.Invoke(commit) == true) { Captured = commit; Receipt = result; }
+
+        if (Parking != null)
+            await Parking.Observe(Inner, commit, result);
+
+        lock (Commits)
+            Commits.Add(commit);
+
+        if (Observe?.Invoke(commit) == true)
+        {
+            Captured = commit;
+            Receipt = result;
+        }
+
         if (Remaining > 0 && After?.Invoke(commit) == true)
         {
             Captured ??= commit;
             Receipt ??= result;
             Failed();
+
             throw new IOException("injected lost invocation acknowledgement");
         }
+
         return result;
     }
 
-    private void Failed() { if (Interlocked.Decrement(ref Remaining) == 0) Exhausted.TrySetResult(); }
+    private void Failed()
+    {
+        if (Interlocked.Decrement(ref Remaining) == 0)
+            Exhausted.TrySetResult();
+    }
+
     internal static bool Schedule(CheckpointCommit commit) => commit.Parts.Any(part =>
         part.Key.StartsWith("v/") &&
-            JsonSerializer.Deserialize<InvocationRecordState>(part.Json.InlineText)!.ScheduledRetries == 1) && commit.ChildStarts.Count == 0;
+        JsonSerializer.Deserialize<InvocationRecordState>(part.Json.InlineText)!.ScheduledRetries == 1) && commit.ChildStarts.Count == 0;
+
     internal static bool Replacement(CheckpointCommit commit) => commit.ChildStarts.Count != 0 && commit.Parts.Any(part =>
         part.Key.StartsWith("v/") &&
-            JsonSerializer.Deserialize<InvocationRecordState>(part.Json.InlineText)!.Attempts.Any(attempt => attempt.Number == 2));
+        JsonSerializer.Deserialize<InvocationRecordState>(part.Json.InlineText)!.Attempts.Any(attempt => attempt.Number == 2));
 }

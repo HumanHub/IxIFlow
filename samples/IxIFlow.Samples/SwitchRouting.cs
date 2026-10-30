@@ -22,5 +22,6 @@ public static class SwitchRouting
             .Default(body => body.Step<Label>(s => s.Input(a => a.Value).From(ctx => "manual review")
                 .Output(a => a.Value).To(ctx => ctx.WorkflowData.Result))))
         .WithId("route").Build();
+
     // end-snippet: switch-routing
 }

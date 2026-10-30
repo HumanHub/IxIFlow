@@ -11,6 +11,7 @@ public static class Contracts
     {
         var definition = Quote.Definition();
         WorkflowDefinitionValidator.Validate(definition);
+
         return definition;
     }
 
@@ -18,13 +19,16 @@ public static class Contracts
     public static IActivityRegistry Catalog()
     {
         var services = new ServiceCollection();
+
         // snippet: register-activities
         services.AddIxIFlow()
             .AddActivities(typeof(AddFee).Assembly);
+
         // To select one activity instead:
         // services.AddIxIFlow().AddActivity<AddFee>();
         // end-snippet: register-activities
         using var provider = services.BuildServiceProvider();
+
         return provider.GetRequiredService<IActivityRegistry>();
     }
 }

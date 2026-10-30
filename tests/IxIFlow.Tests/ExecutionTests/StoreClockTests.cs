@@ -14,7 +14,7 @@ using Npgsql;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// The store's clock decides deadlines (D-35): the store stamps a deadline at the commit that records
+/// The store's clock decides deadlines: the store stamps a deadline at the commit that records
 /// its wait, refuses an event that arrives after it, and says which deadlines are due when the inbox is
 /// read, so an event received in time beats its deadline. A host's clock only decides when to look.
 /// </summary>
@@ -26,8 +26,8 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     private static readonly DateTimeOffset Start = new(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
 
     // One SQL Server store for these tests, so its schema is checked once.
-    private static readonly Lazy<SqlWorkflowStateRepository> SqlStore =
-        new(() => new SqlWorkflowStateRepository(SqlTestDatabase<StoreClockTests>.ConnectionString));
+    private static readonly Lazy<SqlServerWorkflowStateRepository> SqlStore =
+        new(() => new SqlServerWorkflowStateRepository(SqlTestDatabase<StoreClockTests>.ConnectionString));
 
     // One PostgreSQL store for these tests, so its schema is checked once.
     private static readonly Lazy<PostgreSqlWorkflowStateRepository> PostgreSqlStore =
@@ -88,6 +88,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     {
         var clocks = new Clocks(5);
         using var services = Services(clocks);
+
         var definition = Workflow.Create<ClockData>("StoreClockDelay")
             .Step<NoopActivity>()
             .Delay(TimeSpan.FromHours(1))
@@ -95,6 +96,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
                 .Input(activity => activity.Value).From(_ => "after-delay")
                 .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome))
             .Build();
+
         var started = await Engine(services).RunAsync(definition, new ClockData());
 
         // The host's clock passed the hour; the store's has not, so a look finds nothing to run.
@@ -116,10 +118,12 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     {
         var clocks = new Clocks(-5);
         using var services = Services(clocks);
+
         var definition = Workflow.Create<ClockData>("StoreClockExecution")
             .Step<NoopActivity>()
             .WaitFor<Approval>("approval")
             .Build();
+
         var started = await Engine(services).RunAsync(definition, new ClockData(),
             new WorkflowOptions { ExecutionTimeout = TimeSpan.FromHours(1) });
 
@@ -141,6 +145,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         using var services = Services(clocks);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
+
         var definition = Workflow.Create<ClockData>("StoreClockBusyOwner")
             .Step<NoopActivity>()
             .Parallel(parallel => parallel
@@ -152,10 +157,14 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
                         .Input(activity => activity.Value).From(_ => "timeout")
                         .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome))))))
             .Build();
+
         var instanceId = Guid.NewGuid().ToString("N");
+
         var run = Engine(services).RunAsync(definition, new ClockData(),
             new WorkflowOptions { InstanceId = instanceId });
+
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
         while ((await store.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId, Key: "approval"))).Count == 0)
             await Task.Delay(10);
 
@@ -180,6 +189,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         using var services = Services(clocks);
         var gate = services.GetRequiredService<Gate>();
         var host = new DueHost(time);
+
         var definition = Workflow.Create<ClockData>("StoreClockCancelFirst")
             .Step<NoopActivity>()
             .Parallel(parallel => parallel
@@ -190,10 +200,13 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
                         .Input(activity => activity.Value).From(_ => "timeout")
                         .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Outcome))))))
             .Build();
+
         var run = RunExecutorAsync(services, definition, host, time);
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
         while (host.Opened.Count == 0)
             await Task.Delay(10);
+
         var waitId = Assert.Single(host.Opened);
 
         // The run learns of a cancellation request and the store finds the wait due, both before the
@@ -216,10 +229,12 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         using var services = Services(clocks);
         var gate = services.GetRequiredService<Gate>();
         var host = new DueHost(time);
+
         var definition = Workflow.Create<ClockData>("StoreClockCancelDuringRead")
             .Step<GatedActivity>()
             .WaitFor<Approval>("approval")
             .Build();
+
         var run = RunExecutorAsync(services, definition, host, time, TimeSpan.FromMinutes(10));
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -245,6 +260,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         using var services = Services(clocks);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
+
         var definition = answersARequest
             ? Workflow.Create<ClockData>("SiblingRunsWhileARequestWaits")
                 .Step<NoopActivity>()
@@ -260,6 +276,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
                     .Do(branch => branch.Step<GatedActivity>())
                     .Do(branch => branch.WaitFor<Approval>("approval", configure: OneMinuteTimeout)))
                 .Build();
+
         var instanceId = Guid.NewGuid().ToString("N");
         var run = Engine(services).RunAsync(definition, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -267,10 +284,10 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         // No event comes and the sibling keeps running: the wait still times out on time.
         var waitId = await ArmedWaitIdAsync(store, instanceId);
         await clocks.AdvanceInStepsAsync(TimeSpan.FromSeconds(61));
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        StoredWait? wait;
-        while ((wait = await store.GetWaitAsync(instanceId, waitId))!.IsOpen && DateTime.UtcNow < deadline)
-            await Task.Delay(20);
+
+        var wait = await TestEventually.UntilAsync(instanceId, $"wait {waitId} to close",
+            () => store.GetWaitAsync(instanceId, waitId), current => current is { IsOpen: false });
+
         Assert.Equal(WaitCloseReason.TimedOut, wait.CloseReason);
         Assert.False(run.IsCompleted);
 
@@ -286,36 +303,42 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         using var services = Services(clocks, slots: 1);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
+
         var child = Workflow.Create<ClockData>("SlotlessChild")
             .Step<NoopActivity>()
             .WaitFor<Approval>("approval", configure: OneMinuteTimeout)
             .Build();
+
         var parent = Workflow.Create<ClockData>("SlotHoldingParent")
             .Step<NoopActivity>()
             .Parallel(parallel => parallel
                 .Do(branch => branch.Step<GatedActivity>())
                 .Do(branch => branch.Invoke<ClockData>("SlotlessChild", 1)))
             .Build();
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var instanceId = Guid.NewGuid().ToString("N");
         var run = Engine(services).RunAsync(parent, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // The child is started, but the parent's run holds the only slot, so the child has not run.
-        WorkflowInstance? started = null;
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
-        while (DateTime.UtcNow < deadline && (started = (await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "SlotlessChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
-                   .SingleOrDefault(item => item.ParentInstanceId == instanceId)) == null)
-            await Task.Delay(20);
-        await Task.Delay(300);
-        Assert.Equal(1, (await store.GetWorkflowInstanceAsync(started!.InstanceId))!.Revision);
+        var started = await TestEventually.UntilAsync(instanceId, "a durable SlotlessChild admission", async () =>
+            (await Task.WhenAll(
+                (await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "SlotlessChild", Limit: int.MaxValue))).Items
+                .Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
+            .SingleOrDefault(item => item.ParentInstanceId == instanceId), child => child != null);
+
+        await HostWorkProbe.WaitingForSlotAsync(services.GetRequiredService<WorkflowHost>(), started!.InstanceId);
+        Assert.Equal(1, (await store.GetWorkflowInstanceAsync(started.InstanceId))!.Revision);
 
         // Once the parent waits for it, the slot is free: the child runs, times out and wakes its parent.
         using var settled = services.GetRequiredService<WorkflowHost>().WatchSettled(started.InstanceId,
             out var childRunFinished);
+
         gate.Release.TrySetResult();
         var idle = await run.WaitAsync(TimeSpan.FromSeconds(10));
         await ArmedWaitIdAsync(store, started.InstanceId);
+
         // The armed wait is visible before its run disposes the lease. Settlement follows disposal,
         // so neither the parent nor the child has a live lease that needs renewal during this advance.
         await childRunFinished.WaitAsync(TimeSpan.FromSeconds(10));
@@ -330,16 +353,19 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         using var services = Services(clocks, slots: 2);
         var gate = services.GetRequiredService<Gate>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
+
         var child = Workflow.Create<ClockData>("StoreClockChild")
             .Step<NoopActivity>()
             .WaitFor<Approval>("approval", configure: OneMinuteTimeout)
             .Build();
+
         var parent = Workflow.Create<ClockData>("StoreClockParent")
             .Step<NoopActivity>()
             .Parallel(parallel => parallel
                 .Do(branch => branch.Step<GatedActivity>())
                 .Do(branch => branch.Invoke<ClockData>("StoreClockChild", 1)))
             .Build();
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var instanceId = Guid.NewGuid().ToString("N");
         var run = Engine(services).RunAsync(parent, new ClockData(), new WorkflowOptions { InstanceId = instanceId });
@@ -348,20 +374,29 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         // The child runs in the other slot, and its own deadline ends its wait.
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         WorkflowInstance? started = null;
-        while ((started = (await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "StoreClockChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
+
+        while ((started = (await Task.WhenAll(
+                       (await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "StoreClockChild", Limit: int.MaxValue))).Items
+                       .Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
                    .SingleOrDefault(item => item.ParentInstanceId == instanceId)) == null)
         {
             Assert.True(DateTime.UtcNow < deadline, "The child was never started");
             await Task.Delay(20);
         }
+
         await ArmedWaitIdAsync(store, started.InstanceId);
         await clocks.AdvanceInStepsAsync(TimeSpan.FromSeconds(61));
         deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         WorkflowInstance? childInstance = null;
+
         while (DateTime.UtcNow < deadline &&
-               (childInstance = (await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "StoreClockChild", Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
+               (childInstance =
+                   (await Task.WhenAll(
+                       (await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: "StoreClockChild", Limit: int.MaxValue))).Items
+                       .Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
                    .SingleOrDefault(item => item.ParentInstanceId == instanceId))?.Status != WorkflowStatus.Completed)
             await Task.Delay(20);
+
         Assert.Equal(WorkflowStatus.Completed, childInstance?.Status);
         Assert.False(run.IsCompleted);
 
@@ -377,6 +412,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         var correct = new FakeTimeProvider(Start);
         var repository = new InMemoryWorkflowStateRepository(store);
         var failures = new FailOnce();
+
         var definition = Workflow.Create<ClockData>("StoreClockRetryHandoff")
             .Step<NoopActivity>()
             .Saga(saga => saga.Step<FailOnceActivity>(step => step
@@ -386,12 +422,14 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
 
         // A host five minutes fast runs the step, which fails, and parks the retry for a minute.
         string instanceId;
+
         using (var first = HostServices(fast, repository, failures))
         {
             instanceId = await Engine(first).StartAsync(definition, new ClockData());
             var parked = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
             while (await repository.GetWorkflowInstanceAsync(instanceId) is not
-                   { Status: WorkflowStatus.Running, RunnableAtUtc: { } due } || due < Start.UtcDateTime.AddSeconds(30))
+                       { Status: WorkflowStatus.Running, RunnableAtUtc: { } due } || due < Start.UtcDateTime.AddSeconds(30))
             {
                 Assert.True(DateTime.UtcNow < parked, "The retry was never parked");
                 await Task.Delay(10);
@@ -420,6 +458,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         services.AddSingleton(failures);
         services.AddTransient<NoopActivity>();
         services.AddTransient<FailOnceActivity>();
+
         return services.BuildServiceProvider();
     }
 
@@ -435,11 +474,13 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     private static async Task<string> ArmedWaitIdAsync(IWorkflowStateRepository store, string instanceId)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
         while (true)
         {
             if ((await store.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId, Key: "approval")))
                 .SingleOrDefault() is { DeadlineUtc: not null } open)
                 return open.WaitId;
+
             Assert.True(DateTime.UtcNow < deadline, "The wait was never armed");
             await Task.Delay(10);
         }
@@ -475,6 +516,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     private static async Task VerifyLateArrivals(IWorkflowStateRepository store)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
             // A wait already past its deadline, one with time left under another key, a reply wait
@@ -487,13 +529,17 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
 
             Assert.Equal(EventRejection.WaitTimedOut, (await store.AppendEventAsync(
                 Event(instanceId, "by-token", targetWaitId: "late"))).Rejection);
+
             Assert.Equal(EventRejection.WaitTimedOut, (await store.AppendEventAsync(
                 Event(instanceId, "by-key", key: "late"))).Rejection);
+
             Assert.Equal(EventAppendStatus.Stored, (await store.AppendEventAsync(
                 Event(instanceId, "to-reply", targetWaitId: "reply"))).Status);
+
             // Without a key, the wait with time left could still take it.
             Assert.Equal(EventAppendStatus.Stored, (await store.AppendEventAsync(
                 Event(instanceId, "any-key"))).Status);
+
             // No event can answer a delay.
             Assert.Equal(EventRejection.UnknownWait, (await store.AppendEventAsync(
                 Event(instanceId, "to-delay", targetWaitId: "delay"))).Rejection);
@@ -501,6 +547,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             // Delays are kept out of listings unless asked for.
             var listed = await store.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId));
             Assert.DoesNotContain(listed, wait => wait.WaitId == "delay");
+
             Assert.Equal("delay", Assert.Single(await store.GetOpenWaitsAsync(
                 new WaitQuery(InstanceId: instanceId, Kind: WaitKind.Delay))).WaitId);
         }
@@ -515,9 +562,11 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     public Task MemoryStoreFindsDeadlinesDueWithTheEventsReceivedBeforeThem()
     {
         var time = new FakeTimeProvider(Start);
+
         return VerifyDuePage(new InMemoryWorkflowStateRepository(time), TimeSpan.FromMilliseconds(500), _ =>
         {
             time.Advance(TimeSpan.FromMilliseconds(700));
+
             return Task.CompletedTask;
         });
     }
@@ -531,6 +580,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         VerifyDuePage(SqlStore.Value, TimeSpan.FromSeconds(2), async instanceId =>
         {
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
             while (!(await SqlStore.Value.GetPendingEventsAsync(instanceId, 0, 10)).IsDue("short"))
             {
                 Assert.True(DateTime.UtcNow < deadline, "The store never found the deadline due");
@@ -546,6 +596,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         VerifyDuePage(PostgreSqlStore.Value, TimeSpan.FromSeconds(2), async instanceId =>
         {
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
             while (!(await PostgreSqlStore.Value.GetPendingEventsAsync(instanceId, 0, 10)).IsDue("short"))
             {
                 Assert.True(DateTime.UtcNow < deadline, "The store never found the deadline due");
@@ -561,9 +612,11 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     {
         var time = new FakeTimeProvider(Start);
         await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<StoreClockTests>.ConnectionString, time);
+
         await VerifyDuePage(repository, TimeSpan.FromMilliseconds(500), _ =>
         {
             time.Advance(TimeSpan.FromMilliseconds(700));
+
             return Task.CompletedTask;
         });
     }
@@ -572,13 +625,16 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         Func<string, Task> passShortDeadline)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
             await CommitAsync(store, instanceId, null,
                 new OpenedWait("short", WaitKind.Event, "approval", "Approval", shortDeadline),
                 new OpenedWait("long", WaitKind.Event, "other", "Approval", TimeSpan.FromHours(1)));
+
             var before = await store.GetPendingEventsAsync(instanceId, 0, 10);
             Assert.False(before.IsDue("short"));
+
             Assert.Equal(EventAppendStatus.Stored,
                 (await store.AppendEventAsync(Event(instanceId, "in-time", key: "approval"))).Status);
 
@@ -592,9 +648,11 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             Assert.True(inTime.ReceivedAtUtc < page.Deadlines!["short"]);
             Assert.True(page.Deadlines["short"] <= page.StoreTimeUtc);
             Assert.Equal(page.Deadlines["short"], (await store.GetWaitAsync(instanceId, "short"))!.DeadlineUtc);
+
             // An event for that wait now is too late, and never reaches a page.
             Assert.Equal(EventRejection.WaitTimedOut, (await store.AppendEventAsync(
                 Event(instanceId, "late", key: "approval"))).Rejection);
+
             Assert.Single((await store.GetPendingEventsAsync(instanceId, 0, 10)).Events);
         }
         finally
@@ -606,21 +664,25 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "D-03")]
-    public Task SqlStoreReadsItsTimeOnceTheInstanceLockIsHeld() => VerifyStoreTimeAfterInstanceLock(_ => SqlStore.Value, () => new SqlConnection(SqlTestDatabase<StoreClockTests>.ConnectionString));
+    public Task SqlStoreReadsItsTimeOnceTheInstanceLockIsHeld() => VerifyStoreTimeAfterInstanceLock(_ => SqlStore.Value,
+        () => new SqlConnection(SqlTestDatabase<StoreClockTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "D-03")]
-    public Task PostgreSqlStoreReadsItsTimeOnceTheInstanceLockIsHeld() => VerifyStoreTimeAfterInstanceLock(_ => PostgreSqlStore.Value, () => new NpgsqlConnection(PostgreSqlTestDatabase<StoreClockTests>.ConnectionString));
+    public Task PostgreSqlStoreReadsItsTimeOnceTheInstanceLockIsHeld() => VerifyStoreTimeAfterInstanceLock(_ => PostgreSqlStore.Value,
+        () => new NpgsqlConnection(PostgreSqlTestDatabase<StoreClockTests>.ConnectionString));
 
     [Fact]
     [Trait("Spec", "D-03")]
     public Task MemoryStoreArmsAReplyWaitOnce()
     {
         var time = new FakeTimeProvider(Start);
+
         return VerifyArming(new InMemoryWorkflowStateRepository(time), () =>
         {
             time.Advance(TimeSpan.FromMilliseconds(50));
+
             return Task.CompletedTask;
         });
     }
@@ -645,9 +707,11 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     {
         var time = new FakeTimeProvider(Start);
         await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<StoreClockTests>.ConnectionString, time);
+
         await VerifyArming(repository, () =>
         {
             time.Advance(TimeSpan.FromMilliseconds(50));
+
             return Task.CompletedTask;
         });
     }
@@ -655,20 +719,28 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     private static async Task VerifyArming(IWorkflowStateRepository store, Func<Task> letTimePass)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
             // The request's start opens its reply wait without a deadline; its WaitFor arms it.
             var instance = new WorkflowInstance
-            { InstanceId = instanceId, WorkflowName = "StoreClock", Status = WorkflowStatus.Running,
-                ExecutionStateJson = StoreTestSupport.CheckpointJson, WorkflowDataJson = StoredJson.Inline("{}") };
+            {
+                InstanceId = instanceId, WorkflowName = "StoreClock", Status = WorkflowStatus.Running,
+                ExecutionStateJson = StoreTestSupport.CheckpointJson, WorkflowDataJson = StoredJson.Inline("{}")
+            };
+
             var started = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance,
                 (await StoreTestSupport.LeaseAsync(store, instanceId)).Epoch, 0,
                 openedWaits: [new OpenedWait("reply", WaitKind.Reply, "payment", "Payment", null)]));
+
             Assert.Equal(WorkflowCommitStatus.Applied, started.Status);
             instance.Revision = started.Revision;
             Assert.Null((await store.GetWaitAsync(instanceId, "reply"))!.DeadlineUtc);
-            var arming = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, instance.Revision, commitId: "arm",
+
+            var arming = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch,
+                instance.Revision, commitId: "arm",
                 armedWaits: [new ArmedWait("reply", TimeSpan.FromHours(1))]);
+
             var armed = await store.CommitWorkflowInstanceAsync(arming);
             Assert.Equal(WorkflowCommitStatus.Applied, armed.Status);
             var deadline = (await store.GetWaitAsync(instanceId, "reply"))!.DeadlineUtc;
@@ -678,9 +750,11 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             await letTimePass();
             Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(arming)).Status);
             instance.Revision = armed.Revision;
+
             Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
                 CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, instance.Revision,
                     armedWaits: [new ArmedWait("reply", TimeSpan.FromHours(2))]))).Status);
+
             Assert.Equal(deadline, (await store.GetWaitAsync(instanceId, "reply"))!.DeadlineUtc);
         }
         finally
@@ -694,14 +768,19 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         TimeSpan? wakeAfter, params OpenedWait[] waits)
     {
         var instance = new WorkflowInstance
-        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = instanceId, WorkflowName = "StoreClock", Status = WorkflowStatus.Suspended,
             WorkflowDataJson = StoredJson.Inline("{}")
         };
-        var result = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0,
+
+        var result = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance,
+            (await StoreTestSupport.LeaseAsync(store, instance.InstanceId)).Epoch, 0,
             openedWaits: waits, wakeAfter: wakeAfter));
+
         Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
         instance.Revision = result.Revision;
+
         return instance;
     }
 
@@ -755,6 +834,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         public void Advance(TimeSpan by)
         {
             Store.Advance(by);
+
             if (Host != Store)
                 Host.Advance(by);
         }
@@ -766,23 +846,31 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         public async Task AdvanceInStepsAsync(TimeSpan by)
         {
             var step = TimeSpan.FromSeconds(5);
+
             for (var moved = TimeSpan.Zero; moved < by; moved += step)
             {
                 var length = by - moved < step ? by - moved : step;
+
                 if (_timers is not { } timers)
                 {
                     Advance(length);
                     await Task.Delay(5);
+
                     continue;
                 }
+
                 var armedBefore = timers.Armed;
+
                 var renewalsBefore = timers.Armings
                     .Where(timer => timer.Pending && timer.DueTime == RenewalInterval)
                     .Select(timer => timer.Number)
                     .ToHashSet();
+
                 Advance(length);
+
                 var renewalsFired = timers.Armings.Count(timer =>
                     renewalsBefore.Contains(timer.Number) && timer.Firings > 0);
+
                 await timers.WaitUntilAsync(armings => armings.Skip(armedBefore)
                         .Count(timer => timer.DueTime == RenewalInterval) >= renewalsFired,
                     $"{renewalsFired} lease renewals set again after a step to {timers.GetUtcNow():O}");
@@ -796,15 +884,18 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         services.AddLogging();
         services.AddSingleton<TimeProvider>(clocks.Host);
         services.AddSingleton<IWorkflowStateRepository>(new InMemoryWorkflowStateRepository(clocks.Store));
+
         if (slots is { } count)
             services.AddIxIFlow(options => options.Slots = count);
         else
             services.AddIxIFlow();
+
         services.AddSingleton<Gate>();
         services.AddTransient<NoopActivity>();
         services.AddTransient<MarkActivity>();
         services.AddTransient<GatedActivity>();
         services.AddTransient<AskActivity>();
+
         return services.BuildServiceProvider();
     }
 
@@ -827,6 +918,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         using var scanner = new WorkflowRecoveryService(services.GetRequiredService<IServiceScopeFactory>(),
             services.GetRequiredService<IWorkflowStateRepository>(), NullLogger<WorkflowRecoveryService>.Instance,
             hostTime);
+
         await scanner.RecoverOnceAsync(CancellationToken.None);
     }
 
@@ -835,8 +927,10 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     {
         var now = time.GetUtcNow().UtcDateTime;
         var data = new ClockData();
+
         var instance = new WorkflowInstance
-        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"),
             WorkflowName = definition.Name,
             WorkflowVersion = definition.Version,
@@ -846,6 +940,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             CreatedAt = now,
             StartedAt = now
         };
+
         var checkpoint = new ExecutionCheckpoint
         {
             StructureHash = new WorkflowScopeCatalog(definition).StructureHash,
@@ -854,19 +949,25 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             ExecutionDeadlineUtc = now + executionTimeout,
             Continuations = [new ContinuationState { Stack = [new ScopePosition { ScopeId = "root" }] }]
         };
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         var executor = new WorkflowExecutor(services, host);
         using var run = executor.PrepareAssignment(Guid.NewGuid());
+
         // Assign starts from a committed checkpoint, including the store's execution timer.
         await ExecutionCheckpointWriter.CommitAsync(new ExecutionSession(host, run.AssignmentId, instance.InstanceId,
-            1, new() { MaxCheckpointBytes = long.MaxValue }, false), instance, checkpoint, data,
+                1, new() { MaxCheckpointBytes = long.MaxValue }, false), instance, checkpoint, data,
             WorkflowDefinitionValidator.ForExecution(definition), now);
+
         host.DeliverCancellation = reason => executor.Deliver(new Cancel(run.AssignmentId, CancelKind.Workflow, reason));
+
         var ready = await Task.Run(() => executor.ExecuteAsync(new(run.AssignmentId, instance, instance.PartsAt(instance.Revision),
             checkpoint.StructureHash, 1, 0, new() { MaxCheckpointBytes = long.MaxValue }, false, []), CancellationToken.None));
+
         Assert.Equal(AssignmentOutcomeKind.Idle, ready.Outcome.Kind);
         Assert.NotNull(host.Saved);
+
         return host.Saved;
     }
 
@@ -878,6 +979,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     {
         public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
             Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
+
         private readonly object _lock = new();
         private readonly List<string> _opened = [];
         private readonly Dictionary<string, WaitCloseReason> _closed = new(StringComparer.Ordinal);
@@ -887,15 +989,26 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
 
         public IReadOnlyList<string> Opened
         {
-            get { lock (_lock) return _opened.ToArray(); }
+            get
+            {
+                lock (_lock)
+                    return _opened.ToArray();
+            }
         }
 
         public IReadOnlyDictionary<string, WaitCloseReason> Closed
         {
-            get { lock (_lock) return new Dictionary<string, WaitCloseReason>(_closed); }
+            get
+            {
+                lock (_lock)
+                    return new Dictionary<string, WaitCloseReason>(_closed);
+            }
         }
 
-        public Action<CancellationReason> DeliverCancellation { get; set; } = _ => { };
+        public Action<CancellationReason> DeliverCancellation { get; set; } = _ =>
+        {
+        };
+
         public WorkflowInstance? Saved { get; private set; }
 
         public void Cancel()
@@ -912,6 +1025,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         {
             _readRelease = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             _readStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
             return _readStarted.Task;
         }
 
@@ -920,15 +1034,19 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
         public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
             var commit = request.Commit;
+
             lock (_lock)
             {
                 Saved = commit.ReadInstance(Saved);
                 _opened.AddRange(commit.OpenedWaits.Where(wait => wait.Timeout != null).Select(wait => wait.WaitId));
+
                 foreach (var wait in commit.OpenedWaits.Where(wait => wait.Timeout != null))
                     _deadlines.TryAdd(wait.WaitId, time.GetUtcNow().UtcDateTime + wait.Timeout!.Value);
+
                 foreach (var closed in commit.ClosedWaits)
                     _closed[closed.WaitId] = closed.Reason;
             }
+
             return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Ack,
                 Interlocked.Increment(ref _revision)));
         }
@@ -940,11 +1058,16 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
                 _readStarted!.TrySetResult();
                 await release.Task;
             }
+
             var now = time.GetUtcNow().UtcDateTime;
             Dictionary<string, DateTime> deadlines;
-            lock (_lock) deadlines = _deadlines.ToDictionary(item => item.Key,
-                item => _cancelled ? now.AddHours(-1) : item.Value);
-            return new(request.AssignmentId, new InboxPage([], request.AfterSequence, Opened.ToDictionary(id => id, _ => 0L), deadlines, now));
+
+            lock (_lock)
+                deadlines = _deadlines.ToDictionary(item => item.Key,
+                    item => _cancelled ? now.AddHours(-1) : item.Value);
+
+            return new(request.AssignmentId,
+                new InboxPage([], request.AfterSequence, Opened.ToDictionary(id => id, _ => 0L), deadlines, now));
         }
 
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => Task.FromResult(new ReadWaitReply(request.AssignmentId));
@@ -1012,6 +1135,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             await gate.Release.Task;
         }
     }
+
     [Fact]
     [Trait("Category", "SqliteIntegration")]
     [Trait("Spec", "C-11")]
@@ -1019,13 +1143,17 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
     {
         var time = new FakeTimeProvider(Start);
         await using var repository = new SqliteWorkflowStateRepository(SqliteTestDatabase<StoreClockTests>.ConnectionString, time);
-        await VerifyStoreTimeAfterInstanceLock(_ => repository, () => new Microsoft.Data.Sqlite.SqliteConnection(SqliteTestDatabase<StoreClockTests>.ConnectionString), time);
+
+        await VerifyStoreTimeAfterInstanceLock(_ => repository,
+            () => new Microsoft.Data.Sqlite.SqliteConnection(SqliteTestDatabase<StoreClockTests>.ConnectionString), time);
     }
 
-    private static async Task VerifyStoreTimeAfterInstanceLock(Func<TimeProvider, IWorkflowStateRepository> newStore, Func<System.Data.Common.DbConnection> newConnection, FakeTimeProvider? time = null)
+    private static async Task VerifyStoreTimeAfterInstanceLock(Func<TimeProvider, IWorkflowStateRepository> newStore,
+        Func<System.Data.Common.DbConnection> newConnection, FakeTimeProvider? time = null)
     {
         var store = newStore(time ?? TimeProvider.System);
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
             await CommitAsync(store, instanceId, null,
@@ -1034,29 +1162,44 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             // Another transaction holds the instance row while a read and an append wait for it.
             await using var holder = newConnection();
             await holder.OpenAsync();
+
             await using var transaction = holder is Microsoft.Data.Sqlite.SqliteConnection sqlite
-                ? sqlite.BeginTransaction(deferred: false) : await holder.BeginTransactionAsync();
+                ? sqlite.BeginTransaction(deferred: false)
+                : await holder.BeginTransactionAsync();
+
             await using (var lockRow = holder.CreateCommand())
             {
                 lockRow.Transaction = transaction;
+
                 lockRow.CommandText = holder is SqlConnection
                     ? "SELECT InstanceId FROM dbo.IxIFlowWorkflowInstances WITH (UPDLOCK, ROWLOCK) WHERE InstanceId = @InstanceId"
                     : holder is NpgsqlConnection
                         ? "SELECT instance_id FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId FOR UPDATE"
                         : "SELECT instance_id FROM ixiflow_workflow_instances WHERE instance_id = @InstanceId";
+
                 var parameter = lockRow.CreateParameter();
                 parameter.ParameterName = holder is NpgsqlConnection ? "InstanceId" : "@InstanceId";
                 parameter.Value = instanceId;
                 lockRow.Parameters.Add(parameter);
                 await lockRow.ExecuteScalarAsync();
             }
-            var read = time == null ? store.GetPendingEventsAsync(instanceId, 0, 10)
+
+            var read = time == null
+                ? store.GetPendingEventsAsync(instanceId, 0, 10)
                 : Task.Run(() => store.GetPendingEventsAsync(instanceId, 0, 10));
-            var append = time == null ? store.AppendEventAsync(Event(instanceId, "held", key: "approval"))
+
+            var append = time == null
+                ? store.AppendEventAsync(Event(instanceId, "held", key: "approval"))
                 : Task.Run(() => store.AppendEventAsync(Event(instanceId, "held", key: "approval")));
-            await Task.Delay(TimeSpan.FromMilliseconds(500));
+
+            if (holder is Microsoft.Data.Sqlite.SqliteConnection)
+                await DatabaseWaitProbe.SqliteWriterQueueAsync(store, instanceId);
+            else
+                await DatabaseWaitProbe.BlockedByAsync(holder, newConnection, instanceId, minimum: 2);
+
             Assert.False(read.IsCompleted || append.IsCompleted);
             DateTime releasedAt;
+
             if (time != null)
             {
                 time.Advance(TimeSpan.FromMilliseconds(500));
@@ -1069,6 +1212,7 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
                 clock.CommandText = holder is SqlConnection ? "SELECT SYSUTCDATETIME()" : "SELECT clock_timestamp()";
                 releasedAt = (DateTime)(await clock.ExecuteScalarAsync())!;
             }
+
             await transaction.CommitAsync();
 
             // Both took the store's time after the lock was theirs, not when they started waiting.
@@ -1081,6 +1225,4 @@ public sealed class StoreClockTests : IClassFixture<SqliteTestDatabase<StoreCloc
             await store.DeleteWorkflowInstanceAsync(instanceId);
         }
     }
-
-
 }

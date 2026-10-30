@@ -28,7 +28,8 @@ internal static class Telemetry
     public static readonly Meter Meter = new(Name);
 
     public static readonly Counter<long> ArtifactRetentionUnreadablePins = Meter.CreateCounter<long>(
-        "ixiflow.artifact.retention.unreadable_pin", "{pin}", "Orphan instance bundle pins that could not be read; package content was retained conservatively");
+        "ixiflow.artifact.retention.unreadable_pin", "{pin}",
+        "Orphan instance bundle pins that could not be read; package content was retained conservatively");
 
     public static readonly UpDownCounter<long> ActiveRuns = Meter.CreateUpDownCounter<long>(
         "ixiflow.run.active", "{run}", "Runs of instances in progress on this host");
@@ -81,6 +82,7 @@ internal static class Telemetry
     {
         if (span == null)
             return;
+
         span.SetTag(WorkflowName, instance.WorkflowName);
         span.SetTag(WorkflowVersion, instance.WorkflowVersion);
         span.SetTag(InstanceId, instance.InstanceId);
@@ -91,6 +93,7 @@ internal static class Telemetry
     {
         var tags = Workflow(instance);
         ActiveRuns.Add(1, tags);
+
         return new RunEnded(tags);
     }
 
@@ -110,17 +113,21 @@ internal static class Telemetry
         WorkflowInstance instance, string activityType, long startedAt)
     {
         var outcome = "Faulted";
+
         try
         {
             var result = await attempt;
             outcome = result.Kind.ToString();
+
             if (result.Error is { } error)
                 Fail(span, error);
+
             return result;
         }
         catch (Exception error)
         {
             Fail(span, error);
+
             throw;
         }
         finally

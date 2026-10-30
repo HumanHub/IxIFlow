@@ -52,11 +52,13 @@ internal static class BranchData
     internal static RedactingJson.ClassifiedPath[] ClassifiedPaths(Type type)
     {
         var paths = new List<RedactingJson.ClassifiedPath>();
+
         Walk(Info(type), [], merged: true, new HashSet<(Type, bool)>(), (path, _, property, _) =>
         {
             if (RedactingJson.Classification(property.AttributeProvider) is { } classification)
                 paths.Add(new(string.Join('.', path), classification));
         });
+
         return paths.ToArray();
     }
 
@@ -84,46 +86,75 @@ internal static class BranchData
     {
         var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);
         var unchanged = Capture(data);
+
         return current => unchanged(current);
 
         Func<object?, bool> Capture(object? value)
         {
-            if (value == null) return current => current == null;
+            if (value == null)
+                return current => current == null;
+
             var type = value.GetType();
-            if (value is string) return current => ReferenceEquals(value, current);
+
+            if (value is string)
+                return current => ReferenceEquals(value, current);
+
             if (type.IsPrimitive || type.IsEnum || value is decimal or DateTime or DateTimeOffset or Guid or TimeSpan)
                 return current => Equals(value, current);
-            if (!type.IsValueType && !seen.Add(value)) return current => ReferenceEquals(value, current);
+
+            if (!type.IsValueType && !seen.Add(value))
+                return current => ReferenceEquals(value, current);
+
             var info = Info(type);
-            if (info.Kind == JsonTypeInfoKind.Object && info.Converter.GetType().Assembly == typeof(System.Text.Json.JsonSerializer).Assembly)
+
+            if (info.Kind == JsonTypeInfoKind.Object &&
+                info.Converter.GetType().Assembly == typeof(System.Text.Json.JsonSerializer).Assembly)
             {
                 var properties = info.Properties.Where(p => p.Get != null).ToArray();
-                if (properties.Any(p => p.CustomConverter != null)) return _ => false;
+
+                if (properties.Any(p => p.CustomConverter != null))
+                    return _ => false;
+
                 var members = properties.Select(p => (Property: p, Same: Capture(p.Get!(value)))).ToArray();
+
                 return current => current != null && current.GetType() == type &&
                     (type.IsValueType || ReferenceEquals(value, current)) && members.All(p => p.Same(p.Property.Get!(current)));
             }
-            if (info.Kind == JsonTypeInfoKind.Dictionary && info.Converter.GetType().Assembly == typeof(System.Text.Json.JsonSerializer).Assembly &&
+
+            if (info.Kind == JsonTypeInfoKind.Dictionary &&
+                info.Converter.GetType().Assembly == typeof(System.Text.Json.JsonSerializer).Assembly &&
                 value is IDictionary dictionary)
             {
                 var entries = Entries().Select(p => (p.Key, Same: Capture(p.Value))).ToArray();
+
                 return current => ReferenceEquals(value, current) && dictionary.Count == entries.Length &&
                     Entries().Zip(entries).All(p => Equals(p.First.Key, p.Second.Key) && p.Second.Same(p.First.Value));
+
                 IEnumerable<DictionaryEntry> Entries()
-                { foreach (DictionaryEntry entry in dictionary) yield return entry; }
+                {
+                    foreach (DictionaryEntry entry in dictionary)
+                        yield return entry;
+                }
             }
+
             if (info.Kind == JsonTypeInfoKind.Enumerable && value is IEnumerable sequence)
             {
                 var items = sequence.Cast<object?>().Select(Capture).ToArray();
+
                 return current => ReferenceEquals(value, current) && SameItems();
+
                 bool SameItems()
                 {
                     var index = 0;
+
                     foreach (var item in sequence)
-                        if (index == items.Length || !items[index++](item)) return false;
+                        if (index == items.Length || !items[index++](item))
+                            return false;
+
                     return index == items.Length;
                 }
             }
+
             // Custom converters and opaque mutable shapes remain conservatively dirty.
             return _ => false;
         }
@@ -148,6 +179,7 @@ internal static class BranchData
         var changes = new List<DataChange>();
         var info = Info(type);
         Compare(baseline, Node(branch), info, PerMember(info), [], changes);
+
         return changes;
     }
 
@@ -155,8 +187,10 @@ internal static class BranchData
     public static object Rebuild(object baseline, IReadOnlyList<DataChange> changes)
     {
         var node = Node(baseline);
+
         foreach (var change in changes)
             Lay(node, change);
+
         return JsonSerializer.Deserialize(node.ToJsonString(), baseline.GetType(), Options)!;
     }
 
@@ -164,27 +198,41 @@ internal static class BranchData
     public static object Patch(object data, IReadOnlyList<DataPatch> patches)
     {
         var node = Node(data);
+
         foreach (var patch in patches)
         {
             if (patch.Path.Count == 0 || patch.Path.Any(string.IsNullOrEmpty))
                 throw new ArgumentException("An edit requires a nonempty property path");
+
             var info = Info(data.GetType());
             JsonNode? owner = node;
+
             foreach (var segment in patch.Path.Take(patch.Path.Count - 1))
             {
                 var property = EditableProperty(info, segment, leaf: false);
+
                 if (property.CustomConverter != null)
                     throw new ArgumentException("An edit cannot traverse a property converter");
+
                 owner = (owner as JsonObject)?[segment];
-                if (owner == null) throw new ArgumentException("An edit cannot traverse null or absent data");
+
+                if (owner == null)
+                    throw new ArgumentException("An edit cannot traverse null or absent data");
+
                 info = Info(property.PropertyType);
             }
+
             _ = EditableProperty(info, patch.Path[^1]);
+
             if (owner is not JsonObject target || !target.ContainsKey(patch.Path[^1]))
                 throw new ArgumentException("The edited property does not exist");
-            if (patch.Remove) target.Remove(patch.Path[^1]);
-            else target[patch.Path[^1]] = JsonNode.Parse(patch.Value.GetRawText());
+
+            if (patch.Remove)
+                target.Remove(patch.Path[^1]);
+            else
+                target[patch.Path[^1]] = JsonNode.Parse(patch.Value.GetRawText());
         }
+
         // All converters, required properties and setters see the complete candidate together.
         return JsonSerializer.Deserialize(node.ToJsonString(), data.GetType(), Options)
             ?? throw new ArgumentException("Workflow data cannot be null");
@@ -193,16 +241,21 @@ internal static class BranchData
     internal static void ValidateAssignmentProperty(Type receiver, PropertyInfo member, bool write, bool leaf)
     {
         var info = Info(receiver);
+
         var property = info.Properties.FirstOrDefault(property => property.AttributeProvider is PropertyInfo reflected &&
             reflected.Name == member.Name && reflected.DeclaringType == member.DeclaringType);
+
         var value = property == null ? null : Info(property.PropertyType);
+
         var populate = property != null && !property.PropertyType.IsValueType &&
             (property.ObjectCreationHandling ?? info.PreferredPropertyObjectCreationHandling) == JsonObjectCreationHandling.Populate &&
             value!.Kind == JsonTypeInfoKind.Object && MergedInPlace(property);
+
         if (property?.Get == null || property.IsExtensionData || property.Set == null && (write || !populate) ||
             PopulatedCollection(info, property) || !leaf && property.CustomConverter != null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"ASSIGN002: '{member.Name}' is not writable serialized workflow data (getter-only containers require a restorable Populate contract)");
+
         if (leaf && property.CustomConverter == null)
             ValidateAssignmentValue(property.PropertyType);
     }
@@ -223,10 +276,14 @@ internal static class BranchData
         // Dictionary keys are values, so accepting them would also expose them in audit paths.
         if (info.Kind != JsonTypeInfoKind.Object || info.Converter.GetType().Assembly != typeof(System.Text.Json.JsonSerializer).Assembly)
             throw new ArgumentException("An edit path must contain only contract properties, without dictionary keys or indices");
+
         var property = PropertyNamed(info, name);
+
         if (property?.Get == null || property.IsExtensionData || property.Set == null &&
-            (leaf || (property.ObjectCreationHandling ?? info.PreferredPropertyObjectCreationHandling) != JsonObjectCreationHandling.Populate))
+            (leaf || (property.ObjectCreationHandling ?? info.PreferredPropertyObjectCreationHandling) !=
+                JsonObjectCreationHandling.Populate))
             throw new ArgumentException("An edit path must name an existing settable contract property");
+
         return property;
     }
 
@@ -239,21 +296,26 @@ internal static class BranchData
         IReadOnlyDictionary<string, Type>? overrides = null)
     {
         var type = baseline.GetType();
+
         // Each change belongs to a unit: the outermost property on its path with a combiner, or itself.
         var units = new Dictionary<string, (List<string> Path, Type? Combiner, List<int> Branches, DataChange Change)>(
             StringComparer.Ordinal);
+
         var order = new List<string>();
         var combinerAt = new Dictionary<string, Type?>(StringComparer.Ordinal);
+
         for (var index = 0; index < branches.Count; index++)
             foreach (var change in branches[index].Changes)
             {
                 var (path, combiner) = Unit(type, change.Path, overrides, combinerAt);
                 var key = Key(path);
+
                 if (!units.TryGetValue(key, out var unit))
                 {
                     units[key] = unit = (path, combiner, [], change);
                     order.Add(key);
                 }
+
                 // Branches come in order, so a branch already listed is the last one.
                 if (unit.Branches.Count == 0 || unit.Branches[^1] != index)
                     unit.Branches.Add(index);
@@ -263,6 +325,7 @@ internal static class BranchData
         foreach (var key in order)
         {
             var (path, _, changedBy, _) = units[key];
+
             for (var length = 0; length < path.Count; length++)
                 if (units.TryGetValue(Key(path.Take(length).ToList()), out var outer) &&
                     outer.Branches.Concat(changedBy).Distinct().Count() > 1)
@@ -272,9 +335,11 @@ internal static class BranchData
 
         var node = Node(baseline);
         var combined = new List<(List<string> Path, Type Combiner, List<int> Branches)>();
+
         foreach (var key in order)
         {
             var (path, combiner, changedBy, change) = units[key];
+
             if (combiner != null)
                 combined.Add((path, combiner, changedBy));
             else if (changedBy.Count > 1)
@@ -282,6 +347,7 @@ internal static class BranchData
             else
                 Lay(node, change);
         }
+
         // A combined value is written as its property's contract writes it, with the property's converter
         // and number handling, and laid over the merge, so the read-back below validates it with the rest
         // and no setter sees it beside values it will not be merged with.
@@ -290,6 +356,7 @@ internal static class BranchData
             var values = changedBy.Select(index => ValueAt(branches[index].Data(), path)).ToList();
             var value = Combine(combiner, path, ValueAt(baseline, path), values);
             string json;
+
             try
             {
                 json = PropertyJson(type, path, value)?.ToJsonString() ?? "null";
@@ -298,10 +365,12 @@ internal static class BranchData
             {
                 throw Conflict(path, $"The combined value of '{Display(path)}' could not be written: {error.Message}");
             }
+
             Lay(node, new DataChange { Path = path, Value = StoredJson.Inline(json) });
         }
 
         object merged;
+
         try
         {
             merged = JsonSerializer.Deserialize(node.ToJsonString(), type, Options)!;
@@ -310,8 +379,10 @@ internal static class BranchData
         {
             // The data type refused the merge, through its converters, required members or setters.
             var at = (error as JsonException)?.Path?.TrimStart('$').TrimStart('.') ?? "";
+
             throw new JoinConflictException(at, $"The merged data could not be read back as {type.Name}: {error.Message}");
         }
+
         return new MergedData(merged, order.Select(key => units[key].Path).ToList());
     }
 
@@ -327,21 +398,25 @@ internal static class BranchData
     {
         var undo = new List<Action>();
         List<string> path = [];
+
         try
         {
             // In the order the read-back set them: each object's properties as its contract declares them.
             foreach (var changed in merge.Paths.OrderBy(item => DeclarationOrder(data.GetType(), item), PathOrder.Instance))
             {
                 path = changed;
+
                 if (path.Count == 0)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                         "A branch replaced the whole workflow data, which a join cannot apply in place");
+
                 SetFrom(data, merge.Data, path, undo);
             }
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             var refused = new List<Exception>();
+
             for (var index = undo.Count - 1; index >= 0; index--)
                 try
                 {
@@ -351,13 +426,17 @@ internal static class BranchData
                 {
                     refused.Add(restore is TargetInvocationException { InnerException: { } inner } ? inner : restore);
                 }
+
             if (refused.Count > 0)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                     $"A join could not put the workflow data back after '{Display(path)}' was refused: " +
                     string.Join("; ", refused.Select(item => item.Message)), new AggregateException(refused));
+
             if (error is WorkflowEngineException)
                 throw;
+
             var reason = error is TargetInvocationException { InnerException: { } cause } ? cause : error;
+
             throw Conflict(path, $"The merge could not be applied to '{Display(path)}': {reason.Message}");
         }
     }
@@ -367,20 +446,26 @@ internal static class BranchData
     {
         var order = new List<int>();
         var info = Info(type);
+
         foreach (var segment in path)
         {
             if (info.Kind == JsonTypeInfoKind.Dictionary)
             {
                 order.Add(0);
                 info = Info(info.ElementType!);
+
                 continue;
             }
+
             var index = info.Properties.Select(property => property.Name).ToList().IndexOf(segment);
             order.Add(index);
+
             if (index < 0)
                 break;
+
             info = Info(info.Properties[index].PropertyType);
         }
+
         return order;
     }
 
@@ -393,6 +478,7 @@ internal static class BranchData
             for (var index = 0; index < Math.Min(one!.Count, other!.Count); index++)
                 if (one[index] != other[index])
                     return one[index].CompareTo(other[index]);
+
             return one.Count.CompareTo(other.Count);
         }
     }
@@ -406,10 +492,12 @@ internal static class BranchData
         var target = data;
         var source = merged;
         var info = Info(data.GetType());
-        for (var depth = 0; ; depth++)
+
+        for (var depth = 0;; depth++)
         {
             var segment = path[depth];
             var last = depth == path.Count - 1;
+
             if (info.Kind == JsonTypeInfoKind.Dictionary)
             {
                 var key = DictionaryKey(info, segment);
@@ -418,6 +506,7 @@ internal static class BranchData
                 var existed = dictionary.Contains(key);
                 var old = existed ? dictionary[key] : null;
                 var value = mergedDictionary.Contains(key) ? mergedDictionary[key] : null;
+
                 if (!mergedDictionary.Contains(key) || last || value == null || old == null)
                 {
                     undo.Add(() =>
@@ -430,12 +519,15 @@ internal static class BranchData
                                 dictionary.Remove(key);
                         }
                     });
+
                     if (mergedDictionary.Contains(key))
                         dictionary[key] = value;
                     else
                         dictionary.Remove(key);
+
                     return;
                 }
+
                 (target, source, info) = (old, value, Info(info.ElementType!));
             }
             else
@@ -443,22 +535,29 @@ internal static class BranchData
                 var property = PropertyNamed(info, segment)
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                         $"A join found no property at '{Display(path)}'");
+
                 var value = property.Get!(source);
                 var old = property.Get(target);
+
                 if (last || value == null || old == null)
                 {
                     var set = property.Set ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                         $"A join cannot set '{Display(path)}', which has no setter");
+
                     var owner = target;
                     var get = property.Get;
+
                     undo.Add(() =>
                     {
                         if (!Same(get(owner), old))
                             set(owner, old);
                     });
+
                     set(owner, value);
+
                     return;
                 }
+
                 (target, source, info) = (old, value, Info(property.PropertyType));
             }
         }
@@ -474,28 +573,36 @@ internal static class BranchData
             if (info.Kind == JsonTypeInfoKind.Dictionary)
             {
                 var element = Info(info.ElementType!);
+
                 foreach (var (key, value) in afterObject)
                 {
                     var child = new List<string>(path) { key };
+
                     if (beforeObject.TryGetPropertyValue(key, out var old))
                         Compare(old, value, element, PerMember(element), child, changes);
                     else
                         changes.Add(new DataChange { Path = child, Value = StoredJson.Inline(value?.ToJsonString() ?? "null") });
                 }
+
                 foreach (var (key, _) in beforeObject)
                     if (!afterObject.ContainsKey(key))
                         changes.Add(new DataChange { Path = new List<string>(path) { key }, Removed = true });
+
                 return;
             }
+
             foreach (var property in info.Properties.Where(IsBranchData))
             {
                 var member = Info(property.PropertyType);
+
                 Compare(beforeObject[property.Name], afterObject[property.Name], member,
                     property.CustomConverter == null && PerMember(member),
                     new List<string>(path) { property.Name }, changes);
             }
+
             return;
         }
+
         if (!JsonNode.DeepEquals(before, after))
             changes.Add(new DataChange { Path = path, Value = StoredJson.Inline(after?.ToJsonString() ?? "null") });
     }
@@ -516,21 +623,27 @@ internal static class BranchData
     {
         var owner = Info(type);
         JsonPropertyInfo? property = null;
+
         foreach (var segment in path)
         {
             if (property != null)
                 owner = Info(property.PropertyType);
+
             if (owner.Kind == JsonTypeInfoKind.Dictionary)
             {
                 // A key: the next segment is a property of the dictionary's values.
                 owner = Info(owner.ElementType!);
                 property = null;
+
                 continue;
             }
+
             property = PropertyNamed(owner, segment) ?? throw Missing(path);
         }
+
         if (property == null)
             throw Missing(path);
+
         var box = JsonTypeInfo.CreateJsonTypeInfo(typeof(PropertyBox), Options);
         box.NumberHandling = owner.NumberHandling;
         var single = box.CreateJsonPropertyInfo(property.PropertyType, property.Name);
@@ -538,6 +651,7 @@ internal static class BranchData
         single.CustomConverter = property.CustomConverter;
         single.NumberHandling = property.NumberHandling;
         box.Properties.Add(single);
+
         return JsonSerializer.SerializeToNode(new PropertyBox(), box)?[property.Name]?.DeepClone();
     }
 
@@ -550,11 +664,15 @@ internal static class BranchData
         if (change.Path.Count == 0)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 "A branch replaced the whole workflow data, which a join cannot apply in place");
+
         var owner = root;
+
         foreach (var segment in change.Path.Take(change.Path.Count - 1))
             owner = (owner as JsonObject)?[segment] ?? throw Missing(change.Path);
+
         if (owner is not JsonObject target)
             throw Missing(change.Path);
+
         if (change.Removed)
             target.Remove(change.Path[^1]);
         else
@@ -574,8 +692,8 @@ internal static class BranchData
         info.Kind switch
         {
             JsonTypeInfoKind.Object => !info.Properties.Any(property => property.IsExtensionData ||
-                                                                         property.Get != null && property.Set == null &&
-                                                                         property.AssociatedParameter != null),
+                property.Get != null && property.Set == null &&
+                property.AssociatedParameter != null),
             JsonTypeInfoKind.Dictionary => info.CreateObject != null && typeof(IDictionary).IsAssignableFrom(info.Type),
             _ => false
         };
@@ -605,11 +723,14 @@ internal static class BranchData
         {
             var prefix = path.Take(length).ToList();
             var key = Key(prefix);
+
             if (!cache.TryGetValue(key, out var combiner))
                 cache[key] = combiner = CombinerAt(type, prefix, overrides);
+
             if (combiner != null)
                 return (prefix, combiner);
         }
+
         return (path, null);
     }
 
@@ -622,23 +743,31 @@ internal static class BranchData
     {
         if (overrides != null && overrides.TryGetValue(Key(path), out var chosen))
             return chosen;
+
         var info = Info(type);
         JsonPropertyInfo? property = null;
+
         foreach (var segment in path)
         {
             if (!PerMember(info))
                 return null;
+
             if (info.Kind == JsonTypeInfoKind.Dictionary)
             {
                 info = Info(info.ElementType!);
                 property = null;
+
                 continue;
             }
+
             property = PropertyNamed(info, segment);
+
             if (property == null)
                 return null;
+
             info = Info(property.PropertyType);
         }
+
         return property == null ? null : Declared(property);
     }
 
@@ -653,64 +782,82 @@ internal static class BranchData
     public static List<string>? MergePath(Type dataType, string clrPath, Func<string> where)
     {
         const string root = "WorkflowData";
+
         if (!clrPath.StartsWith(root + ".", StringComparison.Ordinal))
             return null;
+
         var target = clrPath[(root.Length + 1)..];
         var contracts = Contracts(Info(dataType));
         var path = new List<string>();
         List<string>? unit = null;
         var decided = false;
         var segments = target.Split('.');
+
         for (var position = 0; position < segments.Length; position++)
         {
             var segment = segments[position];
             var indexes = 0;
+
             while (segment.EndsWith("[]", StringComparison.Ordinal))
             {
                 segment = segment[..^2];
                 indexes++;
             }
+
             // A cast in the path is not kept, so every derived type that has the member must serialize it.
             var matches = contracts.SelectMany(contract => contract.Properties
                     .Where(item => ClrName(item) == segment).Select(item => (Contract: contract, Property: item)))
                 .ToList();
+
             if (matches.Count == 0 || matches.Any(match => match.Property.Get == null))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"{where()} writes '{target}', but '{segment}' is not serialized with the workflow data" +
                     (matches.Count > 1 ? " in every type it may be" : "") + ", so a join would drop the write");
+
             var property = matches[0].Property;
             var inside = position < segments.Length - 1 || indexes > 0;
+
             // A value the join sets whole, written inside, must have a setter, wherever it is on the path.
             foreach (var (_, match) in matches)
                 if (inside && match.Set == null && (match.CustomConverter != null || !PerMember(Info(match.PropertyType))))
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                         $"{where()} writes '{target}', inside '{segment}', which a join sets whole but which has " +
                         "no setter, so a join would drop the write");
+
             var value = Info(property.PropertyType);
+
             if (!decided)
             {
                 path.Add(property.Name);
+
                 if (property.CustomConverter != null || !PerMember(value))
                     (unit, decided) = (path, true);
                 else if (indexes > 0)
                     (unit, decided) = (null, true);
             }
+
             // The rest of the path is checked too, through list items and polymorphic values; behind a
             // converter of its own the serializer decides, so nothing more can be checked.
             contracts = [];
+
             foreach (var (_, match) in matches)
             {
                 if (match.CustomConverter != null)
                     continue;
+
                 var next = Info(match.PropertyType);
+
                 for (var level = 0; level < indexes && next.ElementType != null; level++)
                     next = Info(next.ElementType);
+
                 if (next.Kind != JsonTypeInfoKind.None)
                     contracts.AddRange(Contracts(next));
             }
+
             if (contracts.Count == 0)
                 break;
         }
+
         return decided ? unit : path;
     }
 
@@ -727,9 +874,11 @@ internal static class BranchData
     {
         ArgumentNullException.ThrowIfNull(property);
         var path = MemberPath.Of(property);
+
         if (path == null || path.Contains("[]", StringComparison.Ordinal))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"A combiner is chosen for a property of the workflow data, reached through members only: {property}");
+
         step.ParallelCombiners[CombinerKey(dataType, path, valueType, combiner)] = combiner;
     }
 
@@ -743,28 +892,35 @@ internal static class BranchData
         var info = Info(dataType);
         var path = new List<string>();
         JsonPropertyInfo? property = null;
+
         foreach (var name in clrPath.Split('.'))
         {
             if (property != null && (property.CustomConverter != null || !PerMember(info)))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"A combiner cannot be chosen for '{clrPath}': '{string.Join('.', path)}' is merged as one value");
+
             if (property != null && Declared(property) != null)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"A combiner cannot be chosen for '{clrPath}': '{string.Join('.', path)}' has a combiner, " +
                     "which merges everything inside it");
+
             property = info.Properties.FirstOrDefault(item => ClrName(item) == name && item.Get != null)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"A combiner cannot be chosen for '{clrPath}': '{name}' is not serialized with the workflow data");
+
             path.Add(property.Name);
             info = Info(property.PropertyType);
         }
+
         if (property!.PropertyType != valueType)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"The combiner '{combiner.Name}' merges {valueType.Name} values, but '{clrPath}' is " +
                 $"{property.PropertyType.Name}");
+
         if (property.Set == null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"A combiner cannot be chosen for '{clrPath}', which has no setter for the combined value");
+
         return Key(path);
     }
 
@@ -781,38 +937,48 @@ internal static class BranchData
     public static void Validate(Type dataType, bool branches)
     {
         _ = RedactingJson.ClassifiedPaths(dataType);
+
         if (branches && !PerMember(Info(dataType)))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"'{dataType.Name}' is serialized as one value, so parallel branches' changes to it cannot be " +
                 "merged; use a class whose properties are its JSON");
+
         Walk(Info(dataType), [], merged: true, new HashSet<(Type, bool)>(), (path, owner, property, merged) =>
         {
             var at = string.Join('.', path);
+
             if (Declared(property) is { } combiner)
             {
                 var valueType = CombinerContract(combiner).GetGenericArguments()[0];
+
                 if (valueType != property.PropertyType)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                         $"The combiner '{combiner.Name}' of '{at}' merges {valueType.Name} values, but the property " +
                         $"is {property.PropertyType.Name}");
+
                 if (branches && property.Set == null)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                         $"'{at}' has a combiner but no setter for the combined value");
+
                 if (branches && !merged)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                         $"'{at}' has a combiner, but it is inside a value a join merges as one, so the combiner " +
                         "never applies; put it on that value's property");
             }
+
             if (!branches)
                 return;
+
             // The serializer populates an existing mutable collection; an array, an immutable or frozen one, or
             // a read-only view it replaces, whatever the preference says.
             if (PopulatedCollection(owner, property))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"'{at}' is read back by adding to what its initializer put in it, so a parallel branch's copy " +
                     "would keep items the data no longer has; read it back whole");
+
             if (RestorableProperty(owner, property))
                 return;
+
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"'{at}' has no setter and no constructor parameter the serializer uses, so a parallel branch's " +
                 "copy would lose it or keep what its initializer put in it; give it a setter, or a constructor " +
@@ -823,14 +989,17 @@ internal static class BranchData
     private static bool RestorableProperty(JsonTypeInfo owner, JsonPropertyInfo property)
     {
         var value = Info(property.PropertyType);
+
         if (property.Set != null || property.AssociatedParameter != null ||
             value.Kind == JsonTypeInfoKind.Object &&
             (property.ObjectCreationHandling ?? owner.PreferredPropertyObjectCreationHandling) == JsonObjectCreationHandling.Populate &&
             MergedInPlace(property))
             return true;
+
         // Computed scalars carry no state; stored getter-only members must be reconstructed.
         var stored = property.AttributeProvider is PropertyInfo { DeclaringType: { } declaring } clr &&
-                     declaring.GetField($"<{clr.Name}>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic) != null;
+            declaring.GetField($"<{clr.Name}>k__BackingField", BindingFlags.Instance | BindingFlags.NonPublic) != null;
+
         return !stored && (value.Type.IsValueType || value.Kind == JsonTypeInfoKind.None);
     }
 
@@ -842,21 +1011,24 @@ internal static class BranchData
     private static bool Populatable(Type type) =>
         !type.IsArray && type.Namespace is not ("System.Collections.Immutable" or "System.Collections.Frozen") &&
         !(type.IsInterface && type.IsGenericType && type.GetGenericTypeDefinition() is var definition &&
-          (definition == typeof(IEnumerable<>) || definition == typeof(IReadOnlyCollection<>) ||
-           definition == typeof(IReadOnlyList<>) || definition == typeof(IReadOnlyDictionary<,>) ||
-           definition == typeof(IReadOnlySet<>)));
+            (definition == typeof(IEnumerable<>) || definition == typeof(IReadOnlyCollection<>) ||
+                definition == typeof(IReadOnlyList<>) || definition == typeof(IReadOnlyDictionary<,>) ||
+                definition == typeof(IReadOnlySet<>)));
 
     /// <summary>The combiners a data type declares, for the structure hash.</summary>
     public static string CombinerSignature(Type? dataType)
     {
         if (dataType == null)
             return "";
+
         var found = new List<string>();
+
         Walk(Info(dataType), [], merged: true, new HashSet<(Type, bool)>(), (path, _, property, _) =>
         {
             if (Declared(property) is { } combiner)
                 found.Add(string.Join('.', path) + "=" + WorkflowTypeIdentity.StableName(combiner));
         });
+
         return string.Join(';', found.Distinct().Order(StringComparer.Ordinal));
     }
 
@@ -868,6 +1040,7 @@ internal static class BranchData
     {
         if (!visiting.Add((info.Type, merged)))
             return;
+
         try
         {
             // Built-in nullable contracts read the underlying value whole; custom converters stay opaque.
@@ -875,26 +1048,33 @@ internal static class BranchData
                 info.Converter.GetType().Assembly == typeof(System.Text.Json.JsonSerializer).Assembly)
             {
                 Walk(Info(underlying), path, merged: false, visiting, visit);
+
                 return;
             }
+
             var inside = merged && PerMember(info);
+
             if (info.PolymorphismOptions is { } polymorphism)
                 foreach (var derived in polymorphism.DerivedTypes.Where(item => item.DerivedType != info.Type))
                     Walk(Info(derived.DerivedType), path, merged: false, visiting, visit);
+
             switch (info.Kind)
             {
                 case JsonTypeInfoKind.Dictionary or JsonTypeInfoKind.Enumerable when info.ElementType != null:
                     Walk(Info(info.ElementType), path.Count == 0 ? ["[]"] : [.. path[..^1], path[^1] + "[]"],
                         inside && info.Kind == JsonTypeInfoKind.Dictionary, visiting, visit);
+
                     break;
                 case JsonTypeInfoKind.Object:
                     foreach (var property in info.Properties.Where(item => item.Get != null))
                     {
                         List<string> at = [.. path, ClrName(property) ?? property.Name];
                         visit(at, info, property, inside);
+
                         if (property.CustomConverter == null)
                             Walk(Info(property.PropertyType), at, inside && Declared(property) == null, visiting, visit);
                     }
+
                     break;
             }
         }
@@ -909,20 +1089,25 @@ internal static class BranchData
     {
         object? current = data;
         var info = Info(data.GetType());
+
         foreach (var segment in path)
         {
             if (current == null)
                 return null;
+
             if (info.Kind == JsonTypeInfoKind.Dictionary)
             {
                 current = ((IDictionary)current)[DictionaryKey(info, segment)];
                 info = Info(info.ElementType!);
+
                 continue;
             }
+
             var property = PropertyNamed(info, segment) ?? throw Missing(path);
             current = property.Get!(current);
             info = Info(property.PropertyType);
         }
+
         return current;
     }
 
@@ -931,8 +1116,10 @@ internal static class BranchData
     {
         if (dictionary.KeyType == typeof(string))
             return name;
+
         var probe = typeof(Dictionary<,>).MakeGenericType(dictionary.KeyType!, typeof(int));
         var read = (IDictionary)JsonSerializer.Deserialize($"{{{JsonSerializer.Serialize(name)}:0}}", probe, Options)!;
+
         return read.Keys.Cast<object>().Single();
     }
 
@@ -947,14 +1134,18 @@ internal static class BranchData
         {
             var contract = CombinerContract(combinerType);
             var list = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(contract.GetGenericArguments()[0]))!;
+
             foreach (var value in values)
                 list.Add(value);
+
             var combiner = Activator.CreateInstance(combinerType)!;
+
             return contract.GetMethod(nameof(ICombiner<object>.Combine))!.Invoke(combiner, [original, list]);
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             var reason = error is TargetInvocationException { InnerException: { } inner } ? inner : error;
+
             throw Conflict(path, $"The combiner of '{Display(path)}' could not merge the branches: {reason.Message}");
         }
     }
@@ -965,6 +1156,7 @@ internal static class BranchData
         var contracts = combinerType.GetInterfaces()
             .Where(item => item.IsGenericType && item.GetGenericTypeDefinition() == typeof(ICombiner<>))
             .ToArray();
+
         return contracts.Length == 1 && combinerType.GetConstructor(Type.EmptyTypes) != null
             ? contracts[0]
             : throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,

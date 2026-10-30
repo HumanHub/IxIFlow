@@ -32,17 +32,17 @@ public interface IForEachSetup<TWorkflowData>
     /// <summary>Completes the parallel step when the first item completes; the rest are cancelled or never start.</summary>
     IForEachSetup<TWorkflowData> WaitAny();
 
+    /// <summary>Captures the join predicate as an expression.</summary>
+    [System.Runtime.CompilerServices.OverloadResolutionPriority(-1)]
+    IForEachSetup<TWorkflowData> WaitConditionally<TResult>(
+        Expression<Func<TWorkflowData, IReadOnlyList<ItemResult<TResult>>, bool>> completeWhenExpression);
+
     /// <summary>
     /// Completes the parallel step when <paramref name="completeWhen"/> holds, evaluated after each item
     /// completes with the provisional merge of the completed items' data and their results so far, in
     /// item order, or when every item has completed. The body must end with a result of
     /// <typeparamref name="TResult"/>.
     /// </summary>
-    /// <summary>Captures the join predicate as an expression.</summary>
-    [System.Runtime.CompilerServices.OverloadResolutionPriority(-1)]
-    IForEachSetup<TWorkflowData> WaitConditionally<TResult>(
-        Expression<Func<TWorkflowData, IReadOnlyList<ItemResult<TResult>>, bool>> completeWhenExpression);
-
     IForEachSetup<TWorkflowData> WaitConditionally<TResult>(
         Func<TWorkflowData, IReadOnlyList<ItemResult<TResult>>, bool> completeWhen);
 

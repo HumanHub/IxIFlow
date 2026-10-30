@@ -16,18 +16,21 @@ public sealed class ReadmeExamples
         services.AddIxIFlow();
         await using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
-        
+
         var definition = Workflow.Create<QuoteData>("QuickStart")
             .Step<AddFee>(step => step
                 .Input(activity => activity.Customer).From(ctx => ctx.WorkflowData.Customer)
                 .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
                 .Output(activity => activity.Amount).To(ctx => ctx.WorkflowData.Amount))
             .Build();
+
         WorkflowDefinitionValidator.Validate(definition);
-        
+
         var result = await client.RunAsync(definition, new QuoteData());
+
         if (result.Status != WorkflowExecutionStatus.Success)
             throw new InvalidOperationException(result.ErrorMessage);
+
         Console.WriteLine(((QuoteData)result.WorkflowData!).Amount); // 12.50
         Assert.Equal(12.5m, Assert.IsType<QuoteData>(result.WorkflowData).Amount);
     }

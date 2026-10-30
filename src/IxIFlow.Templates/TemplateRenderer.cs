@@ -21,22 +21,31 @@ public sealed class TemplateRenderer(IWorkflowCatalogStore store, TemplateEngine
     {
         var bundled = WorkflowDefinitionScope.Resolve(template, typeof(TModel), model is not null);
         ArgumentNullException.ThrowIfNull(template);
+
         if (model is null)
             throw new ArgumentNullException(nameof(model), $"Template {template} needs a model to render");
+
         cancellationToken.ThrowIfCancellationRequested();
-        var version = bundled ?? (await store.GetTemplateVersionAsync(template.Key, template.Version))?.Version
-                      ?? throw new TemplateNotFoundException($"Template {template} is not published");
+
+        var version = bundled ?? (await store.GetTemplateVersionAsync(template.Key, template.Version, cancellationToken: cancellationToken))
+            ?.Version
+            ?? throw new TemplateNotFoundException($"Template {template} is not published");
+
         var modelType = TemplateVersion.ModelTypeName(typeof(TModel));
+
         if (version.ModelType != modelType || version.ModelTypeId != WorkflowTypeIdentity.SavedName(typeof(TModel)))
             throw new TemplateNotFoundException(
                 $"Template {template} is written against '{version.ModelType}', and the step renders it with " +
                 $"'{modelType}'");
+
         var formatting = string.IsNullOrEmpty(culture)
             ? CultureInfo.InvariantCulture
             : TemplateVariant.CultureNamed(culture);
+
         var variant = version.Resolve(formatting);
         var source = TemplateSource.Of(version, variant);
         var content = await engines.Get(version.Engine).RenderAsync(source, model, typeof(TModel), formatting, cancellationToken);
+
         return new RenderedTemplate(version.Key, version.Version, variant.Culture, version.Format, content);
     }
 }

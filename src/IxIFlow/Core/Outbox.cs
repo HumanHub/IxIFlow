@@ -3,8 +3,15 @@ using System.Text.Json;
 namespace IxIFlow.Core;
 
 /// <summary>An immutable event committed with the workflow. Its ID and JSON stay the same on every delivery.</summary>
-public sealed record OutboxEvent(string Id, string Type, string InstanceId, string WorkflowName,
-    int WorkflowVersion, string CorrelationId, DateTime OccurredAtUtc, string DataJson)
+public sealed record OutboxEvent(
+    string Id,
+    string Type,
+    string InstanceId,
+    string WorkflowName,
+    int WorkflowVersion,
+    string CorrelationId,
+    DateTime OccurredAtUtc,
+    string DataJson)
 {
     public const string WorkflowCompleted = "io.ixiflow.workflow.completed";
 
@@ -26,21 +33,47 @@ public sealed record OutboxEvent(string Id, string Type, string InstanceId, stri
         }));
 }
 
-public enum OutboxDeliveryStatus { Pending, Delivered, GivenUp }
-public enum OutboxGivenUpReason { Exhausted, Horizon, Disabled, Unregistered, Operator }
-public enum OutboxPublishOutcome { Delivered, RetryLater, GiveUp }
+public enum OutboxDeliveryStatus
+{
+    Pending,
+    Delivered,
+    GivenUp
+}
+
+public enum OutboxGivenUpReason
+{
+    Exhausted,
+    Horizon,
+    Disabled,
+    Unregistered,
+    Operator
+}
+
+public enum OutboxPublishOutcome
+{
+    Delivered,
+    RetryLater,
+    GiveUp
+}
 
 /// <summary>A retry delay overrides the default exponential backoff. DisablePublisher persists endpoint shutdown.</summary>
-public sealed record OutboxPublishResult(OutboxPublishOutcome Outcome, TimeSpan? RetryAfter = null,
-    string? Error = null, bool DisablePublisher = false, OutboxGivenUpReason? GivenUpReason = null)
+public sealed record OutboxPublishResult(
+    OutboxPublishOutcome Outcome,
+    TimeSpan? RetryAfter = null,
+    string? Error = null,
+    bool DisablePublisher = false,
+    OutboxGivenUpReason? GivenUpReason = null)
 {
     public static OutboxPublishResult Delivered() => new(OutboxPublishOutcome.Delivered);
+
     public static OutboxPublishResult RetryLater(string? error = null, TimeSpan? delay = null)
     {
         if (delay < TimeSpan.Zero || delay > TimeSpan.FromDays(30))
             throw new ArgumentOutOfRangeException(nameof(delay), "Retry delay must be between zero and 30 days");
+
         return new(OutboxPublishOutcome.RetryLater, delay, error);
     }
+
     public static OutboxPublishResult GiveUp(string? error = null, bool disablePublisher = false,
         OutboxGivenUpReason reason = OutboxGivenUpReason.Exhausted) =>
         new(OutboxPublishOutcome.GiveUp, Error: error, DisablePublisher: disablePublisher, GivenUpReason: reason);
@@ -58,14 +91,29 @@ public interface IOutboxPublisher
 public sealed record OutboxPublishContext(OutboxEvent Event, int Attempts, DateTime StoreNowUtc);
 
 /// <summary>Attempts count claims, including a claim lost with its host. StoreNowUtc is sampled after claiming.</summary>
-public sealed record OutboxDelivery(OutboxEvent Event, string PublisherName, int Attempts,
-    DateTime NextAttemptAtUtc, OutboxDeliveryStatus Status, string? LastError, string? LeaseToken,
-    DateTime? LeaseUntilUtc, DateTime StoreNowUtc, DateTime? FirstAttemptAtUtc = null,
-    OutboxGivenUpReason? GivenUpReason = null, DateTime? RetriedAtUtc = null, string? RetriedBy = null);
+public sealed record OutboxDelivery(
+    OutboxEvent Event,
+    string PublisherName,
+    int Attempts,
+    DateTime NextAttemptAtUtc,
+    OutboxDeliveryStatus Status,
+    string? LastError,
+    string? LeaseToken,
+    DateTime? LeaseUntilUtc,
+    DateTime StoreNowUtc,
+    DateTime? FirstAttemptAtUtc = null,
+    OutboxGivenUpReason? GivenUpReason = null,
+    DateTime? RetriedAtUtc = null,
+    string? RetriedBy = null);
 
-public sealed record OutboxPublisherState(string Name, DateTime? DisabledAtUtc, string? LastError,
-    DateTime? EnabledAtUtc = null, string? EnabledBy = null,
-    DateTime? UnregisteredAtUtc = null, string? UnregisteredBy = null);
+public sealed record OutboxPublisherState(
+    string Name,
+    DateTime? DisabledAtUtc,
+    string? LastError,
+    DateTime? EnabledAtUtc = null,
+    string? EnabledBy = null,
+    DateTime? UnregisteredAtUtc = null,
+    string? UnregisteredBy = null);
 
 /// <summary>
 /// Per-publisher, leased, at-least-once delivery. All deadlines use the store's clock. Registration starts with
@@ -73,18 +121,26 @@ public sealed record OutboxPublisherState(string Name, DateTime? DisabledAtUtc, 
 /// </summary>
 public interface IWorkflowOutbox
 {
-    Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false);
-    Task UnregisterPublisherAsync(string name, string actor = "host");
-    Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query);
-    Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor);
-    Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync();
-    Task<bool> EnablePublisherAsync(string publisherName, string actor);
+    Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false,
+        CancellationToken cancellationToken = default);
+
+    Task UnregisterPublisherAsync(string name, string actor = "host", CancellationToken cancellationToken = default);
+    Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query, CancellationToken cancellationToken = default);
+    Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync(CancellationToken cancellationToken = default);
+    Task<bool> EnablePublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token,
-        TimeSpan leaseDuration, int limit);
-    Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration);
-    Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result);
-    Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName);
-    Task<OutboxPublisherState?> GetPublisherAsync(string publisherName);
+        TimeSpan leaseDuration, int limit, CancellationToken cancellationToken = default);
+
+    Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result,
+        CancellationToken cancellationToken = default);
+
+    Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName, CancellationToken cancellationToken = default);
+    Task<OutboxPublisherState?> GetPublisherAsync(string publisherName, CancellationToken cancellationToken = default);
 }
 
 /// <summary>One bounded retry policy for custom publishers. Webhooks return their standard schedule explicitly.</summary>
@@ -99,6 +155,7 @@ internal static class OutboxRetry
     {
         if (result.RetryAfter is { } delay && (delay < TimeSpan.Zero || delay > TimeSpan.FromDays(30)))
             throw new ArgumentOutOfRangeException(nameof(result), "Retry delay must be between zero and 30 days");
+
         return result.RetryAfter ?? Delay(attempts);
     }
 
@@ -106,8 +163,10 @@ internal static class OutboxRetry
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(token);
+
         if (duration <= TimeSpan.Zero || duration > TimeSpan.FromDays(1))
             throw new ArgumentOutOfRangeException(nameof(duration));
+
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, 1000);
     }

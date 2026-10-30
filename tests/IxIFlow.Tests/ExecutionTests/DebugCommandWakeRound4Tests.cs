@@ -14,6 +14,7 @@ public sealed class DebugCommandWakeRound4Tests
     public Task EveryRecoveryExitReconcilesTheAcceptedCommand(string scenario)
     {
         var store = new InMemoryWorkflowStateRepository();
+
         return DebugCommandWakeRound4Scenario.VerifyAsync(store, store, scenario);
     }
 }

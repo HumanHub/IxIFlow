@@ -13,7 +13,6 @@ In service setup, with `IxIFlow.Extensions` imported:
 ```csharp
 services.AddIxIFlow(options =>
 {
-
     options.FinishedInstanceRetention = TimeSpan.FromDays(30);
     options.TombstoneRetention = TimeSpan.FromDays(90);
     options.RetentionScanInterval = TimeSpan.FromHours(1);

@@ -19,13 +19,15 @@ public sealed class AssignTotals : IWorkflow<AssignmentTotalsData>
     {
         var builder = Workflow.Create<AssignmentTotalsData>("AssignTotals");
         new AssignTotals().Build(builder);
+
         return builder.Build();
     }
 
     // snippet: assign-totals
     public void Build(IWorkflowBuilder<AssignmentTotalsData> builder) =>
         builder.Assign(ctx => ctx.WorkflowData.Total,
-                       ctx => ctx.WorkflowData.Price * ctx.WorkflowData.Quantity)
-               .WithId("total");
+                ctx => ctx.WorkflowData.Price * ctx.WorkflowData.Quantity)
+            .WithId("total");
+
     // end-snippet: assign-totals
 }

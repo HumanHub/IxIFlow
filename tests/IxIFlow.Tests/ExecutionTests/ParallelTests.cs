@@ -26,6 +26,7 @@ namespace IxIFlow.Tests.ExecutionTests.Models
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Output = Input * 2; // Example transformation
+
             return Task.CompletedTask;
         }
     }
@@ -38,6 +39,7 @@ namespace IxIFlow.Tests.ExecutionTests.Models
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Output = Input * 3; // Example transformation
+
             return Task.CompletedTask;
         }
     }
@@ -51,6 +53,7 @@ namespace IxIFlow.Tests.ExecutionTests.Models
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Result = InputA + InputB;
+
             return Task.CompletedTask;
         }
     }
@@ -138,6 +141,7 @@ namespace IxIFlow.Tests.ExecutionTests
                             .Step<ActivityA>(setup => setup
                                 .Input(act => act.Input).From(ctx => ctx.WorkflowData.InputA)
                                 .Output(act => act.Output).To(ctx => ctx.WorkflowData.OutputA)));
+
                     parallelBuilder
                         .Do(branch => branch
                             .Step<FailingActivity>(setup => setup
@@ -156,6 +160,7 @@ namespace IxIFlow.Tests.ExecutionTests
 
             // Assert
             Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+
             // Check both possible error messages
             Assert.True(
                 result.ErrorMessage.Contains("Simulated failure") ||
@@ -183,6 +188,7 @@ namespace IxIFlow.Tests.ExecutionTests
                                 .Input(act => act.Input).From(ctx => ctx.WorkflowData.InputA)
                                 .Input(act => act.Multiplier).From(ctx => 2)
                                 .Output(act => act.Output).To(ctx => ctx.WorkflowData.OutputA)));
+
                     parallelBuilder
                         .Do(branch => branch
                             .Step<GatedBranchActivity>(setup => setup
@@ -202,10 +208,12 @@ namespace IxIFlow.Tests.ExecutionTests
                 InputA = 10,
                 InputB = 20
             };
+
             var gate = _serviceProvider.GetRequiredService<BranchGate>();
 
             // Act
             var run = _workflowEngine.RunAsync(definition, workflowData);
+
             try
             {
                 // Both branches are running before either is released.
@@ -215,6 +223,7 @@ namespace IxIFlow.Tests.ExecutionTests
             {
                 gate.Release();
             }
+
             var result = await run.WaitAsync(TimeSpan.FromSeconds(10));
 
             // Assert
@@ -224,7 +233,7 @@ namespace IxIFlow.Tests.ExecutionTests
         }
 
         // Each branch works on its own copy of the data, so two branches incrementing one counter
-        // without a combiner would lose an update; the build refuses it (D-14, spec E-04).
+        // without a combiner would lose an update; the build refuses it.
         [Fact]
         [Trait("Spec", "E-04")]
         public void BranchesWritingOnePropertyWithoutACombinerAreABuildError()
@@ -240,6 +249,7 @@ namespace IxIFlow.Tests.ExecutionTests
                             .Step<IncrementCounterActivity>(setup => setup
                                 .Input(act => act.Counter).From(ctx => ctx.WorkflowData.Counter)
                                 .Output(act => act.Result).To(ctx => ctx.WorkflowData.Counter)));
+
                     parallelBuilder
                         .Do(branch => branch
                             .Step<IncrementCounterActivity>(setup => setup
@@ -253,7 +263,7 @@ namespace IxIFlow.Tests.ExecutionTests
         }
 
         // With Sum, the join adds every branch's change to the value at the fork, also when a branch
-        // finishes in a later run, rebuilt from its saved changes (spec E-01, E-06).
+        // finishes in a later run, rebuilt from its saved changes.
         [Fact]
         [Trait("Spec", "E-06")]
         [Trait("Spec", "E-01")]
@@ -284,7 +294,7 @@ namespace IxIFlow.Tests.ExecutionTests
         }
 
         // A conflict the build cannot see, here activity code changing its branch's copy directly, fails
-        // the parallel step, where a Catch can handle it, and leaves the data as it was at the fork (spec E-04).
+        // the parallel step, where a Catch can handle it, and leaves the data as it was at the fork.
         [Fact]
         [Trait("Spec", "E-04")]
         [Trait("Spec", "E-07")]
@@ -368,14 +378,14 @@ namespace IxIFlow.Tests.ExecutionTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             ((SharedDataTestData)context.WorkflowData).Counter++;
+
             return Task.CompletedTask;
         }
     }
 
     public class SummedCounterData
     {
-        [Combine<Sum<int>>]
-        public int Counter { get; set; }
+        [Combine<Sum<int>>] public int Counter { get; set; }
     }
 
     public class GoOn;
@@ -387,6 +397,7 @@ namespace IxIFlow.Tests.ExecutionTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Counter = 0;
+
             return Task.CompletedTask;
         }
     }
@@ -399,6 +410,7 @@ namespace IxIFlow.Tests.ExecutionTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Result = Counter + 1;
+
             return Task.CompletedTask;
         }
     }

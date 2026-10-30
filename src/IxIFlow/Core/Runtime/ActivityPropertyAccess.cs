@@ -12,12 +12,14 @@ internal static class ActivityPropertyAccess
         {
             var value = property.GetValue(activity);
             WorkflowDefinitionScope.ThrowIfDispatchFailed();
+
             return value;
         }
         catch (TargetInvocationException error) when (error.InnerException != null)
         {
             WorkflowDefinitionScope.ThrowIfDispatchFailed();
             ExceptionDispatchInfo.Capture(WorkflowEngineException.FromWorkflowCode(error.InnerException)).Throw();
+
             throw;
         }
     }
@@ -33,6 +35,7 @@ internal static class ActivityPropertyAccess
         {
             WorkflowDefinitionScope.ThrowIfDispatchFailed();
             ExceptionDispatchInfo.Capture(WorkflowEngineException.FromWorkflowCode(error.InnerException)).Throw();
+
             throw;
         }
     }

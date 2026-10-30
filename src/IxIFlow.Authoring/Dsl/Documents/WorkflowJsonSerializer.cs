@@ -20,13 +20,18 @@ public static class WorkflowJsonSerializer
     {
         var document = JsonSerializer.Deserialize<T>(json, Options)
             ?? throw new JsonException("Workflow JSON did not contain a document");
+
         var bytes = Encoding.UTF8.GetBytes(json);
         var lines = new List<long> { 0 };
+
         for (var index = 0; index < bytes.Length; index++)
-            if (bytes[index] == (byte)'\n') lines.Add(index + 1);
+            if (bytes[index] == (byte)'\n')
+                lines.Add(index + 1);
+
         var reader = new Utf8JsonReader(bytes);
         reader.Read();
         RecordLocations(ref reader, document, lines, bytes);
+
         return document;
     }
 
@@ -36,6 +41,7 @@ public static class WorkflowJsonSerializer
         {
             node.Location = Position(reader.TokenStartIndex, lines, bytes);
             var members = new Dictionary<string, DocumentLocation>(StringComparer.Ordinal);
+
             while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
             {
                 var name = reader.GetString()!;
@@ -46,6 +52,7 @@ public static class WorkflowJsonSerializer
                 var member = DocumentModel.GetKeys(node.GetType()).FirstOrDefault(key => key.Name == name).Member;
                 RecordLocations(ref reader, member?.GetValue(node), lines, bytes);
             }
+
             node.Members = members;
         }
         else if (value is IDictionary dictionary && reader.TokenType == JsonTokenType.StartObject)
@@ -60,13 +67,16 @@ public static class WorkflowJsonSerializer
         else if (value is IList list && reader.TokenType == JsonTokenType.StartArray)
         {
             var index = 0;
+
             while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
                 RecordLocations(ref reader, list[index++], lines, bytes);
         }
-        else reader.Skip();
+        else
+            reader.Skip();
     }
 
-    private static void RecordChildren(ref Utf8JsonReader reader, string path, Dictionary<string, DocumentLocation> members, List<long> lines, byte[] bytes)
+    private static void RecordChildren(ref Utf8JsonReader reader, string path, Dictionary<string, DocumentLocation> members,
+        List<long> lines, byte[] bytes)
     {
         if (reader.TokenType == JsonTokenType.StartObject)
             while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
@@ -79,6 +89,7 @@ public static class WorkflowJsonSerializer
         else if (reader.TokenType == JsonTokenType.StartArray)
         {
             var index = 0;
+
             while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
             {
                 var childPath = path + "[" + index++ + "]";
@@ -86,13 +97,17 @@ public static class WorkflowJsonSerializer
                 RecordChildren(ref reader, childPath, members, lines, bytes);
             }
         }
-        else reader.Skip();
+        else
+            reader.Skip();
     }
 
     private static DocumentLocation Position(long offset, List<long> lines, byte[] bytes)
     {
         var line = lines.BinarySearch(offset);
-        if (line < 0) line = ~line - 1;
+
+        if (line < 0)
+            line = ~line - 1;
+
         return new DocumentLocation(line + 1, Encoding.UTF8.GetCharCount(bytes, (int)lines[line], (int)(offset - lines[line])) + 1);
     }
 
@@ -104,9 +119,12 @@ public static class WorkflowJsonSerializer
         DefaultIgnoreCondition = JsonIgnoreCondition.Never,
         TypeInfoResolver = new DefaultJsonTypeInfoResolver().WithAddedModifier(info =>
         {
-            if (!typeof(DocumentNode).IsAssignableFrom(info.Type) || info.Kind != JsonTypeInfoKind.Object) return;
+            if (!typeof(DocumentNode).IsAssignableFrom(info.Type) || info.Kind != JsonTypeInfoKind.Object)
+                return;
+
             var properties = info.Properties.ToDictionary(property => property.Name);
             info.Properties.Clear();
+
             foreach (var key in DocumentModel.GetKeys(info.Type))
             {
                 if (key.IsDiscriminator)
@@ -115,52 +133,75 @@ public static class WorkflowJsonSerializer
                     var kind = DocumentModel.GetKind(info.Type)!.Kind;
                     var discriminator = info.CreateJsonPropertyInfo(typeof(string), key.Name);
                     discriminator.Get = _ => kind;
+
                     discriminator.Set = (target, value) =>
                     {
-                        if ((string?)value != kind) throw new JsonException($"Expected workflow document kind '{kind}'");
+                        if ((string?)value != kind)
+                            throw new JsonException($"Expected workflow document kind '{kind}'");
+
                         key.Member?.SetValue(target, value);
                     };
+
                     info.Properties.Add(discriminator);
                 }
                 else if (key.Member is { } member)
                 {
                     var property = properties[member.Name];
                     property.Name = key.Name;
+
                     if (key.Name is "to" or "when" or "steps")
                         property.ShouldSerialize = (target, _) => target is not StateTransitionDocument { Cases: not null };
-                    if (key.Name == "to" && (info.Type == typeof(FlowchartEdgeDocument) || typeof(StateCaseDocument).IsAssignableFrom(info.Type) || info.Type == typeof(TransitionStepDocument)))
+
+                    if (key.Name == "to" && (info.Type == typeof(FlowchartEdgeDocument) ||
+                            typeof(StateCaseDocument).IsAssignableFrom(info.Type) || info.Type == typeof(TransitionStepDocument)))
                     {
                         var get = property.Get!;
                         property.Get = target => get(target) ?? "end";
                     }
+
                     if (key.Name == "case" && info.Type == typeof(FlowchartEdgeDocument))
                     {
                         property.ShouldSerialize = (target, value) => value != null || ((DocumentNode)target).Members.ContainsKey("case");
                         var get = property.Get!;
-                        property.Get = target => get(target) ?? (((DocumentNode)target).Members.ContainsKey("case") ? JsonSerializer.SerializeToElement<object?>(null) : null);
+
+                        property.Get = target => get(target) ?? (((DocumentNode)target).Members.ContainsKey("case")
+                            ? JsonSerializer.SerializeToElement<object?>(null)
+                            : null);
                     }
+
                     if (key.Name == "after" && info.Type == typeof(StateTransitionDocument))
                         property.CustomConverter = new GraphDurationConverter();
+
                     if (key.Name == "case" && info.Type == typeof(FlowchartEdgeDocument))
                         property.CustomConverter = new GraphCaseConverter();
+
                     if (key.Name != "case" && key.Name != "to")
                     {
                         var shouldSerialize = property.ShouldSerialize;
+
                         property.ShouldSerialize = (target, value) => (shouldSerialize?.Invoke(target, value) ?? true) &&
                             (value != null || ((DocumentNode)target).Members.ContainsKey(key.Name));
                     }
+
                     var set = property.Set;
+
                     if (info.Type == typeof(ActivityMemberDocument) && member.Name == nameof(ActivityMemberDocument.Default))
                         property.CustomConverter = new DocumentValueConverter(preserveNumbers: true);
+
                     var values = DocumentModel.GetValues(info.Type, member.Name);
+
                     property.Set = (target, value) =>
                     {
-                        if (value == null && !member.IsDefined(typeof(DocumentRequiredAttribute), true) && !DocumentModel.AllowsNull(member))
+                        if (value == null && !member.IsDefined(typeof(DocumentRequiredAttribute), true) &&
+                            !DocumentModel.AllowsNull(member))
                             throw new JsonException($"Member '{key.Name}' cannot be null");
+
                         if (value is string choice && values.Count > 0 && !values.Contains(choice))
                             throw new JsonException($"Unknown {key.Name} '{choice}'; use {string.Join(", ", values)}");
+
                         set?.Invoke(target, value);
                     };
+
                     info.Properties.Add(property);
                 }
                 else
@@ -169,7 +210,11 @@ public static class WorkflowJsonSerializer
                     var binding = info.CreateJsonPropertyInfo(typeof(string), key.Name);
                     binding.Get = _ => null;
                     binding.ShouldSerialize = (_, _) => false;
-                    binding.Set = (_, _) => { };
+
+                    binding.Set = (_, _) =>
+                    {
+                    };
+
                     info.Properties.Add(binding);
                 }
             }
@@ -203,21 +248,30 @@ public static class WorkflowJsonSerializer
         {
             // Scan a copy for the discriminator, then read the variant with the original reader so that
             // error positions refer to the whole document.
-            if (reader.TokenType != JsonTokenType.StartObject) throw new JsonException($"A workflow {typeof(T).Name} must be an object");
+            if (reader.TokenType != JsonTokenType.StartObject)
+                throw new JsonException($"A workflow {typeof(T).Name} must be an object");
+
             var scan = reader;
             var names = new HashSet<string>(StringComparer.Ordinal);
             string? kind = null;
+
             while (scan.Read() && scan.TokenType == JsonTokenType.PropertyName)
             {
                 var name = scan.GetString()!;
                 names.Add(name);
                 scan.Read();
-                if (name == "kind" && scan.TokenType == JsonTokenType.String) kind = scan.GetString();
+
+                if (name == "kind" && scan.TokenType == JsonTokenType.String)
+                    kind = scan.GetString();
+
                 scan.Skip();
             }
+
             var type = DocumentModel.ResolveVariant(typeof(T), kind, names.Contains)
                 ?? throw new JsonException($"Unknown workflow document kind '{kind}'");
-            return (T?)Variants.GetOrAdd(type, static type => (VariantReader)Activator.CreateInstance(typeof(VariantReader<>).MakeGenericType(type))!)
+
+            return (T?)Variants.GetOrAdd(type,
+                    static type => (VariantReader)Activator.CreateInstance(typeof(VariantReader<>).MakeGenericType(type))!)
                 .Read(ref reader, options);
         }
 
@@ -225,6 +279,7 @@ public static class WorkflowJsonSerializer
         {
             if (DocumentModel.GetKind(value.GetType()) == null)
                 throw new JsonException($"Unknown workflow document type '{value.GetType().Name}'");
+
             JsonSerializer.Serialize(writer, value, value.GetType(), options);
         }
     }
@@ -234,6 +289,7 @@ public static class WorkflowJsonSerializer
         public override object? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
             using var document = JsonDocument.ParseValue(ref reader);
+
             return Value(document.RootElement);
         }
 
@@ -253,8 +309,10 @@ public static class WorkflowJsonSerializer
 
         public override void Write(Utf8JsonWriter writer, object value, JsonSerializerOptions options)
         {
-            if (value is DocumentNumber number) writer.WriteRawValue(number.JsonLiteral);
-            else JsonSerializer.Serialize(writer, value, value.GetType());
+            if (value is DocumentNumber number)
+                writer.WriteRawValue(number.JsonLiteral);
+            else
+                JsonSerializer.Serialize(writer, value, value.GetType());
         }
     }
 
@@ -264,6 +322,7 @@ public static class WorkflowJsonSerializer
             reader.TokenType == JsonTokenType.StartObject
                 ? JsonSerializer.Deserialize<ExpressionDocument>(ref reader, options)
                 : new DocumentValueConverter().Read(ref reader, typeToConvert, options);
+
         public override void Write(Utf8JsonWriter writer, object value, JsonSerializerOptions options) =>
             JsonSerializer.Serialize(writer, value, value.GetType(), options);
     }
@@ -273,8 +332,10 @@ public static class WorkflowJsonSerializer
         public override object? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
             reader.TokenType == JsonTokenType.StartObject
                 ? JsonSerializer.Deserialize<ExpressionDocument>(ref reader, options)
-                : reader.TokenType == JsonTokenType.String ? reader.GetString()
-                : throw new JsonException("After must be a duration string or expression");
+                : reader.TokenType == JsonTokenType.String
+                    ? reader.GetString()
+                    : throw new JsonException("After must be a duration string or expression");
+
         public override void Write(Utf8JsonWriter writer, object value, JsonSerializerOptions options) =>
             JsonSerializer.Serialize(writer, value, value.GetType(), options);
     }

@@ -15,6 +15,7 @@ public sealed class AddStock : IAsyncActivity
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Count++;
+
         return Task.CompletedTask;
     }
 }

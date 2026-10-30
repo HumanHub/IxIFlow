@@ -9,14 +9,15 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Builder for parallel execution branches with previous step data
 /// </summary>
-public class FaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData> : IFaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData>
+internal class
+    FaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData> : IFaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData>
     where TWorkflowData : class
     where TPreviousStepData : class
 {
     private readonly WorkflowStep _step;
     private readonly Type _exceptionType;
 
-    public FaultParallelBuilder(WorkflowStep step, Type exceptionType)
+    internal FaultParallelBuilder(WorkflowStep step, Type exceptionType)
     {
         _exceptionType = exceptionType;
         _step = step ?? throw new ArgumentNullException(nameof(step));
@@ -28,6 +29,7 @@ public class FaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData> : IF
     public IFaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData> WaitAny()
     {
         SetJoinMode(ParallelJoinMode.WaitAny);
+
         return this;
     }
 
@@ -38,6 +40,7 @@ public class FaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData> : IF
     {
         var result = WaitConditionally(completeWhenExpression.Compile());
         _step.ParallelCompletionExpression = completeWhenExpression;
+
         return result;
     }
 
@@ -47,6 +50,7 @@ public class FaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData> : IF
         ArgumentNullException.ThrowIfNull(completeWhen);
         SetJoinMode(ParallelJoinMode.WaitConditionally);
         _step.ParallelCompletionCondition = data => completeWhen((TWorkflowData)data);
+
         return this;
     }
 
@@ -55,6 +59,7 @@ public class FaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData> : IF
         where TCombiner : ICombiner<TValue>, new()
     {
         Core.Runtime.BranchData.Choose(_step, property, typeof(TWorkflowData), typeof(TValue), typeof(TCombiner));
+
         return this;
     }
 
@@ -87,5 +92,4 @@ public class FaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData> : IF
 
         return this;
     }
-
 }

@@ -1,0 +1,1 @@
+{"ContinuationId":"root","Kind":0,"Origin":{"ActivationId":"activation","StepIndex":2,"Iteration":3,"ItemCursor":4,"ItemsJoined":true,"ArmOccurrence":0},"OriginScopes":["outer","activation"],"EligibleContinuations":["root","forked"],"CommandId":"step","Actor":"actor","Started":true,"OriginGraph":null}

@@ -12,10 +12,12 @@ internal static class ActivityActivation
     public static object Create(Type activityType, IServiceProvider services, IActivityRegistry registry)
     {
         object activity;
+
         try
         {
             if (!registry.IsRegistered(activityType))
                 return ActivatorUtilities.CreateInstance(services, activityType);
+
             activity = services.GetRequiredService(activityType);
         }
         catch (Exception error)
@@ -23,9 +25,11 @@ internal static class ActivityActivation
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 $"Activity '{activityType.Name}' cannot be created in this host: {error.Message}", error);
         }
+
         if (!Used.TryAdd(activity, Sentinel))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Activity factory for '{activityType.Name}' returned a previously used instance");
+
         return activity;
     }
 }

@@ -21,6 +21,7 @@ internal static class ForEachRules
     public static List<WorkflowStep> Paired(List<WorkflowStep> steps)
     {
         Validate(steps);
+
         return steps;
     }
 
@@ -34,29 +35,41 @@ internal static class ForEachRules
         for (var index = 0; index < body.Count; index++)
         {
             var step = body[index];
+
             if (step.ForEachIntoExpression != null && step.ForEachInto == null)
                 throw WorkflowBuildError.Invalid(step,
                     $"A ForEach stores its results in a settable property of the workflow data, not of an item: {step.ForEachIntoExpression}");
+
             if (step.StepType == WorkflowStepType.ForEachResult && (!leavesItem || index != body.Count - 1))
                 throw WorkflowBuildError.Invalid(step, "A ForEach result must be the last step of a ForEach body, or of a timeout " +
-                              "branch that leaves the body");
+                    "branch that leaves the body");
+
             foreach (var behavior in Behaviors(step))
-                foreach (var handle in ItemCaptures.Of(behavior))
-                    if (!inScope.Contains(handle))
-                        throw WorkflowBuildError.Invalid(step, $"{handle} is used outside its ForEach body, in step '{step.Name}'");
+            foreach (var handle in ItemCaptures.Of(behavior))
+                if (!inScope.Contains(handle))
+                    throw WorkflowBuildError.Invalid(step, $"{handle} is used outside its ForEach body, in step '{step.Name}'");
+
             var writes = WorkflowDataWrites.Of(step).ToArray();
+
             if (writes.Any(path => path?.StartsWith(MemberPath.ItemRoot, StringComparison.Ordinal) == true))
-                throw WorkflowBuildError.Invalid(step, $"Step '{step.Name}' writes a ForEach item; items are read-only, so write workflow data instead");
+                throw WorkflowBuildError.Invalid(step,
+                    $"Step '{step.Name}' writes a ForEach item; items are read-only, so write workflow data instead");
+
             if (enclosing.Count > 0 && writes.Any(path => path == null))
                 throw WorkflowBuildError.Invalid(step, $"Step '{step.Name}' in a ForEach body writes a target that is not a chain of " +
                     "members and indexes, so it cannot be shown to write workflow data");
+
             foreach (var owner in enclosing.Where(owner => owner.ForEachIntoPath != null))
                 if (writes.Any(path => MemberPath.Overlaps(path, owner.ForEachIntoPath!)))
-                    throw WorkflowBuildError.Invalid(step, $"Step '{step.Name}' writes '{owner.ForEachIntoPath}', where its ForEach stores its results");
+                    throw WorkflowBuildError.Invalid(step,
+                        $"Step '{step.Name}' writes '{owner.ForEachIntoPath}', where its ForEach stores its results");
+
             if (step.StepType == WorkflowStepType.ForEach)
                 ValidateForEach(step, inScope, enclosing);
+
             foreach (var nested in Bodies(step))
                 ValidateBody(nested, inScope, enclosing, leavesItem: false);
+
             foreach (var scope in step.ChildScopes().Where(scope => scope.Kind == "timeout"))
                 ValidateBody(scope.Steps, inScope, enclosing, leavesItem);
         }
@@ -75,24 +88,32 @@ internal static class ForEachRules
         if (step.ForEachStoredResultType != null && step.ForEachStoredResultType != step.ResultType)
             throw WorkflowBuildError.Invalid(step,
                 $"ForEach step '{step.Name}' decides on {step.ResultType?.Name} results, so it stores them");
+
         if (step.ForEachConditionResultType != null && step.ForEachConditionResultType != step.ResultType)
             throw WorkflowBuildError.Invalid(step,
                 $"ForEach step '{step.Name}' stores {step.ResultType?.Name} results, so its condition reads them");
+
         if (step.ForEachItem == null || step.ForEachItems == null)
             throw WorkflowBuildError.Invalid(step, $"ForEach step '{step.Name}' has no item list");
+
         if (!step.ForEachParallel && step.ParallelJoinMode != ParallelJoinMode.WaitAll)
             throw WorkflowBuildError.Invalid(step, $"ForEach step '{step.Name}' has a join, which only a parallel ForEach has");
+
         if (!step.ForEachParallel && step.ParallelCombiners.Count > 0)
-            throw WorkflowBuildError.Invalid(step, $"ForEach step '{step.Name}' chooses a combiner, which only a parallel ForEach's join uses");
+            throw WorkflowBuildError.Invalid(step,
+                $"ForEach step '{step.Name}' chooses a combiner, which only a parallel ForEach's join uses");
+
         if (ForEachTransitions.StoresResults(step))
         {
             // Every way out of the body gives a result of the stored type.
             foreach (var exit in Exits(step.ForEachBodySteps))
                 if (exit.LastOrDefault() is not { StepType: WorkflowStepType.ForEachResult } result ||
                     result.ResultType != step.ResultType)
-                    throw WorkflowBuildError.Invalid(step, $"ForEach step '{step.Name}' stores {step.ResultType?.Name} results, so its body " +
-                                  "and every timeout branch that leaves it must end with a result of that type");
+                    throw WorkflowBuildError.Invalid(step,
+                        $"ForEach step '{step.Name}' stores {step.ResultType?.Name} results, so its body " +
+                        "and every timeout branch that leaves it must end with a result of that type");
         }
+
         var withItem = new HashSet<ItemScope>(inScope, ReferenceEqualityComparer.Instance) { step.ForEachItem };
         ValidateBody(step.ForEachBodySteps, withItem, [.. enclosing, step], leavesItem: true);
     }
@@ -101,9 +122,9 @@ internal static class ForEachRules
     private static IEnumerable<PropertyMapping> Mappings(WorkflowStep step) =>
         step.InputMappings.Concat(step.OutputMappings)
             .Concat(step.StepMetadata.TryGetValue("CompensationActivities", out var value) &&
-                    value is List<CompensationActivityInfo> compensations
-                ? compensations.SelectMany(compensation => compensation.InputMappings.Concat(compensation.OutputMappings))
-                : []);
+                value is List<CompensationActivityInfo> compensations
+                    ? compensations.SelectMany(compensation => compensation.InputMappings.Concat(compensation.OutputMappings))
+                    : []);
 
     // The code a step runs with a workflow context, where a handle can be read.
     private static IEnumerable<Delegate?> Behaviors(WorkflowStep step) =>
@@ -118,7 +139,6 @@ internal static class ForEachRules
     private static IEnumerable<IReadOnlyList<WorkflowStep>> Bodies(WorkflowStep step) =>
         step.ChildScopes().Where(scope => scope.Kind is not ("foreach" or "timeout" or "inline"))
             .Select(scope => scope.Steps);
-
 }
 
 /// <summary>
@@ -133,8 +153,10 @@ internal static class ItemCaptures
     public static IReadOnlyCollection<ItemScope> Of(Delegate? behavior)
     {
         var found = new HashSet<ItemScope>(ReferenceEqualityComparer.Instance);
+
         if (behavior != null)
             Collect(behavior, found, new HashSet<object>(ReferenceEqualityComparer.Instance), 0);
+
         return found;
     }
 
@@ -143,33 +165,43 @@ internal static class ItemCaptures
         if (value == null || depth > MaxDepth || value is string or Type || value.GetType().IsPrimitive ||
             value.GetType().IsEnum)
             return;
+
         if (value is ItemScope handle)
         {
             found.Add(handle);
+
             return;
         }
+
         if (!visited.Add(value))
             return;
+
         switch (value)
         {
             case Delegate behavior:
                 foreach (var invocation in behavior.GetInvocationList())
                     Collect(invocation.Target, found, visited, depth + 1);
+
                 return;
             case IStrongBox box:
                 Collect(box.Value, found, visited, depth + 1);
+
                 return;
             case object?[] array:
                 foreach (var element in array)
                     Collect(element, found, visited, depth + 1);
+
                 return;
         }
+
         // A compiled expression keeps what it captured in a Closure; an interpreted one in its interpreter.
         var type = value.GetType();
+
         if (!type.IsDefined(typeof(CompilerGeneratedAttribute)) &&
             type.FullName != "System.Runtime.CompilerServices.Closure" &&
             type.Namespace != "System.Linq.Expressions.Interpreter")
             return;
+
         foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
             Collect(field.GetValue(value), found, visited, depth + 1);
     }

@@ -16,26 +16,30 @@ public sealed partial class SpecTraceabilityTests
     public void DoneItemsHaveTestsAndTestsReferToItems()
     {
         var root = SpecFactAttribute.RepositoryRoot!;
+
         // README.md explains the item format with an example item, so it is not read.
         var items = Directory.GetFiles(SpecFactAttribute.SpecDirectory!, "*.md")
             .Where(file => Path.GetFileName(file) != "README.md")
             .SelectMany(file => ItemPattern().Matches(File.ReadAllText(file)))
             .ToDictionary(match => match.Groups["id"].Value,
                 match => match.Groups["status"].Value.Trim());
+
         var tagged = Directory.GetFiles(Path.Combine(root, "tests"), "*.cs", SearchOption.AllDirectories)
             .Where(file => !file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}") &&
-                           !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
+                !file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}"))
             .SelectMany(file => SpecTraitPattern().Matches(File.ReadAllText(file))
                 .Select(match => (Id: match.Groups["id"].Value, File: Path.GetFileName(file))))
             .ToList();
 
         Assert.Empty(tagged.Where(tag => !items.ContainsKey(tag.Id))
             .Select(tag => $"{tag.File} refers to {tag.Id}, which is not in the specification"));
+
         var taggedIds = tagged.Select(tag => tag.Id).ToHashSet();
+
         Assert.Empty(items
             .Where(item => item.Value.StartsWith("done", StringComparison.Ordinal) &&
-                           !item.Key.StartsWith("I-", StringComparison.Ordinal) &&
-                           !taggedIds.Contains(item.Key))
+                !item.Key.StartsWith("I-", StringComparison.Ordinal) &&
+                !taggedIds.Contains(item.Key))
             .Select(item => $"{item.Key} is done but no test is tagged with it"));
     }
 
@@ -60,27 +64,34 @@ public sealed class SpecFactAttribute : FactAttribute
 
     private static string? FindRoot()
     {
-        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory != null;
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
+             directory != null;
              directory = directory.Parent)
         {
             if (File.Exists(Path.Combine(directory.FullName, "IxIFlow.sln")))
                 return directory.FullName;
         }
+
         return null;
     }
 
     private static string? FindSpecDirectory()
     {
         var configured = Environment.GetEnvironmentVariable("IXIFLOW_SPEC_DIR");
+
         if (!string.IsNullOrWhiteSpace(configured) && Directory.Exists(configured))
             return configured;
-        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory != null;
+
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
+             directory != null;
              directory = directory.Parent)
         {
             var candidate = Path.Combine(directory.FullName, "design", "spec");
+
             if (Directory.Exists(candidate))
                 return candidate;
         }
+
         return null;
     }
 }

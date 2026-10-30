@@ -10,8 +10,11 @@ public sealed record RetentionResult(int InstancesRemoved, int TombstonesRemoved
         new Dictionary<string, int>();
 }
 
-internal sealed record RetentionSettings(TimeSpan FinishedRetention, TimeSpan TombstoneRetention,
-    TimeSpan ScanInterval, int BatchSize)
+internal sealed record RetentionSettings(
+    TimeSpan FinishedRetention,
+    TimeSpan TombstoneRetention,
+    TimeSpan ScanInterval,
+    int BatchSize)
 {
     public TimeSpan PublicationRetention { get; init; } = TimeSpan.FromDays(30);
 

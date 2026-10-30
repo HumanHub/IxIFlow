@@ -71,7 +71,8 @@ public sealed record WorkflowCommitResult(
         UnreadEvents == other.UnreadEvents && Equals(Notice, other.Notice) && MadeRunnable.SequenceEqual(other.MadeRunnable);
 
     public override int GetHashCode() =>
-        HashCode.Combine(HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count, Admission, Notice),
+        HashCode.Combine(
+            HashCode.Combine(Status, Revision, PendingCancellation, Parked, UnreadEvents, MadeRunnable.Count, Admission, Notice),
             RunnableAtUtc, StoreTimeUtc);
 }
 
@@ -129,6 +130,7 @@ public sealed class CheckpointCommit
         PreservesPayloadPins = preservesPayloadPins;
         PayloadBodies = payloadBodies;
         _trunk = new(() => CheckpointParts.Summarize(Payload, null, checked(ExpectedRevision + 1)));
+
         _contentHash = SHA256.HashData(Encoding.UTF8.GetBytes(
             $"{(clearsCrashCount ? 1 : 0)}{(parks ? 1 : 0)}{(stopped ? 1 : 0)}\n" +
             $"{inboxReadThrough?.ToString() ?? "-"}\n{wakeAfter?.Ticks.ToString() ?? "-"}\n" +
@@ -139,7 +141,8 @@ public sealed class CheckpointCommit
             $"{JsonSerializer.Serialize(diagnostics)}\n{JsonSerializer.Serialize(retainedDiagnosticIds)}\n" +
             $"{(replacesParts ? 1 : 0)}\n{JsonSerializer.Serialize(deletedParts)}\n{JsonSerializer.Serialize(parts)}\n" +
             $"{(payloadReferences.Count == 0 ? "[]" : JsonSerializer.Serialize(payloadReferences))}\n{preservesPayloadPins}\n" +
-            $"{(payloadBodies.Count == 0 ? "[]" : JsonSerializer.Serialize(payloadBodies.Select(body => new { body.Reference, body.Dependencies })))}\n" + payload));
+            $"{(payloadBodies.Count == 0 ? "[]" : JsonSerializer.Serialize(payloadBodies.Select(body => new { body.Reference, body.Dependencies })))}\n" +
+            payload));
     }
 
     /// <summary>The longest timeout, delay or park a commit may carry.</summary>
@@ -160,10 +163,13 @@ public sealed class CheckpointCommit
 
     /// <summary>The parts this commit writes, in key order: new ones, and those whose JSON changed.</summary>
     public IReadOnlyList<CheckpointPart> Parts { get; }
+
     /// <summary>The complete checkpoint owner's references, including references nested in inline parts.</summary>
     public IReadOnlyList<PayloadReference> PayloadReferences { get; }
+
     /// <summary>A fenced metadata-only stop or termination retains existing parts and pins, even if bodies are unreadable.</summary>
     public bool PreservesPayloadPins { get; }
+
     /// <summary>New bodies written atomically with this checkpoint and its pins.</summary>
     public IReadOnlyList<PayloadBody> PayloadBodies { get; }
 
@@ -308,30 +314,50 @@ public sealed class CheckpointCommit
         IReadOnlyList<WorkflowDiagnostic>? diagnostics = null, IReadOnlyList<string>? retainedDiagnosticIds = null)
     {
         ArgumentNullException.ThrowIfNull(instance);
+        WorkflowStatuses.Write(instance.Status);
         InstanceIds.Validate(instance.InstanceId);
-        if (instance.ParentInstanceId != null) InstanceIds.Validate(instance.ParentInstanceId);
+        RuntimeIdentifiers.ValidateText(instance.CorrelationId);
+
+        if (instance.ParentWaitId != null)
+            RuntimeIdentifiers.ValidateText(instance.ParentWaitId);
+
+        if (instance.ParentInstanceId != null)
+            InstanceIds.Validate(instance.ParentInstanceId);
+
         // Validate the original identity before JSON encoding can replace an unpaired surrogate.
         // Raw instances may be unnamed, just as at the store's start boundary.
         WorkflowCatalogRules.ValidateNameWhitespace(instance.WorkflowName);
+
         foreach (var child in childStarts ?? [])
             if (child.Child is { } childInstance)
                 WorkflowCatalogRules.ValidateNameWhitespace(childInstance.WorkflowName);
-        if (!admission) ArgumentOutOfRangeException.ThrowIfNegativeOrZero(epoch);
+
+        if (!admission)
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(epoch);
+
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         commitId ??= Guid.NewGuid().ToString("N");
-        // Only the parts that differ from those the instance was last stored with are written (A-08).
+
+        // Only the parts that differ from those the instance was last stored with are written.
         var stored = Runtime.StoredCheckpoint.Of(instance);
         var saved = instance.PartsAt(expectedRevision);
+
         var written = stored.Parts
             .Where(part => saved == null || !saved.TryGetValue(part.Key, out var json) || json != part.Value)
             .OrderBy(part => part.Key, StringComparer.Ordinal)
             .Select(part => new CheckpointPart(part.Key, part.Value)).ToArray();
-        var deleted = saved == null ? [] : saved.Keys.Where(key => !stored.Parts.ContainsKey(key))
-            .Order(StringComparer.Ordinal).ToArray();
+
+        var deleted = saved == null
+            ? []
+            : saved.Keys.Where(key => !stored.Parts.ContainsKey(key))
+                .Order(StringComparer.Ordinal).ToArray();
+
         // Stamp the caller too, so later checkpoints use the same incarnation as this immutable first commit.
         if (expectedRevision == 0)
             instance.Incarnation = Guid.NewGuid();
+
         var trunk = expectedRevision == 0 ? stored.Trunk : stored.UpdateTrunk;
+
         return FromFieldsCore(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance.AsTrunk(trunk)),
             written, deleted, saved == null, instance.Incarnation, epoch, commitId,
             expectedRevision, clearsCrashCount, parks, settlements ?? [], inboxReadThrough,
@@ -374,157 +400,245 @@ public sealed class CheckpointCommit
         IReadOnlyList<PayloadBody>? payloadBodies = null, WorkflowInstance? generatedInstance = null)
     {
         ArgumentNullException.ThrowIfNull(metadata);
+        WorkflowStatuses.Write(metadata.Status);
         ArgumentNullException.ThrowIfNull(payload);
+
         // Locally generated payload and trace JSON already came from these validated objects.
         // Imported wire fields still take the complete parse and consistency checks below.
-        var instance = generatedInstance ?? JsonSerializer.Deserialize<WorkflowInstance>(payload)
+        var instance = generatedInstance ?? ReadCommitPayload(payload)
             ?? throw new ArgumentException("A commit carries an instance payload", nameof(payload));
+
         if (generatedInstance == null && CommittedInstance.Of(instance) != metadata)
             throw new ArgumentException("Commit metadata differs from its payload", nameof(metadata));
+
         ArgumentNullException.ThrowIfNull(instance);
+        WorkflowStatuses.Write(instance.Status);
         InstanceIds.Validate(instance.InstanceId);
-        if (instance.ParentInstanceId != null) InstanceIds.Validate(instance.ParentInstanceId);
+        RuntimeIdentifiers.ValidateText(instance.CorrelationId);
+
+        if (instance.ParentWaitId != null)
+            RuntimeIdentifiers.ValidateText(instance.ParentWaitId);
+
+        if (instance.ParentInstanceId != null)
+            InstanceIds.Validate(instance.ParentInstanceId);
+
         ArgumentOutOfRangeException.ThrowIfNegative(epoch);
+
         if (epoch == 0 && expectedRevision != 0)
             throw new ArgumentException("Only an admission commit can have epoch zero", nameof(epoch));
+
         ArgumentOutOfRangeException.ThrowIfNegative(expectedRevision);
         ArgumentException.ThrowIfNullOrWhiteSpace(commitId);
+        RuntimeIdentifiers.ValidateText(commitId);
+
         if (commitId.Length > 100)
             throw new ArgumentException("Commit IDs must be at most 100 characters", nameof(commitId));
+
         if (inboxReadThrough < 0)
             throw new ArgumentOutOfRangeException(nameof(inboxReadThrough), "An inbox read mark cannot be negative");
+
         // A copy, so the settlements cannot change after the commit is hashed.
         var settled = (settlements ?? []).ToArray();
+
         foreach (var settlement in settled)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(settlement.EventId, nameof(settlements));
+            RuntimeIdentifiers.ValidateText(settlement.EventId);
+
+            if (settlement.WaitId != null)
+                RuntimeIdentifiers.ValidateText(settlement.WaitId);
+
             if (settlement.Outcome is not (EventOutcome.Consumed or EventOutcome.Rejected))
                 throw new ArgumentException("A commit settles an event only as consumed or rejected",
                     nameof(settlements));
+
             if (settlement.Outcome == EventOutcome.Consumed && string.IsNullOrWhiteSpace(settlement.WaitId))
                 throw new ArgumentException("A consumed event names the wait that took it", nameof(settlements));
+
             if (settlement.Outcome == EventOutcome.Rejected && settlement.Rejection == null)
                 throw new ArgumentException("A rejected event says why", nameof(settlements));
         }
+
         if (settled.Select(settlement => settlement.EventId).Distinct(StringComparer.Ordinal).Count() != settled.Length)
             throw new ArgumentException("A commit settles each event once", nameof(settlements));
+
         var opened = (openedWaits ?? []).ToArray();
+
         foreach (var wait in opened)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(wait.WaitId, nameof(openedWaits));
+            RuntimeIdentifiers.ValidateText(wait.WaitId);
             ArgumentNullException.ThrowIfNull(wait.Key, nameof(openedWaits));
             ArgumentNullException.ThrowIfNull(wait.EventType, nameof(openedWaits));
+            RuntimeIdentifiers.ValidateText(wait.Key);
+            RuntimeIdentifiers.ValidateText(wait.EventType);
+
             // An answerable wait names what answers it; a delay or an execution deadline is only its time.
             var timed = wait.Kind is WaitKind.Delay or WaitKind.Execution;
+
             if (!timed && string.IsNullOrWhiteSpace(wait.EventType))
                 throw new ArgumentException("A wait an event can answer names its event type", nameof(openedWaits));
+
             if (timed && wait.Timeout == null || wait.Kind == WaitKind.Child && wait.Timeout != null)
                 throw new ArgumentException("Delays and execution deadlines have a timeout; a child's wait has none",
                     nameof(openedWaits));
+
             if (wait.WaitId.Length > 100 || wait.Key.Length > 400 || wait.EventType.Length > 400)
                 throw new ArgumentException("Wait IDs are at most 100 characters, keys and event types 400",
                     nameof(openedWaits));
+
             ValidateDuration(wait.Timeout, nameof(openedWaits));
         }
+
         var armed = (armedWaits ?? []).ToArray();
+
         foreach (var wait in armed)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(wait.WaitId, nameof(armedWaits));
+            RuntimeIdentifiers.ValidateText(wait.WaitId);
+
             if (wait.Timeout == null && wait.DefaultPayloadJson == null)
                 throw new ArgumentException("An activated wait must supply a timeout or a suggested payload", nameof(armedWaits));
+
             ValidateDuration(wait.Timeout, nameof(armedWaits));
         }
+
         var closed = (closedWaits ?? []).ToArray();
+
         foreach (var wait in closed)
+        {
             ArgumentException.ThrowIfNullOrWhiteSpace(wait.WaitId, nameof(closedWaits));
+            RuntimeIdentifiers.ValidateText(wait.WaitId);
+        }
+
         if (opened.Select(wait => wait.WaitId).Concat(armed.Select(wait => wait.WaitId))
                 .Concat(closed.Select(wait => wait.WaitId))
                 .Distinct(StringComparer.Ordinal).Count() != opened.Length + armed.Length + closed.Length)
             throw new ArgumentException("A commit opens, arms or closes each wait once", nameof(openedWaits));
+
         ValidateDuration(wakeAfter, nameof(wakeAfter));
+
         if (parks && wakeAfter == null)
             throw new ArgumentException("A park says how long the run stops", nameof(wakeAfter));
+
         var started = (childStarts ?? []).ToArray();
+
         foreach (var child in started)
         {
             InstanceIds.Validate(child.ChildInstanceId, nameof(childStarts));
             ArgumentException.ThrowIfNullOrWhiteSpace(child.ParentWaitId, nameof(childStarts));
-            if (child.Incarnation == Guid.Empty) throw new ArgumentException("A child start requires an incarnation", nameof(childStarts));
+            RuntimeIdentifiers.ValidateText(child.ParentWaitId);
+
+            if (child.Incarnation == Guid.Empty)
+                throw new ArgumentException("A child start requires an incarnation", nameof(childStarts));
+
             var childInstance = child.Child
                 ?? throw new ArgumentException("A child start carries the child's instance", nameof(childStarts));
+
+            RuntimeIdentifiers.ValidateText(childInstance.CorrelationId);
+
             if (childInstance.InstanceId != child.ChildInstanceId || childInstance.ParentInstanceId != instance.InstanceId ||
                 childInstance.ParentWaitId != child.ParentWaitId || childInstance.Status != WorkflowStatus.Running ||
                 child.ChildInstanceId == instance.InstanceId)
                 throw new ArgumentException(
                     "A child start names a new running instance whose parent and wait are this commit's",
                     nameof(childStarts));
+
             if (!opened.Any(wait => wait.WaitId == child.ParentWaitId && wait.Kind == WaitKind.Child))
                 throw new ArgumentException("A child starts with the parent's wait for it", nameof(childStarts));
         }
+
         if (started.Select(child => child.ChildInstanceId).Distinct(StringComparer.Ordinal).Count() != started.Length)
             throw new ArgumentException("A commit starts each child once", nameof(childStarts));
+
         // Copies, so a reason changed after the commit is hashed does not change what the store writes.
         var cancelled = (childCancellations ?? []).Select(child =>
         {
             InstanceIds.Validate(child.ChildInstanceId, nameof(childCancellations));
             ArgumentNullException.ThrowIfNull(child.Reason, nameof(childCancellations));
+
             if (child.Reason.Mode != WorkflowControlMode.Terminate)
                 ArgumentException.ThrowIfNullOrWhiteSpace(child.ParentWaitId, nameof(childCancellations));
+
+            if (child.ParentWaitId != null)
+                RuntimeIdentifiers.ValidateText(child.ParentWaitId);
+
             return child with
             {
                 Reason = JsonSerializer.Deserialize<CancellationReason>(JsonSerializer.Serialize(child.Reason))!
             };
         }).ToArray();
+
         if (parentNotice != null)
         {
             InstanceIds.Validate(parentNotice.ParentInstanceId, nameof(parentNotice));
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.ParentWaitId, nameof(parentNotice));
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.EventId, nameof(parentNotice));
             ArgumentException.ThrowIfNullOrWhiteSpace(parentNotice.EventType, nameof(parentNotice));
+            RuntimeIdentifiers.ValidateText(parentNotice.ParentWaitId);
+            RuntimeIdentifiers.ValidateText(parentNotice.EventId);
+            RuntimeIdentifiers.ValidateText(parentNotice.EventType);
             parentNotice = parentNotice with { PayloadDependencies = Array.AsReadOnly(parentNotice.PayloadDependencies.ToArray()) };
+
             if (!WorkflowStoreRules.IsTerminal(instance.Status) ||
                 instance.ParentInstanceId != parentNotice.ParentInstanceId ||
                 instance.ParentWaitId != parentNotice.ParentWaitId)
                 throw new ArgumentException("Only a child's terminal commit notifies its own parent", nameof(parentNotice));
         }
+
         ArgumentNullException.ThrowIfNull(diagnostics);
         var raw = diagnostics.ToArray();
+
         foreach (var diagnostic in raw)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(diagnostic.DiagnosticId, nameof(diagnostics));
+
             if (diagnostic.DiagnosticId.Length > 100)
                 throw new ArgumentException("Diagnostic IDs must be at most 100 characters", nameof(diagnostics));
         }
+
         if (raw.Select(item => item.DiagnosticId).Distinct(StringComparer.Ordinal).Count() != raw.Length)
             throw new ArgumentException("A commit records each diagnostic once", nameof(diagnostics));
+
         var retained = retainedDiagnosticIds?.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+
         if (retained != null && raw.Any(item => !retained.Contains(item.DiagnosticId, StringComparer.Ordinal)))
             throw new ArgumentException("New diagnostics must be retained by their commit", nameof(diagnostics));
+
         ArgumentNullException.ThrowIfNull(parts);
         ArgumentNullException.ThrowIfNull(deletedParts);
         ArgumentNullException.ThrowIfNull(traceEntries);
+
         if (preservesPayloadPins && (expectedRevision == 0 || parts.Count != 0 || deletedParts.Count != 0 || replacesParts ||
-            !stopped || metadata.Status is not (WorkflowStatus.NeedsResolution or WorkflowStatus.Terminated) ||
-            settled.Length != 0 || opened.Length != 0 || armed.Length != 0 || closed.Length != 0 || started.Length != 0 ||
-            payloadBodies is { Count: > 0 } || parks || wakeAfter != null ||
-            metadata.Status == WorkflowStatus.NeedsResolution && (cancelled.Length != 0 || parentNotice != null || traceEntries.Count != 0)))
+                !stopped || metadata.Status is not (WorkflowStatus.NeedsResolution or WorkflowStatus.Terminated) ||
+                settled.Length != 0 || opened.Length != 0 || armed.Length != 0 || closed.Length != 0 || started.Length != 0 ||
+                payloadBodies is { Count: > 0 } || parks || wakeAfter != null ||
+                metadata.Status == WorkflowStatus.NeedsResolution &&
+                (cancelled.Length != 0 || parentNotice != null || traceEntries.Count != 0)))
             throw new ArgumentException("A metadata-only transition keeps all parts and performs only stop or termination effects");
+
         var written = parts.ToArray();
         var deleted = deletedParts.ToArray();
+
         foreach (var part in written)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(part.Key, nameof(parts));
             ArgumentNullException.ThrowIfNull(part.Json, nameof(parts));
         }
-        foreach (var key in deleted) ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(deletedParts));
+
+        foreach (var key in deleted)
+            ArgumentException.ThrowIfNullOrWhiteSpace(key, nameof(deletedParts));
+
         if (!written.Select(part => part.Key).SequenceEqual(written.Select(part => part.Key).Distinct().Order(StringComparer.Ordinal)) ||
             !deleted.SequenceEqual(deleted.Distinct().Order(StringComparer.Ordinal)) ||
             written.Any(part => deleted.Contains(part.Key, StringComparer.Ordinal)) || replacesParts && deleted.Length != 0)
             throw new ArgumentException("Part keys must be unique, ordered and either written or deleted", nameof(parts));
+
         if (generatedInstance == null)
             foreach (var trace in traceEntries)
                 _ = JsonSerializer.Deserialize<ExecutionTraceEntry>(trace)
                     ?? throw new ArgumentException("Invalid trace entry", nameof(traceEntries));
+
         return new CheckpointCommit(metadata, payload, Array.AsReadOnly(written), Array.AsReadOnly(deleted),
             replacesParts, incarnation, epoch, commitId, expectedRevision, clearsCrashCount, parks,
             Array.AsReadOnly(settled), inboxReadThrough, Array.AsReadOnly(opened), Array.AsReadOnly(armed),
@@ -535,6 +649,7 @@ public sealed class CheckpointCommit
             preservesPayloadPins, Array.AsReadOnly((payloadBodies ?? []).Select(body =>
             {
                 body.Reference.Verify(body.Body);
+
                 return new PayloadBody(body.Reference, body.Body.ToArray(), Array.AsReadOnly(body.Dependencies.ToArray()));
             }).ToArray()));
     }
@@ -558,26 +673,35 @@ public sealed class CheckpointCommit
     {
         if (WorkflowStoreRules.IsTerminal(saved.Status))
             throw new WorkflowEngineException(WorkflowErrorKind.PayloadUnavailable, stop.Reason);
+
         // Only the readable trunk is parsed. No branch, data, input or list payload is assembled.
         var instance = JsonSerializer.Deserialize<WorkflowInstance>(JsonSerializer.Serialize(saved))!;
         var metadata = System.Text.Json.Nodes.JsonNode.Parse(instance.ExecutionStateJson)!.AsObject();
         var checkpoint = Runtime.ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
         instance.LastError = stop.Reason;
+
         stop.Diagnostic = checkpoint.RecordDiagnostic(stop.Kind == Runtime.OperatorStopKind.Quarantine
-            ? "Quarantine" : stop.Kind.ToString(), stop.Reason);
+            ? "Quarantine"
+            : stop.Kind.ToString(), stop.Reason);
+
         stop.Reason = stop.Diagnostic.ToString();
+
         // Keep branch diagnostic identities without loading their bodies. The next ordinary commit
         // applies runtime retention once those branches are available again.
         metadata[nameof(Runtime.ExecutionCheckpoint.Diagnostics)] = JsonSerializer.SerializeToNode(checkpoint.Diagnostics);
         metadata[nameof(Runtime.ExecutionCheckpoint.ResultDiagnostic)] = JsonSerializer.SerializeToNode(stop.Diagnostic);
+
         metadata[nameof(Runtime.ExecutionCheckpoint.OperatorStop)] = JsonSerializer.SerializeToNode(
             stop);
+
         // Placement is immutable and remains in the store's demand set, even on a metadata-only update.
         metadata.Remove(nameof(Runtime.ExecutionCheckpoint.Demands));
+
         // Preserve stored-only fields such as ForEach ResultCount exactly; no state object is reconstructed.
         instance.ExecutionStateJson = metadata.ToJsonString();
         instance.Status = WorkflowStatus.NeedsResolution;
         instance.LastErrorStackTrace = null;
+
         return FromFields(CommittedInstance.Of(instance), JsonSerializer.Serialize(instance), [], [], false,
             saved.Incarnation, epoch, Guid.NewGuid().ToString("N"), saved.Revision, clearsCrashCount, false, [], null,
             [], [], [], null, true, [], [], null, [], checkpoint.PendingDiagnostics,
@@ -608,16 +732,21 @@ public sealed class CheckpointCommit
     public IReadOnlyDictionary<string, StoredJson> ApplyParts(IReadOnlyDictionary<string, StoredJson>? stored)
     {
         var parts = new Dictionary<string, StoredJson>(StringComparer.Ordinal);
+
         if (!ReplacesParts)
         {
             ArgumentNullException.ThrowIfNull(stored);
+
             foreach (var (key, json) in stored)
                 parts[key] = json;
+
             foreach (var key in DeletedParts)
                 parts.Remove(key);
         }
+
         foreach (var part in Parts)
             parts[part.Key] = part.Json;
+
         return parts.AsReadOnly();
     }
 
@@ -630,11 +759,25 @@ public sealed class CheckpointCommit
     public WorkflowInstance ReadInstance(WorkflowInstance? basedOn = null)
     {
         var based = basedOn?.SavedParts;
+
         if (!ReplacesParts && based == null)
             throw new InvalidOperationException(
                 "The commit writes only the parts that changed; read it with the instance it was based on");
+
         return CheckpointParts.Assemble(Payload, ApplyParts(based)
             .Select(part => new CheckpointPart(part.Key, part.Value)), checked(ExpectedRevision + 1));
+    }
+
+    private static WorkflowInstance? ReadCommitPayload(string payload)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<WorkflowInstance>(payload);
+        }
+        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidState)
+        {
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, error.Message, error);
+        }
     }
 
     // Bookkeeping needs the stored trunk and parts, not a reconstructed executable checkpoint.
@@ -642,20 +785,30 @@ public sealed class CheckpointCommit
     {
         var parts = ApplyParts(basedOn.SavedParts);
         var saved = ReadTrunk();
-        if (parts.TryGetValue(CheckpointParts.DataKey, out var data)) saved.WorkflowDataJson = data;
+
+        if (parts.TryGetValue(CheckpointParts.DataKey, out var data))
+            saved.WorkflowDataJson = data;
+
         saved.Incarnation = Incarnation;
         saved.Saved(parts, saved.Revision);
+
         return saved;
     }
 }
 
 /// <summary>The fields of a committed instance a store applies the commit by.</summary>
-public sealed record CommittedInstance(string InstanceId, string WorkflowName, string CorrelationId,
-    WorkflowStatus Status, bool AcknowledgesCancellation)
+public sealed record CommittedInstance(
+    string InstanceId,
+    string WorkflowName,
+    string CorrelationId,
+    WorkflowStatus Status,
+    bool AcknowledgesCancellation)
 {
     public int WorkflowVersion { get; init; }
+
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public ArtifactDigest? BundleDigest { get; init; }
+
     public string? ParentInstanceId { get; init; }
     public string? ParentWaitId { get; init; }
     public DateTime CreatedAt { get; init; }
@@ -666,10 +819,12 @@ public sealed record CommittedInstance(string InstanceId, string WorkflowName, s
     public static CommittedInstance Of(WorkflowInstance instance)
     {
         var projection = InstanceSummary.Of(instance);
+
         return new(instance.InstanceId, instance.WorkflowName, instance.CorrelationId, instance.Status,
             instance.CancellationReason != null)
         {
-            ParentInstanceId = instance.ParentInstanceId, ParentWaitId = instance.ParentWaitId, WorkflowVersion = instance.WorkflowVersion, BundleDigest = instance.BundleDigest,
+            ParentInstanceId = instance.ParentInstanceId, ParentWaitId = instance.ParentWaitId, WorkflowVersion = instance.WorkflowVersion,
+            BundleDigest = instance.BundleDigest,
             CreatedAt = instance.CreatedAt, CommandVersion = instance.CancellationReason?.CommandVersion ?? 0,
             StopKind = projection.StopKind, StopCrashCount = projection.CrashCount
         };

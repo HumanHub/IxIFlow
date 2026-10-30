@@ -45,7 +45,10 @@ public sealed class InspectionRedactionPolicy
                 ? JsonSerializer.Serialize(Note(JsonSerializer.Deserialize<string>(note.Json.InlineText) ?? "", services))
                 : new RedactingJson(services).Serialize(note.Json.InlineText, note.Type);
         }
-        catch { return "\"\""; }
+        catch
+        {
+            return "\"\"";
+        }
     }
 
     /// <summary>Projects a stored diagnostic without exposing its message or stack.</summary>
@@ -71,14 +74,18 @@ public sealed class InspectionRedactionPolicy
     public DeliverySummary Delivery(DeliverySummary delivery) => delivery with
     {
         Event = delivery.Event with { DataJson = "" },
-        LastError = delivery.LastError == null ? null : new InspectionError("DeliveryFailure",
-            $"{delivery.Event.Id}/{delivery.PublisherName}/{delivery.Attempts}").ToString()
+        LastError = delivery.LastError == null
+            ? null
+            : new InspectionError("DeliveryFailure",
+                $"{delivery.Event.Id}/{delivery.PublisherName}/{delivery.Attempts}").ToString()
     };
 
     public OutboxPublisherState Publisher(OutboxPublisherState publisher) => publisher with
     {
-        LastError = publisher.LastError == null ? null : new InspectionError("PublisherFailure",
-            $"{publisher.Name}/{publisher.DisabledAtUtc?.Ticks}").ToString()
+        LastError = publisher.LastError == null
+            ? null
+            : new InspectionError("PublisherFailure",
+                $"{publisher.Name}/{publisher.DisabledAtUtc?.Ticks}").ToString()
     };
 
     /// <summary>Schema shape is inspection; annotations can contain values or arbitrary free text.</summary>
@@ -86,31 +93,42 @@ public sealed class InspectionRedactionPolicy
     {
         try
         {
-            if (WorkflowTypeIdentity.Resolve(typeName) is not { } type) return null;
+            if (WorkflowTypeIdentity.Resolve(typeName) is not { } type)
+                return null;
+
             var options = WorkflowJson.Options(type: type);
             options.MakeReadOnly(populateMissingResolver: true);
             var schema = System.Text.Json.Schema.JsonSchemaExporter.GetJsonSchemaAsNode(options, type);
             StripAnnotations(schema);
+
             return schema.ToJsonString();
         }
-        catch { return null; }
+        catch
+        {
+            return null;
+        }
     }
 
     private static void StripAnnotations(System.Text.Json.Nodes.JsonNode? node)
     {
         if (node is System.Text.Json.Nodes.JsonObject obj)
         {
-            foreach (var key in new[] { "default", "examples", "example", "description", "title", "enum", "const" }) obj.Remove(key);
+            foreach (var key in new[] { "default", "examples", "example", "description", "title", "enum", "const" })
+                obj.Remove(key);
+
             foreach (var property in obj.ToArray())
             {
                 // Property names are schema structure, even when named "default" or "description".
                 if (property.Key is "properties" or "$defs" && property.Value is System.Text.Json.Nodes.JsonObject members)
-                    foreach (var member in members) StripAnnotations(member.Value);
-                else StripAnnotations(property.Value);
+                    foreach (var member in members)
+                        StripAnnotations(member.Value);
+                else
+                    StripAnnotations(property.Value);
             }
         }
         else if (node is System.Text.Json.Nodes.JsonArray array)
-            foreach (var item in array) StripAnnotations(item);
+            foreach (var item in array)
+                StripAnnotations(item);
     }
 
     /// <summary>A delivery attempt has an identity even when the publisher returned only free text.</summary>
@@ -134,7 +152,9 @@ public sealed class InspectionRedactionPolicy
 
     internal void LogSensitive(ILogger<SensitiveDiagnostics>? logger, Exception error)
     {
-        if (!_enableSensitiveDiagnostics) return;
+        if (!_enableSensitiveDiagnostics)
+            return;
+
         var safe = Error(error);
         logger?.LogError(error, "Sensitive diagnostic {ErrorType} ({DiagnosticId})", safe.ErrorType, safe.DiagnosticId);
     }

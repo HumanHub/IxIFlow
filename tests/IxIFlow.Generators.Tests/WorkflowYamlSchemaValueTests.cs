@@ -36,6 +36,7 @@ public sealed class WorkflowYamlSchemaValueTests
     {
         var stream = new YamlStream();
         stream.Load(new StringReader(yaml));
+
         return JsonSerializer.SerializeToElement(Convert(stream.Documents.Single().RootNode));
 
         static JsonNode? Convert(YamlNode node) => node switch
@@ -51,25 +52,45 @@ public sealed class WorkflowYamlSchemaValueTests
     private static JsonNode? Scalar(YamlScalarNode scalar)
     {
         var value = scalar.Value ?? "";
-        if (scalar.Style != ScalarStyle.Plain && scalar.Style != ScalarStyle.Any) return JsonValue.Create(value);
-        if (value is "" or "~" or "null" or "Null" or "NULL") return null;
-        if (value is "true" or "True" or "TRUE") return JsonValue.Create(true);
-        if (value is "false" or "False" or "FALSE") return JsonValue.Create(false);
-        if (Regex.IsMatch(value, @"^[+-]?[0-9]+$")) return JsonNode.Parse(BigInteger.Parse(value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture));
+
+        if (scalar.Style != ScalarStyle.Plain && scalar.Style != ScalarStyle.Any)
+            return JsonValue.Create(value);
+
+        if (value is "" or "~" or "null" or "Null" or "NULL")
+            return null;
+
+        if (value is "true" or "True" or "TRUE")
+            return JsonValue.Create(true);
+
+        if (value is "false" or "False" or "FALSE")
+            return JsonValue.Create(false);
+
+        if (Regex.IsMatch(value, @"^[+-]?[0-9]+$"))
+            return JsonNode.Parse(BigInteger.Parse(value, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture));
+
         if (Regex.IsMatch(value, @"^0[ox][0-9a-fA-F]+$") &&
             (value[1] == 'x' || value.Substring(2).All(character => character is >= '0' and <= '7')))
         {
             var integer = BigInteger.Zero;
-            foreach (var digit in value.Substring(2)) integer = integer * (value[1] == 'x' ? 16 : 8) + int.Parse(digit.ToString(), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+
+            foreach (var digit in value.Substring(2))
+                integer = integer * (value[1] == 'x' ? 16 : 8) +
+                    int.Parse(digit.ToString(), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+
             return JsonNode.Parse(integer.ToString(CultureInfo.InvariantCulture));
         }
+
         if (Regex.IsMatch(value, @"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"))
         {
             var number = double.Parse(value, CultureInfo.InvariantCulture);
+
             return JsonValue.Create(double.IsFinite(number) ? number : 0.5d);
         }
+
         // JSON has no non-finite numbers; a finite non-integer surrogate preserves schema typing.
-        if (Regex.IsMatch(value, @"^(?:[+-]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$")) return JsonValue.Create(0.5d);
+        if (Regex.IsMatch(value, @"^(?:[+-]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$"))
+            return JsonValue.Create(0.5d);
+
         return JsonValue.Create(value);
     }
 }

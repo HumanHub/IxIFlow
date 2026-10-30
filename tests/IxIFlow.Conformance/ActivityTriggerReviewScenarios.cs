@@ -41,19 +41,37 @@ public sealed class ActivityTriggerReviewScenarios
     private static Host Services(ProfileStore store, IWorkflowStateRepository repository)
     {
         var services = new ServiceCollection().AddLogging();
-        services.AddIxIFlow(o => { o.Debugging = true; o.VerifyCheckpointParts = true;
-            o.MaxHydratedPayloadBytes = ActivityTriggerReviewCases.HydrationBudget; });
+
+        services.AddIxIFlow(o =>
+        {
+            o.Debugging = true;
+            o.VerifyCheckpointParts = true;
+            o.MaxHydratedPayloadBytes = ActivityTriggerReviewCases.HydrationBudget;
+        });
+
         services.AddSingleton(repository);
         services.AddSingleton(new ActivityTriggerReviewCases.Probe());
         store.ConfigureHost(services);
         var provider = services.BuildServiceProvider();
-        try { store.StartHostLinksAsync(provider).GetAwaiter().GetResult(); return new(provider); }
-        catch { provider.DisposeAsync().AsTask().GetAwaiter().GetResult(); throw; }
+
+        try
+        {
+            store.StartHostLinksAsync(provider).GetAwaiter().GetResult();
+
+            return new(provider);
+        }
+        catch
+        {
+            provider.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+            throw;
+        }
     }
 
     private sealed class Host(ServiceProvider provider) : IServiceProvider, IAsyncDisposable
     {
         public object? GetService(Type type) => provider.GetService(type);
+
         public async ValueTask DisposeAsync()
         {
             await provider.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);

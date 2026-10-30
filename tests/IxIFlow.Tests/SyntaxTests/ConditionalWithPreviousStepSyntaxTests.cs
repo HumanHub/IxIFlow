@@ -15,31 +15,30 @@ public class ConditionalWithPreviousStepSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("ConditionalWithPreviousStepTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)
-                    .Output(act => act.ValidationErrors).To(ctx => ctx.WorkflowData.ValidationErrors))
-                .If(ctx => ctx.PreviousStep.IsValid,
-                    then =>
-                    {
-                        then.Step<ProcessValidOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)
-                            .Input(act => act.ValidationResult).From(ctx => ctx.PreviousStep.IsValid)
-                            .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
-                    },
-                    @else =>
-                    {
-                        @else.Step<RejectOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                            .Input(act => act.ValidationErrors).From(ctx => ctx.PreviousStep.ValidationErrors)
-                            .Output(act => act.RejectionReason).To(ctx => ctx.WorkflowData.ErrorMessage));
-                    })
-
-                .Step<UpdateAnalyticsAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Success).From(ctx => ctx.WorkflowData.ProcessedOrder != null)
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)
+                .Output(act => act.ValidationErrors).To(ctx => ctx.WorkflowData.ValidationErrors))
+            .If(ctx => ctx.PreviousStep.IsValid,
+                then =>
+                {
+                    then.Step<ProcessValidOrderAsyncActivity>(setup => setup
+                        .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.ValidationResult).From(ctx => ctx.PreviousStep.IsValid)
+                        .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
+                },
+                @else =>
+                {
+                    @else.Step<RejectOrderAsyncActivity>(setup => setup
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.ValidationErrors).From(ctx => ctx.PreviousStep.ValidationErrors)
+                        .Output(act => act.RejectionReason).To(ctx => ctx.WorkflowData.ErrorMessage));
+                })
+            .Step<UpdateAnalyticsAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Success).From(ctx => ctx.WorkflowData.ProcessedOrder != null)
+                .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
             .Build();
 
         // Assert
@@ -55,30 +54,30 @@ public class ConditionalWithPreviousStepSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("ConditionalWithPreviousStepTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)
-                    .Output(act => act.ValidationErrors).To(ctx => ctx.WorkflowData.ValidationErrors))
-                .If(ctx => ctx.PreviousStep.IsValid,
-                    then =>
-                    {
-                        then.Step<ProcessValidOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)
-                            .Input(act => act.ValidationResult).From(ctx => ctx.PreviousStep.IsValid)
-                            .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
-                    },
-                    @else =>
-                    {
-                        @else.Step<RejectOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                            .Input(act => act.ValidationErrors).From(ctx => ctx.PreviousStep.ValidationErrors)
-                            .Output(act => act.RejectionReason).To(ctx => ctx.WorkflowData.ErrorMessage));
-                    })
-                .Step<UpdateAnalyticsAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Success).From(ctx => ctx.WorkflowData.ProcessedOrder != null)
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)
+                .Output(act => act.ValidationErrors).To(ctx => ctx.WorkflowData.ValidationErrors))
+            .If(ctx => ctx.PreviousStep.IsValid,
+                then =>
+                {
+                    then.Step<ProcessValidOrderAsyncActivity>(setup => setup
+                        .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.ValidationResult).From(ctx => ctx.PreviousStep.IsValid)
+                        .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
+                },
+                @else =>
+                {
+                    @else.Step<RejectOrderAsyncActivity>(setup => setup
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.ValidationErrors).From(ctx => ctx.PreviousStep.ValidationErrors)
+                        .Output(act => act.RejectionReason).To(ctx => ctx.WorkflowData.ErrorMessage));
+                })
+            .Step<UpdateAnalyticsAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Success).From(ctx => ctx.WorkflowData.ProcessedOrder != null)
+                .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
             .Build();
 
         // Assert
@@ -100,14 +99,14 @@ public class ConditionalWithPreviousStepSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("IfConditionAccessTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
-                .If(ctx => ctx.PreviousStep.IsValid,
-                    then => then.Step<ProcessValidOrderAsyncActivity>(setup => setup
-                        .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)),
-                    @else => @else.Step<RejectOrderAsyncActivity>(setup => setup
-                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
+            .If(ctx => ctx.PreviousStep.IsValid,
+                then => then.Step<ProcessValidOrderAsyncActivity>(setup => setup
+                    .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)),
+                @else => @else.Step<RejectOrderAsyncActivity>(setup => setup
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
             .Build();
 
         // Assert
@@ -121,15 +120,15 @@ public class ConditionalWithPreviousStepSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("ThenBranchAccessTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
-                .If(ctx => ctx.PreviousStep.IsValid,
-                    then => then.Step<ProcessValidOrderAsyncActivity>(setup => setup
-                        .Input(act => act.ValidationResult)
-                        .From(ctx => ctx.PreviousStep.IsValid)),
-                    @else => @else.Step<RejectOrderAsyncActivity>(setup => setup
-                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
+            .If(ctx => ctx.PreviousStep.IsValid,
+                then => then.Step<ProcessValidOrderAsyncActivity>(setup => setup
+                    .Input(act => act.ValidationResult)
+                    .From(ctx => ctx.PreviousStep.IsValid)),
+                @else => @else.Step<RejectOrderAsyncActivity>(setup => setup
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
             .Build();
 
         // Assert
@@ -144,15 +143,15 @@ public class ConditionalWithPreviousStepSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("ElseBranchAccessTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
-                .If(ctx => ctx.PreviousStep.IsValid,
-                    then => then.Step<ProcessValidOrderAsyncActivity>(setup => setup
-                        .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)),
-                    @else => @else.Step<RejectOrderAsyncActivity>(setup => setup
-                        .Input(act => act.ValidationErrors)
-                        .From(ctx => ctx.PreviousStep.ValidationErrors)))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
+            .If(ctx => ctx.PreviousStep.IsValid,
+                then => then.Step<ProcessValidOrderAsyncActivity>(setup => setup
+                    .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)),
+                @else => @else.Step<RejectOrderAsyncActivity>(setup => setup
+                    .Input(act => act.ValidationErrors)
+                    .From(ctx => ctx.PreviousStep.ValidationErrors)))
             .Build();
 
         // Assert
@@ -167,17 +166,17 @@ public class ConditionalWithPreviousStepSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("StepAfterConditionalTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
-                .If(ctx => ctx.PreviousStep.IsValid,
-                    then => then.Step<ProcessValidOrderAsyncActivity>(setup => setup
-                        .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)),
-                    @else => @else.Step<RejectOrderAsyncActivity>(setup => setup
-                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
-                .Step<UpdateAnalyticsAsyncActivity>(setup => setup
-                    .Input(act => act.Success).From(ctx => ctx.PreviousStep.IsValid)
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
+            .If(ctx => ctx.PreviousStep.IsValid,
+                then => then.Step<ProcessValidOrderAsyncActivity>(setup => setup
+                    .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)),
+                @else => @else.Step<RejectOrderAsyncActivity>(setup => setup
+                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
+            .Step<UpdateAnalyticsAsyncActivity>(setup => setup
+                .Input(act => act.Success).From(ctx => ctx.PreviousStep.IsValid)
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
             .Build();
 
         // Assert

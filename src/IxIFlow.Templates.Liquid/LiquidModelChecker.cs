@@ -35,25 +35,34 @@ internal sealed class LiquidModelChecker
     {
         if (!LiquidModel.IsObject(model))
         {
-            return [new TemplateDiagnostic(
-                $"A Liquid template reads the members of its model, and '{TemplateVersion.ModelTypeName(model)}' " +
-                "has none; wrap it in a model type")];
+            return
+            [
+                new TemplateDiagnostic(
+                    $"A Liquid template reads the members of its model, and '{TemplateVersion.ModelTypeName(model)}' " +
+                    "has none; wrap it in a model type")
+            ];
         }
+
         var checker = new LiquidModelChecker(options, model, content);
+
         checker._scopes.Add(LiquidModel.Members(model)
             .Where(member => member.Readable)
             .GroupBy(member => member.Name, StringComparer.Ordinal)
             .ToDictionary(group => group.Key, group => Shape.Of(group.First().Type), StringComparer.Ordinal));
+
         checker.Statements(template.Statements);
+
         return checker._diagnostics;
     }
 
-    private void Add(TemplateDiagnostic diagnostic) => _diagnostics.Add(diagnostic with { Line = _position.Line, Column = _position.Column });
+    private void Add(TemplateDiagnostic diagnostic) =>
+        _diagnostics.Add(diagnostic with { Line = _position.Line, Column = _position.Column });
 
     private void Statements(IReadOnlyList<Statement>? statements)
     {
         if (statements == null)
             return;
+
         foreach (var statement in statements)
             Statement(statement);
     }
@@ -64,23 +73,29 @@ internal sealed class LiquidModelChecker
         {
             case OutputStatement output:
                 Expression(output.Expression);
+
                 break;
             case AssignStatement assign:
                 Assign(assign.Identifier, Expression(assign.Value));
+
                 break;
             case CaptureStatement capture:
                 Statements(capture.Statements);
                 Assign(capture.Identifier, Shape.Of(typeof(string)));
+
                 break;
             case ForStatement loop:
                 var loopLocations = _source.Loop();
                 var element = Elements(Expression(loop.Source, loopLocations["source"]));
                 Expression(loop.Limit, loopLocations["limit"]);
+
                 // offset: continue resumes where the last loop over the same source stopped; it names no variable.
                 if (!loop.OffsetIsContinue)
                     Expression(loop.Offset, loopLocations["offset"]);
+
                 Scoped(loop.Statements, (loop.Identifier, element), ("forloop", Shape.Named(ForLoopMembers)));
                 Statements(loop.Else?.Statements);
+
                 break;
             case TableRowStatement table:
                 var tableLocations = _source.Loop();
@@ -89,44 +104,58 @@ internal sealed class LiquidModelChecker
                 Expression(table.Offset, tableLocations["offset"]);
                 Expression(table.Cols, tableLocations["cols"]);
                 Scoped(table.Statements, (table.Identifier, row), ("tablerowloop", Shape.Unknown));
+
                 break;
             case IfStatement branch:
                 Expression(branch.Condition);
                 Statements(branch.Statements);
+
                 foreach (var other in branch.ElseIfs ?? [])
                 {
                     Expression(other.Condition);
                     Statements(other.Statements);
                 }
+
                 Statements(branch.Else?.Statements);
+
                 break;
             case UnlessStatement unless:
                 Expression(unless.Condition);
                 Statements(unless.Statements);
                 Statements(unless.Else?.Statements);
+
                 break;
             case CaseStatement choice:
                 Expression(choice.Expression);
+
                 foreach (var when in choice.Whens ?? [])
                 {
                     foreach (var option in when.Options ?? [])
                         Expression(option);
+
                     Statements(when.Statements);
                 }
+
                 Statements(choice.Else?.Statements);
+
                 break;
             case CycleStatement cycle:
                 Expression(cycle.Group);
+
                 foreach (var value in cycle.Values ?? [])
                     Expression(value);
+
                 break;
             case IncludeStatement or RenderStatement:
                 _position = _source.Find(statement is IncludeStatement ? "include" : "render");
+
                 Add(new TemplateDiagnostic(
                     "A template cannot include another template: each template version is self-contained"));
+
                 break;
             case TagStatement tag:
                 Statements(tag.Statements);
+
                 break;
         }
     }
@@ -140,6 +169,7 @@ internal sealed class LiquidModelChecker
     {
         _scopes.Add(variables.ToDictionary(variable => variable.Name, variable => variable.Shape,
             StringComparer.Ordinal));
+
         Statements(statements);
         _scopes.RemoveAt(_scopes.Count - 1);
     }
@@ -148,8 +178,15 @@ internal sealed class LiquidModelChecker
     {
         var previous = _source;
         _source = locations;
-        try { return Expression(expression); }
-        finally { _source = previous; }
+
+        try
+        {
+            return Expression(expression);
+        }
+        finally
+        {
+            _source = previous;
+        }
     }
 
     private Shape Expression(Expression? expression)
@@ -161,23 +198,28 @@ internal sealed class LiquidModelChecker
             case FilterExpression filter:
                 var input = Expression(filter.Input);
                 _position = _source.Find(filter.Name);
+
                 if (!_options.Filters.TryGetValue(filter.Name, out _))
                     Add(new TemplateDiagnostic($"There is no filter named '{filter.Name}'"));
                 else if (LiquidTemplateEngine.DateFilters.Contains(filter.Name) && input.Text is { } text &&
                          !LiquidTemplateEngine.TryParseDate(text, out _))
                     Add(new TemplateDiagnostic(LiquidTemplateEngine.NotADate(text)));
+
                 foreach (var argument in filter.Parameters ?? [])
                     Expression(argument.Expression);
+
                 return Shape.Unknown;
             case BinaryExpression binary:
                 Expression(binary.Left);
                 Expression(binary.Right);
+
                 return Shape.Unknown;
             case LiteralExpression { Value: StringValue text }:
                 return Shape.Of(typeof(string)) with { Text = text.ToStringValue() };
             case RangeExpression range:
                 Expression(range.From);
                 Expression(range.To);
+
                 return Shape.Unknown;
             default:
                 return Shape.Unknown;
@@ -187,28 +229,35 @@ internal sealed class LiquidModelChecker
     private Shape Member(MemberExpression expression)
     {
         var segments = expression.Segments;
+
         if (segments.Count == 0 || segments[0] is not IdentifierSegment root)
         {
             foreach (var segment in segments)
                 Segment(Shape.Unknown, segment, "");
+
             return Shape.Unknown;
         }
+
         var shape = Lookup(root.Identifier);
         _position = _source.Find(root.Identifier);
         var path = root.Identifier;
+
         if (shape == null)
         {
             Add(LiquidModel.Member(_model, root.Identifier) is { Readable: false } member
                 ? Unreadable("the model", member)
                 : new TemplateDiagnostic(
                     $"'{root.Identifier}' is not a member of the model or a variable of the template"));
+
             shape = Shape.Unknown;
         }
+
         for (var index = 1; index < segments.Count; index++)
         {
             shape = Segment(shape, segments[index], path);
             path += segments[index] is IdentifierSegment identifier ? $".{identifier.Identifier}" : "[]";
         }
+
         return shape;
     }
 
@@ -219,6 +268,7 @@ internal sealed class LiquidModelChecker
             if (_scopes[index].TryGetValue(name, out var shape))
                 return shape;
         }
+
         return null;
     }
 
@@ -228,18 +278,23 @@ internal sealed class LiquidModelChecker
         {
             case IdentifierSegment identifier:
                 _position = _source.Find(identifier.Identifier);
+
                 return Read(shape, identifier.Identifier, path);
             case IndexerSegment indexer:
                 Expression(indexer.Expression);
+
                 if (shape.Type is { } type)
                 {
                     if (LiquidModel.DictionaryValue(type) is { } value)
                         return Shape.Of(value);
+
                     if (LiquidModel.Element(type) is { } element)
                         return Shape.Of(element);
+
                     if (indexer.Expression is LiteralExpression { Value: StringValue name })
                         return Read(shape, name.ToStringValue(), path);
                 }
+
                 return Shape.Unknown;
             default:
                 return Shape.Unknown;
@@ -252,11 +307,15 @@ internal sealed class LiquidModelChecker
         {
             if (members.Contains(name))
                 return Shape.Unknown;
+
             Add(new TemplateDiagnostic($"'{path}' has no member '{name}'"));
+
             return Shape.Unknown;
         }
+
         if (shape.Type is not { } type)
             return Shape.Unknown;
+
         if (type == typeof(string))
         {
             if (name is "size" or "first" or "last")
@@ -270,6 +329,7 @@ internal sealed class LiquidModelChecker
         {
             if (name == "size")
                 return Shape.Unknown;
+
             if (name is "first" or "last")
                 return Shape.Of(element);
         }
@@ -277,11 +337,15 @@ internal sealed class LiquidModelChecker
         {
             if (member.Readable)
                 return Shape.Of(member.Type);
+
             Add(Unreadable(path, member));
+
             return Shape.Unknown;
         }
+
         Add(new TemplateDiagnostic(
             $"'{path}' has no member '{name}': it is {TypeName(type)}"));
+
         return Shape.Unknown;
     }
 

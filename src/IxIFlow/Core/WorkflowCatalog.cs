@@ -4,11 +4,21 @@ using Microsoft.Extensions.Logging;
 
 namespace IxIFlow.Core;
 
-public enum WorkflowVersionState { Draft, Published, Deprecated, Retired }
+public enum WorkflowVersionState
+{
+    Draft,
+    Published,
+    Deprecated,
+    Retired
+}
 
 public sealed record WorkflowVersionReference(string Name, int Version);
 
-public enum WorkflowDependencyKind { Child, Inline }
+public enum WorkflowDependencyKind
+{
+    Child,
+    Inline
+}
 
 public sealed record WorkflowVersionDependency(string Name, int Version, WorkflowDependencyKind Kind = WorkflowDependencyKind.Child);
 
@@ -17,14 +27,22 @@ public sealed record WorkflowVersionInvocation(string Name, int Version, string 
 
 /// <summary>Version identity and contracts are immutable. Code presentation refreshes at registration.
 /// Artifact references retain the full package closure, including pins copied from verified callees.</summary>
-public sealed record WorkflowVersion(string Name, int Version, string StructureHash,
-    string ContractJson, string ContractHash,
-    [property: System.Text.Json.Serialization.JsonRequired] WorkflowDescriptor Descriptor,
-    [property: System.Text.Json.Serialization.JsonRequired] IReadOnlyList<WorkflowVersionInvocation> Invocations,
-    WorkflowVersionState State = WorkflowVersionState.Published, ArtifactDigest? ArtifactDigest = null,
+public sealed record WorkflowVersion(
+    string Name,
+    int Version,
+    string StructureHash,
+    string ContractJson,
+    string ContractHash,
+    [property: System.Text.Json.Serialization.JsonRequired]
+    WorkflowDescriptor Descriptor,
+    [property: System.Text.Json.Serialization.JsonRequired]
+    IReadOnlyList<WorkflowVersionInvocation> Invocations,
+    WorkflowVersionState State = WorkflowVersionState.Published,
+    ArtifactDigest? ArtifactDigest = null,
     IReadOnlyList<WorkflowVersionDependency>? Dependencies = null,
     IReadOnlyList<ArtifactDigest>? ArtifactReferences = null,
-    WorkflowDraftId? PublishedDraft = null, string? ManifestJson = null)
+    WorkflowDraftId? PublishedDraft = null,
+    string? ManifestJson = null)
 {
     /// <summary>The new authoring package closure, before union with verified callee pins.
     /// Shared pins remain here for the final withdrawal check; ArtifactReferences retains the full union.</summary>
@@ -38,7 +56,8 @@ public sealed record WorkflowVersion(string Name, int Version, string StructureH
 
     public bool Equals(WorkflowVersion? other) => ReferenceEquals(this, other) || other != null &&
         Name == other.Name && Version == other.Version && StructureHash == other.StructureHash &&
-        ContractJson == other.ContractJson && ContractHash == other.ContractHash && Descriptor == other.Descriptor && State == other.State &&
+        ContractJson == other.ContractJson && ContractHash == other.ContractHash && Descriptor == other.Descriptor &&
+        State == other.State &&
         ArtifactDigest == other.ArtifactDigest && PublishedDraft == other.PublishedDraft &&
         ManifestJson == other.ManifestJson && SameValues(Invocations, other.Invocations) &&
         SameValues(Dependencies, other.Dependencies) && SameValues(ArtifactReferences, other.ArtifactReferences) &&
@@ -47,13 +66,21 @@ public sealed record WorkflowVersion(string Name, int Version, string StructureH
     public override int GetHashCode()
     {
         var hash = new HashCode();
-        hash.Add(Name); hash.Add(Version); hash.Add(StructureHash);
-        hash.Add(ContractJson); hash.Add(ContractHash); hash.Add(Descriptor); hash.Add(State);
-        hash.Add(ArtifactDigest); hash.Add(PublishedDraft); hash.Add(ManifestJson);
+        hash.Add(Name);
+        hash.Add(Version);
+        hash.Add(StructureHash);
+        hash.Add(ContractJson);
+        hash.Add(ContractHash);
+        hash.Add(Descriptor);
+        hash.Add(State);
+        hash.Add(ArtifactDigest);
+        hash.Add(PublishedDraft);
+        hash.Add(ManifestJson);
         AddValues(ref hash, Invocations);
         AddValues(ref hash, Dependencies);
         AddValues(ref hash, ArtifactReferences);
         AddValues(ref hash, AuthoringPackageReferences);
+
         return hash.ToHashCode();
     }
 
@@ -63,8 +90,10 @@ public sealed record WorkflowVersion(string Name, int Version, string StructureH
     private static void AddValues<T>(ref HashCode hash, IReadOnlyList<T>? values)
     {
         hash.Add(values?.Count);
+
         if (values != null)
-            foreach (var value in values) hash.Add(value);
+            foreach (var value in values)
+                hash.Add(value);
     }
 }
 
@@ -88,65 +117,145 @@ public interface IWorkflowCatalogStore
 {
     /// <summary>The artifact source used for current catalog availability; null uses the store's own artifacts.</summary>
     IArtifactStore? CatalogArtifacts { get; set; }
+
     /// <summary>Lists installed metadata variants and their live host marks, optionally filtered by normalized id.</summary>
-    Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null);
-    Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query);
-    Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query);
-    Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope);
+    Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null,
+        CancellationToken cancellationToken = default);
+
+    Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query, CancellationToken cancellationToken = default);
+
+    Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query,
+        CancellationToken cancellationToken = default);
+
+    Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Lists matching template projections by key and integer version, scoped before paging.</summary>
-    Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query);
+    Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query, CancellationToken cancellationToken = default);
+
     /// <summary>Lists one permitted template's projections in ascending integer version order.</summary>
-    Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query);
+    Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Verifies immutable content and returns scoped metadata and audit, without variant text.</summary>
-    Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope);
+    Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Lists built-in step contracts, which disclose no scoped catalog identities.</summary>
-    Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope);
-    Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query);
-    Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query);
-    Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope);
-    Task<CatalogPage<CatalogPackage>> ListPackagesAsync(CatalogPackageQuery query);
-    Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query);
-    Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope);
-    Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query);
-    Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null);
-    Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version);
-    Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null);
-    Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null);
-    Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope);
-    Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null);
-    Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected, string? actor = null);
-    Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null);
-    Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null);
-    Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit);
-    Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity, int limit);
-    Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null);
-    Task<WorkflowPackage?> GetPackageAsync(string id, string version);
-    Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit);
-    Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version);
-    Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null);
-    Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null);
-    Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version);
-    Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null);
+    Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope, CancellationToken cancellationToken = default);
+
+    Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query, CancellationToken cancellationToken = default);
+
+    Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query,
+        CancellationToken cancellationToken = default);
+
+    Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope,
+        CancellationToken cancellationToken = default);
+
+    Task<CatalogPage<CatalogPackage>> ListPackagesAsync(CatalogPackageQuery query, CancellationToken cancellationToken = default);
+
+    Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query,
+        CancellationToken cancellationToken = default);
+
+    Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope,
+        CancellationToken cancellationToken = default);
+
+    Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query,
+        CancellationToken cancellationToken = default);
+
+    Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version,
+        IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default);
+
+    Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null,
+        CancellationToken cancellationToken = default);
+
+    Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId,
+        IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null,
+        CancellationToken cancellationToken = default);
+
+    Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope,
+        CancellationToken cancellationToken = default);
+
+    Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package, PackageActivities activities,
+        IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default);
+
+    Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected,
+        string? actor = null, CancellationToken cancellationToken = default);
+
+    Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts,
+        string? actor = null, CancellationToken cancellationToken = default);
+
+    Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest,
+        PackageActivities activities, IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity, int limit,
+        CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null, CancellationToken cancellationToken = default);
+    Task<WorkflowPackage?> GetPackageAsync(string id, string version, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit,
+        CancellationToken cancellationToken = default);
+
+    Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version, CancellationToken cancellationToken = default);
+
+    Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null,
+        CancellationToken cancellationToken = default);
+
+    Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null,
+        CancellationToken cancellationToken = default);
+
+    Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null, CancellationToken cancellationToken = default);
+
     /// <summary>Reads the committed store-wide version revision without reading version metadata.</summary>
-    Task<long> GetCatalogRevisionAsync();
+    Task<long> GetCatalogRevisionAsync(CancellationToken cancellationToken = default);
+
     /// <summary>Returns current rows changed after <paramref name="afterRevision"/> and a consistent revision watermark.
     /// Every version mutation must stamp its row and advance the revision in the same transaction.
     /// A concurrent write is included or remains visible to a subsequent read from the returned revision.
     /// </summary>
-    Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision);
-    Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null);
+    Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision, CancellationToken cancellationToken = default);
+
+    Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected,
+        IArtifactStore? artifacts = null, string? actor = null, CancellationToken cancellationToken = default);
+
     /// <summary>Publishes a version atomically against the draft's complete identity and deletes the draft.</summary>
-    Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null);
-    Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected);
-    Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query);
-    Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope);
+    Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts,
+        string? actor = null, CancellationToken cancellationToken = default);
+
+    Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected, CancellationToken cancellationToken = default);
+    Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query, CancellationToken cancellationToken = default);
+
+    Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Joins/starts publication, or returns the abandoned stale attempt when its draft was superseded.</summary>
-    Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter);
-    Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId);
-    Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome);
-    Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope);
-    Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query);
+    Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId, CancellationToken cancellationToken = default);
+
+    Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome,
+        CancellationToken cancellationToken = default);
+
+    Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope, CancellationToken cancellationToken = default);
+
+    /// <summary>Reads the latest attempt for one draft generation, ordered by start time, revision and attempt descending.</summary>
+    Task<WorkflowPublication?> GetLatestPublicationAsync(string kind, string name, int version, Guid generation, CatalogScope scope,
+        CancellationToken cancellationToken = default);
+
+    Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query,
+        CancellationToken cancellationToken = default);
+
     Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default);
+
     /// <summary>Collects old artifacts under the catalog/start lock, retaining catalog references and saved instance pins.</summary>
     Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default);
@@ -158,8 +267,10 @@ public interface IWorkflowCatalog : IWorkflowCatalogStore, IWorkflowDefinitionSo
     Task<IReadOnlyList<CatalogHost>> GetWorkflowVersionHostsAsync(string name, int version, CatalogScope scope);
     Task<IReadOnlyList<CatalogHost>> GetPackageHostsAsync(string id, string version, string? build, CatalogScope scope);
     Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version);
+
     /// <summary>Monotonically increases after a local catalog mutation or executable registration.</summary>
     long DefinitionRevision { get; }
+
     Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync();
     Task RegisterWorkflowAsync(WorkflowDefinition definition);
     Task<string?> GetWorkflowStructureHashAsync(string name, int version);
@@ -173,23 +284,43 @@ public sealed partial class WorkflowCatalog : IWorkflowCatalog, IDisposable
     private readonly ConcurrentDictionary<(string, int), WorkflowDefinition> _definitions = new();
     private readonly ConcurrentDictionary<(string, int), WorkflowVersion> _registrations = new();
     private readonly SemaphoreSlim _registrationLock = new(1, 1);
+    private readonly object _initializationGate = new();
+    private readonly WorkflowDefinition[] _initialDefinitions;
+    private Task? _initialization;
     private long _definitionRevision;
     private readonly IArtifactStore? _artifacts;
     private readonly WorkflowBundleLoader? _bundles;
 
     public long DefinitionRevision => Interlocked.Read(ref _definitionRevision);
 
-    public WorkflowCatalog() : this(new InMemoryWorkflowStateRepository()) { }
+    public WorkflowCatalog() : this(new InMemoryWorkflowStateRepository())
+    {
+    }
+
     public WorkflowCatalog(IEnumerable<WorkflowDefinition> definitions)
-        : this(new InMemoryWorkflowStateRepository(), definitions) { }
+        : this(new InMemoryWorkflowStateRepository(), definitions)
+    {
+    }
 
     public WorkflowCatalog(IWorkflowCatalogStore store, IEnumerable<WorkflowDefinition>? definitions = null,
         IArtifactStore? artifacts = null, WorkflowBundleOptions? bundles = null, ILogger<WorkflowCatalog>? logger = null)
     {
         _store = store;
         _artifacts = artifacts;
+        _initialDefinitions = (definitions ?? []).ToArray();
+
+        // Definition and local-call validation is pure. Persisting the registrations belongs
+        // to asynchronous startup, but locally visible definition errors still fail early.
+        var local = _initialDefinitions.Select(Registration).ToArray();
+
+        foreach (var registration in local)
+            WorkflowCatalogRules.CheckInvocations(registration, local);
+
         var artifactSource = artifacts is RepositoryArtifactStore repositoryArtifacts ? repositoryArtifacts.Repository : artifacts;
-        if (artifactSource != null && !ReferenceEquals(artifactSource, store)) store.CatalogArtifacts = artifacts;
+
+        if (artifactSource != null && !ReferenceEquals(artifactSource, store))
+            store.CatalogArtifacts = artifacts;
+
         if (bundles != null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(bundles.CacheDirectory);
@@ -199,154 +330,378 @@ public sealed partial class WorkflowCatalog : IWorkflowCatalog, IDisposable
             ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(bundles.CacheLockTimeout, TimeSpan.Zero);
             _bundles = new(artifacts ?? throw new ArgumentException("Bundle loading requires an artifact store"), bundles, logger);
         }
-        foreach (var definition in definitions ?? [])
-            RegisterWorkflowAsync(definition).GetAwaiter().GetResult();
+    }
+
+    internal Task InitializeAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Task initialization;
+
+        lock (_initializationGate)
+            initialization = _initialization is { IsFaulted: false, IsCanceled: false }
+                ? _initialization
+                : _initialization = InitializeCoreAsync(cancellationToken: cancellationToken);
+
+        return initialization.WaitAsync(cancellationToken);
+    }
+
+    private async Task InitializeCoreAsync(CancellationToken cancellationToken = default)
+    {
+        foreach (var definition in _initialDefinitions)
+            await RegisterCoreAsync(definition, cancellationToken: cancellationToken);
     }
 
     public async Task RegisterWorkflowAsync(WorkflowDefinition definition)
     {
+        await InitializeAsync();
+        await RegisterCoreAsync(definition);
+    }
+
+    private static WorkflowVersion Registration(WorkflowDefinition definition)
+    {
         WorkflowDefinitionValidator.Validate(definition);
-        var scopes = new WorkflowScopeCatalog(definition);
+        var scopes = WorkflowDefinitionValidator.ForExecution(definition);
         var dependencies = WorkflowDefinitionValidator.GetDependencies(definition);
         var contract = WorkflowDefinitionValidator.GetContract(definition);
-        var registration = new WorkflowVersion(definition.Name, definition.Version, scopes.StructureHash,
+
+        return new WorkflowVersion(definition.Name, definition.Version, scopes.StructureHash,
             contract.ToJson(), contract.Hash, WorkflowDescriptor.Of(definition), Dependencies: dependencies,
             Invocations: WorkflowDefinitionValidator.GetInvocations(definition));
-        await _registrationLock.WaitAsync();
+    }
+
+    private async Task RegisterCoreAsync(WorkflowDefinition definition, CancellationToken cancellationToken = default)
+    {
+        var registration = Registration(definition);
+        await _registrationLock.WaitAsync(cancellationToken);
+
         try
         {
             var key = (definition.Name, definition.Version);
+
             if (_registrations.TryGetValue(key, out var existing))
             {
-                WorkflowCatalogRules.CheckRegistration(existing, registration);
+                // Registration pins the first executable shape. The validated catalog is cached,
+                // but the public definition can still be mutated between registrations.
+                var currentHash = new WorkflowScopeCatalog(definition).StructureHash;
+                WorkflowCatalogRules.CheckRegistration(existing, registration with { StructureHash = currentHash });
+
                 // Starts register the same definition repeatedly; only a changed presentation
                 // refreshes the stored row, so an unchanged start never takes the catalog lock.
                 if (existing.Descriptor != registration.Descriptor)
                 {
-                    await _store.RegisterWorkflowVersionAsync(registration, _artifacts);
+                    await _store.RegisterWorkflowVersionAsync(registration, _artifacts, cancellationToken: cancellationToken);
                     _registrations[key] = registration;
                 }
             }
             else
             {
-                await _store.RegisterWorkflowVersionAsync(registration, _artifacts);
+                await _store.RegisterWorkflowVersionAsync(registration, _artifacts, cancellationToken: cancellationToken);
                 _registrations.TryAdd(key, registration);
                 _definitions.TryAdd(key, definition);
                 Interlocked.Increment(ref _definitionRevision);
             }
         }
-        finally { _registrationLock.Release(); }
+        finally
+        {
+            _registrationLock.Release();
+        }
     }
 
-    public Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync() =>
-        Task.FromResult<IReadOnlyList<WorkflowDefinition>>(_definitions.Values.ToArray());
+    public async Task<IReadOnlyList<WorkflowDefinition>> GetWorkflowDefinitionsAsync()
+    {
+        await InitializeAsync();
 
-    public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version)
+        return _definitions.Values.ToArray();
+    }
+
+    public async Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version)
     {
         WorkflowCatalogRules.ValidateName(name);
-        return Task.FromResult(_definitions.GetValueOrDefault((name, version)));
+        await InitializeAsync();
+
+        return _definitions.GetValueOrDefault((name, version));
     }
 
-    public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? bundleDigest, CancellationToken cancellationToken = default)
+    public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? bundleDigest,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         WorkflowCatalogRules.ValidateName(name);
+
         if (bundleDigest == null)
-            return new(await GetWorkflowDefinitionAsync(name, version)
-                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, $"Workflow definition not found: {name} v{version}; it is unavailable on this host"));
+        {
+            await InitializeAsync(cancellationToken);
+
+            return new(_definitions.GetValueOrDefault((name, version))
+                ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
+                    $"Workflow definition not found: {name} v{version}; it is unavailable on this host"));
+        }
+
         if (_bundles == null)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "This host has no bundle cache configured");
+
         var lease = await _bundles.AcquireAsync(bundleDigest.Value, cancellationToken);
+
         try
         {
             if (lease.Definition.Name != name || lease.Definition.Version != version)
-                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Bundle identity differs from the saved workflow identity");
-            var registered = await _store.GetWorkflowVersionAsync(name, version)
+                throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch,
+                    "Bundle identity differs from the saved workflow identity");
+
+            var registered = await _store.GetWorkflowVersionAsync(name, version, cancellationToken: cancellationToken)
                 ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Bundle has no registered workflow version");
+
             WorkflowCatalogRules.CheckBundleDefinition(registered, lease.Definition, WorkflowErrorKind.ArtifactMismatch);
+
             return lease;
         }
-        catch { lease.Dispose(); throw; }
+        catch
+        {
+            lease.Dispose();
+
+            throw;
+        }
     }
 
-    public void Dispose() => _bundles?.Dispose();
+    public void Dispose()
+    {
+        _bundles?.Dispose();
+        _registrationLock.Dispose();
+    }
 
-    public async Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version, CancellationToken cancellationToken = default) =>
-        await AcquireWorkflowDefinitionAsync(name, version, (await _store.GetWorkflowVersionAsync(name, version))?.ArtifactDigest, cancellationToken);
+    public async Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version,
+        CancellationToken cancellationToken = default) =>
+        await AcquireWorkflowDefinitionAsync(name, version,
+            (await GetWorkflowVersionAsync(name, version, cancellationToken: cancellationToken))?.ArtifactDigest, cancellationToken);
 
-    public async Task<string?> GetWorkflowStructureHashAsync(string name, int version) =>
-        _registrations.TryGetValue((name, version), out var local) ? local.StructureHash
+    public async Task<string?> GetWorkflowStructureHashAsync(string name, int version)
+    {
+        await InitializeAsync();
+
+        return _registrations.TryGetValue((name, version), out var local)
+            ? local.StructureHash
             : (await _store.GetWorkflowVersionAsync(name, version))?.StructureHash;
+    }
 
-    public async Task<WorkflowVersion?> GetLatestWorkflowVersionAsync(string name) =>
-        (await _store.GetWorkflowVersionsAsync(name)).Where(row => row.State == WorkflowVersionState.Published)
-        .MaxBy(row => row.Version);
+    public async Task<WorkflowVersion?> GetLatestWorkflowVersionAsync(string name)
+    {
+        await InitializeAsync();
+
+        return (await _store.GetWorkflowVersionsAsync(name)).Where(row => row.State == WorkflowVersionState.Published)
+            .MaxBy(row => row.Version);
+    }
 
     public Task RetireWorkflowVersionAsync(string name, int version, CatalogMutationToken expected, string? actor = null) =>
         SetWorkflowVersionStateAsync(name, version, WorkflowVersionState.Retired, expected, actor: actor);
-    public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version) => _store.GetDefinitionAsync(kind, name, version);
-    public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) => _store.GetInstalledPackagesAsync(id);
-    public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query) => _store.ListTemplatesAsync(query);
-    public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query) => _store.ListTemplateVersionsAsync(key, query);
-    public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope) => _store.GetTemplateDetailAsync(key, version, scope);
-    public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope) => _store.ListStepDescriptorsAsync(scope);
-    public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => _store.ListActivitiesAsync(query);
-    public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => _store.ListActivityVersionsAsync(key, query);
-    public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => _store.GetActivityAsync(key, version, provider, scope);
-    public Task<CatalogPage<CatalogPackage>> ListPackagesAsync(CatalogPackageQuery query) => _store.ListPackagesAsync(query);
-    public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query) => _store.ListPackageVersionsAsync(id, query);
-    public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => _store.GetPackageDetailAsync(id, version, scope);
-    public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => _store.GetPackageActivitiesAsync(id, version, query);
-    public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => _store.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit);
-    public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => _store.RegisterTemplateVersionAsync(version, artifacts, actor);
-    public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version) => _store.GetTemplateVersionAsync(key, version);
-    public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => _store.GetTemplateVersionsAsync(key);
-    public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => _store.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
-    public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => _store.GetPackageHoldersAsync(id, version, scope);
-    public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _store.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor);
-    public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected, string? actor = null) => _store.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor);
-    public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _store.RegisterPackageAsync(package, activities, artifacts, actor);
-    public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _store.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
-    public IArtifactStore? CatalogArtifacts { get => _store.CatalogArtifacts; set => _store.CatalogArtifacts = value; }
-    public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity, int limit) => _store.GetPackageExtractionPageAsync(extraction, afterIdentity, limit);
-    public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _store.GetPackagesAsync(id);
-    public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _store.GetPackageAsync(id, version);
-    public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _store.GetPackagePageAsync(id, afterVersion, limit);
-    public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null) =>
-        _store.SaveDefinitionAsync(definition, expected, actor);
-    public async Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null)
+
+    public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version, CancellationToken cancellationToken = default) =>
+        _store.GetDefinitionAsync(kind, name, version, cancellationToken: cancellationToken);
+
+    public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null,
+        CancellationToken cancellationToken = default) => _store.GetInstalledPackagesAsync(id, cancellationToken: cancellationToken);
+
+    public Task<CatalogPage<CatalogTemplate>>
+        ListTemplatesAsync(CatalogTemplateQuery query, CancellationToken cancellationToken = default) =>
+        _store.ListTemplatesAsync(query, cancellationToken: cancellationToken);
+
+    public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query,
+        CancellationToken cancellationToken = default) =>
+        _store.ListTemplateVersionsAsync(key, query, cancellationToken: cancellationToken);
+
+    public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope,
+        CancellationToken cancellationToken = default) =>
+        _store.GetTemplateDetailAsync(key, version, scope, cancellationToken: cancellationToken);
+
+    public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope,
+        CancellationToken cancellationToken = default) => _store.ListStepDescriptorsAsync(scope, cancellationToken: cancellationToken);
+
+    public Task<CatalogPage<CatalogActivity>>
+        ListActivitiesAsync(CatalogActivityQuery query, CancellationToken cancellationToken = default) =>
+        _store.ListActivitiesAsync(query, cancellationToken: cancellationToken);
+
+    public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query,
+        CancellationToken cancellationToken = default) =>
+        _store.ListActivityVersionsAsync(key, query, cancellationToken: cancellationToken);
+
+    public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope,
+        CancellationToken cancellationToken = default) =>
+        _store.GetActivityAsync(key, version, provider, scope, cancellationToken: cancellationToken);
+
+    public Task<CatalogPage<CatalogPackage>> ListPackagesAsync(CatalogPackageQuery query, CancellationToken cancellationToken = default) =>
+        _store.ListPackagesAsync(query, cancellationToken: cancellationToken);
+
+    public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query,
+        CancellationToken cancellationToken = default) => _store.ListPackageVersionsAsync(id, query, cancellationToken: cancellationToken);
+
+    public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope,
+        CancellationToken cancellationToken = default) =>
+        _store.GetPackageDetailAsync(id, version, scope, cancellationToken: cancellationToken);
+
+    public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query,
+        CancellationToken cancellationToken = default) =>
+        _store.GetPackageActivitiesAsync(id, version, query, cancellationToken: cancellationToken);
+
+    public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit,
+        CancellationToken cancellationToken = default) =>
+        _store.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit, cancellationToken: cancellationToken);
+
+    public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version,
+        IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+        _store.RegisterTemplateVersionAsync(version, artifacts, actor, cancellationToken: cancellationToken);
+
+    public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version,
+        CancellationToken cancellationToken = default) =>
+        _store.GetTemplateVersionAsync(key, version, cancellationToken: cancellationToken);
+
+    public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null,
+        CancellationToken cancellationToken = default) => _store.GetTemplateVersionsAsync(key, cancellationToken: cancellationToken);
+
+    public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId,
+        IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null,
+        CancellationToken cancellationToken = default) =>
+        _store.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor, cancellationToken: cancellationToken);
+
+    public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope,
+        CancellationToken cancellationToken = default) =>
+        _store.GetPackageHoldersAsync(id, version, scope, cancellationToken: cancellationToken);
+
+    public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package,
+        PackageActivities activities, IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+        _store.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor, cancellationToken: cancellationToken);
+
+    public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected,
+        string? actor = null, CancellationToken cancellationToken = default) =>
+        _store.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor, cancellationToken: cancellationToken);
+
+    public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts,
+        string? actor = null, CancellationToken cancellationToken = default) =>
+        _store.RegisterPackageAsync(package, activities, artifacts, actor, cancellationToken: cancellationToken);
+
+    public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest,
+        PackageActivities activities, IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+        _store.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor,
+            cancellationToken: cancellationToken);
+
+    public IArtifactStore? CatalogArtifacts
     {
-        await _store.RegisterWorkflowVersionAsync(version, artifacts ?? _artifacts);
+        get => _store.CatalogArtifacts;
+        set => _store.CatalogArtifacts = value;
+    }
+
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity,
+        int limit, CancellationToken cancellationToken = default) =>
+        _store.GetPackageExtractionPageAsync(extraction, afterIdentity, limit, cancellationToken: cancellationToken);
+
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null, CancellationToken cancellationToken = default) =>
+        _store.GetPackagesAsync(id, cancellationToken: cancellationToken);
+
+    public Task<WorkflowPackage?> GetPackageAsync(string id, string version, CancellationToken cancellationToken = default) =>
+        _store.GetPackageAsync(id, version, cancellationToken: cancellationToken);
+
+    public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit,
+        CancellationToken cancellationToken = default) =>
+        _store.GetPackagePageAsync(id, afterVersion, limit, cancellationToken: cancellationToken);
+
+    public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null,
+        CancellationToken cancellationToken = default) =>
+        _store.SaveDefinitionAsync(definition, expected, actor, cancellationToken: cancellationToken);
+
+    public async Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null,
+        CancellationToken cancellationToken = default)
+    {
+        await _store.RegisterWorkflowVersionAsync(version, artifacts ?? _artifacts, cancellationToken: cancellationToken);
         Interlocked.Increment(ref _definitionRevision);
     }
-    public async Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null)
+
+    public async Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts,
+        string? actor = null, CancellationToken cancellationToken = default)
     {
-        var published = await _store.PublishDefinitionAsync(draftId, version, artifacts, actor);
+        var published = await _store.PublishDefinitionAsync(draftId, version, artifacts, actor, cancellationToken: cancellationToken);
         Interlocked.Increment(ref _definitionRevision);
+
         return published;
     }
-    public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) => _store.GetWorkflowVersionAsync(name, version);
-    public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) => _store.GetWorkflowVersionsAsync(name);
-    public Task<long> GetCatalogRevisionAsync() => _store.GetCatalogRevisionAsync();
-    public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => _store.GetWorkflowVersionChangesAsync(afterRevision);
-    public async Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null)
+
+    public async Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version, CancellationToken cancellationToken = default)
     {
-        var row = await _store.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts ?? _artifacts, actor);
+        await InitializeAsync(cancellationToken: cancellationToken);
+
+        return await _store.GetWorkflowVersionAsync(name, version, cancellationToken: cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null,
+        CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken: cancellationToken);
+
+        return await _store.GetWorkflowVersionsAsync(name, cancellationToken: cancellationToken);
+    }
+
+    public Task<long> GetCatalogRevisionAsync(CancellationToken cancellationToken = default) =>
+        _store.GetCatalogRevisionAsync(cancellationToken: cancellationToken);
+
+    public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision, CancellationToken cancellationToken = default) =>
+        _store.GetWorkflowVersionChangesAsync(afterRevision, cancellationToken: cancellationToken);
+
+    public async Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state,
+        CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null,
+        CancellationToken cancellationToken = default)
+    {
+        var row = await _store.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts ?? _artifacts, actor,
+            cancellationToken: cancellationToken);
+
         Interlocked.Increment(ref _definitionRevision);
+
         return row;
     }
-    public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected) => _store.DeleteDefinitionAsync(expected);
-    public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query) => _store.GetDefinitionsAsync(query);
-    public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => _store.ListWorkflowsAsync(query);
-    public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => _store.ListWorkflowVersionsAsync(name, query);
-    public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => _store.GetWorkflowVersionDetailAsync(name, version, scope);
-    public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope) => _store.GetRetirementBlockersAsync(name, version, scope);
-    public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter) => _store.BeginPublicationAsync(draftId, hostId, actor, staleAfter);
-    public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId) => _store.HeartbeatPublicationAsync(id, hostId);
-    public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome) => _store.CompletePublicationAsync(id, hostId, outcome);
-    public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope) => _store.GetPublicationAsync(id, scope);
-    public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query) => _store.GetPublicationsAsync(query);
-    public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => _store.PurgePublicationsAsync(retention, batchSize, cancellationToken);
+
+    public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected, CancellationToken cancellationToken = default) =>
+        _store.DeleteDefinitionAsync(expected, cancellationToken: cancellationToken);
+
+    public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query,
+        CancellationToken cancellationToken = default) => _store.GetDefinitionsAsync(query, cancellationToken: cancellationToken);
+
+    public Task<CatalogPage<CatalogWorkflow>>
+        ListWorkflowsAsync(CatalogWorkflowQuery query, CancellationToken cancellationToken = default) =>
+        _store.ListWorkflowsAsync(query, cancellationToken: cancellationToken);
+
+    public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query,
+        CancellationToken cancellationToken = default) =>
+        _store.ListWorkflowVersionsAsync(name, query, cancellationToken: cancellationToken);
+
+    public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope,
+        CancellationToken cancellationToken = default) =>
+        _store.GetWorkflowVersionDetailAsync(name, version, scope, cancellationToken: cancellationToken);
+
+    public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope,
+        CancellationToken cancellationToken = default) =>
+        _store.GetRetirementBlockersAsync(name, version, scope, cancellationToken: cancellationToken);
+
+    public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter,
+        CancellationToken cancellationToken = default) =>
+        _store.BeginPublicationAsync(draftId, hostId, actor, staleAfter, cancellationToken: cancellationToken);
+
+    public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId, CancellationToken cancellationToken = default) =>
+        _store.HeartbeatPublicationAsync(id, hostId, cancellationToken: cancellationToken);
+
+    public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome,
+        CancellationToken cancellationToken = default) =>
+        _store.CompletePublicationAsync(id, hostId, outcome, cancellationToken: cancellationToken);
+
+    public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope, CancellationToken cancellationToken = default) =>
+        _store.GetPublicationAsync(id, scope, cancellationToken: cancellationToken);
+
+    /// <inheritdoc/>
+    public Task<WorkflowPublication?> GetLatestPublicationAsync(string kind, string name, int version, Guid generation, CatalogScope scope,
+        CancellationToken cancellationToken = default) =>
+        _store.GetLatestPublicationAsync(kind, name, version, generation, scope, cancellationToken);
+
+    public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query,
+        CancellationToken cancellationToken = default) => _store.GetPublicationsAsync(query, cancellationToken: cancellationToken);
+
+    public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+        _store.PurgePublicationsAsync(retention, batchSize, cancellationToken);
+
     public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
         CancellationToken cancellationToken = default) => _store.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
 }
@@ -356,29 +711,36 @@ internal static class WorkflowCatalogRules
 {
     internal static void CheckManifestInvocations(WorkflowVersion row)
     {
-        if (row.ManifestJson == null) return;
+        if (row.ManifestJson == null)
+            return;
+
         try
         {
             using var manifest = System.Text.Json.JsonDocument.Parse(row.ManifestJson);
+
             if (manifest.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
                 manifest.RootElement.TryGetProperty("Invocations", out var inventory) &&
                 (inventory.ValueKind != System.Text.Json.JsonValueKind.Array || row.Invocations == null ||
-                 !SameInvocations(row.Invocations, System.Text.Json.JsonSerializer.Deserialize<WorkflowVersionInvocation[]>(inventory)!)))
+                    !SameInvocations(row.Invocations,
+                        System.Text.Json.JsonSerializer.Deserialize<WorkflowVersionInvocation[]>(inventory)!)))
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch,
                     $"Workflow '{row.Name}' v{row.Version} invocation inventory differs from its bundle manifest");
         }
         catch (System.Text.Json.JsonException error)
         {
-            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Workflow invocation inventory manifest is invalid", error);
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Workflow invocation inventory manifest is invalid",
+                error);
         }
     }
 
     internal static void CheckBundleDefinition(WorkflowVersion row, WorkflowDefinition definition, WorkflowErrorKind kind)
     {
         var contract = WorkflowDefinitionValidator.GetContract(definition);
+
         if (row.ContractJson != contract.ToJson() || row.ContractHash != contract.Hash)
             throw new WorkflowEngineException(kind,
                 $"Workflow '{row.Name}' v{row.Version} contract differs from its bundle definition");
+
         if (!SameInvocations(row.Invocations, WorkflowDefinitionValidator.GetInvocations(definition)) ||
             !(row.Dependencies ?? []).SequenceEqual(WorkflowDefinitionValidator.GetDependencies(definition)))
             throw new WorkflowEngineException(kind,
@@ -398,35 +760,44 @@ internal static class WorkflowCatalogRules
     public static void CheckInvocations(WorkflowVersion candidate, IEnumerable<WorkflowVersion> registered)
     {
         var dependencies = (candidate.Dependencies ?? []).Select(dependency => (dependency.Name, dependency.Version)).ToHashSet();
+
         if (!candidate.Invocations.Select(invocation => (invocation.Name, invocation.Version)).ToHashSet().IsSubsetOf(dependencies))
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow invocation metadata must refer to declared dependencies");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                "Workflow invocation metadata must refer to declared dependencies");
+
         var versions = registered.Where(row => (row.Name, row.Version) != (candidate.Name, candidate.Version))
             .Append(candidate).ToDictionary(row => (row.Name, row.Version));
+
         foreach (var caller in versions.Values)
-            foreach (var invocation in caller.Invocations)
-            {
-                // Only edges made resolvable by this registration need to be checked.
-                if ((caller.Name, caller.Version) != (candidate.Name, candidate.Version) &&
-                    (invocation.Name, invocation.Version) != (candidate.Name, candidate.Version)) continue;
-                if (versions.TryGetValue((invocation.Name, invocation.Version), out var callee) &&
-                    WorkflowContract.Parse(callee.ContractJson).RequiredScopes.Count != 0)
-                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                        $"{invocation.SourceLocation}: Workflow '{caller.Name}' v{caller.Version}, step '{invocation.Step}' " +
-                        $"cannot invoke '{callee.Name}' v{callee.Version}: an independent child cannot supply required scopes");
-            }
+        foreach (var invocation in caller.Invocations)
+        {
+            // Only edges made resolvable by this registration need to be checked.
+            if ((caller.Name, caller.Version) != (candidate.Name, candidate.Version) &&
+                (invocation.Name, invocation.Version) != (candidate.Name, candidate.Version))
+                continue;
+
+            if (versions.TryGetValue((invocation.Name, invocation.Version), out var callee) &&
+                WorkflowContract.Parse(callee.ContractJson).RequiredScopes.Count != 0)
+                throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+                    $"{invocation.SourceLocation}: Workflow '{caller.Name}' v{caller.Version}, step '{invocation.Step}' " +
+                    $"cannot invoke '{callee.Name}' v{callee.Version}: an independent child cannot supply required scopes");
+        }
     }
 
     public static void CheckPublication(WorkflowDraftId id, WorkflowVersion version, WorkflowDraft? draft, WorkflowVersion? existing)
     {
         CheckPublicationArguments(id, version);
+
         if (existing != null && existing.PublishedDraft == id)
         {
             // The complete draft identity is the idempotency key: another publisher may have won using
             // a different compiler/reference snapshot. Return its immutable receipt.
             return;
         }
+
         if (existing != null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "The workflow identity was already published");
+
         if (draft?.Id != id)
             throw new CatalogPreconditionException("The definition identity changed");
     }
@@ -435,6 +806,7 @@ internal static class WorkflowCatalogRules
     {
         WorkflowPublicationRules.Id(id);
         Validate(version);
+
         if (id.Kind != WorkflowDraftKinds.Workflow || id.Revision < 1 || version.Name != id.Name || version.Version != id.Version ||
             version.PublishedDraft != id || version.State != WorkflowVersionState.Published ||
             version.ArtifactDigest == null || string.IsNullOrWhiteSpace(version.ManifestJson))
@@ -453,30 +825,47 @@ internal static class WorkflowCatalogRules
     {
         ArgumentNullException.ThrowIfNull(name);
         ValidateText(name);
+
         if (name.Length != name.Trim().Length)
             throw new ArgumentException("A workflow name cannot have leading or trailing whitespace", nameof(name));
+    }
+
+    internal static string? ValidateIdentifier(string? value)
+    {
+        if (value != null)
+            RuntimeIdentifiers.ValidateText(value);
+
+        return value;
     }
 
     // Variant content is JSON-escaped; every raw projection and query uses the default rule.
     internal static string? ValidateText(string? value, bool allowNul = false)
     {
-        if (value == null) return null;
+        if (value == null)
+            return null;
+
         for (var i = 0; i < value.Length; i++)
         {
             if (value[i] == '\0' && !allowNul)
                 throw new ArgumentException("Catalog text cannot contain U+0000", nameof(value));
-            if (!char.IsSurrogate(value[i])) continue;
+
+            if (!char.IsSurrogate(value[i]))
+                continue;
+
             if (!char.IsHighSurrogate(value[i]) || i + 1 == value.Length || !char.IsLowSurrogate(value[i + 1]))
                 throw new ArgumentException("Catalog text must contain well-formed UTF-16", nameof(value));
+
             i++;
         }
+
         return value;
     }
 
-    public static async Task CheckArtifactsAsync(WorkflowVersion row, IArtifactStore artifacts)
+    public static async Task CheckArtifactsAsync(WorkflowVersion row, IArtifactStore artifacts,
+        CancellationToken cancellationToken = default)
     {
         foreach (var digest in ArtifactReferences([row]))
-            if (!await artifacts.ExistsAsync(digest))
+            if (!await artifacts.ExistsAsync(digest, cancellationToken))
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                     $"Workflow {row.Name} v{row.Version} references missing artifact {digest}");
     }
@@ -491,30 +880,48 @@ internal static class WorkflowCatalogRules
         WorkflowPublicationRules.Actor(row.PublishedBy);
         WorkflowPublicationRules.Actor(row.StateChangedBy);
         ValidateText(row.ManifestJson);
+
         try
         {
             var contract = WorkflowContract.Parse(row.ContractJson);
+
             if (contract.ToJson() != row.ContractJson || contract.Hash != row.ContractHash)
                 throw new ArgumentException("Contract JSON or hash is not canonical");
         }
         catch (Exception error) when (error is ArgumentException or System.Text.Json.JsonException or InvalidOperationException)
-        { throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow version requires a canonical contract and matching contract hash", error); }
-        if (!Enum.IsDefined(row.State)) throw new ArgumentOutOfRangeException(nameof(row.State));
+        {
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                "Workflow version requires a canonical contract and matching contract hash", error);
+        }
+
+        if (!Enum.IsDefined(row.State))
+            throw new ArgumentOutOfRangeException(nameof(row.State));
+
         foreach (var digest in (row.ArtifactReferences ?? []).Concat(row.ArtifactDigest is { } artifact ? [artifact] : []))
             _ = new ArtifactDigest(digest.Value);
+
         ArgumentNullException.ThrowIfNull(row.AuthoringPackageReferences);
+
         foreach (var digest in row.AuthoringPackageReferences)
             _ = new ArtifactDigest(digest.Value);
+
         if (row.AuthoringPackageReferences.Except(row.ArtifactReferences ?? []).Any())
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Authoring package references must be retained in artifact references");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                "Authoring package references must be retained in artifact references");
+
         foreach (var dependency in row.Dependencies ?? [])
         {
             ValidateName(dependency.Name);
             ArgumentOutOfRangeException.ThrowIfLessThan(dependency.Version, 1);
-            if (!Enum.IsDefined(dependency.Kind)) throw new ArgumentOutOfRangeException(nameof(dependency.Kind));
+
+            if (!Enum.IsDefined(dependency.Kind))
+                throw new ArgumentOutOfRangeException(nameof(dependency.Kind));
         }
+
         if (!ValidInvocations(row.Invocations))
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Workflow version requires complete invocation metadata (use an empty list when there are no invocations)");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                "Workflow version requires complete invocation metadata (use an empty list when there are no invocations)");
+
         foreach (var invocation in row.Invocations)
         {
             ValidateName(invocation.Name);
@@ -531,11 +938,13 @@ internal static class WorkflowCatalogRules
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Workflow {loaded.Name} v{loaded.Version} is already registered with structure hash " +
                 $"'{existing.StructureHash}'; loaded structure hash '{loaded.StructureHash}' differs");
+
         // Source positions are presentation metadata. Each invocation's callee and
         // step identity remain immutable even when the caller's hash is supplied by metadata.
         if (existing.ArtifactDigest != loaded.ArtifactDigest || existing.PublishedDraft != loaded.PublishedDraft ||
             existing.ManifestJson != loaded.ManifestJson ||
-            existing.Descriptor.DataType != loaded.Descriptor.DataType || existing.Descriptor.DataTypeName != loaded.Descriptor.DataTypeName ||
+            existing.Descriptor.DataType != loaded.Descriptor.DataType ||
+            existing.Descriptor.DataTypeName != loaded.Descriptor.DataTypeName ||
             (existing.ArtifactDigest != null && existing.Descriptor != loaded.Descriptor) ||
             existing.ContractJson != loaded.ContractJson || existing.ContractHash != loaded.ContractHash ||
             !SameInvocations(existing.Invocations, loaded.Invocations) ||
@@ -547,17 +956,24 @@ internal static class WorkflowCatalogRules
 
     public static void CheckTransition(WorkflowVersionState from, WorkflowVersionState to)
     {
-        if (!Enum.IsDefined(to)) throw new ArgumentOutOfRangeException(nameof(to));
-        if (from == to) return;
+        if (!Enum.IsDefined(to))
+            throw new ArgumentOutOfRangeException(nameof(to));
+
+        if (from == to)
+            return;
+
         if ((from, to) is (WorkflowVersionState.Draft, WorkflowVersionState.Published or WorkflowVersionState.Retired)
             or (WorkflowVersionState.Published, WorkflowVersionState.Deprecated or WorkflowVersionState.Retired)
-            or (WorkflowVersionState.Deprecated, WorkflowVersionState.Retired)) return;
+            or (WorkflowVersionState.Deprecated, WorkflowVersionState.Retired))
+            return;
+
         throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, $"Cannot change workflow version from {from} to {to}");
     }
 
     public static void CheckStartable(WorkflowVersion? row, string name, int version)
     {
         ValidateName(name);
+
         if (row == null || row.State is WorkflowVersionState.Draft or WorkflowVersionState.Retired)
             throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                 row?.State == WorkflowVersionState.Retired
@@ -568,7 +984,8 @@ internal static class WorkflowCatalogRules
     public static void CheckInstancePin(WorkflowVersion? version, WorkflowInstance instance)
     {
         if (version?.ArtifactDigest != instance.BundleDigest)
-            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "The instance bundle pin differs from its immutable catalog version");
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch,
+                "The instance bundle pin differs from its immutable catalog version");
     }
 
     public static void CheckRetirement(WorkflowVersion target, IReadOnlyList<WorkflowVersion> callers,
@@ -577,9 +994,11 @@ internal static class WorkflowCatalogRules
         // Published and Deprecated callers both keep their pinned dependencies startable.
         var caller = callers.FirstOrDefault(row => (row.Name, row.Version) != (target.Name, target.Version) &&
             row.State is WorkflowVersionState.Published or WorkflowVersionState.Deprecated);
+
         if (caller != null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Workflow {target.Name} v{target.Version} is required by caller {caller.Name} v{caller.Version}");
+
         if (unfinishedCaller != null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Workflow {target.Name} v{target.Version} has unfinished parent instances of {unfinishedCaller.Name} v{unfinishedCaller.Version}");
@@ -590,8 +1009,10 @@ internal static class WorkflowCatalogRules
 
     public static IReadOnlySet<ArtifactDigest> ArtifactReferences(IEnumerable<WorkflowVersion> rows) =>
         rows.SelectMany(row => (row.ArtifactReferences ?? []).Concat(row.ArtifactDigest is { } digest ? [digest] : [])
-            .Concat(row.ManifestJson == null ? [] : System.Text.Json.JsonSerializer.Deserialize<ArtifactManifestReferences>(row.ManifestJson)!
-                .ActivityPackages.Select(package => package.Digest)))
+                .Concat(row.ManifestJson == null
+                    ? []
+                    : System.Text.Json.JsonSerializer.Deserialize<ArtifactManifestReferences>(row.ManifestJson)!
+                        .ActivityPackages.Select(package => package.Digest)))
             .ToHashSet();
 
     // Retention needs only artifact references. Executable manifest validation belongs to loading.
@@ -608,9 +1029,11 @@ internal static class WorkflowCatalogRules
         var callees = (version.Dependencies ?? []).Select(edge => (edge.Name, edge.Version)).ToHashSet();
         var copied = ArtifactReferences(versions.Where(row => callees.Contains((row.Name, row.Version))));
         var references = ArtifactReferences([version]).Except(copied).ToHashSet();
+
         // Retention references include callee-only pins. Restore only the separately recorded
         // authoring closure, so shared pins cannot erase the caller's own acquisition.
         references.UnionWith(version.AuthoringPackageReferences);
+
         foreach (var package in packages)
             if (package.Withdrawn && references.Contains(package.Digest))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "A withdrawn package cannot be used for new authoring");
@@ -623,12 +1046,14 @@ internal static class WorkflowCatalogRules
     {
         var catalogPins = versions.Where(row => row.ArtifactDigest != null).Select(row => row.ArtifactDigest!.Value).ToHashSet();
         var result = new Dictionary<ArtifactDigest, OrphanPin>();
+
         foreach (var digest in instancePins.Distinct().Where(pin => !catalogPins.Contains(pin)))
         {
             try
             {
                 await using var archive = await artifacts.OpenAsync(digest, token)
                     ?? throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Artifact unavailable");
+
                 var bundle = await WorkflowBundleArchive.ReadAsync(archive, digest, token);
                 result.Add(digest, new(bundle.Manifest.ActivityPackages.Select(package => package.Digest).ToArray()));
             }
@@ -637,6 +1062,7 @@ internal static class WorkflowCatalogRules
                 result.Add(digest, new([], error is WorkflowEngineException engine ? engine.Kind.ToString() : "Unreadable"));
             }
         }
+
         return result;
     }
 
@@ -648,22 +1074,33 @@ internal static class WorkflowCatalogRules
     {
         var references = ArtifactReferences(versions).Concat(instancePins).ToHashSet();
         references.UnionWith(templates.SelectMany(row => row.Version.ModelPackages).Select(row => row.Digest));
+
         references.UnionWith(packages.Where(row => row.Origin is WorkflowPackageOrigin.Uploaded or WorkflowPackageOrigin.Published)
             .SelectMany(row => (row.Closure ?? []).Select(pin => pin.Digest).Append(row.Digest)));
+
         var catalogPins = versions.Where(row => row.ArtifactDigest != null).Select(row => row.ArtifactDigest!.Value).ToHashSet();
+
         foreach (var digest in instancePins.Distinct().Where(pin => !catalogPins.Contains(pin)))
         {
-            if (!prepared.TryGetValue(digest, out var pin)) return null;
+            if (!prepared.TryGetValue(digest, out var pin))
+                return null;
+
             references.UnionWith(pin.Packages);
+
             if (pin.Error != null)
             {
                 // Unknown dependencies cannot be collected safely. Preserve package identities'
                 // content, but still collect unrelated abandoned bundles. Do not stop the pass.
-                references.UnionWith(packages.SelectMany(package => (package.Closure ?? []).Select(pin => pin.Digest).Append(package.Digest)));
+                references.UnionWith(packages.SelectMany(package =>
+                    (package.Closure ?? []).Select(pin => pin.Digest).Append(package.Digest)));
+
                 Runtime.Telemetry.ArtifactRetentionUnreadablePins.Add(1, new KeyValuePair<string, object?>("reason", pin.Error));
-                System.Diagnostics.Trace.TraceWarning($"Artifact retention: unreadable orphan instance pin {digest} ({pin.Error}); package content retained conservatively");
+
+                System.Diagnostics.Trace.TraceWarning(
+                    $"Artifact retention: unreadable orphan instance pin {digest} ({pin.Error}); package content retained conservatively");
             }
         }
+
         return references;
     }
 }

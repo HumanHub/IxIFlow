@@ -256,7 +256,6 @@ public class SagaTestData
     public bool LoggedUnknown { get; set; }
 }
 
-
 // =====================================================
 // LOOP TEST ACTIVITIES
 // =====================================================
@@ -553,7 +552,8 @@ public class ReleaseInventoryCompensationAsyncActivity : IAsyncActivity
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Console.WriteLine(
-                    "COMPENSATION ACTIVITY DEBUG: ReleaseInventoryCompensationAsyncActivity.ExecuteAsync() starting");
+            "COMPENSATION ACTIVITY DEBUG: ReleaseInventoryCompensationAsyncActivity.ExecuteAsync() starting");
+
         Console.WriteLine($"  - ReservationId input: '{ReservationId}'");
         Console.WriteLine($"  - Step1Compensated initial value: {Step1Compensated}");
 
@@ -572,6 +572,7 @@ public class ReleaseInventoryCompensationAsyncActivity : IAsyncActivity
         }
 
         Console.WriteLine($"  - Step1Compensated final value: {Step1Compensated}");
+
         Console.WriteLine(
             "\ud83d\udd0d COMPENSATION ACTIVITY DEBUG: ReleaseInventoryCompensationAsyncActivity.ExecuteAsync() completed");
 
@@ -645,6 +646,7 @@ public class SagaProcessPaymentAsyncActivity : IAsyncActivity
         if (ShouldFail)
         {
             Console.WriteLine($"SAGA STEP 3: Payment failed for ${FinalPrice}");
+
             throw new PaymentProcessingException($"Payment processing failed for amount {FinalPrice}", FinalPrice);
         }
 
@@ -812,6 +814,7 @@ public class SagaRetryablePaymentAsyncActivity : IAsyncActivity
         {
             RetryAttempts = currentAttempt; // OUTPUT for workflow data
             Console.WriteLine($"RETRYABLE PAYMENT: First attempt (0) failed for ${FinalPrice}");
+
             throw new PaymentProcessingException(
                 $"Payment processing failed for amount {FinalPrice} (will succeed on retry)", FinalPrice);
         }
@@ -836,6 +839,7 @@ public class SagaThrowCustomExceptionAsyncActivity : IAsyncActivity
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Console.WriteLine($"CUSTOM EXCEPTION: Throwing unhandled exception for order {OrderId}");
+
         throw new InvalidOperationException($"Custom saga exception for order {OrderId} - no explicit handler defined");
     }
 }
@@ -865,11 +869,13 @@ public class SagaStepWithMultipleErrorsAsyncActivity : IAsyncActivity
                 if (currentAttempt <= 1)
                 {
                     Console.WriteLine($"TIMEOUT RETRY: Engine attempt {currentAttempt}, will throw TimeoutException");
+
                     throw new TimeoutException($"Timeout occurred on engine attempt {currentAttempt}",
                         TimeSpan.FromSeconds(30));
                 }
 
                 Console.WriteLine($"TIMEOUT SUCCESS: Engine attempt {currentAttempt}, completing successfully");
+
                 break;
 
             case "validation":
@@ -900,6 +906,7 @@ public class SagaSystemDependentAsyncActivity : IAsyncActivity
     {
         // Simulate system unavailability
         Console.WriteLine($"SYSTEM DEPENDENT: {SystemName} is unavailable for order {OrderId}");
+
         throw new SystemUnavailableException($"System {SystemName} is currently unavailable", SystemName);
     }
 }
@@ -915,12 +922,14 @@ public class SagaTransientSystemAsyncActivity : IAsyncActivity
         var attempt = context.Metadata.TryGetValue("Saga:CurrentAttempt", out var value)
             ? (int)value
             : 0;
+
         if (attempt == 0)
         {
             throw new SystemUnavailableException($"System {SystemName} is temporarily unavailable", SystemName);
         }
 
         Step2Completed = true;
+
         return Task.CompletedTask;
     }
 }

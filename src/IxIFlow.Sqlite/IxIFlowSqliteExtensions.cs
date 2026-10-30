@@ -18,9 +18,11 @@ public static class IxIFlowSqliteExtensions
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         builder.ChooseStore("SQLite");
         connectionString = SqliteWorkflowStateRepository.FileConnectionString(connectionString);
+
         builder.Services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(provider =>
             new SqliteWorkflowStateRepository(connectionString, provider.GetRequiredService<TimeProvider>(),
                 provider.GetRequiredService<OutboxSettings>(), provider.GetRequiredService<PayloadStoreSettings>())));
+
         return builder;
     }
 }

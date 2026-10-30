@@ -26,26 +26,32 @@ public sealed class AssignmentResultRegressionTests
         var time = new TimerRecordingClock();
         var store = new ObservedStore(time) { HoldRenewalAtRelease = true };
         await using var run = new Harness(store, time);
+
         var definition = ending switch
         {
             "parked" => Workflow.Create<Data>("AckPark").Step<Noop>()
-                .Saga(body => body.Step<Fail>(step => step.OnError<InvalidOperationException>(
-                    handler => handler.ThenRetry(new RetryPolicy(TimeSpan.FromHours(1), TimeSpan.FromHours(1), 1, 1)))))
+                .Saga(body => body.Step<Fail>(step => step.OnError<InvalidOperationException>(handler =>
+                    handler.ThenRetry(new RetryPolicy(TimeSpan.FromHours(1), TimeSpan.FromHours(1), 1, 1)))))
                 .Build(),
             "idle" => Workflow.Create<Data>("AckIdle").Step<Noop>().Delay(TimeSpan.FromHours(1)).Build(),
             _ => Workflow.Create<Data>("AckComplete").Step<Noop>().Build()
         };
+
         var instance = await run.SeedAsync(definition);
         AfterReleasingAck? seen = null;
+
         var endpoint = new AfterAckHost(run.Endpoint, async (request, reply) =>
         {
-            if (reply.Kind != CheckpointReplyKind.Ack || !Releases(request.Commit, reply)) return;
+            if (reply.Kind != CheckpointReplyKind.Ack || !Releases(request.Commit, reply))
+                return;
+
             // Observed here, asserted after the run, so a failure cannot be absorbed by the host.
             // The renewal was sent before the final commit. Its false reply arrives only after Ack.
             var renewalPending = !store.Renewal.Task.IsCompleted;
             store.Renewal.SetResult(false);
             await store.Renewal.Task;
             time.Advance(TimeSpan.FromMinutes(2));
+
             seen = new(renewalPending,
                 run.Operations.AdmitReady(new(request.AssignmentId, new(AssignmentOutcomeKind.Idle),
                     new(request.Commit.CommitId, reply.Revision))),
@@ -56,6 +62,7 @@ public sealed class AssignmentResultRegressionTests
                 (await run.Endpoint.StartChildAsync(new(request.AssignmentId, instance.InstanceId, request.Commit.Epoch,
                     "root/0", new("child", "{}", "wait"), "hash", WorkflowContract.OfType(typeof(Data)).Hash))).Conflict);
         });
+
         run.UseEndpoint(endpoint);
 
         var result = await run.Operations.RecoverAsync(instance.InstanceId, default).WaitAsync(Patience);
@@ -71,11 +78,15 @@ public sealed class AssignmentResultRegressionTests
         var saved = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
         Assert.Equal(1, endpoint.ReleasingAcks);
         Assert.Equal(1, store.HeldRenewals);
+
         Assert.Equal(ending == "completed" ? WorkflowExecutionStatus.Success :
             ending == "parked" ? WorkflowExecutionStatus.Scheduled : WorkflowExecutionStatus.Suspended, result.Status);
+
         Assert.Equal(ending == "completed" ? WorkflowStatus.Completed :
             ending == "parked" ? WorkflowStatus.Running : WorkflowStatus.Suspended, saved.Status);
+
         Assert.Equal("assigned", Assert.IsType<Data>(result.WorkflowData).Value);
+
         if (ending != "completed")
             await time.WaitForTimerDueAtAsync(new DateTimeOffset(saved.RunnableAtUtc!.Value));
     }
@@ -107,8 +118,10 @@ public sealed class AssignmentResultRegressionTests
     {
         var time = new TimerRecordingClock();
         var store = new ObservedStore(time);
+
         await using var run = new Harness(store, time, new ExecutionLimits
             { MaxCheckpointBytes = 1_000, MaxTraceEntriesPerInstance = 100 });
+
         var instance = await run.SeedAsync(Workflow.Create<Data>("OversizedRelease").Step<Noop>().Build(), stopped: true);
         run.Control.Recycle();
 
@@ -138,8 +151,10 @@ public sealed class AssignmentResultRegressionTests
         var stateJson = instance.ExecutionStateJson;
         var stored = instance.Stored;
         var endpoint = new RefusingHost();
+
         var session = new ExecutionSession(endpoint, Guid.NewGuid(), instance.InstanceId, 1,
             ExecutionLimits.Default, false);
+
         checkpoint.TakeMarks();
         checkpoint.Touch(checkpoint.Continuations[0]);
 
@@ -165,13 +180,17 @@ public sealed class AssignmentResultRegressionTests
         var store = new ObservedStore(time);
         await using var run = new Harness(store, time);
         var instance = await run.SeedAsync(Workflow.Create<Data>("ReplacedInstance").Step<Noop>().Build());
-        store.Replacement = missing ? null : new WorkflowInstance
-        {
-            InstanceId = instance.InstanceId, Incarnation = Guid.NewGuid(),
-            WorkflowName = "Replacement", WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
-            WorkflowDataJson = StoredJson.Inline("not valid JSON"), Status = WorkflowStatus.Completed,
-            LastError = "replacement error", LastErrorStackTrace = "replacement stack"
-        };
+
+        store.Replacement = missing
+            ? null
+            : new WorkflowInstance
+            {
+                InstanceId = instance.InstanceId, Incarnation = Guid.NewGuid(),
+                WorkflowName = "Replacement", WorkflowDataType = IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
+                WorkflowDataJson = StoredJson.Inline("not valid JSON"), Status = WorkflowStatus.Completed,
+                LastError = "replacement error", LastErrorStackTrace = "replacement stack"
+            };
+
         store.LoseOnCommit = true;
 
         var result = await run.Operations.RecoverAsync(instance.InstanceId, default).WaitAsync(Patience);
@@ -185,9 +204,14 @@ public sealed class AssignmentResultRegressionTests
         Assert.Empty(result.TraceEntries);
     }
 
-    private sealed record AfterReleasingAck(bool RenewalPendingAtAck,
-        ConflictReason? ReadyWithAck, ConflictReason? ReadyWithoutAck, ConflictReason? Checkpoint,
-        ConflictReason? ReadInbox, ConflictReason? ReadWait, ConflictReason? StartChild);
+    private sealed record AfterReleasingAck(
+        bool RenewalPendingAtAck,
+        ConflictReason? ReadyWithAck,
+        ConflictReason? ReadyWithoutAck,
+        ConflictReason? Checkpoint,
+        ConflictReason? ReadInbox,
+        ConflictReason? ReadWait,
+        ConflictReason? StartChild);
 
     private static bool Releases(CheckpointCommit commit, CheckpointReply reply) =>
         (commit.Instance.Status != WorkflowStatus.Running || reply.Parked) &&
@@ -219,8 +243,10 @@ public sealed class AssignmentResultRegressionTests
             Control.OnScheduled(host.Schedule);
             Control.OnUnscheduled(host.Unschedule);
             _watch = new CancellationWatch(store, time);
+
             Operations = new(Services, Services.GetRequiredService<IActivityExecutor>(), store,
-                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), Services.GetRequiredService<ExecutionLeaseRenewer>(),
+                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+                Services.GetRequiredService<ExecutionLeaseRenewer>(),
                 timeProvider: time, limits: limits, control: Control, watch: _watch);
         }
 
@@ -231,9 +257,11 @@ public sealed class AssignmentResultRegressionTests
         public async Task<WorkflowInstance> SeedAsync(WorkflowDefinition definition, bool stopped = false)
         {
             await Services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+
             var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition,
                 new Data { Value = "assigned", Padding = stopped ? new string('x', 5_000) : "" }, new(),
                 _time.GetUtcNow().UtcDateTime);
+
             if (stopped)
             {
                 instance.Status = WorkflowStatus.NeedsResolution;
@@ -241,8 +269,10 @@ public sealed class AssignmentResultRegressionTests
                 checkpoint.Continuations[0].Status = ContinuationStatus.WaitingResolution;
                 checkpoint.Continuations[0].PendingActivity = new() { StepId = definition.Steps[0].Id };
             }
+
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
             await _store.SeedAsync(instance);
+
             return (await _store.GetWorkflowInstanceAsync(instance.InstanceId))!;
         }
 
@@ -265,46 +295,63 @@ public sealed class AssignmentResultRegressionTests
         public WorkflowInstance? Replacement;
         private bool _holdRenewal;
 
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
             Commits++;
+
             if (LoseOnCommit)
             {
                 Lost = true;
+
                 return new(WorkflowCommitStatus.StaleEpoch, commit.ExpectedRevision);
             }
+
             if (HoldRenewalAtRelease && (commit.Parks || commit.Instance.Status != WorkflowStatus.Running))
             {
                 _holdRenewal = true;
                 time.Advance(ExecutionLeaseSettings.Default.RenewalInterval);
                 await _renewalStarted.Task.WaitAsync(Patience);
             }
-            return await base.CommitWorkflowInstanceAsync(commit);
+
+            return await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
         }
 
-        async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> IWorkflowStateRepository.RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
+        async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> IWorkflowStateRepository.RenewExecutionLeasesAsync(
+            IReadOnlyList<ExecutionLeaseRenewal> leases, CancellationToken cancellationToken)
         {
-            if (!_holdRenewal) return await base.RenewExecutionLeasesAsync(leases);
+            if (!_holdRenewal)
+                return await base.RenewExecutionLeasesAsync(leases, cancellationToken: cancellationToken);
+
             Interlocked.Increment(ref HeldRenewals);
             _renewalStarted.TrySetResult();
             var renewed = await Renewal.Task;
-            return leases.Select(_ => new ExecutionLeaseRenewalResult(renewed ? ExecutionLeaseRenewalStatus.Renewed : ExecutionLeaseRenewalStatus.Refused)).ToArray();
+
+            return leases.Select(_ =>
+                    new ExecutionLeaseRenewalResult(renewed ? ExecutionLeaseRenewalStatus.Renewed : ExecutionLeaseRenewalStatus.Refused))
+                .ToArray();
         }
 
-        Task<WorkflowInstance?> IWorkflowStateRepository.GetWorkflowInstanceAsync(string id) =>
-            Lost ? Task.FromResult(Replacement) : base.GetWorkflowInstanceAsync(id);
+        Task<WorkflowInstance?> IWorkflowStateRepository.GetWorkflowInstanceAsync(string id, CancellationToken cancellationToken) =>
+            Lost ? Task.FromResult(Replacement) : base.GetWorkflowInstanceAsync(id, cancellationToken: cancellationToken);
     }
 
     private sealed class AfterAckHost(IExecutionHost inner, Func<Checkpoint, CheckpointReply, Task> afterAck) : IExecutionHost
     {
         public int ReleasingAcks;
+
         public async Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
             var reply = await inner.CheckpointAsync(request);
-            if (reply.Kind == CheckpointReplyKind.Ack && Releases(request.Commit, reply)) ReleasingAcks++;
+
+            if (reply.Kind == CheckpointReplyKind.Ack && Releases(request.Commit, reply))
+                ReleasingAcks++;
+
             await afterAck(request, reply);
+
             return reply;
         }
+
         public Task<StartChildReply> StartChildAsync(StartChild request) => inner.StartChildAsync(request);
         public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => inner.ReadInboxAsync(request);
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => inner.ReadWaitAsync(request);
@@ -314,11 +361,14 @@ public sealed class AssignmentResultRegressionTests
     private sealed class RefusingHost : IExecutionHost
     {
         public CheckpointCommit? Attempt;
+
         public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
             Attempt = request.Commit;
+
             throw new CheckpointLimitExceededException(5_000, 1_000);
         }
+
         public Task<StartChildReply> StartChildAsync(StartChild request) => throw new NotSupportedException();
         public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => throw new NotSupportedException();
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => throw new NotSupportedException();
@@ -330,15 +380,22 @@ public sealed class AssignmentResultRegressionTests
         public string Value { get; set; } = "";
         public string Padding { get; set; } = "";
     }
-    public sealed class Probe { public int Steps; }
+
+    public sealed class Probe
+    {
+        public int Steps;
+    }
+
     public sealed class Noop(Probe probe) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Steps++;
+
             return Task.CompletedTask;
         }
     }
+
     public sealed class Fail : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>

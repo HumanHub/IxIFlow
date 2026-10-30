@@ -17,7 +17,9 @@ public static class ServiceCollectionExtensions
 {
     private static WorkflowBundleOptions? BundleOptions(IServiceProvider provider) =>
         provider.GetService<WorkflowBundleOptions>() is { } options
-            ? options with { SharedProfile = provider.GetService<SharedContractRegistration>()?.Freeze() } : null;
+            ? options with { SharedProfile = provider.GetService<SharedContractRegistration>()?.Freeze() }
+            : null;
+
     /// <summary>
     /// Adds IxIFlow workflow services to the service collection. The builder it returns chooses the store, such as
     /// <c>.UseSqlServer(connectionString)</c> from IxIFlow.SqlServer; without one, instances live in memory.
@@ -31,27 +33,35 @@ public static class ServiceCollectionExtensions
         ActivityBuilderExtensions.Registrations(services);
         services.TryAddSingleton(InspectionRedactionPolicy.Default);
         services.AddScoped<IWorkflowDiagnostics, WorkflowDiagnostics>();
+
         // Core workflow services
         services.TryAddSingleton<ScopeThreadRegistry>(_ => new ScopeThreadRegistry(64));
+
         services.TryAddSingleton<HostSettings>(provider => HostSettings.Default with
-        { SharedProfile = provider.GetService<SharedContractRegistration>()?.Freeze(),
+        {
+            SharedProfile = provider.GetService<SharedContractRegistration>()?.Freeze(),
             BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
-            CapabilityLogger = provider.GetService<ILogger<WorkflowHeartbeatService>>() });
+            CapabilityLogger = provider.GetService<ILogger<WorkflowHeartbeatService>>()
+        });
+
         services.TryAddSingleton(RetentionSettings.Default);
         services.TryAddSingleton<IRunnableNotifier, NullRunnableNotifier>();
         services.TryAddSingleton<CoordinationState>();
         services.AddSingleton<RunnableNotifications>();
+
         services.AddSingleton(provider =>
         {
             // Capture lease services before the host, so provider disposal stops the host and
             // releases its claims before tearing down the watch and renewal registrations.
             provider.GetRequiredService<CancellationWatch>();
             provider.GetRequiredService<ExecutionLeaseRenewer>();
+
             return new WorkflowHost(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<HostSettings>(), provider.GetService<TimeProvider>(),
                 provider.GetService<ILogger<WorkflowHost>>(), provider.GetService<ILogger<SensitiveDiagnostics>>(),
                 provider.GetRequiredService<InspectionRedactionPolicy>());
         });
+
         // One watch per host keeps the state store for the host's lifetime, so the store is a singleton.
         services.AddSingleton<CancellationWatch>();
         services.AddSingleton<ExecutionLeaseRenewer>();
@@ -64,14 +74,18 @@ public static class ServiceCollectionExtensions
         services.AddScoped<WorkflowHost.InstanceOperations>();
         services.TryAddSingleton(new OutboxSettings());
         services.TryAddSingleton(new PayloadStoreSettings());
+
         services.TryAddSingleton<IPayloadStore>(provider =>
             provider.GetRequiredService<IWorkflowStateRepository>().PayloadStore);
+
         // Registers before recovery starts; stops after the host has drained its work.
         services.AddHostedService<WorkflowHeartbeatService>();
+
         // Stops after the workflow host, so its final commits can be delivered during drain.
         services.AddHostedService<WorkflowOutboxService>();
         services.AddHostedService<WorkflowRecoveryService>();
         services.AddHostedService<WorkflowRetentionService>();
+
         // Registered after the scanner so it stops first: hosted services stop in reverse order,
         // and the host drains the work the scanner admitted.
         services.AddHostedService(provider => provider.GetRequiredService<WorkflowHost>());
@@ -85,9 +99,13 @@ public static class ServiceCollectionExtensions
             provider.GetRequiredService<IWorkflowStateRepository>(), provider.GetServices<WorkflowDefinition>(),
             provider.GetRequiredService<IArtifactStore>(), BundleOptions(provider),
             provider.GetService<ILogger<WorkflowCatalog>>()));
-        services.TryAddSingleton<IArtifactStore>(provider => new RepositoryArtifactStore(provider.GetRequiredService<IWorkflowStateRepository>()));
+
+        services.TryAddSingleton<IArtifactStore>(provider =>
+            new RepositoryArtifactStore(provider.GetRequiredService<IWorkflowStateRepository>()));
+
         services.AddSingleton<IWorkflowDefinitionSource>(provider => provider.GetRequiredService<IWorkflowCatalog>());
         services.TryAddSingleton<IWorkflowStateRepository, InMemoryWorkflowStateRepository>();
+
         return new IxIFlowBuilder(services);
     }
 
@@ -107,40 +125,56 @@ public static class ServiceCollectionExtensions
         services.Replace(ServiceDescriptor.Singleton(new PayloadStoreSettings(options.MaxPayloadBytes, options.PayloadThresholdBytes)));
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.MaxHydratedPayloadBytes);
         services.Replace(ServiceDescriptor.Singleton(new InspectionRedactionPolicy(options.EnableSensitiveDiagnostics)));
+
         if (options.MaxCheckpointBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The checkpoint size limit must be positive");
+
         if (!Enum.IsDefined(options.TraceDetail))
             throw new ArgumentOutOfRangeException(nameof(options.TraceDetail));
+
         if (options.MaxTraceEntriesPerInstance is <= 0)
             throw new ArgumentOutOfRangeException(nameof(options.MaxTraceEntriesPerInstance));
+
         if (options.MaxTraceEntriesPerCommit <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The trace entry limit must be positive");
+
         if (options.MaxCrashes <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The crash limit must be positive");
+
         if (options.MaxActiveBranches <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The branch limit must be positive");
+
         if (options.MaxActivitiesPerRun <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The activity limit must be positive");
-        if (options.MaxScopeThreadsPerHost <= 0) throw new ArgumentOutOfRangeException(nameof(options.MaxScopeThreadsPerHost));
+
+        if (options.MaxScopeThreadsPerHost <= 0)
+            throw new ArgumentOutOfRangeException(nameof(options.MaxScopeThreadsPerHost));
+
         services.Replace(ServiceDescriptor.Singleton(new ScopeThreadRegistry(options.MaxScopeThreadsPerHost)));
+
         if (options.MaxGraphTransitionsPerPass <= 0)
             throw new ArgumentOutOfRangeException(nameof(options.MaxGraphTransitionsPerPass));
+
         if (options.MaxForEachItems <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The ForEach item limit must be positive");
+
         if (options.ParkRetriesLongerThan < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(configure), "The park threshold cannot be negative");
-        if (options.PollInterval <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(configure), "The poll interval must be positive");
-        if (options.UnschedulableScanInterval <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(options.UnschedulableScanInterval));
+
+        TimerIntervals.Validate(options.PollInterval, nameof(options.PollInterval));
+        TimerIntervals.Validate(options.UnschedulableScanInterval, nameof(options.UnschedulableScanInterval));
+
         if (options.HostPinLifetime <= TimeSpan.Zero || options.HostPinLifetime > CheckpointCommit.MaxDuration)
             throw new ArgumentOutOfRangeException(nameof(options.HostPinLifetime));
+
         services.AddSingleton(new DemandSettings(options.HostPinLifetime));
         MemberRegistry.ValidateInterval(options.HeartbeatInterval);
         var capabilities = MemberRegistry.SnapshotCapabilities(options.Capabilities);
+
         if (capabilities.Keys.Any(WorkflowHeartbeatService.IsAutomaticCapability))
             throw new ArgumentException("Configured capabilities cannot replace os, arch, runtime, host or workflow:* capabilities",
                 nameof(options.Capabilities));
+
         services.Replace(ServiceDescriptor.Singleton(new ExecutionLimits
         {
             MaxCheckpointBytes = options.MaxCheckpointBytes,
@@ -157,30 +191,49 @@ public static class ServiceCollectionExtensions
             ParkRetriesLongerThan = options.ParkRetriesLongerThan,
             VerifyCheckpointParts = options.VerifyCheckpointParts
         }));
+
         if (options.Slots <= 0)
             throw new ArgumentOutOfRangeException(nameof(configure), "The slot count must be positive");
-        if (options.DrainTimeout < TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(configure), "The drain timeout cannot be negative");
-        if (string.IsNullOrWhiteSpace(options.HostName))
-            throw new ArgumentOutOfRangeException(nameof(configure), "The host name cannot be empty");
+
+        TimerIntervals.Validate(options.DrainTimeout, nameof(options.DrainTimeout), allowZero: true);
+
+        if (string.IsNullOrWhiteSpace(options.HostName) || options.HostName.Length > 200)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "HostName must contain between 1 and 200 characters");
+
+        try
+        {
+            WorkflowCatalogRules.ValidateText(options.HostName);
+        }
+        catch (ArgumentException error)
+        {
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "HostName must be valid catalog text", error);
+        }
+
         var hostSettings = (options.Slots, options.DrainTimeout, options.PollInterval, options.HostName, options.HeartbeatInterval);
+
         services.Replace(ServiceDescriptor.Singleton<HostSettings>(provider =>
             new HostSettings(hostSettings.Slots, hostSettings.DrainTimeout, hostSettings.PollInterval, hostSettings.HostName)
-            { MaxScopeThreadsPerHost = options.MaxScopeThreadsPerHost, Debugging = options.Debugging, HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes,
+            {
+                MaxScopeThreadsPerHost = options.MaxScopeThreadsPerHost, Debugging = options.Debugging,
+                HeartbeatInterval = hostSettings.HeartbeatInterval, Capabilities = capabilities, MaxCrashes = options.MaxCrashes,
                 SharedProfile = provider.GetService<SharedContractRegistration>()?.Freeze(),
-                BundleHostingEnabled = provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
+                BundleHostingEnabled =
+                    provider.GetService<WorkflowBundleOptions>() != null && provider.GetService<IArtifactStore>() != null,
                 CapabilityLogger = provider.GetService<ILogger<WorkflowHeartbeatService>>(),
-                UnschedulableScanInterval = options.UnschedulableScanInterval }));
+                UnschedulableScanInterval = options.UnschedulableScanInterval
+            }));
+
         services.Replace(ServiceDescriptor.Singleton(
             new ClientActor(string.IsNullOrWhiteSpace(options.Actor) ? null : options.Actor)));
 
         RetentionSettings.Validate(options.FinishedInstanceRetention, options.TombstoneRetention, options.RetentionBatchSize);
-        if (options.RetentionScanInterval <= TimeSpan.Zero)
-            throw new ArgumentOutOfRangeException(nameof(options.RetentionScanInterval), "The retention scan interval must be positive");
+        TimerIntervals.Validate(options.RetentionScanInterval, nameof(options.RetentionScanInterval));
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.ArtifactRetention, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(options.PublicationRetention, TimeSpan.Zero);
+
         services.Replace(ServiceDescriptor.Singleton(new RetentionSettings(options.FinishedInstanceRetention,
-            options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize) { ArtifactRetention = options.ArtifactRetention, PublicationRetention = options.PublicationRetention }));
+                options.TombstoneRetention, options.RetentionScanInterval, options.RetentionBatchSize)
+            { ArtifactRetention = options.ArtifactRetention, PublicationRetention = options.PublicationRetention }));
 
         // Apply custom configurations
         if (options.UseCustomStateRepository != null)
@@ -197,6 +250,7 @@ public static class ServiceCollectionExtensions
     /// <typeparam name="TWorkflow">The workflow class that implements IWorkflow&lt;TWorkflowData&gt;</typeparam>
     /// <param name="services">The service collection</param>
     /// <returns>The service collection for chaining</returns>
+    /// <param name="configure">Configures this workflow declaration.</param>
     public static IServiceCollection RegisterWorkflow<TWorkflow>(
         this IServiceCollection services, Action<WorkflowRegistration>? configure = null)
         where TWorkflow : class
@@ -205,6 +259,7 @@ public static class ServiceCollectionExtensions
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
         var registration = new WorkflowRegistration();
         configure?.Invoke(registration);
+
         // Use reflection to find the IWorkflow<T> interface
         var workflowInterface = typeof(TWorkflow)
             .GetInterfaces()
@@ -226,11 +281,16 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<RegisteredWorkflowDefinition<TWorkflow>>(serviceProvider =>
         {
             var workflow = serviceProvider.GetRequiredService<TWorkflow>();
-            var definition = (WorkflowDefinition)buildMethod.Invoke(null, new object?[] { workflow })!;
+
+            var definition = (WorkflowDefinition)buildMethod.Invoke(null, BindingFlags.DoNotWrapExceptions,
+                null, new object?[] { workflow }, null)!;
+
             definition.RegistrationDemands = registration.Demands.ToArray();
             definition.Demands.AddRange(definition.RegistrationDemands);
+
             return new RegisteredWorkflowDefinition<TWorkflow>(definition);
         });
+
         services.AddSingleton(serviceProvider =>
             serviceProvider.GetRequiredService<RegisteredWorkflowDefinition<TWorkflow>>().Definition);
 
@@ -244,6 +304,7 @@ public static class ServiceCollectionExtensions
     /// <typeparam name="TWorkflowData">The workflow data type</typeparam>
     /// <param name="services">The service collection</param>
     /// <returns>The service collection for chaining</returns>
+    /// <param name="configure">Configures this workflow declaration.</param>
     public static IServiceCollection RegisterWorkflow<TWorkflow, TWorkflowData>(
         this IServiceCollection services, Action<WorkflowRegistration>? configure = null)
         where TWorkflow : class, IWorkflow<TWorkflowData>
@@ -253,6 +314,7 @@ public static class ServiceCollectionExtensions
         EnsureWorkflowTypeIsNotRegistered<TWorkflow>(services);
         var registration = new WorkflowRegistration();
         configure?.Invoke(registration);
+
         // Register the workflow class
         services.AddTransient<TWorkflow>();
 
@@ -262,8 +324,10 @@ public static class ServiceCollectionExtensions
             var definition = BuildWorkflowDefinition<TWorkflow, TWorkflowData>(workflow);
             definition.RegistrationDemands = registration.Demands.ToArray();
             definition.Demands.AddRange(definition.RegistrationDemands);
+
             return new RegisteredWorkflowDefinition<TWorkflow>(definition);
         });
+
         services.AddSingleton(serviceProvider =>
             serviceProvider.GetRequiredService<RegisteredWorkflowDefinition<TWorkflow>>().Definition);
 
@@ -284,8 +348,12 @@ public static class ServiceCollectionExtensions
     {
         var identity = WorkflowAttribute.For(typeof(TWorkflow));
         var builder = Workflow.Create<TWorkflowData>(identity.Name, identity.Version);
-        builder.DisplayName(identity.DisplayName).Description(identity.Description ?? "").Tags(identity.Tags).Icon(identity.Icon).Category(identity.Category);
+
+        builder.DisplayName(identity.DisplayName).Description(identity.Description ?? "").Tags(identity.Tags).Icon(identity.Icon)
+            .Category(identity.Category);
+
         workflow.Build(builder);
+
         return builder.Build();
     }
 
@@ -308,6 +376,7 @@ public class IxIFlowOptions
 {
     /// <summary>Whole-value UTF-8 claim-check threshold, disabled by default (zero). Set 256 KiB to enable it.</summary>
     public long PayloadThresholdBytes { get; set; } = PayloadStoreSettings.DefaultPayloadThresholdBytes;
+
     /// <summary>Aggregate hydrated and in-flight payload bytes per run, default 128 MiB.</summary>
     public long MaxHydratedPayloadBytes { get; set; } = 128L * 1024 * 1024;
 
@@ -375,10 +444,10 @@ public class IxIFlowOptions
     /// lease, before the instance is quarantined at NeedsResolution. No host runs a quarantined
     /// instance until an operator releases it. Progress resets the count.
     /// </summary>
+    public int MaxCrashes { get; set; } = HostSettings.DefaultMaxCrashes;
+
     /// <summary>Enables authorized pause and continue operations on this host. Off by default.</summary>
     public bool Debugging { get; set; }
-
-    public int MaxCrashes { get; set; } = HostSettings.DefaultMaxCrashes;
 
     /// <summary>
     /// Maximum live branches of one instance, excluding the root, parents waiting at joins, and
@@ -402,9 +471,10 @@ public class IxIFlowOptions
     /// </summary>
     public int MaxForEachItems { get; set; } = ExecutionLimits.DefaultMaxForEachItems;
 
-    /// <summary>Maximum node entries of one graph between prepared commits; excess stops for an operator.</summary>
+    /// <summary>Maximum dedicated threads for thread-affine scope resources on this host; default 64.</summary>
     public int MaxScopeThreadsPerHost { get; set; } = 64;
 
+    /// <summary>Maximum node entries of one graph between prepared commits; excess stops for an operator.</summary>
     public int MaxGraphTransitionsPerPass { get; set; } = ExecutionLimits.DefaultMaxGraphTransitionsPerPass;
 
     /// <summary>
@@ -420,10 +490,10 @@ public class IxIFlowOptions
     /// </summary>
     public TimeSpan PollInterval { get; set; } = HostSettings.DefaultPollInterval;
 
-    /// <summary>Time between store registry heartbeats. Defaults to five seconds; at most twenty minutes.</summary>
     /// <summary>Interval between bounded checks for work no live host can run; defaults to thirty seconds.</summary>
     public TimeSpan UnschedulableScanInterval { get; set; } = TimeSpan.FromSeconds(30);
 
+    /// <summary>Time between store registry heartbeats. Defaults to five seconds; at most twenty minutes.</summary>
     public TimeSpan HeartbeatInterval { get; set; } = MemberRegistry.DefaultHeartbeatInterval;
 
     /// <summary>User capability keys and values, published alongside automatic host and workflow capabilities.</summary>

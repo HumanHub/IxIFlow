@@ -6,7 +6,7 @@ namespace IxIFlow.Builders.Interfaces;
 /// <summary>
 /// Builder for configuring output properties of compensation activities
 /// </summary>
-public interface ICompensationActivityOutputBuilder<TWorkflowData, TCompensationActivity, TProperty> 
+public interface ICompensationActivityOutputBuilder<TWorkflowData, TCompensationActivity, TProperty>
     : ICompensationActivityBuilder<TWorkflowData, TCompensationActivity>
     where TCompensationActivity : IAsyncActivity
 {

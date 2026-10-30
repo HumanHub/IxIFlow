@@ -15,23 +15,29 @@ public sealed class WorkflowRecoveryServiceTests
     public async Task SlowRecoveryDoesNotBlockAnotherDueInstance()
     {
         var repository = new InMemoryWorkflowStateRepository();
+
         for (var index = 0; index < 2; index++)
             await repository.SeedAsync(new WorkflowInstance
-            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+            {
+                ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = Guid.NewGuid().ToString("N"),
                 WorkflowName = "IndependentRecovery",
                 Status = WorkflowStatus.Running
             });
+
         var engine = new BlockingRecoveryEngine();
         var services = new ServiceCollection();
         services.AddSingleton<IWorkflowClient>(engine);
         services.AddSingleton<IWorkflowCatalog>(new WorkflowCatalog());
         using var provider = services.BuildServiceProvider();
+
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
+
         using var stopping = new CancellationTokenSource();
         var scan = scanner.RecoverOnceAsync(stopping.Token);
+
         try
         {
             await engine.FirstStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -51,18 +57,25 @@ public sealed class WorkflowRecoveryServiceTests
         {
             FailCompletionBeforeApply = 3
         };
+
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
         services.AddTransient<ActivityRecoveryTests.NoopActivity>();
         using var provider = services.BuildServiceProvider();
+
         var definition = Workflow.Create<RecoveryData>("ScanInterrupted")
             .Step<ActivityRecoveryTests.NoopActivity>()
             .Build();
+
         await EngineAssert.StoreFailureAsync(() => provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new RecoveryData()));
-        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        var saved = Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -80,6 +93,7 @@ public sealed class WorkflowRecoveryServiceTests
         {
             FailCompletionBeforeApply = 3
         };
+
         var probe = new RecoveryStopProbe();
         var services = new ServiceCollection();
         services.AddLogging();
@@ -88,15 +102,22 @@ public sealed class WorkflowRecoveryServiceTests
         services.AddSingleton(probe);
         services.AddTransient<RecoveryStopActivity>();
         using var provider = services.BuildServiceProvider();
+
         var definition = Workflow.Create<RecoveryData>("HostStopDuringRecovery")
             .Step<RecoveryStopActivity>()
             .Build();
+
         var engine = provider.GetRequiredService<IWorkflowClient>();
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new RecoveryData()));
-        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        var saved = Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
+
         using var stopping = new CancellationTokenSource();
         var scan = scanner.RecoverOnceAsync(stopping.Token);
         await probe.RecoveryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -109,28 +130,34 @@ public sealed class WorkflowRecoveryServiceTests
     }
 
     [Fact]
-    public async Task ScannerRecoversRunningInstancesOnly()
+    public async Task ScannerRecoversTheInstancesReturnedByTheRunnableQuery()
     {
         var repository = new InMemoryWorkflowStateRepository();
         var runningId = Guid.NewGuid().ToString("N");
         var waitingId = Guid.NewGuid().ToString("N");
+
         await repository.SeedAsync(new WorkflowInstance
-        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = runningId,
             WorkflowName = "Running",
             Status = WorkflowStatus.Running
         });
+
         await repository.SeedAsync(new WorkflowInstance
-        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = waitingId,
             WorkflowName = "Waiting",
             Status = WorkflowStatus.Suspended
         });
+
         var engine = new RecordingEngine();
         var services = new ServiceCollection();
         services.AddSingleton<IWorkflowClient>(engine);
         services.AddSingleton<IWorkflowCatalog>(new WorkflowCatalog());
         using var provider = services.BuildServiceProvider();
+
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -150,15 +177,20 @@ public sealed class WorkflowRecoveryServiceTests
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
         services.AddTransient<ActivityRecoveryTests.NoopActivity>();
         using var provider = services.BuildServiceProvider();
+
         var definition = Workflow.Create<RecoveryData>("CancelAfterHostStopped")
             .Step<ActivityRecoveryTests.NoopActivity>()
             .WaitFor<RecoveryEvent>("approval")
             .Build();
+
         var started = await provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new RecoveryData());
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
         Assert.True((await repository.RequestCancellationAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
+
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -179,18 +211,23 @@ public sealed class WorkflowRecoveryServiceTests
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
         services.AddTransient<ActivityRecoveryTests.NoopActivity>();
         using var provider = services.BuildServiceProvider();
+
         var definition = Workflow.Create<RecoveryData>("CancelFinallyWait")
             .Step<ActivityRecoveryTests.NoopActivity>()
             .Try(body => body.WaitFor<RecoveryEvent>("approval"))
             .Finally(body => body.WaitFor<RecoveryEvent>("cleanup"))
             .Build();
+
         var started = await provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new RecoveryData());
+
         Assert.True((await repository.RequestCancellationAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
+
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
+
         await scanner.RecoverOnceAsync(CancellationToken.None);
         var waiting = (await repository.GetWorkflowInstanceAsync(started.InstanceId))!;
         Assert.Equal(WorkflowStatus.Suspended, waiting.Status);
@@ -209,23 +246,33 @@ public sealed class WorkflowRecoveryServiceTests
         {
             FailCompletionBeforeApply = 3
         };
+
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
         services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(repository));
         services.AddTransient<ActivityRecoveryTests.NoopActivity>();
         using var provider = services.BuildServiceProvider();
+
         var definition = Workflow.Create<RecoveryData>("CancelUnresolved")
             .Step<ActivityRecoveryTests.NoopActivity>()
             .Build();
+
         var engine = provider.GetRequiredService<IWorkflowClient>();
         await EngineAssert.StoreFailureAsync(() => engine.RunAsync(definition, new RecoveryData()));
-        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
+        var saved = Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
         await engine.RecoverAsync(saved.InstanceId);
+
         Assert.Equal(WorkflowStatus.NeedsResolution,
             (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
+
         Assert.True((await repository.RequestCancellationAsync(saved.InstanceId,
             new CancellationReason { ReasonCode = "withdrawn" })).Accepted);
+
         using var scanner = new WorkflowRecoveryService(
             provider.GetRequiredService<IServiceScopeFactory>(), repository,
             NullLogger<WorkflowRecoveryService>.Instance);
@@ -234,11 +281,14 @@ public sealed class WorkflowRecoveryServiceTests
 
         Assert.Equal(WorkflowStatus.NeedsResolution,
             (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
+
         var pending = Assert.Single(await engine.GetPendingActivitiesAsync(saved.InstanceId));
+
         var result = await engine.ResolveAsync(saved.InstanceId, pending.InvocationId,
             ActivityResolution.Completed(new Dictionary<string, object?>()));
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
+
         Assert.Equal(WorkflowStatus.Cancelled,
             (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
     }
@@ -251,44 +301,61 @@ public sealed class WorkflowRecoveryServiceTests
         public Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
+
         public Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
+
         public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> AwaitAsync(string instanceId,
             WorkflowAwaitCondition until = WorkflowAwaitCondition.Idle,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
             string instanceId, string? key, TEventData @event, string eventId,
             CancellationToken cancellationToken = default) where TEventData : class =>
             throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply,
             CancellationToken cancellationToken = default) where TReply : class =>
             throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply, string eventId,
             CancellationToken cancellationToken = default) where TReply : class =>
             throw new NotSupportedException();
+
         public Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
         public Task<IReadOnlyList<EventDelivery>> PublishAsync<TEventData>(string key, TEventData @event,
             string eventId, CancellationToken cancellationToken = default) where TEventData : class =>
             throw new NotSupportedException();
-        public Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId) =>
+
+        public Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-        public Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId, CancellationToken cancellationToken = default) =>
+
+        public Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId,
+            CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
         public Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-        public Task<WorkflowReadResult<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
+
+        public Task<WorkflowReadResult<ExecutionTraceEntry>>
+            GetTraceAsync(string instanceId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
             string invocationId, ActivityResolution resolution,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> CancelAsync(string instanceId,
             CancellationReason reason, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
         public List<string> Recovered { get; } = [];
 
         public Task<WorkflowExecutionResult> ReleaseAsync(string instanceId, string? actor = null,
@@ -298,6 +365,7 @@ public sealed class WorkflowRecoveryServiceTests
             CancellationToken cancellationToken = default)
         {
             Recovered.Add(instanceId);
+
             return Task.FromResult(new WorkflowExecutionResult
             {
                 InstanceId = instanceId,
@@ -309,9 +377,11 @@ public sealed class WorkflowRecoveryServiceTests
             WorkflowDefinition definition, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
             string instanceId, TEventData @event, CancellationToken cancellationToken = default)
             where TEventData : class => throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
             string instanceId, string key, TEventData @event,
             CancellationToken cancellationToken = default)
@@ -326,20 +396,27 @@ public sealed class WorkflowRecoveryServiceTests
         public Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
+
         public Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
+
         public Task<string> StartAsync<TWorkflowData>(WorkflowDefinition definition, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> AwaitAsync(string instanceId,
             WorkflowAwaitCondition until = WorkflowAwaitCondition.Idle,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         private int _calls;
+
         public TaskCompletionSource FirstStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource SecondStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource ReleaseFirst { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -356,46 +433,65 @@ public sealed class WorkflowRecoveryServiceTests
             }
             else
                 SecondStarted.TrySetResult();
-            return new WorkflowExecutionResult { InstanceId = instanceId,
-                Status = WorkflowExecutionStatus.NeedsResolution };
+
+            return new WorkflowExecutionResult
+            {
+                InstanceId = instanceId,
+                Status = WorkflowExecutionStatus.NeedsResolution
+            };
         }
 
         public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
             string instanceId, string? key, TEventData @event, string eventId,
             CancellationToken cancellationToken = default) where TEventData : class =>
             throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply,
             CancellationToken cancellationToken = default) where TReply : class =>
             throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> ReplyAsync<TReply>(string token, TReply reply, string eventId,
             CancellationToken cancellationToken = default) where TReply : class =>
             throw new NotSupportedException();
+
         public Task<WorkflowReadResult<OpenWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
         public Task<IReadOnlyList<EventDelivery>> PublishAsync<TEventData>(string key, TEventData @event,
             string eventId, CancellationToken cancellationToken = default) where TEventData : class =>
             throw new NotSupportedException();
-        public Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId) =>
+
+        public Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-        public Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId, CancellationToken cancellationToken = default) =>
+
+        public Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId,
+            CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
         public Task<WorkflowExecutionSnapshot?> GetSnapshotAsync(string instanceId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
-        public Task<WorkflowReadResult<ExecutionTraceEntry>> GetTraceAsync(string instanceId) =>
+
+        public Task<WorkflowReadResult<ExecutionTraceEntry>>
+            GetTraceAsync(string instanceId, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> ResolveAsync(string instanceId,
             string invocationId, ActivityResolution resolution,
             CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> CancelAsync(string instanceId,
             CancellationReason reason, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> RunAsync<TWorkflowData>(
             WorkflowDefinition definition, TWorkflowData workflowData,
             WorkflowOptions? options = null, CancellationToken cancellationToken = default)
             where TWorkflowData : class => throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
             string instanceId, TEventData @event, CancellationToken cancellationToken = default)
             where TEventData : class => throw new NotSupportedException();
+
         public Task<WorkflowExecutionResult> ResumeAsync<TEventData>(
             string instanceId, string key, TEventData @event,
             CancellationToken cancellationToken = default)
@@ -403,6 +499,7 @@ public sealed class WorkflowRecoveryServiceTests
     }
 
     public sealed class RecoveryData;
+
     public sealed class RecoveryEvent;
 
     public sealed class RecoveryStopProbe
@@ -420,6 +517,7 @@ public sealed class WorkflowRecoveryServiceTests
         {
             probe.RecoveryStarted.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+
             return new ActivityRecoveryResult<string>.Completed();
         }
 

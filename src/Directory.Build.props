@@ -1,10 +1,32 @@
 <Project>
   <!-- Every package ships under Apache 2.0 with its license text and NOTICE. -->
   <PropertyGroup>
+    <Version>1.0.0</Version>
+    <Authors>HumanHub.io</Authors>
+    <Company>HumanHub.io</Company>
+    <Copyright>Copyright 2025-2026 HumanHub.io</Copyright>
+    <RepositoryUrl>https://github.com/HumanHub/IxIFlow</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/HumanHub/IxIFlow</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile Condition="'$(IsPackable)' != 'false'">true</GenerateDocumentationFile>
+    <ContinuousIntegrationBuild Condition="'$(CI)' != '' or '$(GITHUB_ACTIONS)' != ''">true</ContinuousIntegrationBuild>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
   </PropertyGroup>
   <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)../LICENSE" Pack="true" PackagePath="/" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)../NOTICE" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
+  <!-- Publish source links to the public repository even when building from a local mirror. -->
+  <Target Name="SetIxIFlowSourceRepository" AfterTargets="InitializeSourceControlInformation">
+    <ItemGroup>
+      <SourceRoot Update="@(SourceRoot)" Condition="'%(SourceRoot.SourceControl)' == 'git' and '%(SourceRoot.NestedRoot)' == ''">
+        <RepositoryUrl>$(RepositoryUrl)</RepositoryUrl>
+      </SourceRoot>
+    </ItemGroup>
+  </Target>
 </Project>

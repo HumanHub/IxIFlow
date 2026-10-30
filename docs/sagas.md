@@ -32,16 +32,16 @@ If the selected activity never completed, the up-to policy undoes all completed 
 | `ThenContinue()` | Continue after the saga once compensation succeeds |
 | `ThenContinue(ignoreCompensationErrors: true)` | Continue even when compensation reported errors |
 | `ThenTerminate()` | Raise `SagaTerminatedException`, which an enclosing catch may handle; an unhandled policy termination ends the instance as `Terminated` |
-| `ThenRetry(count)` or `ThenRetry(policy)` | `Compensate()` restarts the saga from its first step, re-evaluating `Switch`; `CompensateUpTo<TActivity>()` restarts at that activity if it completed, otherwise at the saga's first step; `CompensateNone()` restarts at the failed step |
+| `ThenRetry(maxRetries: count)` or `ThenRetry(policy)` | `Compensate()` restarts the saga from its first step, re-evaluating `Switch`; `CompensateUpTo<TActivity>()` restarts at that activity if it completed, otherwise at the saga's first step; `CompensateNone()` restarts at the failed step |
 | No continuation | Rethrow the original error after the selected undo |
 
-A compensation failure ends as `SagaTerminatedException` after remaining compensation work has been attempted. Exhausted saga retries and a failing retry-handler body also terminate the saga. When retry can no longer proceed because its budget is exhausted, cleanup failed or cancellation intervened, retained steps are undone too. Build rules reject continuation/termination policies that would keep a request whose answer the saga has not read.
+A compensation failure ends as `SagaTerminatedException` after remaining compensation work has been attempted. Exhausted saga retries and a failing retry-handler body also terminate the saga. When retry cannot proceed because its budget is exhausted, cleanup failed or cancellation intervened, retained steps are undone too. Build rules reject continuation/termination policies that would keep a request whose answer the saga has not read.
 
 ## Retry scopes and attempts
 
 An activity-level saga `OnError` uses the first matching handler. `ThenRetry` retries the step; `ThenIgnore` skips it and clears its previous-step result. Step `ThenTerminate`, or an exhausted step retry, passes the original failure to the saga's error policy. A saga-level handler controls compensation and restarts part or all of the saga. They have separate budgets.
 
-`RetryPolicy` supplies `MaximumAttempts`, `InitialInterval`, `MaximumInterval` and `BackoffCoefficient`. The current retry limit counts retries after the first execution: a budget of one permits a second execution. `ThenRetry(count)`, on a step and on a saga handler alike, waits one second, then doubles up to ten seconds. A `RetryPolicy` built with only a count retries immediately; property defaults use one-second initial delay, ten-second maximum and coefficient two. Long backoffs park durable instances and free host slots.
+`RetryPolicy` supplies `MaximumAttempts`, `InitialInterval`, `MaximumInterval` and `BackoffCoefficient`. The current retry limit counts retries after the first execution: a budget of one permits a second execution. `ThenRetry(maxRetries: count)`, on a step and on a saga handler alike, waits one second, then doubles up to ten seconds. A `RetryPolicy` built with only a count retries immediately; property defaults use one-second initial delay, ten-second maximum and coefficient two. Long backoffs park durable instances and free host slots.
 
 [RetryQuote.cs](../samples/IxIFlow.Samples/RetryQuote.cs) demonstrates a single-step retry, including `context.Attempt.Number`, earlier errors/notes and distinct attempt IDs. [Payments.cs](../samples/IxIFlow.Recipes/Payments.cs) demonstrates a saga retry with compensation.
 

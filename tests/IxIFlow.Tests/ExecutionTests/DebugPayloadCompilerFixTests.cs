@@ -17,8 +17,10 @@ public sealed class DebugPayloadCompilerFixTests
         var load = AssemblyLoadContext.GetLoadContext(compiled.Evaluate.Method.DeclaringType!.Assembly)!;
         var unloading = false;
         load.Unloading += _ => unloading = true;
+
         for (var index = 0; index < 128; index++)
             compiler.Compile(new("structure", "(" + index, typeof(Data)));
+
         var caches = compiler.GetType().GetField("_caches", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(compiler)!;
         var entry = ((System.Collections.IEnumerable)caches).Cast<object>().Single();
         var owner = entry.GetType().GetProperty("Value")!.GetValue(entry)!;
@@ -40,5 +42,8 @@ public sealed class DebugPayloadCompilerFixTests
         Assert.True(unloading);
     }
 
-    public sealed class Data { public int Value { get; set; } }
+    public sealed class Data
+    {
+        public int Value { get; set; }
+    }
 }

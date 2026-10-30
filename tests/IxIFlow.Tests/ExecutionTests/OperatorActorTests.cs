@@ -7,7 +7,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
 /// Operator calls are recorded with who made them: a plain string, the client's default unless the call names someone
-/// else, as a user interface acting for its users does (D-38). The engine records it and checks nothing.
+/// else, as a user interface acting for its users does. The engine records it and checks nothing.
 /// </summary>
 [Trait("Feature", "tracing")]
 [Trait("Spec", "G-01")]
@@ -20,6 +20,7 @@ public sealed class OperatorActorTests
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), "orders-service");
         var client = services.GetRequiredService<IWorkflowClient>();
+
         var started = await client.RunAsync(Workflow.Create<Data>("CancelledByActor")
             .Step<Noop>()
             .WaitFor<Go>("go")
@@ -29,8 +30,10 @@ public sealed class OperatorActorTests
             new CancellationReason { ReasonCode = "withdrawn", RequestedBy = requestedBy });
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
+
         var entry = Assert.Single(await client.GetTraceAsync(started.InstanceId),
             item => item.EntryType == TraceEntryType.CancellationRequested);
+
         Assert.Equal(recorded, Assert.IsType<CancellationTrace>(entry.Payload).Actor);
         Assert.Equal("withdrawn", Assert.IsType<CancellationTrace>(entry.Payload).ReasonCode);
     }
@@ -40,12 +43,14 @@ public sealed class OperatorActorTests
     {
         var store = new InMemoryWorkflowStateRepository();
         string instanceId;
+
         using (var limited = Services(store, "orders-service", maxCheckpointBytes: 8_000))
         {
             var stopped = await limited.GetRequiredService<IWorkflowClient>().RunAsync(Growing(), new Data());
             Assert.Equal(WorkflowExecutionStatus.NeedsResolution, stopped.Status);
             instanceId = stopped.InstanceId;
         }
+
         using var raised = Services(store, "orders-service");
         await raised.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(Growing());
         var client = raised.GetRequiredService<IWorkflowClient>();
@@ -53,8 +58,10 @@ public sealed class OperatorActorTests
         var released = await client.ReleaseAsync(instanceId, "joe@ops");
 
         Assert.True(released.Status == WorkflowExecutionStatus.Success, released.ErrorMessage);
+
         var entry = Assert.Single(await client.GetTraceAsync(instanceId),
             item => item.EntryType == TraceEntryType.Released);
+
         Assert.Equal("joe@ops", Assert.IsType<ReleaseTrace>(entry.Payload).Actor);
     }
 
@@ -64,6 +71,7 @@ public sealed class OperatorActorTests
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), actor: null);
         var client = services.GetRequiredService<IWorkflowClient>();
+
         var started = await client.RunAsync(Workflow.Create<Data>("CancelledByNobody")
             .Step<Noop>()
             .WaitFor<Go>("go")
@@ -73,6 +81,7 @@ public sealed class OperatorActorTests
 
         var entry = Assert.Single(await client.GetTraceAsync(started.InstanceId),
             item => item.EntryType == TraceEntryType.CancellationRequested);
+
         Assert.Null(Assert.IsType<CancellationTrace>(entry.Payload).Actor);
     }
 
@@ -87,11 +96,13 @@ public sealed class OperatorActorTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(store);
+
         services.AddIxIFlow(options =>
         {
             options.Actor = actor;
             options.MaxCheckpointBytes = maxCheckpointBytes;
         });
+
         return services.BuildServiceProvider();
     }
 
@@ -116,6 +127,7 @@ public sealed class OperatorActorTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Text = new string('x', 20_000);
+
             return Task.CompletedTask;
         }
 

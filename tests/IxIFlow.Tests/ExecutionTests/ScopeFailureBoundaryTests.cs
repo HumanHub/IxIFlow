@@ -12,15 +12,26 @@ public sealed class ScopeFailureBoundaryTests
     {
         var probe = new ScopeActivityTests.Probe();
         await using var services = ScopeActivityTests.Services(probe, verify: true);
+
         var definition = ScopeActivityTests.Start("BoundedScope" + fork).Try(outside => outside.Scope<ScopeActivityTests.TestScope>(null,
-            body => body.Try(inner =>
-            {
-                if (fork) inner.Parallel(p => p.Do(b => b.WaitFor<ScopeActivityTests.Signal>("go").Step<ScopeActivityTests.Read>()).Do(b => b.WaitFor<ScopeActivityTests.Signal>("loser")));
-                else inner.WaitFor<ScopeActivityTests.Signal>("go").Step<ScopeActivityTests.Read>();
-            }).Catch<InvalidOperationException>(caught => caught.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "inner-catch")))
-            .Finally(cleanup => cleanup.Try(x => x.If(c => 10 / c.WorkflowData.Zero > 0, _ => { }))
-                .Catch<DivideByZeroException>(x => x.Step<ScopeActivityTests.Mark>(s => s.Input(y => y.Text).From(c => "cleanup-catch"))))))
-            .Catch<InvalidOperationException>(outside => outside.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "outer-catch"))).Build();
+                body => body.Try(inner =>
+                    {
+                        if (fork)
+                            inner.Parallel(p =>
+                                p.Do(b => b.WaitFor<ScopeActivityTests.Signal>("go").Step<ScopeActivityTests.Read>())
+                                    .Do(b => b.WaitFor<ScopeActivityTests.Signal>("loser")));
+                        else
+                            inner.WaitFor<ScopeActivityTests.Signal>("go").Step<ScopeActivityTests.Read>();
+                    }).Catch<InvalidOperationException>(caught =>
+                        caught.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "inner-catch")))
+                    .Finally(cleanup => cleanup.Try(x => x.If(c => 10 / c.WorkflowData.Zero > 0, _ =>
+                        {
+                        }))
+                        .Catch<DivideByZeroException>(x =>
+                            x.Step<ScopeActivityTests.Mark>(s => s.Input(y => y.Text).From(c => "cleanup-catch"))))))
+            .Catch<InvalidOperationException>(outside =>
+                outside.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "outer-catch"))).Build();
+
         var client = services.GetRequiredService<IWorkflowClient>();
         var idle = await client.RunAsync(definition, new ScopeActivityTests.Data());
         Assert.Equal(WorkflowExecutionStatus.Suspended, idle.Status);
@@ -37,13 +48,19 @@ public sealed class ScopeFailureBoundaryTests
     {
         var probe = new ScopeActivityTests.Probe();
         await using var services = ScopeActivityTests.Services(probe, verify: true);
+
         var definition = ScopeActivityTests.Start("BoundedScopeSaga").Try(outside => outside.Scope<ScopeActivityTests.TestScope>(null,
-            body => body.Saga(saga => saga.Step<ScopeActivityTests.Copy>(s => s.CompensateWith<ScopeActivityTests.Mark>(c => c.Input(x => x.Text).From(c => "undo-first")))
-                .Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "second")
-                    .CompensateWith<ScopeActivityTests.Mark>(c => c.Input(x => x.Text).From(c => "undo-second")))
-                .WaitFor<ScopeActivityTests.Signal>("go").Step<ScopeActivityTests.Read>())
-                .OnError<InvalidOperationException>(error => error.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "inner-handler")))))
-            .Catch<InvalidOperationException>(outside => outside.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "outer-catch"))).Build();
+                body => body.Saga(saga => saga
+                        .Step<ScopeActivityTests.Copy>(s =>
+                            s.CompensateWith<ScopeActivityTests.Mark>(c => c.Input(x => x.Text).From(c => "undo-first")))
+                        .Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "second")
+                            .CompensateWith<ScopeActivityTests.Mark>(c => c.Input(x => x.Text).From(c => "undo-second")))
+                        .WaitFor<ScopeActivityTests.Signal>("go").Step<ScopeActivityTests.Read>())
+                    .OnError<InvalidOperationException>(error =>
+                        error.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "inner-handler")))))
+            .Catch<InvalidOperationException>(outside =>
+                outside.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "outer-catch"))).Build();
+
         var client = services.GetRequiredService<IWorkflowClient>();
         var idle = await client.RunAsync(definition, new ScopeActivityTests.Data());
         Assert.Equal(WorkflowExecutionStatus.Suspended, idle.Status);
@@ -60,7 +77,10 @@ public sealed class ScopeFailureBoundaryTests
     {
         var probe = new ScopeActivityTests.Probe { FailuresRemaining = 2 };
         await using var services = ScopeActivityTests.Services(probe);
-        var definition = ScopeActivityTests.Start("ScopeOpenRetries").Scope<ScopeActivityTests.TestScope>(s => s.Retry(new RetryPolicy(2)), b => b.Step<ScopeActivityTests.Read>()).Build();
+
+        var definition = ScopeActivityTests.Start("ScopeOpenRetries")
+            .Scope<ScopeActivityTests.TestScope>(s => s.Retry(new RetryPolicy(2)), b => b.Step<ScopeActivityTests.Read>()).Build();
+
         var done = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new ScopeActivityTests.Data());
         Assert.True(done.Status == WorkflowExecutionStatus.Success, done.ErrorMessage);
         Assert.Equal(3, probe.Invocations.Count);
@@ -72,12 +92,20 @@ public sealed class ScopeFailureBoundaryTests
     {
         var probe = new ScopeActivityTests.Probe();
         await using var services = ScopeActivityTests.Services(probe, verify: true);
-        var definition = ScopeActivityTests.Start("RepeatedScopeFailure" + failures).Try(outside => outside.Scope<ScopeActivityTests.TestScope>(null,
-            body => body.Saga(saga => saga.Step<ScopeActivityTests.Copy>(s => s.CompensateWith<ScopeActivityTests.Mark>(c => c.Input(x => x.Text).From(c => "undo-first")))
-                .Step<ScopeActivityTests.Copy>(s => s.CompensateWith<ScopeActivityTests.Mark>(c => c.Input(x => x.Text).From(c => "undo-second")))
-                .WaitFor<ScopeActivityTests.Signal>("go").Step<ScopeActivityTests.Read>())
-                .OnError<InvalidOperationException>(error => error.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "inner-handler")))))
-            .Catch<InvalidOperationException>(outside => outside.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "outer-catch"))).Build();
+
+        var definition = ScopeActivityTests.Start("RepeatedScopeFailure" + failures).Try(outside =>
+                outside.Scope<ScopeActivityTests.TestScope>(null,
+                    body => body.Saga(saga => saga
+                            .Step<ScopeActivityTests.Copy>(s =>
+                                s.CompensateWith<ScopeActivityTests.Mark>(c => c.Input(x => x.Text).From(c => "undo-first")))
+                            .Step<ScopeActivityTests.Copy>(s =>
+                                s.CompensateWith<ScopeActivityTests.Mark>(c => c.Input(x => x.Text).From(c => "undo-second")))
+                            .WaitFor<ScopeActivityTests.Signal>("go").Step<ScopeActivityTests.Read>())
+                        .OnError<InvalidOperationException>(error =>
+                            error.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "inner-handler")))))
+            .Catch<InvalidOperationException>(outside =>
+                outside.Step<ScopeActivityTests.Mark>(s => s.Input(x => x.Text).From(c => "outer-catch"))).Build();
+
         var client = services.GetRequiredService<IWorkflowClient>();
         var idle = await client.RunAsync(definition, new ScopeActivityTests.Data());
         probe.FailuresRemaining = failures;

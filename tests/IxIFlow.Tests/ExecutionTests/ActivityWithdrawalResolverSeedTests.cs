@@ -16,8 +16,10 @@ public sealed class ActivityWithdrawalResolverSeedTests
         var store = new InMemoryWorkflowStateRepository();
         var ingestion = new PackageIngestion(store, store);
         var leafBytes = ActivityPackageFixture.Package("withdrawal.leaf", "1.0.0", new());
+
         var rootBytes = ActivityPackageFixture.Package("withdrawal.root", "1.0.0", new(),
             "<dependency id=\"withdrawal.leaf\" version=\"[1.0.0]\"/>");
+
         var leaf = (await ingestion.UploadPackageAsync(new MemoryStream(leafBytes))).Stored;
         await ingestion.UploadPackageAsync(new MemoryStream(rootBytes));
         var rootSeed = await ingestion.ReadPackageAsync(new MemoryStream(rootBytes));
@@ -25,10 +27,12 @@ public sealed class ActivityWithdrawalResolverSeedTests
         await store.SetPackageWithdrawnAsync(leaf.Id, leaf.Version, true, new(leaf.LifecycleRevision));
         var resolver = new WorkflowPackageResolver(store, store, new());
         var acquisition = Enum.Parse<PackageAcquisition>(mode);
+
         foreach (var candidates in new PackageUploadCandidate[][] { [], [rootSeed], [rootSeed, leafSeed] })
         {
             var error = await Assert.ThrowsAsync<WorkflowPublishException>(() => resolver.ResolveAsync(
                 ["withdrawal.root@1.0.0"], acquisition, candidates, default));
+
             Assert.Equal("PUB025", error.Code);
             Assert.Contains("withdrawal.leaf@1.0.0", error.Message);
         }

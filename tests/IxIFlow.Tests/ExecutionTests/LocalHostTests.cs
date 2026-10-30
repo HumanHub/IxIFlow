@@ -12,7 +12,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>
 /// Every call runs through the in-process host: at most the configured number of slots run at
 /// once, work for one instance queues without holding a slot, a start returns once it is saved,
-/// cancellation needs no slot, and a stopping host drains (spec B-02, B-03, B-11, B-12).
+/// cancellation needs no slot, and a stopping host drains.
 /// </summary>
 [Trait("Feature", "host")]
 public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostTests>>
@@ -29,6 +29,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         var runs = Enumerable.Range(0, 4)
             .Select(index => Client(services).RunAsync(BlockingWorkflow($"Slots{index}"), new HostData()))
             .ToArray();
+
         await gate.WaitForRunningAsync(2);
         await Task.Delay(200);
         Assert.Equal(2, gate.Running);
@@ -46,12 +47,15 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), slots: 2);
         var gate = Gate(services);
+
         var busy = Client(services).RunAsync(BlockingWorkflow("BusyInstance"), new HostData(),
             new WorkflowOptions { InstanceId = "busy-instance" });
+
         await gate.WaitForRunningAsync(1);
 
         // Queued behind the running instance; the second slot stays free for other work.
         var queued = Client(services).RecoverAsync("busy-instance");
+
         var other = await Client(services).RunAsync(QuickWorkflow("OtherInstance"), new HostData())
             .WaitAsync(Patience);
 
@@ -68,17 +72,21 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), slots: 2);
         var gate = Gate(services);
+
         var instanceId = await Client(services).StartAsync(BlockingWorkflow("GeneratedId"), new HostData())
             .WaitAsync(Patience);
+
         await gate.WaitForRunningAsync(1);
 
         var queued = Client(services).RecoverAsync(instanceId);
+
         var other = await Client(services).RunAsync(QuickWorkflow("BesideGeneratedId"), new HostData())
             .WaitAsync(Patience);
 
         Assert.Equal(WorkflowExecutionStatus.Success, other.Status);
         Assert.False(queued.IsCompleted);
         gate.Release();
+
         // Behind the finished run there is nothing left to recover.
         Assert.Equal(WorkflowExecutionStatus.Success, (await queued.WaitAsync(Patience)).Status);
     }
@@ -89,8 +97,10 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), slots: 2);
         var gate = Gate(services);
+
         var busy = Client(services).RunAsync(BlockingWorkflow("CallerGivesUp"), new HostData(),
             new WorkflowOptions { InstanceId = "caller-gives-up" });
+
         await gate.WaitForRunningAsync(1);
 
         using var giveUp = new CancellationTokenSource();
@@ -107,6 +117,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     public async Task AnActivityCallingTheClientRunsInlineInItsSlot()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
+
         var definition = Workflow.Create<HostData>("CallsTheClient")
             .Step<ClientCallingActivity>()
             .Build();
@@ -123,6 +134,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
         var probe = services.GetRequiredService<BackgroundProbe>();
+
         var definition = Workflow.Create<HostData>("LeavesWorkBehind")
             .Step<BackgroundCallingActivity>()
             .Build();
@@ -157,6 +169,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
         var probe = services.GetRequiredService<BackgroundProbe>();
+
         var definition = Workflow.Create<HostData>("HandsOffInlineWork")
             .Step<HandOffActivity>()
             .Build();
@@ -177,15 +190,19 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
         var probe = services.GetRequiredService<BackgroundProbe>();
+
         var definition = Workflow.Create<HostData>("HandsOffAndHoldsTheSlot")
             .Step<HandOffActivity>()
             .Build();
+
         var result = await Client(services).RunAsync(definition, new HostData()).WaitAsync(Patience);
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
 
         // The only slot is still in use by the inline run, so new work waits for it.
-        var next = Client(services).RunAsync(QuickWorkflow("WaitsForTheSlot"), new HostData());
-        await Task.Delay(300);
+        var next = Client(services).RunAsync(QuickWorkflow("WaitsForTheSlot"), new HostData(),
+            new WorkflowOptions { InstanceId = "queued-after-inline" });
+
+        await HostWorkProbe.WaitingForSlotAsync(services.GetRequiredService<WorkflowHost>(), "queued-after-inline");
         Assert.False(next.IsCompleted);
 
         probe.Later.SetResult();
@@ -199,8 +216,10 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     {
         var services = Services(new InMemoryWorkflowStateRepository(), slots: 1);
         var gate = Gate(services);
+
         _ = Client(services).RunAsync(BlockingWorkflow("DisposedWhileBusy"), new HostData(),
             new WorkflowOptions { InstanceId = "disposed-while-busy" });
+
         await gate.WaitForRunningAsync(1);
         var queued = Client(services).RecoverAsync("disposed-while-busy");
 
@@ -235,18 +254,20 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     public async Task AwaitFinishedWaitsThroughASuspension()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), slots: 4);
+
         var definition = Workflow.Create<HostData>("AwaitThroughWait")
             .Step<QuickActivity>()
             .WaitFor<Approval>("approval")
             .Step<QuickActivity>()
             .Build();
+
         var started = await Client(services).RunAsync(definition, new HostData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         Assert.Equal(WorkflowExecutionStatus.Suspended,
             (await Client(services).AwaitAsync(started.InstanceId)).Status);
+
         var finished = Client(services).AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished);
-        await Task.Delay(100);
         Assert.False(finished.IsCompleted);
         await Client(services).ResumeAsync(started.InstanceId, "approval", new Approval());
 
@@ -261,8 +282,10 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository, slots: 1);
         var gate = Gate(services);
+
         var run = Client(services).RunAsync(BlockingWorkflow("CancelWhileBusy"), new HostData(),
             new WorkflowOptions { InstanceId = "cancel-while-busy" });
+
         await gate.WaitForRunningAsync(1);
 
         var requested = await Client(services).CancelAsync("cancel-while-busy",
@@ -280,11 +303,14 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         // The clock stands still, so the watch's 250 ms timer cannot fire while the host drains.
         var time = new FakeTimeProvider();
         var repository = new CountingStore(time);
+
         var definition = Workflow.Create<HostData>("DrainedInstance")
             .Step<BlockingActivity>()
             .Step<QuickActivity>()
             .Build();
+
         string instanceId;
+
         using (var services = Services(repository, slots: 1, time))
         {
             var gate = Gate(services);
@@ -294,17 +320,20 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
 
             var stopping = services.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(Patience));
+
             // While draining, the run waits for its activity instead of spinning on the store.
             var readsBefore = repository.CancellationReads;
-            await Task.Delay(300);
-            Assert.True(repository.CancellationReads - readsBefore <= 1,
-                $"{repository.CancellationReads - readsBefore} cancellation reads while draining");
+            time.Advance(TimeSpan.FromMilliseconds(300));
             gate.Release();
             await stopping.WaitAsync(Patience);
+
+            Assert.True(repository.CancellationReads - readsBefore <= 1,
+                $"{repository.CancellationReads - readsBefore} cancellation reads while draining");
 
             var drained = await run.WaitAsync(Patience);
             Assert.Equal(WorkflowExecutionStatus.Running, drained.Status);
             instanceId = drained.InstanceId;
+
             // The drain started no new step.
             Assert.Equal(0, Probe(services).Count("quick"));
         }
@@ -329,9 +358,11 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         var store = new CountingStore(time);
         using var services = Services(store, slots: 8, time);
         var gate = Gate(services);
+
         var runs = Enumerable.Range(0, 5)
             .Select(index => Client(services).RunAsync(BlockingWorkflow($"Watched{index}"), new HostData()))
             .ToArray();
+
         await gate.WaitForRunningAsync(5);
 
         // One second in steps of the watch's 250 ms interval. The watch sets its timer after each read, so
@@ -342,12 +373,14 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         Assert.True(store.BatchCancellationReads >= 1);
         var singleBefore = store.CancellationReads;
         var batchBefore = store.BatchCancellationReads;
+
         for (var step = 1; step <= 4; step++)
         {
             var timersBefore = time.Armed;
             time.Advance(interval);
             await time.WaitForTimerDueAtAsync(time.GetUtcNow() + interval, timersBefore, Patience);
         }
+
         var single = store.CancellationReads - singleBefore;
         var batches = store.BatchCancellationReads - batchBefore;
 
@@ -368,7 +401,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "B-10")]
     public Task SqlStoreReadsCancellationRequestsInOneCall() =>
-        VerifyBatchCancellationReads(new SqlWorkflowStateRepository(SqlTestDatabase<LocalHostTests>.ConnectionString));
+        VerifyBatchCancellationReads(new SqlServerWorkflowStateRepository(SqlTestDatabase<LocalHostTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
@@ -389,14 +422,17 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     private static async Task VerifyBatchCancellationReads(IWorkflowStateRepository repository)
     {
         var ids = Enumerable.Range(0, 3).Select(_ => Guid.NewGuid().ToString("N")).ToArray();
+
         try
         {
             foreach (var id in ids)
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(new WorkflowInstance
-                { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+                {
+                    ExecutionStateJson = StoreTestSupport.CheckpointJson,
                     InstanceId = id, WorkflowName = "BatchCancellation", Status = WorkflowStatus.Running,
                     WorkflowDataJson = StoredJson.Inline("{}")
                 }, (await StoreTestSupport.LeaseAsync(repository, id)).Epoch, 0));
+
             Assert.True((await repository.RequestCancellationAsync(ids[0], new CancellationReason { ReasonCode = "a" })).Accepted);
             Assert.True((await repository.RequestCancellationAsync(ids[2], new CancellationReason { ReasonCode = "c" })).Accepted);
 
@@ -422,13 +458,16 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
 
         var held = Client(services).RunAsync(QuickWorkflow("HeldCommits"), new HostData());
         await store.Holding.Task.WaitAsync(Patience);
+
         var other = await Client(services).RunAsync(QuickWorkflow("FreeCommits"), new HostData())
             .WaitAsync(Patience);
+
         Assert.Equal(WorkflowExecutionStatus.Success, other.Status);
         Assert.False(held.IsCompleted);
 
         store.Release();
         Assert.Equal(WorkflowExecutionStatus.Success, (await held.WaitAsync(Patience)).Status);
+
         // One instance's commits are applied in revision order.
         Assert.Equal(store.Revisions("HeldCommits").Order(), store.Revisions("HeldCommits"));
     }
@@ -445,8 +484,10 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(repository);
+
         if (time != null)
             services.AddSingleton(time);
+
         services.AddIxIFlow(options => options.Slots = slots);
         services.AddSingleton<ActivityGate>();
         services.AddSingleton<HostProbe>();
@@ -458,6 +499,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         services.AddTransient<HandOffActivity>();
         services.AddTransient<HeldInlineActivity>();
         services.AddSingleton<BackgroundProbe>();
+
         return services.BuildServiceProvider();
     }
 
@@ -488,10 +530,12 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         {
             var running = Interlocked.Increment(ref _running);
             int seen;
+
             while (running > (seen = Volatile.Read(ref _maxRunning)) &&
                    Interlocked.CompareExchange(ref _maxRunning, running, seen) != seen)
             {
             }
+
             try
             {
                 await _released.Task.WaitAsync(cancellationToken);
@@ -505,10 +549,12 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         public async Task WaitForRunningAsync(int count)
         {
             var deadline = DateTime.UtcNow + Patience;
+
             while (Running < count)
             {
                 if (DateTime.UtcNow > deadline)
                     throw new TimeoutException($"Only {Running} of {count} activities started");
+
                 await Task.Delay(10);
             }
         }
@@ -539,6 +585,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         {
             var result = await client.RunAsync(QuickWorkflow("CalledFromAnActivity"), new HostData(),
                 cancellationToken: cancellationToken);
+
             if (result.Status != WorkflowExecutionStatus.Success)
                 throw new InvalidOperationException(result.ErrorMessage);
         }
@@ -548,26 +595,32 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
     {
         public TaskCompletionSource InnerStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Later { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource<WorkflowExecutionResult> Result { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public RunScope? ParentScope { get; set; }
         public TaskCompletionSource Calling { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     /// <summary>Leaves a task behind that calls the client after the run has finished.</summary>
-    internal sealed class BackgroundCallingActivity(RunScope scope, IWorkflowClient client,
+    internal sealed class BackgroundCallingActivity(
+        RunScope scope,
+        IWorkflowClient client,
         BackgroundProbe probe) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Assert.False(scope.Disposed);
             probe.ParentScope = scope;
+
             _ = Task.Run(async () =>
             {
                 try
                 {
                     await probe.Later.Task;
                     probe.Calling.SetResult();
+
                     probe.Result.SetResult(await client.RunAsync(QuickWorkflow("CalledAfterTheRun"),
                         new HostData()));
                 }
@@ -576,6 +629,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
                     probe.Result.SetException(error);
                 }
             });
+
             return Task.CompletedTask;
         }
     }
@@ -599,6 +653,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
                     probe.Result.SetException(error);
                 }
             });
+
             await probe.InnerStarted.Task;
         }
     }
@@ -625,6 +680,7 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
             Assert.False(scope.Disposed);
             probe.QuickScopes.Enqueue(scope);
             probe.Record("quick");
+
             return Task.CompletedTask;
         }
     }
@@ -644,10 +700,12 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
 
         public int CancellationReads => Volatile.Read(ref _cancellationReads);
 
-        public override Task<CancellationReason?> GetCancellationRequestAsync(string instanceId)
+        public override Task<CancellationReason?> GetCancellationRequestAsync(string instanceId,
+            CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref _cancellationReads);
-            return base.GetCancellationRequestAsync(instanceId);
+
+            return base.GetCancellationRequestAsync(instanceId, cancellationToken: cancellationToken);
         }
 
         private int _batchReads;
@@ -661,10 +719,12 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         {
             Interlocked.Increment(ref _batchReads);
             int seen;
+
             while (instanceIds.Count > (seen = Volatile.Read(ref _largestBatch)) &&
                    Interlocked.CompareExchange(ref _largestBatch, instanceIds.Count, seen) != seen)
             {
             }
+
             return base.GetControlRequestsAsync(instanceIds);
         }
     }
@@ -683,17 +743,22 @@ public sealed class LocalHostTests : IClassFixture<SqliteTestDatabase<LocalHostT
         public long[] Revisions(string name) =>
             _applied.Where(item => item.Name == name).Select(item => item.Revision).ToArray();
 
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
             var instance = commit.ReadTrunk();
+
             if (instance.WorkflowName == HeldInstanceName && instance.Revision >= 1)
             {
                 Holding.TrySetResult();
                 await _released.Task;
             }
-            var result = await base.CommitWorkflowInstanceAsync(commit);
+
+            var result = await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
+
             if (result.Status == WorkflowCommitStatus.Applied)
                 _applied.Enqueue((instance.WorkflowName, result.Revision));
+
             return result;
         }
     }

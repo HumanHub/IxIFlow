@@ -17,8 +17,14 @@ internal sealed class WorkflowFileOptionsProvider(params string[] paths) : Analy
         public override bool TryGetValue(string key, out string value)
         {
             if (key == "build_property.RootNamespace" && rootNamespace != null)
-            { value = rootNamespace; return true; }
+            {
+                value = rootNamespace;
+
+                return true;
+            }
+
             value = enabled ? "true" : "false";
+
             return key == "build_metadata.AdditionalFiles.IxIFlowWorkflow";
         }
     }

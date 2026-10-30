@@ -52,7 +52,7 @@ Optional fixed statements are LockIdentity, AdvanceInbox (when InsertEvent advan
 | PendingEvents | Events, then page waits (WaitId, OpenedSequence, DeadlineUtc). |
 | Event, CandidateWait, Wait, OpenWaits | EventColumns or WaitColumns projection. |
 | EventHash, TakenChild, EarliestDeadline | Sequence/PayloadHash; existing child ID or null; earliest open deadline or null. |
-| Runnable, Cancellation, InboxSequences, Trace | InstanceId/RunnableAtUtc; cancellation JSON; InstanceId/InboxSequence; Sequence/EntryJson. |
+| Cancellation, InboxSequences, Trace | Cancellation JSON; InstanceId/InboxSequence; Sequence/EntryJson. |
 | DeleteState | State JSON or no row. |
 
 Writes that return rows (ClaimLease) may use a multi-statement batch ending in SELECT where RETURNING/OUTPUT is unavailable. Search collections use PostgreSQL arrays, SQL Server table-valued parameters, and bounded SQLite parameter lists.
@@ -63,23 +63,16 @@ DeleteRevalidationSql supplies an optional locked-state revalidation statement. 
 
 The remaining policies describe database capabilities: stamp rechecks versus one WAL snapshot, timestamp normalization, parameter-limited batching, key-ordered bulk child insertion to avoid deadlocks, local versus server clocks, returned due flags for notifications, and retryable database concurrency errors. Their declarations document their meaning.
 
-Batch hooks bind nonempty settlements, waits, parts, trace and child starts. They never commit, open connections, decide transitions or sample clocks. SQL Server batches at 300 rows (1,000 IDs for ownership reads), PostgreSQL uses typed unnest arrays, and SQLite uses parameter sets. PostgreSQL sorts children by ordinal ID to avoid overlapping insert deadlocks; the others retain payload order. Settlements return the affected count; trace appends consecutive numbers under the instance lock.
+Batch hooks bind nonempty settlements, waits, parts, trace and child starts. They never commit, open connections, decide transitions or sample clocks. SQL Server batches at 250 rows (1,000 IDs for ownership reads), PostgreSQL uses typed unnest arrays, and SQLite uses parameter sets. PostgreSQL sorts children by ordinal ID to avoid overlapping insert deadlocks; the others retain payload order. Settlements return the affected count; trace appends consecutive numbers under the instance lock.
 
-RequestCancellationAsync executes atomic provider logic. A null clock uses server time; a supplied clock is the commit's captured time or SQLite's time inside its write transaction. The outcome distinguishes unchanged, recorded, made-runnable and gone. SQL Server shares one UPDATE template for both clock sources. PostgreSQL retains its CTE and conditional transactional NOTIFY; SQLite retains its read/update pair. Only PostgreSQL supplies runnable notifications and LISTEN/NOTIFY wake-ups.
+RequestCancellationAsync executes atomic provider logic. The core supplies its captured store time, sampled inside the transaction; SQLite uses its injected clock after acquiring the writer lock. The outcome distinguishes unchanged, recorded, made-runnable and gone. SQL Server uses one UPDATE template for standalone and commit-time requests. PostgreSQL retains its CTE and conditional transactional NOTIFY; SQLite retains its read/update pair. Only PostgreSQL supplies runnable notifications and LISTEN/NOTIFY wake-ups.
 
-Read assembly retains revision/incarnation checks for SQL Server and PostgreSQL and one deferred WAL snapshot for SQLite. SQL Server preserves its autocommit lease release. PostgreSQL retains transactional release and cancellation. SQLite preserves immediate writes, file ownership, pool clearing, disposed checks and busy/locked error mapping. Deadlock and serialization mappings and notification conditions remain provider-specific.
+Read assembly retains revision/incarnation checks for SQL Server and PostgreSQL and one deferred WAL snapshot for SQLite. SQL Server and PostgreSQL release leases and record cancellation in transactions. SQLite preserves immediate writes, file ownership, pool clearing, disposed checks and busy/locked error mapping. Deadlock and serialization mappings and notification conditions remain provider-specific.
 
 ## Publisher delivery protocol
 
-The outbox has immutable event rows, publisher registrations with persisted endpoint disablement, and delivery rows keyed by event ID and publisher name. Completion insertion and delivery materialization are part of the terminal commit transaction. Event deduplication uses the instance incarnation; SQLite now stores an incarnation too. Repeated commits never regenerate the event ID. Deleting an instance retains pending deliveries and their immutable events.
+The outbox has immutable event rows, publisher registrations with persisted endpoint disablement, and delivery rows keyed by event ID and publisher name. Completion insertion and delivery materialization are part of the terminal commit transaction. Event deduplication uses the instance incarnation; SQLite stores an incarnation too. Repeated commits never regenerate the event ID. Deleting an instance retains pending deliveries and their immutable events.
 
 Completion materialization takes the publisher lock shared; registration, unregistration and disabling take it exclusive. SQL Server uses a transaction application lock and PostgreSQL an advisory transaction lock. SQLite uses its already-held immediate writer transaction without a lock query. Registration starts with future events unless replayRetained is explicitly enabled; it never resets a delivery or re-enables a disabled publisher. Unregistration gives up pending deliveries and removes the subscription. Publishers absent from a particular host remain registered until explicitly unregistered.
 
 ClaimDeliveries takes delivery row locks, then the core samples OutboxClock and stamps the lease and the first-attempt time while incrementing attempts. DeliveryUpdate persists a row only under that transaction and lock. Renewal and settlement lock the delivery, read the store clock, and reject an expired or replaced token. A retry sends only a duration; the core stamps its next attempt from store time. Disabling is atomic with the fenced settlement and gives up all other pending deliveries for that publisher. Acknowledgments after disablement cannot revive a delivery.
-
-Workflow identity is the declared `(name, version)`, with names required. Checkpoint schema 1 (`ixiflow-1`)
-stores a compiler-free `StructureHash` and refuses incompatible definitions. Earlier saved instances
-are unreadable without migration; reset development state and restart hosts together. See the
-[identity and structure-hash contract](../../docs/fluent-api.md#identity-and-expressions).
-
-Workflow classes declare identity once with `[Workflow("Name", Version = n)]` in `IxIFlow.Core`. `RegisterWorkflow<TWorkflow,TData>()` and `Invoke<TWorkflow,TData>(setup)` read it from the type without constructing the class to discover identity; missing attributes are refused. Typed YAML children need only `workflowType`, with no duplicate name/version field.

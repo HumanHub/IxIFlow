@@ -40,9 +40,12 @@ public sealed class CoordinatorRound2StoreScenarios
         await store.RegisterMemberAsync(new(host, MemberKind.Host, "us", null, 1, "1", TimeSpan.FromMinutes(5), caps));
         Assert.False(await store.CanScheduleAsync(await store.GetWorkflowDemandsAsync(instance.InstanceId)));
         Assert.Null(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "early", TimeSpan.FromMinutes(1), query));
+
         if (profile.StartsWith("distributed-", StringComparison.Ordinal))
             await Task.Delay(expiry > DateTime.UtcNow ? expiry - DateTime.UtcNow + TimeSpan.FromMilliseconds(100) : TimeSpan.Zero);
-        else time.Advance(TimeSpan.FromSeconds(5));
+        else
+            time.Advance(TimeSpan.FromSeconds(5));
+
         var saved = await store.GetWorkflowDemandsAsync(instance.InstanceId);
         var merged = Assert.Single(saved.Where(demand => demand.Key == "region"));
         Assert.Null(merged.ExpiresAtUtc);
@@ -63,8 +66,10 @@ public sealed class CoordinatorRound2StoreScenarios
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
         var definition = Workflow.Create<Data>("PinnedTermination").Demand("region", "eu").Step<Noop>().Build();
+
         var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, new Data(),
             new() { RequiredHostId = Guid.NewGuid() }, DateTime.UtcNow);
+
         ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), scopes, DateTime.UtcNow);
         await store.SeedAsync(instance);
         var wrong = new ClaimQuery(Guid.NewGuid(), new Dictionary<string, string>());
@@ -75,20 +80,32 @@ public sealed class CoordinatorRound2StoreScenarios
         Assert.Null(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "cancel", TimeSpan.FromMinutes(1), wrong, termination));
         Assert.True((await store.RequestTerminationAsync(instance.InstanceId, new() { ReasonCode = "stop" })).Accepted);
         Assert.Null(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "ordinary", TimeSpan.FromMinutes(1), wrong));
+
         var first = Assert.IsType<ExecutionLeaseGrant>(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId,
             "terminator", TimeSpan.FromMinutes(1), wrong, termination));
-        Assert.Null(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "contender", TimeSpan.FromMinutes(1), wrong, termination));
+
+        Assert.Null(
+            await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "contender", TimeSpan.FromMinutes(1), wrong, termination));
+
         Assert.True((await store.ReleaseExecutionLeaseAsync(instance.InstanceId, "terminator")).Released);
+
         var second = Assert.IsType<ExecutionLeaseGrant>(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId,
             "next", TimeSpan.FromMinutes(1), wrong, termination));
+
         Assert.True(second.Epoch > first.Epoch);
-        Assert.False((await store.RenewExecutionLeasesAsync([new(instance.InstanceId, "terminator", TimeSpan.FromMinutes(1))]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
+
+        Assert.False((await store.RenewExecutionLeasesAsync([new(instance.InstanceId, "terminator", TimeSpan.FromMinutes(1))]))[0].Status ==
+            ExecutionLeaseRenewalStatus.Renewed);
+
         var saved = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
         saved.Status = WorkflowStatus.Terminated;
         saved.CancellationReason = await store.GetCancellationRequestAsync(instance.InstanceId);
+
         Assert.Equal(WorkflowCommitStatus.StaleEpoch, (await store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(saved, first.Epoch, saved.Revision))).Status);
+
         saved.Incarnation = Guid.NewGuid();
+
         Assert.Equal(WorkflowCommitStatus.StaleEpoch, (await store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(saved, second.Epoch, saved.Revision))).Status);
     }
@@ -101,28 +118,35 @@ public sealed class CoordinatorRound2StoreScenarios
         var store = database.NewRepository();
         var acceptingId = Guid.NewGuid();
         var definition = Workflow.Create<Data>("RequesterLost").Demand("region", "eu").Step<Noop>().Build();
+
         var (instance, checkpoint, catalog) = WorkflowInstances.NewInstance(definition, new Data(),
             new() { RequiredHostId = acceptingId }, DateTime.UtcNow);
+
         ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), catalog, DateTime.UtcNow);
         await store.SeedAsync(instance);
         var accepting = new ServiceCollection().AddLogging();
         accepting.AddSingleton(store);
         accepting.AddIxIFlow(options => options.Capabilities["region"] = "eu");
+
         await using (var requester = accepting.BuildServiceProvider())
         {
             // Crash boundary: the durable command was accepted, but no finishing pass ran.
             var receipt = await requester.GetRequiredService<IWorkflowStateRepository>()
                 .RequestTerminationAsync(instance.InstanceId, new() { ReasonCode = "operator" }, instance.Incarnation);
+
             Assert.True(receipt.Accepted);
             Assert.Equal(instance.Incarnation, receipt.Incarnation);
         }
+
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton(store);
         services.AddIxIFlow(options => options.Capabilities["region"] = "us");
         await using var survivor = services.BuildServiceProvider();
         var settings = survivor.GetRequiredService<HostSettings>();
+
         await store.RegisterMemberAsync(new(settings.Id, MemberKind.Host, "survivor", null, 1, "1",
             TimeSpan.FromMinutes(5), new Dictionary<string, string> { ["region"] = "us" }));
+
         var scanner = survivor.GetServices<IHostedService>().OfType<WorkflowRecoveryService>().Single();
         Assert.Empty(await store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(survivor)));
         Assert.Equal(instance.Incarnation, Assert.Single((await store.GetUnschedulableAsync()).Items).Incarnation);
@@ -140,19 +164,26 @@ public sealed class CoordinatorRound2StoreScenarios
     {
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
+
         for (var index = 0; index <= 32; index++)
         {
             var definition = Workflow.Create<Data>("DormantSets").Demand("set", index.ToString()).Step<Noop>().Build();
             var (instance, checkpoint, catalog) = WorkflowInstances.NewInstance(definition, new Data(), new(), DateTime.UtcNow);
             ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), catalog, DateTime.UtcNow);
-            if (index != 0) instance.Status = WorkflowStatus.Completed;
+
+            if (index != 0)
+                instance.Status = WorkflowStatus.Completed;
+
             await store.SeedAsync(instance, TimeSpan.Zero);
         }
+
         const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+
         if (store is InMemoryWorkflowStateRepository)
         {
             var sets = (IEnumerable<KeyValuePair<string, WorkflowDemand[]>>)store.GetType()
                 .GetMethod("DueDemandSets", flags)!.Invoke(store, [DateTime.UtcNow])!;
+
             Assert.Single(sets);
         }
         else
@@ -162,10 +193,12 @@ public sealed class CoordinatorRound2StoreScenarios
             var rows = (await connection.QueryAsync(sql, new { Now = DateTime.UtcNow })).ToArray();
             Assert.Equal(2, rows.Length); // one tag plus the immutable workflow hash
         }
+
         Assert.Single((await store.GetUnschedulableAsync()).Items);
     }
 
     public sealed class Data;
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;

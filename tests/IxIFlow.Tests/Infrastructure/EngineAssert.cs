@@ -9,6 +9,7 @@ public static class EngineAssert
     {
         var error = Assert.Throws<WorkflowEngineException>(call);
         Assert.Equal(kind, error.Kind);
+
         return error;
     }
 
@@ -16,6 +17,7 @@ public static class EngineAssert
     {
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(call);
         Assert.Equal(kind, error.Kind);
+
         return error;
     }
 
@@ -24,6 +26,7 @@ public static class EngineAssert
     {
         var error = await FailsAsync(WorkflowErrorKind.Infrastructure, call);
         Assert.IsType<IOException>(error.InnerException);
+
         return error;
     }
 }

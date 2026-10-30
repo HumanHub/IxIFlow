@@ -27,6 +27,7 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
         _logger = logger ?? NullLogger<ExecutionLeaseRenewer>.Instance;
         _sensitiveDiagnostics = sensitiveDiagnostics;
         _inspectionPolicy = inspectionPolicy ?? InspectionRedactionPolicy.Default;
+
         // This singleton can first be resolved inside a bundle's type scope.
         using (ExecutionContextFlow.SuppressIfNeeded())
             _timer = _time.CreateTimer(_ => Tick(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
@@ -40,6 +41,7 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
             var registration = new Registration(this, request, dueAtUtc);
             _leases.Add(registration);
             Arm();
+
             return registration;
         }
     }
@@ -50,7 +52,9 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
     {
         var due = _leases.Where(lease => !lease.InFlight).Select(lease => lease.DueAtUtc)
             .DefaultIfEmpty(DateTime.MaxValue).Min();
+
         var delay = due - _time.GetUtcNow().UtcDateTime;
+
         _timer.Change(due == DateTime.MaxValue ? Timeout.InfiniteTimeSpan :
             delay < TimeSpan.Zero ? TimeSpan.Zero : delay, Timeout.InfiniteTimeSpan);
     }
@@ -59,23 +63,33 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
     {
         Registration[] batch;
         var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         lock (_lock)
         {
-            if (_disposed) return;
+            if (_disposed)
+                return;
+
             var now = _time.GetUtcNow().UtcDateTime;
+
             if (!_leases.Any(lease => !lease.InFlight && lease.DueAtUtc <= now))
             {
                 Arm();
+
                 return;
             }
+
             // A stale registration and its replacement can briefly share an ID. Send the other
             // token on the next pass; duplicate IDs would fail the store's entire batch.
             batch = _leases.Where(lease => !lease.InFlight)
                 .DistinctBy(lease => lease.Request.InstanceId, StringComparer.Ordinal).ToArray();
-            foreach (var lease in batch) lease.InFlight = true;
+
+            foreach (var lease in batch)
+                lease.InFlight = true;
+
             _batches.Add(completed.Task);
             Arm();
         }
+
         // A hung call never blocks the timer or another lease's expiry clock. Its registrations
         // stay in flight, so the host never queues another renewal for the same hung leases.
         _ = RenewAsync(batch, completed);
@@ -84,11 +98,14 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
     private async Task RenewAsync(Registration[] batch, TaskCompletionSource completed)
     {
         var sentAtUtc = _time.GetUtcNow().UtcDateTime;
+
         try
         {
             var results = await _store.RenewExecutionLeasesAsync(batch.Select(lease => lease.Request).ToArray());
+
             if (results.Count != batch.Length)
                 throw new InvalidOperationException("A renewal batch must return one result per lease");
+
             for (var index = 0; index < batch.Length; index++)
                 batch[index].Reply.TrySetResult(new Attempt(sentAtUtc, results[index]));
         }
@@ -96,12 +113,16 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
         {
             _inspectionPolicy.Log(_logger, _sensitiveDiagnostics, LogLevel.Warning, error,
                 "Could not renew execution leases for {Count} workflow instances", batch.Length);
-            foreach (var lease in batch) lease.Reply.TrySetException(error);
+
+            foreach (var lease in batch)
+                lease.Reply.TrySetException(error);
         }
         finally
         {
             completed.TrySetResult();
-            lock (_lock) _batches.Remove(completed.Task);
+
+            lock (_lock)
+                _batches.Remove(completed.Task);
         }
     }
 
@@ -109,10 +130,15 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
     {
         lock (_lock)
         {
-            if (_disposed) return;
+            if (_disposed)
+                return;
+
             _disposed = true;
             _timer.Dispose();
-            foreach (var lease in _leases) lease.Reply.TrySetCanceled();
+
+            foreach (var lease in _leases)
+                lease.Reply.TrySetCanceled();
+
             _leases.Clear();
         }
     }
@@ -121,7 +147,10 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
     {
         Dispose();
         Task[] batches;
-        lock (_lock) batches = _batches.ToArray();
+
+        lock (_lock)
+            batches = _batches.ToArray();
+
         try
         {
             // Shutdown must also finish when an injected workflow clock is no longer advancing.
@@ -136,7 +165,9 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
 
     internal sealed record Attempt(DateTime SentAtUtc, ExecutionLeaseRenewalResult Result);
 
-    internal sealed class Registration(ExecutionLeaseRenewer owner, ExecutionLeaseRenewal request,
+    internal sealed class Registration(
+        ExecutionLeaseRenewer owner,
+        ExecutionLeaseRenewal request,
         DateTime dueAtUtc) : IDisposable
     {
         internal ExecutionLeaseRenewal Request { get; } = request;
@@ -150,7 +181,9 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
         {
             lock (owner._lock)
             {
-                if (!owner._leases.Contains(this)) return;
+                if (!owner._leases.Contains(this))
+                    return;
+
                 Reply = NewReply();
                 DueAtUtc = due;
                 InFlight = false;
@@ -163,11 +196,14 @@ internal sealed class ExecutionLeaseRenewer : IDisposable, IAsyncDisposable
             lock (owner._lock)
             {
                 owner._leases.Remove(this);
+
                 // Observe a late failure of an abandoned store call as well as a completed one.
                 using (ExecutionContextFlow.SuppressIfNeeded())
                     _ = Reply.Task.ContinueWith(task => _ = task.Exception, CancellationToken.None,
                         TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-                if (!owner._disposed) owner.Arm();
+
+                if (!owner._disposed)
+                    owner.Arm();
             }
         }
     }

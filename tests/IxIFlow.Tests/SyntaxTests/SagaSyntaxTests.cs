@@ -23,7 +23,6 @@ public class SagaSyntaxTests
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
-
             .Saga(saga =>
             {
                 saga.Step<ChargePaymentAsyncActivity>(setup => setup
@@ -52,7 +51,6 @@ public class SagaSyntaxTests
         var definition = Workflow.Create<OrderWorkflowData>("SagaWithErrorHandlingTest", 1)
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
-
             .Saga(saga =>
             {
                 saga.Step<ChargePaymentAsyncActivity>(setup => setup
@@ -78,26 +76,25 @@ public class SagaSyntaxTests
     {
         // Arrange & Act - This test verifies that saga with multiple steps compiles correctly
         var definition = Workflow.Create<OrderWorkflowData>("SagaWithMultipleStepsTest", 1)
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
             .Saga(saga =>
             {
                 saga.Step<ChargePaymentAsyncActivity>(setup => setup
-                    .Input(act => act.TransactionId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
-                    .CompensateWith<RefundPaymentAsyncActivity>())
-
-                .Step<ReserveInventoryAsyncActivity>(setup => setup
-                    .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                    .Input(act => act.InStock).From(ctx => !string.IsNullOrEmpty(ctx.PreviousStep.TransactionId)) // Access previous step
-                    .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId)
-                    .CompensateWith<ReleaseInventoryAsyncActivity>())
-
-                .Step<SendConfirmationAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.ShipmentId).From(ctx => ctx.PreviousStep.ReservationId) // Access previous step
-                    .CompensateWith<SendCancellationAsyncActivity>());
+                        .Input(act => act.TransactionId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
+                        .CompensateWith<RefundPaymentAsyncActivity>())
+                    .Step<ReserveInventoryAsyncActivity>(setup => setup
+                        .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                        .Input(act => act.InStock)
+                        .From(ctx => !string.IsNullOrEmpty(ctx.PreviousStep.TransactionId)) // Access previous step
+                        .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId)
+                        .CompensateWith<ReleaseInventoryAsyncActivity>())
+                    .Step<SendConfirmationAsyncActivity>(setup => setup
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.ShipmentId).From(ctx => ctx.PreviousStep.ReservationId) // Access previous step
+                        .CompensateWith<SendCancellationAsyncActivity>());
             })
             .Build();
 
@@ -111,9 +108,9 @@ public class SagaSyntaxTests
     {
         // Arrange & Act - This test verifies that saga within try/catch compiles correctly
         var definition = Workflow.Create<OrderWorkflowData>("SagaWithTryCatchTest", 1)
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
             .Try(tryBlock =>
             {
                 tryBlock.Saga(saga =>
@@ -129,7 +126,9 @@ public class SagaSyntaxTests
                     .Input(act => act.ErrorMessage).From(ctx => ctx.Fault.Message)
                     .Output(act => act.FailureHandled).To(ctx => ctx.WorkflowData.ErrorHandled));
             })
-                .Catch(x => { })
+            .Catch(x =>
+            {
+            })
             .Build();
 
         // Assert
@@ -145,7 +144,6 @@ public class SagaSyntaxTests
         var definition = Workflow.Create<OrderWorkflowData>("SagaStructureTest", 1)
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
-
             .Saga(saga =>
             {
                 saga.Step<ChargePaymentAsyncActivity>(setup => setup
@@ -167,9 +165,9 @@ public class SagaSyntaxTests
     {
         // Arrange & Act - Test that saga error strategies compile correctly
         var definition = Workflow.Create<OrderWorkflowData>("SagaErrorStrategiesTest", 1)
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
             .Saga(saga =>
             {
                 saga.Step<ChargePaymentAsyncActivity>(setup => setup
@@ -191,9 +189,9 @@ public class SagaSyntaxTests
     {
         // Arrange & Act - Test that saga compensation strategies compile correctly
         var definition = Workflow.Create<OrderWorkflowData>("SagaCompensationStrategiesTest", 1)
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
             .Saga(saga =>
             {
                 saga.Step<ChargePaymentAsyncActivity>(setup => setup
@@ -208,7 +206,7 @@ public class SagaSyntaxTests
             .OnError(error =>
             {
                 error.CompensateUpTo<ChargePaymentAsyncActivity>() // Compensate up to specific step
-                    .ThenRetry(maxAttempts: 3);
+                    .ThenRetry(maxRetries: 3);
             })
             .Build();
 
@@ -222,9 +220,9 @@ public class SagaSyntaxTests
     {
         // Arrange & Act - Test that step after saga can access saga results
         var definition = Workflow.Create<OrderWorkflowData>("StepAfterSagaTest", 1)
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
             .Saga(saga =>
             {
                 saga.Step<ChargePaymentAsyncActivity>(setup => setup
@@ -232,7 +230,6 @@ public class SagaSyntaxTests
                     .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId)
                     .CompensateWith<RefundPaymentAsyncActivity>());
             })
-
             .Step<UpdateAnalyticsAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Input(act => act.Success).From(ctx => !string.IsNullOrEmpty(ctx.WorkflowData.TransactionId)) // Access saga result
@@ -252,9 +249,9 @@ public class SagaSyntaxTests
     {
         // Arrange & Act - Test that saga with complex compensation logic compiles
         var definition = Workflow.Create<OrderWorkflowData>("SagaComplexCompensationTest", 1)
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
             .Saga(saga =>
             {
                 saga.Step<ChargePaymentAsyncActivity>(setup => setup
@@ -263,7 +260,9 @@ public class SagaSyntaxTests
                     .CompensateWith<RefundPaymentAsyncActivity>(comp =>
                     {
                         comp.Input(act => act.TransactionId).From(ctx => ctx.WorkflowData.TransactionId);
-                        comp.Input(act => act.TransactionId).From(ctx => ctx.CurrentStep.TransactionId); // Access previous step in compensation
+
+                        comp.Input(act => act.TransactionId)
+                            .From(ctx => ctx.CurrentStep.TransactionId); // Access previous step in compensation
                     }));
             })
             .Build();
@@ -281,30 +280,25 @@ public class SagaSyntaxTests
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
-
             .Saga(saga =>
             {
                 saga.Step<ChargePaymentAsyncActivity>(setup => setup
-                    .Input(act => act.TransactionId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
-                    .Output(act => act.PaymentStatus).To(ctx => ctx.WorkflowData.PaymentStatus)
-                    .CompensateWith<RefundPaymentAsyncActivity>())
-
-                .Switch(ctx => ctx.PreviousStep.PaymentMethod, outcomes => outcomes
-                    .Case("Card", success => success
-                        .Step<SendConfirmationAsyncActivity>(setup => setup
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
-                    
-                    .Case("Cash", declined => declined
-                        .Step<HandleDeclinedPaymentAsyncActivity>(setup => setup
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
-                    
-                    .Case("Check", pending => pending
-                        .Suspend<ConfirmOrderEventData>("Waiting for payment confirmation"))
-                    
-                    .Default(defaultPath => defaultPath
-                        .Step<LogUnknownStatusAsyncActivity>(setup => setup
-                            .Input(act => act.Status).From(ctx => ctx.WorkflowData.PaymentStatus))));
+                        .Input(act => act.TransactionId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
+                        .Output(act => act.PaymentStatus).To(ctx => ctx.WorkflowData.PaymentStatus)
+                        .CompensateWith<RefundPaymentAsyncActivity>())
+                    .Switch(ctx => ctx.PreviousStep.PaymentMethod, outcomes => outcomes
+                        .Case("Card", success => success
+                            .Step<SendConfirmationAsyncActivity>(setup => setup
+                                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
+                        .Case("Cash", declined => declined
+                            .Step<HandleDeclinedPaymentAsyncActivity>(setup => setup
+                                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
+                        .Case("Check", pending => pending
+                            .Suspend<ConfirmOrderEventData>("Waiting for payment confirmation"))
+                        .Default(defaultPath => defaultPath
+                            .Step<LogUnknownStatusAsyncActivity>(setup => setup
+                                .Input(act => act.Status).From(ctx => ctx.WorkflowData.PaymentStatus))));
             })
             .Build();
 
@@ -324,21 +318,18 @@ public class SagaSyntaxTests
             .Step<ValidateOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult))
-
             .Saga(saga =>
             {
                 saga.Step<ChargePaymentAsyncActivity>(setup => setup
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
-                    .Output(act => act.PaymentStatus).To(ctx => ctx.WorkflowData.PaymentStatus))
-
-                .Switch(ctx => ctx.WorkflowData.ValidationResult, outcomes => outcomes
-                    .Case(true, valid => valid
-                        .Step<ProcessOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
-                    
-                    .Default(invalid => invalid
-                        .Step<RejectOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))));
+                        .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
+                        .Output(act => act.PaymentStatus).To(ctx => ctx.WorkflowData.PaymentStatus))
+                    .Switch(ctx => ctx.WorkflowData.ValidationResult, outcomes => outcomes
+                        .Case(true, valid => valid
+                            .Step<ProcessOrderAsyncActivity>(setup => setup
+                                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)))
+                        .Default(invalid => invalid
+                            .Step<RejectOrderAsyncActivity>(setup => setup
+                                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))));
             })
             .Build();
 

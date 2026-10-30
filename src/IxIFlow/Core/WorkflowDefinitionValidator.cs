@@ -12,12 +12,14 @@ public static class WorkflowDefinitionValidator
     public static string Inspect(WorkflowDefinition definition)
     {
         Validate(definition);
+
         return ForExecution(definition).StructureHash;
     }
 
     public static string GetCombinerSignature(WorkflowDefinition definition)
     {
         Validate(definition);
+
         return BranchData.CombinerSignature(definition.WorkflowDataType);
     }
 
@@ -26,6 +28,7 @@ public static class WorkflowDefinitionValidator
     {
         ArgumentNullException.ThrowIfNull(definition);
         var dataType = RequireDataType(definition);
+
         return Validated.TryGetValue(definition, out var validation) && validation.IsValueCreated
             ? validation.Value.Contract
             : WorkflowContract.Derive(dataType, definition.DeclaredInputs, definition.DeclaredOutputs)
@@ -39,9 +42,13 @@ public static class WorkflowDefinitionValidator
     internal static void CheckRootDataType(WorkflowDefinition definition, object workflowData)
     {
         if (definition.RequiredScopes.Count != 0)
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "A workflow with required scopes can only run inline inside a supplying scope");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                "A workflow with required scopes can only run inline inside a supplying scope");
+
         if (ScopeOperation.Current.Value is { Active: true })
-            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Return from the scope callback before starting dependent workflow execution");
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
+                "Return from the scope callback before starting dependent workflow execution");
+
         if (definition.WorkflowDataType is { } dataType && !AcceptsRootData(dataType, workflowData))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                 $"Workflow data type '{workflowData.GetType()}' is not an instance of the definition's data type '{dataType}'");
@@ -57,6 +64,7 @@ public static class WorkflowDefinitionValidator
     public static IReadOnlyList<WorkflowVersionDependency> GetDependencies(WorkflowDefinition definition)
     {
         Validate(definition);
+
         return ForExecution(definition).AllSteps.Select(pair => pair.Value)
             .Where(step => step.StepType is WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow)
             .Select(step => new WorkflowVersionDependency(step.WorkflowName!, step.WorkflowVersion!.Value,
@@ -68,6 +76,7 @@ public static class WorkflowDefinitionValidator
     public static IReadOnlyList<WorkflowInlineWorkflow> GetInlineWorkflows(WorkflowDefinition definition)
     {
         Validate(definition);
+
         return ForExecution(definition).AllSteps.Where(pair => pair.Value.StepType == WorkflowStepType.InlineWorkflow)
             .GroupBy(pair => pair.Value.InlinePin ?? throw InlineConstruction.Invalid("Inline executable pin metadata is required"))
             .Select(group => new WorkflowInlineWorkflow(group.Key.Name, group.Key.Version, group.Key.BundleDigest,
@@ -76,7 +85,8 @@ public static class WorkflowDefinitionValidator
             .OrderBy(item => item.Name, StringComparer.Ordinal).ThenBy(item => item.Version).ToArray();
     }
 
-    internal static bool SameInlineWorkflows(IReadOnlyList<WorkflowInlineWorkflow> expected, IReadOnlyList<WorkflowInlineWorkflow> actual) =>
+    internal static bool SameInlineWorkflows(IReadOnlyList<WorkflowInlineWorkflow> expected,
+        IReadOnlyList<WorkflowInlineWorkflow> actual) =>
         expected.Count == actual.Count && expected.All(pin => actual.Any(other =>
             pin.Name == other.Name && pin.Version == other.Version && pin.BundleDigest == other.BundleDigest &&
             pin.StructureHash == other.StructureHash && pin.ContractHash == other.ContractHash &&
@@ -88,6 +98,7 @@ public static class WorkflowDefinitionValidator
     {
         Validate(definition);
         var scopes = ForExecution(definition);
+
         return scopes.AllSteps
             .Where(pair => pair.Value.StepType == WorkflowStepType.WorkflowInvocation)
             .Select(pair => new WorkflowVersionInvocation(pair.Value.WorkflowName!, pair.Value.WorkflowVersion!.Value,
@@ -113,37 +124,49 @@ public static class WorkflowDefinitionValidator
         if (!Validated.TryGetValue(definition, out var validation) || !validation.IsValueCreated)
             Check(() => throw WorkflowBuildError.Invalid(definition.FirstStep ?? new WorkflowStep(),
                 "The workflow definition has not been validated; call WorkflowDefinitionValidator.Validate before execution"));
+
         return validation!.Value.Scopes.Value;
     }
 
     private static Validation Checked(WorkflowDefinition definition)
     {
         WorkflowContract? contract = null;
+
         Check(() =>
         {
             if (string.IsNullOrWhiteSpace(definition.Name) || definition.Name.Length != definition.Name.Trim().Length)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     "A workflow name is required and cannot have leading or trailing whitespace");
+
             if (definition.Version < 1)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Workflow '{definition.Name}' requires a positive version");
+
             _ = RequireDataType(definition);
+
             var inlineDemands = ParallelRules.Flatten(definition.Steps, crossInline: false)
                 .SelectMany(step => step.InlineDemands).ToArray();
+
             if (inlineDemands.Length > 0)
                 definition.Demands = InlineConstruction.MergeDemands(definition.Demands.Concat(inlineDemands));
+
             foreach (var demand in definition.Demands)
             {
                 WorkflowDemands.Validate(demand);
                 ExpressionRules.CheckDemand(demand);
             }
+
             contract = GetContract(definition);
             var steps = definition.Steps;
+
             foreach (var type in ParallelRules.Flatten(steps).SelectMany(step => new[]
-                     { step.WorkflowDataType, step.PreviousStepDataType,
-                         step.ResumeEventType, step.ReplyType, step.InvokedDataType, step.ResultType })
+                         {
+                             step.WorkflowDataType, step.PreviousStepDataType,
+                             step.ResumeEventType, step.ReplyType, step.InvokedDataType, step.ResultType
+                         })
                          .Prepend(definition.WorkflowDataType).OfType<Type>().Distinct())
                 _ = RedactingJson.ClassifiedPaths(type);
+
             AssignmentRules.Validate(steps);
             ThrowRules.Validate(steps);
             ScopeRules.Validate(definition);
@@ -154,18 +177,22 @@ public static class WorkflowDefinitionValidator
 
             ExpressionRules.Checked(MappingRules.Checked(ParallelRules.Checked(
                 ForEachRules.Paired(SagaRules.Checked(RequestPairing.Paired(steps))))));
+
             foreach (var step in ParallelRules.Flatten(steps))
             {
                 ValidateStepPolicies(step);
+
                 if (step.Runtime == null)
                     throw WorkflowBuildError.Invalid(step,
                         $"Step '{step.Id}' has no runtime delegates; construct steps through the workflow builders");
+
                 if (step.StepMetadata.GetValueOrDefault("CompensationActivities") is List<CompensationActivityInfo> compensations &&
                     compensations.Any(compensation => compensation.Runtime == null))
                     throw WorkflowBuildError.Invalid(step,
                         $"Step '{step.Id}' has a compensation with no runtime delegates; construct steps through the workflow builders");
             }
         });
+
         return new Validation(definition, contract!);
     }
 
@@ -178,15 +205,19 @@ public static class WorkflowDefinitionValidator
         public Lazy<WorkflowScopeCatalog> Scopes { get; } = new(() =>
         {
             WorkflowScopeCatalog? catalog = null;
+
             Check(() =>
             {
                 catalog = new WorkflowScopeCatalog(definition);
                 var ids = new HashSet<string>(StringComparer.Ordinal);
+
                 foreach (var (_, step) in catalog.AllSteps)
                     if (!ids.Add(catalog.AuthorId(step)))
                         throw WorkflowBuildError.Invalid(step, $"Duplicate step ID '{catalog.AuthorId(step)}'");
+
                 ValidateSupportedSteps(catalog);
             });
+
             return catalog!;
         });
     }
@@ -196,7 +227,10 @@ public static class WorkflowDefinitionValidator
         foreach (var step in steps)
         {
             var id = prefix + step.Id;
-            if (!ids.Add(id)) throw WorkflowBuildError.Invalid(step, $"Duplicate step ID '{id}'");
+
+            if (!ids.Add(id))
+                throw WorkflowBuildError.Invalid(step, $"Duplicate step ID '{id}'");
+
             foreach (var scope in step.ChildScopes())
                 CheckIds(scope.Steps, scope.Kind == "inline" ? id + "/" : prefix, ids);
         }
@@ -205,13 +239,17 @@ public static class WorkflowDefinitionValidator
     private static void ValidateSupportedSteps(WorkflowScopeCatalog catalog)
     {
         ValidateCompensations(catalog);
+
         foreach (var (id, step) in catalog.AllSteps)
         {
             var supported = step.StepType switch
             {
-                WorkflowStepType.Scope or WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow or WorkflowStepType.Sequence or
-                    WorkflowStepType.Assign or WorkflowStepType.Conditional or WorkflowStepType.Switch or WorkflowStepType.Throw or WorkflowStepType.Rethrow or WorkflowStepType.Parallel or WorkflowStepType.Loop or
-                    WorkflowStepType.CancellationScope or WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga or
+                WorkflowStepType.Scope or WorkflowStepType.Activity or WorkflowStepType.WorkflowInvocation
+                    or WorkflowStepType.InlineWorkflow or WorkflowStepType.Sequence or
+                    WorkflowStepType.Assign or WorkflowStepType.Conditional or WorkflowStepType.Switch or WorkflowStepType.Throw
+                    or WorkflowStepType.Rethrow or WorkflowStepType.Parallel or WorkflowStepType.Loop or
+                    WorkflowStepType.CancellationScope or WorkflowStepType.TryCatch or WorkflowStepType.CatchBlock or WorkflowStepType.Saga
+                    or
                     WorkflowStepType.ForEach or WorkflowStepType.ForEachResult or WorkflowStepType.Flowchart or
                     WorkflowStepType.Enter or WorkflowStepType.Decision or WorkflowStepType.Edge or
                     WorkflowStepType.StateMachine or WorkflowStepType.Arm or WorkflowStepType.Trigger or
@@ -220,26 +258,34 @@ public static class WorkflowDefinitionValidator
                 WorkflowStepType.Delay => step.DelayDuration > TimeSpan.Zero,
                 _ => false
             };
+
             if (!supported)
                 throw WorkflowBuildError.Invalid(step,
                     $"Structured execution does not support {step.StepType} at '{id}'");
+
             if (step.StepType == WorkflowStepType.SuspendResume &&
                 ((step.WaitTimeout == null) != (step.TimeoutSteps.Count == 0) ||
-                 step.WaitTimeout is { } timeout && timeout <= TimeSpan.Zero))
+                    step.WaitTimeout is { } timeout && timeout <= TimeSpan.Zero))
                 throw WorkflowBuildError.Invalid(step,
                     $"Wait at '{id}' requires a positive timeout and a timeout branch");
+
             if (step.StepType is WorkflowStepType.WorkflowInvocation or WorkflowStepType.InlineWorkflow &&
-                (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowName.Length != step.WorkflowName.Trim().Length || step.WorkflowVersion is not > 0))
+                (string.IsNullOrWhiteSpace(step.WorkflowName) || step.WorkflowName.Length != step.WorkflowName.Trim().Length ||
+                    step.WorkflowVersion is not > 0))
                 throw WorkflowBuildError.Invalid(step,
                     $"Workflow invocation at '{id}' has no child workflow reference");
+
             if (step.StepType == WorkflowStepType.InlineWorkflow &&
-                (string.IsNullOrWhiteSpace(step.InlineStructureHash) || step.InvokedContractKind != WorkflowInvocationContractKind.ExactPin))
+                (string.IsNullOrWhiteSpace(step.InlineStructureHash) ||
+                    step.InvokedContractKind != WorkflowInvocationContractKind.ExactPin))
                 throw WorkflowBuildError.Invalid(step, $"Inline workflow at '{id}' has no exact callee pin");
+
             if (step.StepType == WorkflowStepType.Parallel &&
                 step.ParallelJoinMode == ParallelJoinMode.WaitConditionally &&
                 step.ParallelCompletionCondition == null)
                 throw WorkflowBuildError.Invalid(step,
                     $"Conditional parallel join at '{id}' has no completion condition");
+
             if (step.StepType is WorkflowStepType.Activity or WorkflowStepType.Scope && step.ActivityType != null)
             {
                 var properties = UnrestorableProperties.GetValue(step.ActivityType, static type => type.GetProperties(
@@ -250,6 +296,7 @@ public static class WorkflowDefinitionValidator
                             .Cast<System.Text.Json.Serialization.JsonIgnoreAttribute>()
                             .Any(attribute => attribute.Condition == System.Text.Json.Serialization.JsonIgnoreCondition.Always))
                     .Select(property => property.Name).ToArray());
+
                 if (properties.Length != 0)
                     throw WorkflowBuildError.Invalid(step,
                         $"Activity '{step.ActivityType.Name}' has a getter-only property '{properties[0]}' " +
@@ -264,18 +311,23 @@ public static class WorkflowDefinitionValidator
         {
             if (policies is not List<StepErrorHandlerInfo> handlers)
                 throw WorkflowBuildError.Invalid(step, "Step error policies have an invalid representation");
+
             if (step.StepType != WorkflowStepType.WorkflowInvocation &&
                 (step.StepType != WorkflowStepType.Activity || !step.StepMetadata.ContainsKey("IsSagaStep")))
                 throw WorkflowBuildError.Invalid(step, "Step error policies require a saga activity, request or workflow invocation");
+
             foreach (var handler in handlers)
             {
                 if (handler.ExceptionType == null || !typeof(Exception).IsAssignableFrom(handler.ExceptionType) ||
                     !Enum.IsDefined(handler.HandlerAction))
                     throw WorkflowBuildError.Invalid(step, "A step error policy requires an exception type and a valid action");
+
                 if (handler.HandlerAction == StepErrorAction.Retry && handler.RetryPolicy == null)
                     throw WorkflowBuildError.Invalid(step, "Retry requires retry settings");
+
                 if (handler.RetryPolicy != null && handler.HandlerAction != StepErrorAction.Retry)
                     throw WorkflowBuildError.Invalid(step, "Only retry accepts retry settings");
+
                 if (handler.RetryPolicy is { } retry && IxIFlow.Authoring.RetryDelayRules.Validate(
                         retry.MaximumAttempts, retry.InitialInterval, retry.MaximumInterval, retry.BackoffCoefficient) is { } problem)
                     throw WorkflowBuildError.Invalid(step, problem);
@@ -289,11 +341,13 @@ public static class WorkflowDefinitionValidator
                      step.StepType == WorkflowStepType.Activity && step.StepMetadata.ContainsKey("IsSagaStep")))
         {
             var activities = source.StepMetadata.GetValueOrDefault("CompensationActivities") as List<CompensationActivityInfo>;
+
             if (activities != null)
             {
                 for (var index = 0; index < activities.Count; index++)
                 {
                     var expected = activities[index].PreviousChainActivityType;
+
                     if (expected != null && (index == 0 ||
                             !expected.IsAssignableFrom(activities[index - 1].ActivityType)))
                         throw WorkflowBuildError.Invalid(source,
@@ -313,6 +367,7 @@ public static class WorkflowDefinitionValidator
         catch (WorkflowEngineException error) when (WorkflowBuildError.Step(error)?.SourceLocation is { })
         {
             var step = WorkflowBuildError.Step(error)!;
+
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 step.SourceLocation + ": " + error.Message, error);
         }

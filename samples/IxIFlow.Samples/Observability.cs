@@ -21,16 +21,21 @@ public sealed class Observability : IDisposable
             Sample = (ref ActivityCreationOptions<ActivityContext> options) => ActivitySamplingResult.AllData,
             ActivityStopped = activity => Spans.Enqueue(activity.OperationName)
         };
+
         ActivitySource.AddActivityListener(_activities);
+
         _metrics.InstrumentPublished = (instrument, listener) =>
         {
             if (instrument.Meter.Name == "IxIFlow")
                 listener.EnableMeasurementEvents(instrument);
         };
+
         _metrics.SetMeasurementEventCallback<long>((instrument, value, tags, state) =>
             Measurements.Enqueue(instrument.Name));
+
         _metrics.SetMeasurementEventCallback<double>((instrument, value, tags, state) =>
             Measurements.Enqueue(instrument.Name));
+
         _metrics.Start();
     }
 

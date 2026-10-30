@@ -112,13 +112,14 @@ no-store caching because those facts are not covered by the catalog revision.
 
 <!-- snippet: samples/IxIFlow.Samples/CatalogExamples.cs#template-reads -->
 ```csharp
-    public static async Task<(CatalogPage<CatalogTemplate> Templates, IReadOnlyList<CatalogStepDescriptor> Steps)>
-        ReadAsync(IWorkflowCatalogStore catalog, CatalogScope scope)
-    {
-        var templates = await catalog.ListTemplatesAsync(new CatalogTemplateQuery(scope, Engine: "liquid"));
-        var steps = await catalog.ListStepDescriptorsAsync(scope);
-        return (templates, steps);
-    }
+public static async Task<(CatalogPage<CatalogTemplate> Templates, IReadOnlyList<CatalogStepDescriptor> Steps)>
+    ReadAsync(IWorkflowCatalogStore catalog, CatalogScope scope)
+{
+    var templates = await catalog.ListTemplatesAsync(new CatalogTemplateQuery(scope, Engine: "liquid"));
+    var steps = await catalog.ListStepDescriptorsAsync(scope);
+
+    return (templates, steps);
+}
 ```
 
 The public [template records](../src/IxIFlow/Core/CatalogTemplates.cs) and [catalog store API](../src/IxIFlow/Core/WorkflowCatalog.cs) define query and receipt shapes. `ListTemplateVersionsAsync` pages one key; `GetTemplateDetailAsync` reads its publication receipt.

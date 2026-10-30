@@ -27,10 +27,12 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         using var renewer = new ExecutionLeaseRenewer(store, time);
         using var watch = new CancellationWatch(store, time);
         var leases = new List<WorkflowExecutionLease>();
+
         try
         {
             for (var index = 0; index < 32; index++)
                 leases.Add((await AcquireAsync(store, watch, renewer, time, $"batch-{index}"))!);
+
             Assert.Empty(store.Attempts);
             time.Advance(Settings.RenewalInterval);
             await ConfirmRenewalsAsync(time, time.Start + Settings.RenewalInterval + Settings.Duration, leases.Count);
@@ -43,7 +45,11 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
             Assert.All(store.Attempts, attempt => Assert.Equal(32, attempt.Leases.Length));
             Assert.All(leases, lease => lease.ThrowIfLost());
         }
-        finally { foreach (var lease in leases) await lease.DisposeAsync(); }
+        finally
+        {
+            foreach (var lease in leases)
+                await lease.DisposeAsync();
+        }
     }
 
     [Theory]
@@ -62,7 +68,10 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         time.Advance(TimeSpan.FromMilliseconds(50));
         var acquiredAt = time.GetUtcNow();
         var interval = TimeSpan.FromMilliseconds(intervalMilliseconds);
-        await using var second = (await AcquireAsync(store, watch, renewer, time, "second", settings: Settings with { RenewalInterval = interval }))!;
+
+        await using var second =
+            (await AcquireAsync(store, watch, renewer, time, "second", settings: Settings with { RenewalInterval = interval }))!;
+
         var due = intervalMilliseconds == 20 ? TimeSpan.FromMilliseconds(20) : TimeSpan.FromMilliseconds(50);
         time.Advance(due);
         await ConfirmRenewalsAsync(time, time.GetUtcNow() + Settings.Duration, 2);
@@ -83,14 +92,24 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         using var renewer = new ExecutionLeaseRenewer(store, time);
         using var watch = new CancellationWatch(store, time);
         var instances = new List<WorkflowInstance>();
-        for (var index = 0; index < 3; index++) instances.Add(await OperationsTests.SeedAsync(store, WorkflowStatus.Running));
-        var losses = Enumerable.Range(0, 3).Select(_ => new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
-        var cancellations = Enumerable.Range(0, 3).Select(_ => new TaskCompletionSource<CancellationReason>(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
+
+        for (var index = 0; index < 3; index++)
+            instances.Add(await OperationsTests.SeedAsync(store, WorkflowStatus.Running));
+
+        var losses = Enumerable.Range(0, 3)
+            .Select(_ => new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
+
+        var cancellations = Enumerable.Range(0, 3)
+            .Select(_ => new TaskCompletionSource<CancellationReason>(TaskCreationOptions.RunContinuationsAsynchronously)).ToArray();
+
         var leases = new List<WorkflowExecutionLease>();
+
         try
         {
             for (var index = 0; index < 3; index++)
-                leases.Add((await AcquireAsync(store, watch, renewer, time, instances[index].InstanceId, losses[index], cancellations[index]))!);
+                leases.Add((await AcquireAsync(store, watch, renewer, time, instances[index].InstanceId, losses[index],
+                    cancellations[index]))!);
+
             Assert.True((await store.RequestTerminationAsync(instances[1].InstanceId, new() { ReasonCode = "stop" })).Accepted);
             await store.DeleteWorkflowInstanceAsync(instances[2].InstanceId);
             time.Advance(Settings.RenewalInterval);
@@ -106,7 +125,11 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
             leases[1].ThrowIfLost();
             Assert.Throws<ExecutionOwnershipLostException>(leases[2].ThrowIfLost);
         }
-        finally { foreach (var lease in leases) await lease.DisposeAsync(); }
+        finally
+        {
+            foreach (var lease in leases)
+                await lease.DisposeAsync();
+        }
     }
 
     [Fact]
@@ -125,27 +148,45 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         await using var first = (await AcquireAsync(store, watch, renewer, time, firstInstance.InstanceId, firstLoss, cancellation))!;
         time.Advance(TimeSpan.FromMilliseconds(50));
         await using var second = (await AcquireAsync(store, watch, renewer, time, secondInstance.InstanceId, secondLoss, cancellation))!;
+
         foreach (var instance in new[] { firstInstance, secondInstance })
             Assert.True((await store.RequestTerminationAsync(instance.InstanceId, new() { ReasonCode = "stop" })).Accepted);
+
         time.Advance(TimeSpan.FromMilliseconds(50));
         Assert.Equal(2, Assert.Single(store.Attempts).Leases.Length);
         time.Advance(TimeSpan.FromMilliseconds(299));
         Assert.False(firstLoss.Task.IsCompleted);
-        Assert.Null(await store.TryAcquireExecutionLeaseAsync(firstInstance.InstanceId, "fallback", Settings.Duration, Claim, ExecutionClaimKind.Termination));
+
+        Assert.Null(await store.TryAcquireExecutionLeaseAsync(firstInstance.InstanceId, "fallback", Settings.Duration, Claim,
+            ExecutionClaimKind.Termination));
+
         time.Advance(TimeSpan.FromMilliseconds(1));
         Assert.IsType<TimeoutException>(await firstLoss.Task.WaitAsync(Patience));
-        var firstFallback = await store.TryAcquireExecutionLeaseAsync(firstInstance.InstanceId, "fallback", Settings.Duration, Claim, ExecutionClaimKind.Termination);
+
+        var firstFallback = await store.TryAcquireExecutionLeaseAsync(firstInstance.InstanceId, "fallback", Settings.Duration, Claim,
+            ExecutionClaimKind.Termination);
+
         Assert.NotNull(firstFallback);
         Assert.True(firstFallback.Epoch > first.Epoch);
         Assert.False(secondLoss.Task.IsCompleted);
-        Assert.Null(await store.TryAcquireExecutionLeaseAsync(secondInstance.InstanceId, "fallback", Settings.Duration, Claim, ExecutionClaimKind.Termination));
+
+        Assert.Null(await store.TryAcquireExecutionLeaseAsync(secondInstance.InstanceId, "fallback", Settings.Duration, Claim,
+            ExecutionClaimKind.Termination));
+
         time.Advance(TimeSpan.FromMilliseconds(50));
         Assert.IsType<TimeoutException>(await secondLoss.Task.WaitAsync(Patience));
-        var secondFallback = await store.TryAcquireExecutionLeaseAsync(secondInstance.InstanceId, "fallback", Settings.Duration, Claim, ExecutionClaimKind.Termination);
+
+        var secondFallback = await store.TryAcquireExecutionLeaseAsync(secondInstance.InstanceId, "fallback", Settings.Duration, Claim,
+            ExecutionClaimKind.Termination);
+
         Assert.NotNull(secondFallback);
         Assert.True(secondFallback.Epoch > second.Epoch);
-        store.Reply.TrySetResult([new(ExecutionLeaseRenewalStatus.Renewed), new(ExecutionLeaseRenewalStatus.TerminationRequested,
-            new() { Mode = WorkflowControlMode.Terminate })]);
+
+        store.Reply.TrySetResult([
+            new(ExecutionLeaseRenewalStatus.Renewed), new(ExecutionLeaseRenewalStatus.TerminationRequested,
+                new() { Mode = WorkflowControlMode.Terminate })
+        ]);
+
         Assert.Throws<ExecutionOwnershipLostException>(first.ThrowIfLost);
         Assert.Throws<ExecutionOwnershipLostException>(second.ThrowIfLost);
         Assert.False(cancellation.Task.IsCompleted);
@@ -167,8 +208,10 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         var beforeAttempt = time.Armed;
         time.Advance(Settings.RenewalInterval);
         await time.WaitForTimerDueAtAsync(time.Start + TimeSpan.FromMilliseconds(175));
+
         await time.WaitUntilAsync(timers => timers.Count(timer => timer.Number > beforeAttempt && timer.Pending &&
             timer.DueAt == time.Start + Settings.Duration) >= 2, "both leases to schedule their retry");
+
         Assert.False(firstLoss.Task.IsCompleted);
         Assert.False(secondLoss.Task.IsCompleted);
         time.Advance(TimeSpan.FromMilliseconds(75));
@@ -219,6 +262,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         Assert.Single(store.Attempts);
         lease.StopRenewing();
         var disposing = renewer.DisposeAsync().AsTask();
+
         try
         {
             Assert.False(disposing.IsCompleted);
@@ -243,6 +287,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         using var renewer = new ExecutionLeaseRenewer(store, time);
         using var watch = new CancellationWatch(store, time);
         await using var lease = (await AcquireAsync(store, watch, renewer, time, "slow"))!;
+
         try
         {
             time.Advance(Settings.RenewalInterval);
@@ -251,6 +296,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
             var beforeReply = time.Armed;
             store.Hang = false;
             store.Reply.TrySetResult([new(ExecutionLeaseRenewalStatus.Renewed)]);
+
             // The overdue interval is exactly -1 ms, which must not mean an infinite delay.
             await time.WaitForTimerAsync(timer => timer.DueTime == TimeSpan.Zero, beforeReply);
             time.Advance(TimeSpan.Zero);
@@ -259,7 +305,10 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
             Assert.Equal(time.Start + TimeSpan.FromMilliseconds(201), store.Attempts.Last().SentAt);
             lease.ThrowIfLost();
         }
-        finally { store.Reply.TrySetResult([new(ExecutionLeaseRenewalStatus.Refused)]); }
+        finally
+        {
+            store.Reply.TrySetResult([new(ExecutionLeaseRenewalStatus.Refused)]);
+        }
     }
 
     [Fact]
@@ -275,13 +324,19 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         var cancellation = new TaskCompletionSource<CancellationReason>(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var malformed = (await AcquireAsync(store, watch, renewer, time, "malformed", malformedLoss, cancellation))!;
         await using var healthy = (await AcquireAsync(store, watch, renewer, time, "healthy", healthyLoss, cancellation))!;
+
         try
         {
             time.Advance(Settings.RenewalInterval);
             var attempt = Assert.Single(store.Attempts);
             store.Hang = false;
+
             store.Reply.TrySetResult(attempt.Leases.Select(lease => new ExecutionLeaseRenewalResult(
-                lease.InstanceId == "malformed" ? ExecutionLeaseRenewalStatus.TerminationRequested : ExecutionLeaseRenewalStatus.Renewed)).ToArray());
+                    lease.InstanceId == "malformed"
+                        ? ExecutionLeaseRenewalStatus.TerminationRequested
+                        : ExecutionLeaseRenewalStatus.Renewed))
+                .ToArray());
+
             Assert.IsType<InvalidOperationException>(await malformedLoss.Task.WaitAsync(Patience));
             await ConfirmRenewalsAsync(time, time.Start + Settings.RenewalInterval + Settings.Duration, 1);
             Assert.Throws<ExecutionOwnershipLostException>(malformed.ThrowIfLost);
@@ -292,7 +347,10 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
             await ConfirmRenewalsAsync(time, time.Start + Settings.RenewalInterval * 2 + Settings.Duration, 1);
             Assert.Equal("healthy", Assert.Single(store.Attempts.Last().Leases).InstanceId);
         }
-        finally { store.Reply.TrySetResult([new(ExecutionLeaseRenewalStatus.Refused), new(ExecutionLeaseRenewalStatus.Refused)]); }
+        finally
+        {
+            store.Reply.TrySetResult([new(ExecutionLeaseRenewalStatus.Refused), new(ExecutionLeaseRenewalStatus.Refused)]);
+        }
     }
 
     [Fact]
@@ -314,8 +372,10 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         Assert.Equal(ExecutionLeaseRenewalStatus.Renewed, (await current.Next.WaitAsync(Patience)).Result.Status);
         Assert.Equal(ExecutionLeaseRenewalStatus.Renewed, (await healthy.Next.WaitAsync(Patience)).Result.Status);
         Assert.Equal(2, store.Attempts.Count);
+
         Assert.All(store.Attempts, attempt => Assert.Equal(attempt.Leases.Length,
             attempt.Leases.Select(lease => lease.InstanceId).Distinct(StringComparer.Ordinal).Count()));
+
         Assert.Equal(3, store.Attempts.Sum(attempt => attempt.Leases.Length));
     }
 
@@ -350,19 +410,25 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         var connectionString = SqliteTestDatabase<BatchedLeaseRenewalTests>.ConnectionString;
         await using var store = new SqliteWorkflowStateRepository(connectionString, time);
         var prefix = $"partial-{Guid.NewGuid():N}-";
+
         var requests = Enumerable.Range(0, 302).Select(index =>
             new ExecutionLeaseRenewal(prefix + index, "owner", TimeSpan.FromMinutes(10))).ToArray();
+
         await using var connection = new SqliteConnection(connectionString);
         await connection.OpenAsync();
+
         try
         {
             foreach (var request in requests)
-                Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(request.InstanceId, request.Token, TimeSpan.FromMinutes(1), Claim));
+                Assert.NotNull(
+                    await store.TryAcquireExecutionLeaseAsync(request.InstanceId, request.Token, TimeSpan.FromMinutes(1), Claim));
+
             await connection.ExecuteAsync($"""
-                CREATE TRIGGER fail_renewal_chunk BEFORE UPDATE ON ixiflow_workflow_leases
-                WHEN OLD.instance_id = '{requests[301].InstanceId}'
-                BEGIN SELECT RAISE(ABORT, 'renewal chunk unavailable'); END;
-                """);
+                                           CREATE TRIGGER fail_renewal_chunk BEFORE UPDATE ON ixiflow_workflow_leases
+                                           WHEN OLD.instance_id = '{requests[301].InstanceId}'
+                                           BEGIN SELECT RAISE(ABORT, 'renewal chunk unavailable'); END;
+                                           """);
+
             var failure = await Assert.ThrowsAsync<SqliteException>(() => store.RenewExecutionLeasesAsync(requests));
             Assert.Contains("renewal chunk unavailable", failure.Message);
             await connection.ExecuteAsync("DROP TRIGGER fail_renewal_chunk");
@@ -371,13 +437,16 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
             Assert.Null(await store.TryAcquireExecutionLeaseAsync(requests[299].InstanceId, "replacement", Settings.Duration, Claim));
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(requests[300].InstanceId, "replacement", Settings.Duration, Claim));
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(requests[301].InstanceId, "replacement", Settings.Duration, Claim));
+
             Assert.All(await store.RenewExecutionLeasesAsync(requests[..300]),
                 result => Assert.Equal(ExecutionLeaseRenewalStatus.Renewed, result.Status));
         }
         finally
         {
             await connection.ExecuteAsync("DROP TRIGGER IF EXISTS fail_renewal_chunk");
-            foreach (var request in requests) await store.DeleteWorkflowInstanceAsync(request.InstanceId);
+
+            foreach (var request in requests)
+                await store.DeleteWorkflowInstanceAsync(request.InstanceId);
         }
     }
 
@@ -387,6 +456,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         var connectionString = SqliteTestDatabase<BatchedLeaseRenewalTests>.ConnectionString;
         await using var store = new SqliteWorkflowStateRepository(connectionString);
         await using var connection = new SqliteConnection(connectionString);
+
         await VerifyMalformedCancellationsAsync(store, (id, json) => connection.ExecuteAsync(
             "UPDATE ixiflow_workflow_instances SET cancellation_json=@json WHERE instance_id=@id", new { id, json }));
     }
@@ -396,8 +466,9 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     public async Task SqlServerMalformedCancellationDoesNotFailTheChunk()
     {
         var connectionString = SqlTestDatabase<BatchedLeaseRenewalTests>.ConnectionString;
-        var store = new SqlWorkflowStateRepository(connectionString);
+        var store = new SqlServerWorkflowStateRepository(connectionString);
         await using var connection = new SqlConnection(connectionString);
+
         await VerifyMalformedCancellationsAsync(store, (id, json) => connection.ExecuteAsync(
             "UPDATE dbo.IxIFlowWorkflowInstances SET CancellationJson=@json WHERE InstanceId=@id", new { id, json }));
     }
@@ -409,6 +480,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         var connectionString = PostgreSqlTestDatabase<BatchedLeaseRenewalTests>.ConnectionString;
         var store = new PostgreSqlWorkflowStateRepository(connectionString);
         await using var connection = new NpgsqlConnection(connectionString);
+
         await VerifyMalformedCancellationsAsync(store, (id, json) => connection.ExecuteAsync(
             "UPDATE ixiflow_workflow_instances SET cancellation_json=@json WHERE instance_id=@id", new { id, json }));
     }
@@ -416,6 +488,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     private static async Task VerifyMalformedCancellationsAsync(IWorkflowStateRepository store, Func<string, string, Task> corrupt)
     {
         var ids = new List<string>();
+
         try
         {
             for (var index = 0; index < 5; index++)
@@ -424,27 +497,43 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
                 ids.Add(instance.InstanceId);
                 Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1), Claim));
             }
+
             await corrupt(ids[0], "{broken-json");
             await corrupt(ids[1], "{\"Mode\":\"invalid\"}");
             await corrupt(ids[2], "{\"Mode\":1,\"RequestedAt\":\"invalid\"}");
             Assert.True((await store.RequestTerminationAsync(ids[4], new() { ReasonCode = "stop" })).Accepted);
+
             var results = await store.RenewExecutionLeasesAsync(ids.Select(id =>
                 new ExecutionLeaseRenewal(id, "owner", TimeSpan.FromMinutes(2))).ToArray());
-            Assert.Equal(new[] { ExecutionLeaseRenewalStatus.Renewed, ExecutionLeaseRenewalStatus.Renewed,
+
+            Assert.Equal(new[]
+            {
                 ExecutionLeaseRenewalStatus.Renewed, ExecutionLeaseRenewalStatus.Renewed,
-                ExecutionLeaseRenewalStatus.TerminationRequested }, results.Select(result => result.Status));
+                ExecutionLeaseRenewalStatus.Renewed, ExecutionLeaseRenewalStatus.Renewed,
+                ExecutionLeaseRenewalStatus.TerminationRequested
+            }, results.Select(result => result.Status));
+
             Assert.Equal("stop", results[4].PendingTermination!.ReasonCode);
             Assert.All(results.Take(4), result => Assert.Null(result.PendingTermination));
         }
-        finally { foreach (var id in ids) await store.DeleteWorkflowInstanceAsync(id); }
+        finally
+        {
+            foreach (var id in ids)
+                await store.DeleteWorkflowInstanceAsync(id);
+        }
     }
 
     [Fact]
     public async Task MemoryBatchReturnsIndependentOutcomes()
     {
         var time = new TimerRecordingClock();
+
         await VerifyOutcomesAsync(new InMemoryWorkflowStateRepository(time), _ =>
-        { time.Advance(TimeSpan.FromMilliseconds(200)); return Task.CompletedTask; });
+        {
+            time.Advance(TimeSpan.FromMilliseconds(200));
+
+            return Task.CompletedTask;
+        });
     }
 
     [Fact]
@@ -452,7 +541,13 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     {
         var time = new TimerRecordingClock();
         await using var store = new SqliteWorkflowStateRepository(SqliteTestDatabase<BatchedLeaseRenewalTests>.ConnectionString, time);
-        await VerifyOutcomesAsync(store, _ => { time.Advance(TimeSpan.FromMilliseconds(200)); return Task.CompletedTask; });
+
+        await VerifyOutcomesAsync(store, _ =>
+        {
+            time.Advance(TimeSpan.FromMilliseconds(200));
+
+            return Task.CompletedTask;
+        });
     }
 
     [SqlServerFact]
@@ -460,10 +555,13 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     public async Task SqlServerBatchReturnsIndependentOutcomes()
     {
         var connectionString = SqlTestDatabase<BatchedLeaseRenewalTests>.ConnectionString;
-        await VerifyOutcomesAsync(new SqlWorkflowStateRepository(connectionString), async id =>
+
+        await VerifyOutcomesAsync(new SqlServerWorkflowStateRepository(connectionString), async id =>
         {
             await using var connection = new SqlConnection(connectionString);
-            await connection.ExecuteAsync("UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc=DATEADD(SECOND,-1,SYSUTCDATETIME()) WHERE InstanceId=@id", new { id });
+
+            await connection.ExecuteAsync(
+                "UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc=DATEADD(SECOND,-1,SYSUTCDATETIME()) WHERE InstanceId=@id", new { id });
         });
     }
 
@@ -472,44 +570,62 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     public async Task PostgreSqlBatchReturnsIndependentOutcomes()
     {
         var connectionString = PostgreSqlTestDatabase<BatchedLeaseRenewalTests>.ConnectionString;
+
         await VerifyOutcomesAsync(new PostgreSqlWorkflowStateRepository(connectionString), async id =>
         {
             await using var connection = new NpgsqlConnection(connectionString);
-            await connection.ExecuteAsync("UPDATE ixiflow_workflow_leases SET expires_at_utc=clock_timestamp()-INTERVAL '1 second' WHERE instance_id=@id", new { id });
+
+            await connection.ExecuteAsync(
+                "UPDATE ixiflow_workflow_leases SET expires_at_utc=clock_timestamp()-INTERVAL '1 second' WHERE instance_id=@id",
+                new { id });
         });
     }
 
     private static async Task VerifyOutcomesAsync(IWorkflowStateRepository store, Func<string, Task> expire)
     {
         var ids = new List<string>();
+
         try
         {
             for (var index = 0; index < 7; index++)
             {
                 var instance = await OperationsTests.SeedAsync(store, WorkflowStatus.Running);
                 ids.Add(instance.InstanceId);
+
                 Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner",
                     index == 0 ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromMinutes(5), Claim));
             }
+
             await expire(ids[0]);
             Assert.True((await store.RequestTerminationAsync(ids[2], new() { ReasonCode = "stop" })).Accepted);
             Assert.True((await store.RequestCancellationAsync(ids[4], new() { ReasonCode = "graceful" })).Accepted);
             await store.DeleteWorkflowInstanceAsync(ids[5]);
             Assert.True((await store.RequestTerminationAsync(ids[6], new() { ReasonCode = "wrong-token" })).Accepted);
+
             var requests = ids.Select((id, index) => new ExecutionLeaseRenewal(id,
                 index is 3 or 6 ? "wrong" : "owner", TimeSpan.FromMinutes(10))).ToList();
+
             requests.Add(new(Guid.NewGuid().ToString("N"), "missing", TimeSpan.FromMinutes(10)));
             var results = await store.RenewExecutionLeasesAsync(requests);
-            Assert.Equal(new[] { ExecutionLeaseRenewalStatus.Refused, ExecutionLeaseRenewalStatus.Renewed,
+
+            Assert.Equal(new[]
+            {
+                ExecutionLeaseRenewalStatus.Refused, ExecutionLeaseRenewalStatus.Renewed,
                 ExecutionLeaseRenewalStatus.TerminationRequested, ExecutionLeaseRenewalStatus.Refused,
                 ExecutionLeaseRenewalStatus.Renewed, ExecutionLeaseRenewalStatus.Refused,
-                ExecutionLeaseRenewalStatus.Refused, ExecutionLeaseRenewalStatus.Refused }, results.Select(result => result.Status));
+                ExecutionLeaseRenewalStatus.Refused, ExecutionLeaseRenewalStatus.Refused
+            }, results.Select(result => result.Status));
+
             Assert.Equivalent(await store.GetCancellationRequestAsync(ids[2]), results[2].PendingTermination, strict: true);
             Assert.All(results.Where((_, index) => index != 2), result => Assert.Null(result.PendingTermination));
             Assert.Empty(await store.RenewExecutionLeasesAsync([]));
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(ids[0], "fallback", TimeSpan.FromMinutes(1), Claim));
         }
-        finally { foreach (var id in ids) await store.DeleteWorkflowInstanceAsync(id); }
+        finally
+        {
+            foreach (var id in ids)
+                await store.DeleteWorkflowInstanceAsync(id);
+        }
     }
 
     [Fact]
@@ -522,7 +638,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlServerChunksBeyond2100Parameters() =>
-        VerifyLargeBatchAsync(new SqlWorkflowStateRepository(SqlTestDatabase<BatchedLeaseRenewalTests>.ConnectionString));
+        VerifyLargeBatchAsync(new SqlServerWorkflowStateRepository(SqlTestDatabase<BatchedLeaseRenewalTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
@@ -533,29 +649,47 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
     {
         var requests = Enumerable.Range(0, 2201).Select(index =>
             new ExecutionLeaseRenewal($"batch-{Guid.NewGuid():N}-{index}", $"token-{index}", TimeSpan.FromMinutes(30))).ToArray();
+
         try
         {
             foreach (var request in requests)
-                Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(request.InstanceId, request.Token, TimeSpan.FromMinutes(5), Claim));
+                Assert.NotNull(
+                    await store.TryAcquireExecutionLeaseAsync(request.InstanceId, request.Token, TimeSpan.FromMinutes(5), Claim));
+
             // Straddle every provider's chunk boundaries with refusals and preserve input ordering.
             var sent = requests.Select((request, index) => index % 299 == 0 ? request with { Token = "wrong" } : request).ToArray();
             var results = await store.RenewExecutionLeasesAsync(sent);
             Assert.Equal(requests.Length, results.Count);
+
             for (var index = 0; index < results.Count; index++)
-                Assert.Equal(index % 299 == 0 ? ExecutionLeaseRenewalStatus.Refused : ExecutionLeaseRenewalStatus.Renewed, results[index].Status);
+                Assert.Equal(index % 299 == 0 ? ExecutionLeaseRenewalStatus.Refused : ExecutionLeaseRenewalStatus.Renewed,
+                    results[index].Status);
+
             var correct = await store.RenewExecutionLeasesAsync(requests);
             Assert.Equal(requests.Length, correct.Count);
             Assert.All(correct, result => Assert.Equal(ExecutionLeaseRenewalStatus.Renewed, result.Status));
         }
-        finally { foreach (var request in requests) await store.DeleteWorkflowInstanceAsync(request.InstanceId); }
+        finally
+        {
+            foreach (var request in requests)
+                await store.DeleteWorkflowInstanceAsync(request.InstanceId);
+        }
     }
 
     private static Task<WorkflowExecutionLease?> AcquireAsync(IWorkflowStateRepository store, CancellationWatch watch,
         ExecutionLeaseRenewer renewer, TimeProvider time, string id, TaskCompletionSource<Exception>? lost = null,
         TaskCompletionSource<CancellationReason>? cancellation = null, ExecutionLeaseSettings? settings = null) =>
         WorkflowExecutionLease.TryAcquireAsync(store, new() { InstanceId = id }, settings ?? Settings, watch, renewer, Claim,
-            error => { if (lost != null) lost.TrySetResult(error); else throw new InvalidOperationException("Unexpected ownership loss", error); },
-            reason => cancellation?.TrySetResult(reason), _ => { }, time);
+            error =>
+            {
+                if (lost != null)
+                    lost.TrySetResult(error);
+                else
+                    throw new InvalidOperationException("Unexpected ownership loss", error);
+            },
+            reason => cancellation?.TrySetResult(reason), _ =>
+            {
+            }, time);
 
     private static Task ConfirmRenewalsAsync(TimerRecordingClock time, DateTimeOffset expiresAt, int count) =>
         time.WaitUntilAsync(timers => timers.Count(timer => timer.Pending && timer.DueAt == expiresAt) >= count,
@@ -568,16 +702,25 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         public ConcurrentQueue<(DateTimeOffset SentAt, ExecutionLeaseRenewal[] Leases)> Attempts { get; } = new();
         public bool Hang;
         public bool Fail;
-        public TaskCompletionSource<IReadOnlyList<ExecutionLeaseRenewalResult>> Reply { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public override Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
+
+        public TaskCompletionSource<IReadOnlyList<ExecutionLeaseRenewalResult>> Reply { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+            IReadOnlyList<ExecutionLeaseRenewal> leases, CancellationToken cancellationToken = default)
         {
             Attempts.Enqueue((_time.GetUtcNow(), leases.ToArray()));
-            if (Fail) throw new IOException("Renewal store unavailable");
-            return Hang ? Reply.Task : base.RenewExecutionLeasesAsync(leases);
+
+            if (Fail)
+                throw new IOException("Renewal store unavailable");
+
+            return Hang ? Reply.Task : base.RenewExecutionLeasesAsync(leases, cancellationToken: cancellationToken);
         }
+
         // Keep cancellation delivery independent so the renewal response is the only termination signal.
         public override Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
-            Task.FromResult(new WorkflowControlRequests(new Dictionary<string, CancellationReason>(), new Dictionary<string, WorkflowDebugState>()));
+            Task.FromResult(new WorkflowControlRequests(new Dictionary<string, CancellationReason>(),
+                new Dictionary<string, WorkflowDebugState>()));
     }
 
     private sealed class RenewalLogger : ILogger<ExecutionLeaseRenewer>
@@ -585,6 +728,7 @@ public sealed class BatchedLeaseRenewalTests : IClassFixture<SqliteTestDatabase<
         public List<(LogLevel Level, string Text, Exception? Error)> Entries { get; } = [];
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter) => Entries.Add((logLevel, formatter(state, exception), exception));
     }

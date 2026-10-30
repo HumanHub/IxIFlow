@@ -35,9 +35,9 @@ Entry requests retain their state activation and original reply token. Their wai
 
 State keys, final flags, trigger kinds, event keys/types, duration expressions, ordered alternatives and destinations participate in structure hash format 1 (`ixiflow-1`). State declaration order and display names do not. State frames, fired values and receipts, pending event values, join winners and `ArmOccurrence` use checkpoint contract 1 (`ixiflow-1`) in existing trunk and continuation parts. Claim-checked entry snapshots and pending trigger payloads are hydrated before synchronous restoration, including when the current step finishes a nested entry body. `MaxGraphTransitionsPerPass` applies to state entries as it does to nodes; native trigger waits do not consume the branch limit.
 
-YAML and fluent definitions lower to these same graph scopes, executable picks and structure hash. YAML adds no execution phase or checkpoint field. `GraphTable` describes the static topology; it contains no saved visit, accepted payload or branch winner. A code-activity trigger is one activity. Composed durable-step and workflow-call triggers remain unspecified, so state-machine support does not yet cover every Windows Workflow Foundation trigger composition.
+YAML and fluent definitions lower to these same graph scopes, executable picks and structure hash. YAML adds no execution phase or checkpoint field. `GraphTable` describes the static topology; it contains no saved visit, accepted payload or branch winner. A code-activity trigger is one activity. Composed durable-step and workflow-call triggers are outside 1.0; state-machine support covers the trigger forms listed here.
 
-The fluent API supports event, reply, timer, immediate and single code-activity triggers. Code-activity triggers are included; composed workflow triggers are not yet specified. Activity-valued conditions remain unsupported.
+The fluent API supports event, reply, timer, immediate and single code-activity triggers. Composed workflow triggers are outside 1.0. Activity-valued conditions remain unsupported.
 
 ## Checkpoints and commits
 
@@ -106,6 +106,7 @@ Inside a method with `client`, `instanceId` and `customer` parameters:
 ```csharp
 var waits = await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId));
 var wait = waits.Single();
+
 return await client.ReplyAsync(wait.Token, new ReviewAnswer { Customer = customer });
 ```
 
@@ -180,7 +181,7 @@ Limit stops preserve the last checkpoint at `NeedsResolution`. Raise the relevan
 
 An invocation occurrence has a stable logical ID, a distinct policy-attempt ID for each preparation, and a different child ID for every started attempt. The occurrence includes the parent incarnation and saved frame/loop context. Recovery of a committed start waits for that same child and input snapshot. Scheduling another attempt commits the old outcome, closed wait, attempt record and absolute store-clock deadline together, including zero-delay retries. Long backoffs release the execution slot and lease through parking. Recovery keeps the accepted deadline rather than calculating a new delay.
 
-Retained invocation parts survive completed branches and trace limits. A resource limit still stops against the last good checkpoint. Metadata-only termination adds a closure marker to open records without reading their payload bodies. Checkpoint contract 1 (`ixiflow-1`) refuses older checkpoints; the host/executor message contract is 14. There are no migration or compatibility paths.
+Invocation records remain durable while their occurrence can resume, independently of trace limits. Completed occurrences are removed when no live continuation references them; their history remains in committed traces subject to tracing settings. A resource limit still stops against the last good checkpoint. Metadata-only termination adds a closure marker to open records without reading their payload bodies. Checkpoint contract 1 (`ixiflow-1`) refuses older checkpoints; the host/executor message contract is 14. There are no migration or compatibility paths.
 
 Operator resolution of a workflow invocation requires the observed `PendingActivityInfo.PolicyAttemptId`, passed unchanged as `expectedPolicyAttemptId` to `ActivityResolution.Failed` or `CompletedInvocation`. Missing targets are `InvalidRequest`; stale or already settled targets are `InvalidState`. A saved decision retains its target across recovery. Ordinary activity/request resolution retains its existing identity semantics.
 
@@ -200,4 +201,4 @@ The [activity SDK contract](activity-sdk.md#scope-activities) describes concurre
 
 A timer-paced cycle inside a scope pays the pass boundary cost each time it idles: close as suspended, release the thread, then a lazy re-open on the next author callback. Timer arming and rejected guards alone do not re-open it. A scope placed inside a graph node opens a new occurrence per visit and closes before the node's decision/arm or the next state exit/action. Place a scope around the machine when exit/actions need it. Inline calls preserve the enclosing scope through their frames; independent child invocations inherit no resources.
 
-Termination and loss of ownership run no close. The old owner releases its live values locally after their users finish, disposing them on the owning thread when supported. It commits no late lifecycle result; process death cannot dispose anything. The first-open intent is a commit boundary; re-open and close success are not extra boundaries. Current storage formats are manifest 6, checkpoint 14 and structure hash 9.
+Termination and loss of ownership run no close. The old owner releases its live values locally after their users finish, disposing them on the owning thread when supported. It commits no late lifecycle result; process death cannot dispose anything. The first-open intent is a commit boundary; re-open and close success are not extra boundaries. The bundle manifest format is 6, the checkpoint contract and structure-hash format are 1, and the runtime marker is `ixiflow-1`. The host/executor message contract is 14.

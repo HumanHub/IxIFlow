@@ -6,7 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.Conformance;
 
 /// <summary>
-/// The wait and reply recipes of spec D-17, run as the samples define them in every profile (J-02).
+/// The wait and reply recipes, run as the samples define them in every profile.
 /// Each scenario asserts what became of every event it sends.
 /// </summary>
 [Trait("Spec", "D-17")]
@@ -24,6 +24,7 @@ public sealed class WaitRecipeScenarios
 
         var started = await engine.RunAsync(OneApproverRecipe.Definition(TimeSpan.FromHours(4)),
             new Order { OrderId = "order-1", Amount = 10 });
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var request = mailer.To("manager");
         Assert.Equal(("order-1", 10m), (request.OrderId, request.Amount));
@@ -46,8 +47,10 @@ public sealed class WaitRecipeScenarios
 
         var started = await engine.RunAsync(OneApproverRecipe.Definition(TimeSpan.FromMilliseconds(200)),
             new Order { OrderId = "order-2", Amount = 10 });
+
         var escalated = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(Patience);
+
         Assert.True(Data<Order>(escalated).Escalated);
 
         var late = await engine.ReplyAsync(mailer.To("manager").ReplyToken, new ApprovalDecision { Approved = true });
@@ -65,6 +68,7 @@ public sealed class WaitRecipeScenarios
 
         var started = await engine.StartAsync(PaymentRecipe.Definition(TimeSpan.FromHours(1)),
             new Payment { OrderId = "order-3", Amount = 25 });
+
         await fraud.Entered.Task.WaitAsync(Patience);
 
         // The provider calls back while the fraud check runs: first "pending", then "paid".
@@ -91,6 +95,7 @@ public sealed class WaitRecipeScenarios
 
         var started = await engine.RunAsync(PaymentRecipe.Definition(TimeSpan.FromHours(1)),
             new Payment { OrderId = "order-4", Amount = 25 });
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         var pending = await engine.ReplyAsync(payments.Token, new PaymentReceived { Status = "pending" });
@@ -108,6 +113,7 @@ public sealed class WaitRecipeScenarios
         var mailer = new RecordingMailer();
         await using var cluster = await ClusterAsync(profile, mailer);
         var engine = cluster.AddHost();
+
         var started = await engine.RunAsync(AnyApproverRecipe.Definition(TimeSpan.FromHours(4)),
             new Order { OrderId = "order-5", Amount = 500 });
 
@@ -129,6 +135,7 @@ public sealed class WaitRecipeScenarios
         var mailer = new RecordingMailer();
         await using var cluster = await ClusterAsync(profile, mailer);
         var engine = cluster.AddHost();
+
         await engine.RunAsync(AnyApproverRecipe.Definition(TimeSpan.FromHours(4)),
             new Order { OrderId = "order-6", Amount = 500 });
 
@@ -149,6 +156,7 @@ public sealed class WaitRecipeScenarios
 
         var started = await engine.RunAsync(AnyApproverRecipe.Definition(TimeSpan.FromMilliseconds(200)),
             new Order { OrderId = "order-7", Amount = 500 });
+
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(Patience);
 
@@ -170,6 +178,7 @@ public sealed class WaitRecipeScenarios
         var second = await engine.ReplyAsync(mailer.To("manager").ReplyToken, new ApprovalDecision { Approved = false });
         EventAssert.Consumed(second);
         Assert.Equal(WorkflowExecutionStatus.Success, second.Status);
+
         Assert.Equal((false, true, "both answered"),
             (Data<Order>(second).ManagerApproved, Data<Order>(second).DirectorApproved, Data<Order>(second).Outcome));
     }
@@ -181,8 +190,10 @@ public sealed class WaitRecipeScenarios
         var mailer = new RecordingMailer();
         await using var cluster = await ClusterAsync(profile, mailer);
         var engine = cluster.AddHost();
+
         await engine.RunAsync(ApprovalPerLineRecipe.Definition(),
             new OrderLines { OrderId = "order-9", Lines = [10, 1000] });
+
         var first = mailer.Sent[0];
         Assert.Equal(10, first.Amount);
 
@@ -234,6 +245,7 @@ public sealed class WaitRecipeScenarios
         var early = await engine.ResumeAsync(started, "delivered", new ParcelDelivered { At = DateTime.UtcNow });
         EventAssert.Rejected(early, EventRejection.NoOpenWait);
         shipping.Release.TrySetResult();
+
         Assert.Equal(WorkflowExecutionStatus.Suspended,
             (await engine.AwaitAsync(started).WaitAsync(Patience)).Status);
 
@@ -249,11 +261,13 @@ public sealed class WaitRecipeScenarios
         var mailer = new RecordingMailer();
         await using var cluster = await ClusterAsync(profile, mailer);
         var engine = cluster.AddHost();
+
         var order = await engine.RunAsync(OneApproverRecipe.Definition(TimeSpan.FromHours(4)),
             new Order { OrderId = "order-12", Amount = 900 });
 
         var fraud = await engine.RunAsync(FraudRecipe.Definition(),
             new FraudCase { OrderInstanceId = order.InstanceId, Reason = "stolen card" });
+
         Assert.Equal(WorkflowExecutionStatus.Success, fraud.Status);
         Assert.Equal(WorkflowStatus.Cancelled, (await cluster.GetInstanceAsync(order.InstanceId))!.Status);
 
@@ -271,7 +285,8 @@ public sealed class WaitRecipeScenarios
         await cluster.Registry.RegisterWorkflowAsync(ChildApprovalRecipe.Child());
         var parent = await engine.RunAsync(ChildApprovalRecipe.Parent(), new Order { OrderId = "order-13", Amount = 70 });
         Assert.Equal(WorkflowExecutionStatus.Suspended, parent.Status);
-        // The child runs as an instance of its own and sends its request when a slot takes it (D-17).
+
+        // The child runs as an instance of its own and sends its request when a slot takes it.
         var request = await mailer.ToAsync("purchasing");
         Assert.True(ReplyToken.TryRead(request.ReplyToken, out var childId, out _, out _));
         Assert.NotEqual(parent.InstanceId, childId);
@@ -294,18 +309,22 @@ public sealed class WaitRecipeScenarios
         var payments = new RecordingPayments();
         await using var cluster = await ClusterAsync(profile, payments: payments);
         var engine = cluster.AddHost();
+
         var started = await engine.RunAsync(PaymentRecipe.Definition(TimeSpan.FromSeconds(2)),
             new Payment { OrderId = "order-14", Amount = 40 });
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         Assert.True(ReplyToken.TryRead(payments.Token, out var instanceId, out var waitId, out var subject));
 
         // The callback is stored in time, but nothing runs the instance until the host's timer does so
         // at the deadline, as when the owner is gone or slow: the callback still wins.
         var inbox = cluster.NewRepository();
+
         var stored = await inbox.AppendEventAsync(new WorkflowEvent(instanceId, "callback-1",
             IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(PaymentReceived)),
             System.Text.Json.JsonSerializer.Serialize(new PaymentReceived { Status = "paid" }),
             TargetWaitId: waitId, Subject: subject));
+
         Assert.Equal(EventAppendStatus.Stored, stored.Status);
 
         var finished = await engine.AwaitAsync(instanceId, WorkflowAwaitCondition.Finished).WaitAsync(Patience);
@@ -320,12 +339,15 @@ public sealed class WaitRecipeScenarios
     {
         var mailer = new RecordingMailer();
         await using var cluster = await ClusterAsync(profile, mailer);
+
         // The first host dies after the email went out and before it could save that it did.
         FaultRepository? dying = null;
+
         var first = cluster.AddHost(repository => dying = new FaultRepository(repository)
         {
             FailCommit = instance => instance.Status == WorkflowStatus.Running && mailer.Sent.Count > 0
         });
+
         var second = cluster.AddHost();
         var definition = OneApproverRecipe.Definition(TimeSpan.FromHours(4));
         await cluster.Registry.RegisterWorkflowAsync(definition);
@@ -333,6 +355,7 @@ public sealed class WaitRecipeScenarios
 
         await Assert.ThrowsAnyAsync<Exception>(() => first.RunAsync(definition,
             new Order { OrderId = instanceId, Amount = 30 }, new WorkflowOptions { InstanceId = instanceId }));
+
         var sent = Assert.Single(mailer.Sent);
 
         // Another host recovers the instance; the request is sent again under the same token.
@@ -359,15 +382,17 @@ public sealed class WaitRecipeScenarios
         });
 
     // The reply returns only once the event is decided, so the scenario waits until it is stored. The
-    // owner may decide it at once, while its activity runs, or at its next pass (D-17).
+    // owner may decide it at once, while its activity runs, or at its next pass.
     private static async Task WaitUntilStoredAsync(ConformanceCluster cluster, string instanceId, string eventId)
     {
         var inbox = cluster.NewRepository();
         var deadline = DateTime.UtcNow + Patience;
+
         while (await inbox.GetEventAsync(instanceId, eventId) == null)
         {
             if (DateTime.UtcNow > deadline)
                 throw new TimeoutException($"Event '{eventId}' was not stored for '{instanceId}'");
+
             await Task.Delay(10);
         }
     }
@@ -380,7 +405,11 @@ public sealed class WaitRecipeScenarios
 
         public IReadOnlyList<ApprovalRequest> Sent
         {
-            get { lock (_sent) return _sent.ToArray(); }
+            get
+            {
+                lock (_sent)
+                    return _sent.ToArray();
+            }
         }
 
         public ApprovalRequest To(string approver) => Assert.Single(Sent, request => request.Approver == approver);
@@ -388,8 +417,10 @@ public sealed class WaitRecipeScenarios
         public async Task<ApprovalRequest> ToAsync(string approver)
         {
             using var patience = new CancellationTokenSource(Patience);
+
             while (!Sent.Any(request => request.Approver == approver))
                 await Task.Delay(10, patience.Token);
+
             return To(approver);
         }
 
@@ -397,6 +428,7 @@ public sealed class WaitRecipeScenarios
         {
             lock (_sent)
                 _sent.Add(request);
+
             return Task.CompletedTask;
         }
     }
@@ -410,6 +442,7 @@ public sealed class WaitRecipeScenarios
         public Task<string> CreatePaymentAsync(decimal amount, string replyToken, CancellationToken cancellationToken)
         {
             _token = replyToken;
+
             return Task.FromResult("pay-1");
         }
     }
@@ -423,6 +456,7 @@ public sealed class WaitRecipeScenarios
         {
             var checks = new GatedFraudChecks();
             checks.Release.SetResult();
+
             return checks;
         }
 
@@ -430,6 +464,7 @@ public sealed class WaitRecipeScenarios
         {
             Entered.TrySetResult();
             await Release.Task.WaitAsync(cancellationToken);
+
             return false;
         }
     }
@@ -443,6 +478,7 @@ public sealed class WaitRecipeScenarios
         {
             var shipping = new GatedShipping();
             shipping.Release.SetResult();
+
             return shipping;
         }
 
@@ -450,6 +486,7 @@ public sealed class WaitRecipeScenarios
         {
             Entered.TrySetResult();
             await Release.Task.WaitAsync(cancellationToken);
+
             return $"parcel-{orderId}";
         }
     }

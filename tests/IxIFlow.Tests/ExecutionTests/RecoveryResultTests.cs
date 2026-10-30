@@ -21,19 +21,24 @@ public sealed class RecoveryResultTests
         var client = services.GetRequiredService<IWorkflowClient>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
         var workflow = Workflow.Create<ResultData>("RecoverFinished" + status).Step<Increment>();
+
         var definition = status switch
         {
             WorkflowStatus.Failed => workflow.Step<Fail>().Build(),
             WorkflowStatus.Cancelled => workflow.WaitFor<Reply>("reply").Build(),
             _ => workflow.Build()
         };
+
         var finished = await client.RunAsync(definition, new ResultData { Value = 41 });
+
         if (status == WorkflowStatus.Cancelled)
             finished = await client.CancelAsync(finished.InstanceId,
                 new CancellationReason { ReasonCode = "operator", Description = "Cancelled for recovery test" });
+
         Assert.Equal(expected, finished.Status);
         var saved = (await store.GetWorkflowInstanceAsync(finished.InstanceId))!;
         Assert.Equal(status, saved.Status);
+
         if (status == WorkflowStatus.Failed)
         {
             Assert.Contains("saved failure", saved.LastError);
@@ -42,6 +47,7 @@ public sealed class RecoveryResultTests
 
         var repeatedStart = await client.RunAsync(definition, new ResultData(),
             new WorkflowOptions { InstanceId = finished.InstanceId });
+
         for (var attempt = 0; attempt < 2; attempt++)
         {
             var recovered = await client.RecoverAsync(finished.InstanceId);
@@ -50,8 +56,10 @@ public sealed class RecoveryResultTests
             Assert.Equal(expected, recovered.Status);
             Assert.Equal(repeatedStart.Status, recovered.Status);
             Assert.Equal(42, Assert.IsType<ResultData>(recovered.WorkflowData).Value);
+
             Assert.Equal(Assert.IsType<ResultData>(repeatedStart.WorkflowData).Value,
                 Assert.IsType<ResultData>(recovered.WorkflowData).Value);
+
             Assert.Equal(saved.LastError, recovered.ErrorMessage);
             Assert.Equal(saved.LastErrorStackTrace, recovered.ErrorStackTrace);
             Assert.Empty(recovered.TraceEntries);
@@ -73,8 +81,10 @@ public sealed class RecoveryResultTests
         await using var services = Services(time);
         var client = services.GetRequiredService<IWorkflowClient>();
         var store = services.GetRequiredService<IWorkflowStateRepository>();
+
         var definition = Workflow.Create<ResultData>("RecoverIdle").Step<Increment>()
             .WaitFor<Reply>("reply").Build();
+
         var suspended = await client.RunAsync(definition, new ResultData { Value = 41 });
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
         var saved = (await store.GetWorkflowInstanceAsync(suspended.InstanceId))!;
@@ -125,10 +135,15 @@ public sealed class RecoveryResultTests
         services.AddSingleton<TimeProvider>(time);
         services.AddSingleton<IWorkflowStateRepository>(new InMemoryWorkflowStateRepository(time));
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
-    public sealed class ResultData { public int Value { get; set; } }
+    public sealed class ResultData
+    {
+        public int Value { get; set; }
+    }
+
     public sealed class Reply;
 
     public sealed class Increment : IAsyncActivity
@@ -136,6 +151,7 @@ public sealed class RecoveryResultTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             ((ResultData)context.WorkflowData).Value++;
+
             return Task.CompletedTask;
         }
     }

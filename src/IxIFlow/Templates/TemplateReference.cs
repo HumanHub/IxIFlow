@@ -11,8 +11,10 @@ public sealed record TemplateReference
     public TemplateReference(string key, int version)
     {
         TemplateVersion.CheckKey(key);
+
         if (version < 1)
             throw new ArgumentOutOfRangeException(nameof(version), "Template versions start at 1");
+
         Key = key;
         Version = version;
     }

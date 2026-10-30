@@ -7,6 +7,7 @@ public enum WorkflowInvocationContractKind
 {
     /// <summary>Check mapped names and required inputs against the callee, allowing value conversions.</summary>
     CallerView,
+
     /// <summary>Require the callee's effective contract to match the explicit pin exactly.</summary>
     ExactPin
 }
@@ -14,55 +15,54 @@ public enum WorkflowInvocationContractKind
 /// <summary>
 ///     Represents the current status of a workflow execution
 /// </summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(WorkflowStatusJsonConverter))]
 public enum WorkflowStatus
 {
     /// <summary>
     ///     Workflow is ready to be started
     /// </summary>
-    Ready,
+    Ready = 0,
 
     /// <summary>
     ///     Workflow is currently running
     /// </summary>
-    Running,
+    Running = 1,
 
     /// <summary>
     ///     Workflow is suspended and waiting for an event
     /// </summary>
-    Suspended,
+    Suspended = 2,
 
     /// <summary>
     ///     Workflow completed successfully
     /// </summary>
-    Completed,
+    Completed = 3,
 
     /// <summary>
     ///     Workflow failed with an error
     /// </summary>
-    Failed,
+    Failed = 4,
 
     /// <summary>
     ///     Workflow was cancelled
     /// </summary>
-    Cancelled,
-
-    /// <summary>
-    ///     Workflow is in compensation mode (saga pattern)
-    /// </summary>
-    Compensating,
+    Cancelled = 5,
 
     /// <summary>
     ///     Workflow is terminated
     /// </summary>
-    Terminated,
+    Terminated = 7,
+
     /// <summary>
-    /// At least one activity has a committed Start without a committed End and needs resolution.
+    /// Execution is stopped for activity resolution, a resource limit, quarantine or verification.
     /// </summary>
-    NeedsResolution,
+    NeedsResolution = 8,
+
     /// <summary>The whole-instance execution deadline expired.</summary>
-    TimedOut,
+    TimedOut = 9,
+
     /// <summary>Execution is held until continued or cancelled.</summary>
-    Paused
+    Paused = 10
 }
 
 /// <summary>
@@ -111,10 +111,13 @@ public class CancellationReason
 public class WorkflowOptions
 {
     internal string? DebugStopOnEntryActor { get; set; }
+
     /// <summary>Additional capability constraints, resolved once at creation.</summary>
     public List<WorkflowDemand> Demands { get; set; } = [];
+
     /// <summary>A temporary pin, stamped with an expiry by the creating store.</summary>
     public Guid? RequiredHostId { get; set; }
+
     /// <summary>Wait by default, or refuse when no live host matches.</summary>
     public WhenUnschedulable WhenUnschedulable { get; set; } = WhenUnschedulable.Wait;
 
@@ -155,6 +158,7 @@ public class WorkflowInstance
     /// <summary>The immutable published bundle pin; null for code-defined workflows.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public ArtifactDigest? BundleDigest { get; set; }
+
     /// <summary>The host that most recently claimed or committed this instance.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Guid? LastHostId { get; internal set; }
@@ -287,7 +291,8 @@ public class WorkflowInstance
     /// </summary>
     internal IReadOnlyDictionary<string, StoredJson>? PartsAt(long revision) =>
         SavedParts != null && _savedPartsRevision == revision && _savedPartsInstanceId == InstanceId
-            ? SavedParts : null;
+            ? SavedParts
+            : null;
 
     /// <summary>The stored form the last preparation made of the instance's state and data.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
@@ -299,13 +304,17 @@ public class WorkflowInstance
     {
         var copy = (WorkflowInstance)MemberwiseClone();
         copy.Properties = Properties.ToDictionary(pair => pair.Key, pair => pair.Value.Clone());
-        copy.CancellationReason = CancellationReason == null ? null :
-            System.Text.Json.JsonSerializer.Deserialize<CancellationReason>(
+
+        copy.CancellationReason = CancellationReason == null
+            ? null
+            : System.Text.Json.JsonSerializer.Deserialize<CancellationReason>(
                 System.Text.Json.JsonSerializer.Serialize(CancellationReason));
+
         copy.Stored = null;
         copy.SavedParts = null;
         copy._savedPartsInstanceId = null;
         copy._savedPartsRevision = 0;
+
         return copy;
     }
 
@@ -315,10 +324,9 @@ public class WorkflowInstance
         var copy = (WorkflowInstance)MemberwiseClone();
         copy.ExecutionStateJson = trunk;
         copy.WorkflowDataJson = StoredJson.Inline("");
+
         return copy;
     }
-
-    /// <summary>
 }
 
 /// <summary>
@@ -328,6 +336,7 @@ public class WorkflowInstance
 public class WorkflowExecutionSnapshot
 {
     public ArtifactDigest? BundleDigest { get; set; }
+
     /// <summary>True when only the instance's removal tombstone remains; all collections are empty.</summary>
     public bool IsRemoved { get; set; }
 
@@ -381,8 +390,10 @@ public class ExecutionPointer
     public string? ParentJoinId { get; set; }
     public int Sequence { get; set; }
     public string? ForkActivationId { get; set; }
+
     /// <summary>The author-supplied step identity.</summary>
     public string AuthorStepId { get; set; } = string.Empty;
+
     /// <summary>
     ///     Pointer identity
     /// </summary>
@@ -405,6 +416,7 @@ public class ExecutionPointer
 
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool CancellationUnwind { get; set; }
+
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public CancellationUnwindCause? UnwindCause { get; set; }
 
@@ -423,6 +435,7 @@ public class ExecutionFrame
     public string Name { get; set; } = "";
     public int LoopIteration { get; set; }
     public int? ForEachItemIndex { get; set; }
+
     /// <summary>
     ///     Frame identity
     /// </summary>
@@ -462,8 +475,10 @@ public class ExecutionTraceEntry
 {
     public string? ContinuationId { get; set; }
     public string? FrameActivationId { get; set; }
+
     /// <summary>The catalog identity of the activity step.</summary>
     public string? StepId { get; set; }
+
     /// <summary>
     ///     Unique identifier for this trace entry
     /// </summary>
@@ -601,35 +616,49 @@ public enum TraceEntryType
     /// <summary>An operator released an instance stopped for them, with who did.</summary>
     Released,
 
-    // Append kinds to preserve the stored numeric values of existing entries (G-01).
-    /// <summary>A control-flow step was entered.</summary>
+    // Append kinds to preserve the stored numeric values of existing entries.
+    // <summary>A control-flow step was entered.</summary>
     StepEntered,
+
     /// <summary>A conditional selected its branch, identified by index and scope, never its value.</summary>
     ConditionTaken,
+
     /// <summary>One loop iteration started, with its one-based index.</summary>
     LoopIteration,
+
     /// <summary>A loop guard ended the loop.</summary>
     LoopCompleted,
+
     /// <summary>A parallel branch started.</summary>
     BranchStarted,
+
     /// <summary>A join finished, including joins unwound by cancellation or failure.</summary>
     JoinCompleted,
+
     /// <summary>A catch body was entered.</summary>
     CatchEntered,
+
     /// <summary>A finally body was entered.</summary>
     FinallyEntered,
+
     /// <summary>A ForEach item started.</summary>
     ForEachItemStarted,
+
     /// <summary>A ForEach item ended, normally or through unwind.</summary>
     ForEachItemEnded,
+
     /// <summary>An event was taken by a wait.</summary>
     EventReceived,
+
     /// <summary>An event was refused, with its reason.</summary>
     EventRefused,
+
     /// <summary>An operator resolved an invocation.</summary>
     ActivityResolved,
+
     /// <summary>A parent asked its child to cancel.</summary>
     ChildCancellationRequested,
+
     /// <summary>The per-commit trace limit omitted entries.</summary>
     Truncated,
     WaitTimedOut,
@@ -642,44 +671,60 @@ public enum TraceEntryType
     Continued,
     BreakpointHit,
     BreakpointsChanged,
+
     /// <summary>A mandatory, value-free audit of a paused data edit.</summary>
     DataEdited,
     ReplayOrigin,
     ThreadPosition,
+
     /// <summary>A versioned hard-stop command was acknowledged.</summary>
     WorkflowTerminated,
+
     /// <summary>A node entry pick, captured after its frame is pushed.</summary>
     NodeEntered,
+
     /// <summary>A node frame left normally or during unwind.</summary>
     NodeExited,
+
     /// <summary>A graph edge was selected; this is not an executable pick.</summary>
     TransitionTaken,
+
     /// <summary>A graph ended.</summary>
     GraphCompleted,
+
     /// <summary>A state entry pick, captured after its frame is pushed.</summary>
     StateEntered,
+
     /// <summary>A state exit-body entry pick.</summary>
     ExitEntered,
+
     /// <summary>A transition action's edge pick.</summary>
     ActionEntered,
+
     /// <summary>A native state's trigger waits were saved.</summary>
     StateArmed,
+
     /// <summary>A state activation left normally or unwound.</summary>
     StateExited,
+
     /// <summary>A timer trigger became due.</summary>
     TimerFired,
     InlineEntered,
     InlineExited,
+
     /// <summary>A switch selected a case, default or no-match path.</summary>
     CancellationHandlerEntered,
     CancellationHandlerCompleted,
     SwitchSelected,
     DataAssigned,
+
     /// <summary>An invocation policy selected retry, ignore or propagation.</summary>
     InvocationPolicyApplied,
     FaultRaised,
     FaultRethrown,
-    ScopeOpened, ScopeClosed, ScopeCloseFailed
+    ScopeOpened,
+    ScopeClosed,
+    ScopeCloseFailed
 }
 
 /// <summary>
@@ -688,23 +733,30 @@ public enum TraceEntryType
 public class WorkflowDefinition
 {
     public IReadOnlyList<Type> RequiredScopes { get; set; } = [];
+
     /// <summary>Declared root inputs; null means no list, empty explicitly declares no inputs.</summary>
     public IReadOnlyList<string>? DeclaredInputs { get; set; }
+
     /// <summary>Declared root outputs; null means no list, empty explicitly declares no outputs.</summary>
     public IReadOnlyList<string>? DeclaredOutputs { get; set; }
+
     internal ArtifactDigest? BundleDigest { get; set; }
     internal IxIFlow.Templates.TemplateSet? Templates { get; set; }
     internal IReadOnlyList<WorkflowTemplateBinding> TemplateBindings { get; set; } = [];
     internal System.Runtime.Loader.AssemblyLoadContext? BundleContext { get; set; }
     internal IReadOnlyDictionary<string, string>? BundleSources { get; set; }
+
     /// <summary>The executable definition's catalog, including author identities and call sites.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public StepTable StepTable => WorkflowDefinitionValidator.ForExecution(this).StepTable;
+
     /// <summary>The definition's graph topology and designer metadata.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public GraphTable GraphTable => WorkflowDefinitionValidator.ForExecution(this).GraphTable;
 
+    [System.Text.Json.Serialization.JsonIgnore]
     public SwitchTable SwitchTable => WorkflowDefinitionValidator.ForExecution(this).SwitchTable;
+
     /// <summary>Placement declarations, excluded from executable structure identity.</summary>
     public List<WorkflowDemand> Demands { get; set; } = [];
 
@@ -730,6 +782,7 @@ public class WorkflowDefinition
     ///     Description of the workflow
     /// </summary>
     public string Description { get; set; } = "";
+
     public string? DisplayName { get; set; }
     public string? Icon { get; set; }
     public string? Category { get; set; }
@@ -737,7 +790,7 @@ public class WorkflowDefinition
     /// <summary>
     ///     Workflow data type
     /// </summary>
-    public Type WorkflowDataType { get; set; } = null!;
+    public Type? WorkflowDataType { get; set; }
 
     /// <summary>
     ///     When this definition was created
@@ -768,7 +821,6 @@ public class WorkflowDefinition
     ///     Gets the first step in the workflow
     /// </summary>
     public WorkflowStep? FirstStep => Steps.FirstOrDefault();
-
 }
 
 /// <summary>
@@ -778,11 +830,13 @@ public class WorkflowStep
 {
     /// <summary>Executable provenance retained for published inline pin verification.</summary>
     public WorkflowInlinePin? InlinePin { get; internal set; }
+
     public List<WorkflowStep> ScopeBodySteps { get; set; } = [];
     public Type? ScopeValueType { get; set; }
     public IxIFlow.Builders.RetryPolicy? ScopeRetryPolicy { get; set; }
     public ScopeThreading ScopeThreading { get; set; }
     public ScopeConcurrency ScopeConcurrency { get; set; }
+
     /// <summary>The authoring source location, when available.</summary>
     public string? SourceLocation { get; set; }
 
@@ -821,15 +875,19 @@ public class WorkflowStep
 
     /// <summary>The built body executed on a private data frame.</summary>
     public List<WorkflowStep> InlineSteps { get; set; } = [];
+
     /// <summary>The callee structure identity before composition.</summary>
     public string? InlineStructureHash { get; set; }
+
     internal IReadOnlyList<WorkflowDemand> InlineDemands { get; set; } = [];
     internal IReadOnlySet<WorkflowStep>? InlineBodyIdentity { get; set; }
 
     /// <summary>The caller's immutable view or exact child input and output contract.</summary>
     public WorkflowContract? InvokedContract { get; set; }
+
     /// <summary>The hash of the caller's view or exact contract.</summary>
     public string? InvokedContractHash { get; set; }
+
     /// <summary>Whether the invocation requires an exact contract or checks its mappings against the callee.</summary>
     public WorkflowInvocationContractKind InvokedContractKind { get; set; }
 
@@ -886,11 +944,15 @@ public class WorkflowStep
     /// <summary>One typed workflow-data assignment.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public Assignment? Assignment { get; set; }
+
     [System.Text.Json.Serialization.JsonIgnore]
     public System.Linq.Expressions.LambdaExpression? ExceptionExpression { get; set; }
+
     [System.Text.Json.Serialization.JsonIgnore]
     public Func<object, Exception?>? ExceptionFactory { get; set; }
+
     public Type? ExceptionFactoryReturnType { get; set; }
+
     /// <summary>The catalog address of the lexically enclosing Catch.</summary>
     public string? RethrowOwnerId { get; internal set; }
 
@@ -1086,9 +1148,11 @@ public class WorkflowStep
 
     /// <summary>The keyed states of a state machine.</summary>
     public List<StateMachineState> GraphStates { get; set; } = [];
+
     public TriggerKind TriggerKind { get; set; }
     public System.Linq.Expressions.LambdaExpression? AfterExpression { get; set; }
     public Func<object, TimeSpan>? After { get; set; }
+
     /// <summary>The request's paired wait or reply trigger, resolved at build.</summary>
     internal WorkflowStep? ReplyWait { get; set; }
 
@@ -1109,7 +1173,10 @@ public class WorkflowStep
     {
         if (StepType == WorkflowStepType.CancellationScope && (SequenceSteps == null || CancellationSteps == null))
             throw Core.Runtime.WorkflowBuildError.Invalid(this, "CANCEL001: CancellationScope requires a body and a handler");
-        if (StepType == WorkflowStepType.InlineWorkflow) yield return ("inline", null, InlineSteps);
+
+        if (StepType == WorkflowStepType.InlineWorkflow)
+            yield return ("inline", null, InlineSteps);
+
         yield return ("sequence", null, SequenceSteps);
         yield return ("cancelled", null, CancellationSteps);
         yield return ("then", null, ThenSteps);
@@ -1120,29 +1187,45 @@ public class WorkflowStep
         yield return ("timeout", null, TimeoutSteps);
         yield return ("catch", null, CatchBlocks);
         yield return ("scope", null, ScopeBodySteps);
+
         for (var index = 0; index < ParallelBranches.Count; index++)
             yield return ("branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture), ParallelBranches[index]);
+
         foreach (var node in GraphNodes)
         {
             yield return ("node", node.Key, node.Steps);
+
             for (var index = 0; index < node.Edges.Count; index++)
-                yield return ("node", node.Key + "/to/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture), node.Edges[index]);
+                yield return ("node", node.Key + "/to/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    node.Edges[index]);
         }
+
         foreach (var state in GraphStates)
         {
             yield return ("state", state.Key, state.Steps);
-            if (state.ExitSteps.Count > 0) yield return ("state", state.Key + "/exit", state.ExitSteps);
+
+            if (state.ExitSteps.Count > 0)
+                yield return ("state", state.Key + "/exit", state.ExitSteps);
+
             for (var index = 0; index < state.Transitions.Count; index++)
             {
                 var key = state.Key + "/on/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 var transition = state.Transitions[index];
+
                 yield return ("state", key, transition.Steps);
+
                 for (var alternative = 0; alternative < transition.Cases.Count; alternative++)
-                    yield return ("state", key + "/case/" + alternative.ToString(System.Globalization.CultureInfo.InvariantCulture), transition.Cases[alternative]);
-                if (transition.RunSteps.Count > 0) yield return ("state", key + "/run", transition.RunSteps);
+                    yield return ("state", key + "/case/" + alternative.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        transition.Cases[alternative]);
+
+                if (transition.RunSteps.Count > 0)
+                    yield return ("state", key + "/run", transition.RunSteps);
             }
-            if (state.ListenSteps.Count > 0) yield return ("state", state.Key + "/listen", state.ListenSteps);
+
+            if (state.ListenSteps.Count > 0)
+                yield return ("state", state.Key + "/listen", state.ListenSteps);
         }
+
         for (var index = 0; index < OutcomeBranches.Count; index++)
             yield return OutcomeBranches[index].IsDefault
                 ? ("default", null, OutcomeBranches[index].Steps)
@@ -1186,6 +1269,7 @@ public class WorkflowStep
             GraphStates = GraphStates.Select(state => new StateMachineState
             {
                 Key = state.Key, Name = state.Name, Final = state.Final,
+
                 // Keep the optional exit scope present until ChildScopes copies its contents.
                 ExitSteps = state.ExitSteps.Take(1).ToList(),
                 ListenSteps = state.ListenSteps.Take(1).ToList(),
@@ -1254,11 +1338,13 @@ public class WorkflowStep
             Order = Order,
             StepMetadata = new Dictionary<string, object>(StepMetadata)
         };
+
         foreach (var (source, target) in ChildScopes().Zip(clone.ChildScopes()))
         {
             target.Steps.Clear();
             target.Steps.AddRange(source.Steps.Select(step => step.Clone()));
         }
+
         return clone;
     }
 }
@@ -1269,7 +1355,7 @@ public class WorkflowOutcomeBranch
     public object? Value { get; set; }
     public bool IsDefault { get; set; }
     public List<WorkflowStep> Steps { get; set; } = new();
-    public List<IxIFlow.Builders.SagaStepInfo> SagaSteps { get; set; } = new();
+    internal List<IxIFlow.Builders.SagaStepInfo> SagaSteps { get; set; } = new();
 }
 
 /// <summary>
@@ -1338,33 +1424,43 @@ public enum WorkflowStepType
 
     /// <summary>A graph of keyed node bodies and ordered transitions.</summary>
     Flowchart,
+
     /// <summary>The executable entry pick of a graph node.</summary>
     Enter,
+
     /// <summary>The trailing selection pick of a flowchart node.</summary>
     Decision,
+
     /// <summary>A selected edge or an explicit timeout transition.</summary>
     Edge,
+
     /// <summary>A graph of keyed states armed with native waits.</summary>
     StateMachine,
+
     /// <summary>The repeated arbitration and arming pick of a state.</summary>
     Arm,
+
     /// <summary>The selected transition pick, after state exit.</summary>
     Trigger,
+
     /// <summary>The shared wait pick of an activity-trigger fork.</summary>
     Listen,
+
     /// <summary>Records a fired trigger before its branch completes.</summary>
     Fire,
+
     /// <summary>Execute a built workflow body on its own data copy.</summary>
     InlineWorkflow,
+
     /// <summary>Selects one body with typed label equality.</summary>
     Switch,
     Assign,
     Throw,
     Rethrow,
     Scope,
+
     /// <summary>A body with cleanup for unfinished cancelled work.</summary>
     CancellationScope
-
 }
 
 /// <summary>

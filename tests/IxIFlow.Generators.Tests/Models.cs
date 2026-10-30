@@ -24,14 +24,17 @@ public sealed class Multiply : IAsyncActivity
 {
     [ActivityInput, System.ComponentModel.DataAnnotations.Required]
     public int Value { get; set; }
+
     [ActivityInput, System.ComponentModel.DefaultValue(2)]
     public int Factor { get; set; } = 2;
-    [ActivityOutput]
-    public int Result { get; private set; }
+
+    [ActivityOutput] public int Result { get; private set; }
     public string? Internal { get; set; }
+
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Result = Value * Factor;
+
         return Task.CompletedTask;
     }
 }

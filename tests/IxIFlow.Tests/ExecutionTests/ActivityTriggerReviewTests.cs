@@ -12,6 +12,7 @@ public sealed class ActivityTriggerReviewTests
     public async Task ReplyIntakeDefersSelectedFireUntilItsJoinCompletes()
     {
         await using var host = Services();
+
         await ActivityTriggerReviewCases.ReplyIntakeDefersSelectedFireUntilJoinCompletes(host,
             host.GetRequiredService<IWorkflowStateRepository>());
     }
@@ -20,6 +21,7 @@ public sealed class ActivityTriggerReviewTests
     public async Task CancellationPreservesTheSelectedWinnerInsideFinallyAcrossRecovery()
     {
         await using var host = Services();
+
         await ActivityTriggerReviewCases.CancellationPreservesCleanupWinner(host,
             host.GetRequiredService<IWorkflowStateRepository>());
     }
@@ -32,6 +34,7 @@ public sealed class ActivityTriggerReviewTests
     public async Task RecoveryHydratesOnlyNeededTriggerResults(string shape)
     {
         await using var host = Services();
+
         await ActivityTriggerReviewCases.RecoveryOnlyHydratesNeededResults(host,
             host.GetRequiredService<IWorkflowStateRepository>(), shape);
     }
@@ -39,9 +42,16 @@ public sealed class ActivityTriggerReviewTests
     private static ServiceProvider Services()
     {
         var services = new ServiceCollection().AddLogging();
-        services.AddIxIFlow(o => { o.Debugging = true; o.VerifyCheckpointParts = true;
-            o.MaxHydratedPayloadBytes = ActivityTriggerReviewCases.HydrationBudget; });
+
+        services.AddIxIFlow(o =>
+        {
+            o.Debugging = true;
+            o.VerifyCheckpointParts = true;
+            o.MaxHydratedPayloadBytes = ActivityTriggerReviewCases.HydrationBudget;
+        });
+
         services.AddSingleton(new ActivityTriggerReviewCases.Probe());
+
         return services.BuildServiceProvider();
     }
 }

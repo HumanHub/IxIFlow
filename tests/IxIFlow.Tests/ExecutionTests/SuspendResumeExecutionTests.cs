@@ -54,7 +54,7 @@ public class SuspendResumeExecutionTests
                 .Output(act => act.ProcessOrderCompleted).To(ctx => ctx.WorkflowData.ProcessOrderCompleted))
             .Suspend<ApprovalEvent>("Waiting for manager approval",
                 (resumeEvent, ctx) => resumeEvent.OrderId == ctx.WorkflowData.OrderId &&
-                                      (resumeEvent.Approved || resumeEvent.Declined))
+                    (resumeEvent.Approved || resumeEvent.Declined))
             .Step<CompleteOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Input(act => act.ProcessedData).From(ctx => ctx.WorkflowData.ProcessedOrder)
@@ -68,12 +68,12 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should be suspended
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
-        
+
         // Check workflow instance status
         var instance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(instance);
         Assert.Equal(WorkflowStatus.Suspended, instance.Status);
-        
+
         Assert.True(startedData.ProcessOrderCompleted);
         Assert.False(startedData.CompleteOrderCompleted);
         Assert.NotEmpty(startedData.ProcessedOrder);
@@ -91,20 +91,22 @@ public class SuspendResumeExecutionTests
         // Debug: Check the resume result
         Console.WriteLine($"RESUME RESULT: Status={resumeResult.Status}");
         Console.WriteLine($"WORKFLOW DATA TYPE: {resumeResult.WorkflowData?.GetType().Name}");
+
         if (resumeResult.WorkflowData is SuspendResumeTestData resumedData)
         {
             Console.WriteLine($"RESUMED DATA: CompleteOrderCompleted={resumedData.CompleteOrderCompleted}");
         }
+
         Console.WriteLine($"ORIGINAL DATA: CompleteOrderCompleted={workflowData.CompleteOrderCompleted}");
 
         // Assert - Workflow should complete successfully
         Assert.Equal(WorkflowExecutionStatus.Success, resumeResult.Status);
-        
+
         // Check workflow instance status after resume
         var completedInstance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(completedInstance);
         Assert.Equal(WorkflowStatus.Completed, completedInstance.Status);
-        
+
         // Use the workflow data from the resume result, not the original
         var finalWorkflowData = (SuspendResumeTestData)resumeResult.WorkflowData!;
         Assert.True(finalWorkflowData.CompleteOrderCompleted);
@@ -129,8 +131,8 @@ public class SuspendResumeExecutionTests
                 .Output(act => act.ProcessOrderCompleted).To(ctx => ctx.WorkflowData.ProcessOrderCompleted))
             .Suspend<ApprovalEvent>("Waiting for approval without double approval requirement",
                 (resumeEvent, ctx) => resumeEvent.OrderId == ctx.WorkflowData.OrderId &&
-                                      (resumeEvent.Approved || resumeEvent.Declined) &&
-                                      !resumeEvent.RequiresDoubleApproval) // Specific condition
+                    (resumeEvent.Approved || resumeEvent.Declined) &&
+                    !resumeEvent.RequiresDoubleApproval) // Specific condition
             .Step<CompleteOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Output(act => act.CompleteOrderCompleted).To(ctx => ctx.WorkflowData.CompleteOrderCompleted))
@@ -141,7 +143,7 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should be suspended
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
-        
+
         var instance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(instance);
         Assert.Equal(WorkflowStatus.Suspended, instance.Status);
@@ -160,11 +162,11 @@ public class SuspendResumeExecutionTests
         // Assert - Workflow should still be suspended (condition not met)
         Assert.Equal(WorkflowExecutionStatus.Suspended, invalidResumeResult.Status);
         EventAssert.Rejected(invalidResumeResult, EventRejection.NotMatched);
-        
+
         var stillSuspendedInstance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(stillSuspendedInstance);
         Assert.Equal(WorkflowStatus.Suspended, stillSuspendedInstance.Status);
-        
+
         Assert.False(workflowData.CompleteOrderCompleted);
 
         // Act - Resume with valid event that meets condition
@@ -180,11 +182,11 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should complete successfully
         Assert.Equal(WorkflowExecutionStatus.Success, validResumeResult.Status);
-        
+
         var completedInstance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(completedInstance);
         Assert.Equal(WorkflowStatus.Completed, completedInstance.Status);
-        
+
         // Use the resumed workflow data, not the original
         var finalWorkflowData = (SuspendResumeTestData)validResumeResult.WorkflowData!;
         Assert.True(finalWorkflowData.CompleteOrderCompleted);
@@ -231,11 +233,11 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should be suspended at first suspend point
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
-        
+
         var instance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(instance);
         Assert.Equal(WorkflowStatus.Suspended, instance.Status);
-        
+
         Assert.True(startedData.ProcessOrderCompleted);
         Assert.False(startedData.ValidateOrderCompleted);
 
@@ -251,11 +253,11 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should be suspended at second suspend point
         Assert.Equal(WorkflowExecutionStatus.Suspended, firstResumeResult.Status);
-        
+
         var secondSuspendInstance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(secondSuspendInstance);
         Assert.Equal(WorkflowStatus.Suspended, secondSuspendInstance.Status);
-        
+
         // Use the resumed workflow data from the first resume result
         var firstResumeData = (SuspendResumeTestData)firstResumeResult.WorkflowData!;
         Assert.True(firstResumeData.ValidateOrderCompleted);
@@ -274,11 +276,11 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should complete successfully
         Assert.Equal(WorkflowExecutionStatus.Success, secondResumeResult.Status);
-        
+
         var completedInstance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(completedInstance);
         Assert.Equal(WorkflowStatus.Completed, completedInstance.Status);
-        
+
         // Use the resumed workflow data, not the original
         var finalWorkflowData = (SuspendResumeTestData)secondResumeResult.WorkflowData!;
         Assert.True(finalWorkflowData.CompleteOrderCompleted);
@@ -317,7 +319,7 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should be suspended
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
-        
+
         var instance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(instance);
         Assert.Equal(WorkflowStatus.Suspended, instance.Status);
@@ -336,11 +338,11 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should complete and event data should be mapped
         Assert.Equal(WorkflowExecutionStatus.Success, resumeResult.Status);
-        
+
         var completedInstance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(completedInstance);
         Assert.Equal(WorkflowStatus.Completed, completedInstance.Status);
-        
+
         // Use the resumed workflow data, not the original
         var finalWorkflowData = (SuspendResumeTestData)resumeResult.WorkflowData!;
         Assert.True(finalWorkflowData.ApprovalStatus);
@@ -406,9 +408,9 @@ public class SuspendResumeExecutionTests
                 .Output(act => act.ProcessOrderCompleted).To(ctx => ctx.WorkflowData.ProcessOrderCompleted))
             .Suspend<ApprovalEvent>("Waiting for manager approval",
                 (evt, ctx) => evt.OrderId == ctx.WorkflowData.OrderId &&
-                              evt.Approved &&
-                              !string.IsNullOrWhiteSpace(evt.ApproverName) &&
-                              evt.ApproverName.Contains("Manager"))
+                    evt.Approved &&
+                    !string.IsNullOrWhiteSpace(evt.ApproverName) &&
+                    evt.ApproverName.Contains("Manager"))
             .Build();
 
         var startResult = await _workflowEngine.RunAsync(workflow, workflowData);
@@ -541,11 +543,11 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should be suspended
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
-        
+
         var instance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(instance);
         Assert.Equal(WorkflowStatus.Suspended, instance.Status);
-        
+
         Assert.True(startedData.ProcessOrderCompleted);
         Assert.False(startedData.CompleteOrderCompleted);
 
@@ -561,11 +563,11 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should complete successfully
         Assert.Equal(WorkflowExecutionStatus.Success, resumeResult.Status);
-        
+
         var completedInstance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(completedInstance);
         Assert.Equal(WorkflowStatus.Completed, completedInstance.Status);
-        
+
         // Use the resumed workflow data, not the original
         var finalWorkflowData = (SuspendResumeTestData)resumeResult.WorkflowData!;
         Assert.True(finalWorkflowData.CompleteOrderCompleted);
@@ -600,11 +602,11 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should be suspended
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
-        
+
         var instance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(instance);
         Assert.Equal(WorkflowStatus.Suspended, instance.Status);
-        
+
         Assert.True(startedData.ProcessOrderCompleted);
         Assert.False(startedData.CompleteOrderCompleted);
 
@@ -632,10 +634,10 @@ public class SuspendResumeExecutionTests
                 .Output(act => act.ProcessOrderCompleted).To(ctx => ctx.WorkflowData.ProcessOrderCompleted))
             .Suspend<ApprovalEvent>("Waiting for complex approval condition",
                 (evt, ctx) => evt.OrderId == ctx.WorkflowData.OrderId &&
-                              evt.Approved &&
-                              !evt.Declined &&
-                              !string.IsNullOrEmpty(evt.ApproverName) &&
-                              evt.ApproverName.Contains("Manager"))
+                    evt.Approved &&
+                    !evt.Declined &&
+                    !string.IsNullOrEmpty(evt.ApproverName) &&
+                    evt.ApproverName.Contains("Manager"))
             .Step<CompleteOrderAsyncActivity>(setup => setup
                 .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
                 .Output(act => act.CompleteOrderCompleted).To(ctx => ctx.WorkflowData.CompleteOrderCompleted))
@@ -646,7 +648,7 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should be suspended
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
-        
+
         var instance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(instance);
         Assert.Equal(WorkflowStatus.Suspended, instance.Status);
@@ -665,7 +667,7 @@ public class SuspendResumeExecutionTests
         // Assert - Workflow should still be suspended
         Assert.Equal(WorkflowExecutionStatus.Suspended, invalidResumeResult.Status);
         EventAssert.Rejected(invalidResumeResult, EventRejection.NotMatched);
-        
+
         var stillSuspendedInstance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(stillSuspendedInstance);
         Assert.Equal(WorkflowStatus.Suspended, stillSuspendedInstance.Status);
@@ -683,11 +685,11 @@ public class SuspendResumeExecutionTests
 
         // Assert - Workflow should complete successfully
         Assert.Equal(WorkflowExecutionStatus.Success, validResumeResult.Status);
-        
+
         var completedInstance = await _stateRepository.GetWorkflowInstanceAsync(result.InstanceId);
         Assert.NotNull(completedInstance);
         Assert.Equal(WorkflowStatus.Completed, completedInstance.Status);
-        
+
         // Use the resumed workflow data, not the original
         var finalWorkflowData = (SuspendResumeTestData)validResumeResult.WorkflowData!;
         Assert.True(finalWorkflowData.CompleteOrderCompleted);
@@ -701,11 +703,15 @@ public class SuspendResumeExecutionTests
     /// <summary>
     ///     Mock implementation of IWorkflowStateRepository for testing
     /// </summary>
-    private class MockWorkflowStateRepository : InMemoryWorkflowStateRepository
+    private class MockWorkflowStateRepository : TestWorkflowStateRepository
     {
         public async Task<List<WorkflowInstance>> GetWorkflowInstancesAsync(string workflowName, int? version = null)
         {
-            var instances = await Task.WhenAll((await QueryInstancesAsync(new InstanceQuery(WorkflowName: workflowName, Limit: int.MaxValue))).Items.Select(async row => (await GetWorkflowInstanceAsync(row.InstanceId))!));
+            var instances =
+                await Task.WhenAll(
+                    (await QueryInstancesAsync(new InstanceQuery(WorkflowName: workflowName, Limit: int.MaxValue))).Items.Select(async
+                        row => (await GetWorkflowInstanceAsync(row.InstanceId))!));
+
             return instances.Where(instance => !version.HasValue || instance.WorkflowVersion == version.Value).ToList();
         }
     }

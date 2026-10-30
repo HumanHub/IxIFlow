@@ -14,16 +14,24 @@ public static class ActivityBuilderExtensions
         ArgumentNullException.ThrowIfNull(assembly);
         ActivityRegistrations.CheckAssembly(assembly);
         Type[] types;
-        try { types = assembly.GetTypes().Where(type => type.IsDefined(typeof(WorkflowActivityAttribute))).ToArray(); }
+
+        try
+        {
+            types = assembly.GetTypes().Where(type => type.IsDefined(typeof(WorkflowActivityAttribute))).ToArray();
+        }
         catch (ReflectionTypeLoadException error)
         {
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
-                $"Activity assembly '{assembly.GetName().Name}' could not load its types: {error.LoaderExceptions.FirstOrDefault()?.Message}", error);
+                $"Activity assembly '{assembly.GetName().Name}' could not load its types: {error.LoaderExceptions.FirstOrDefault()?.Message}",
+                error);
         }
+
         if (types.Length == 0)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"Assembly '{assembly.GetName().Name}' has no [WorkflowActivity] types");
+
         Registrations(builder.Services).Add(types);
+
         return builder;
     }
 
@@ -31,6 +39,7 @@ public static class ActivityBuilderExtensions
     public static IIxIFlowBuilder AddActivity<TActivity>(this IIxIFlowBuilder builder) where TActivity : class
     {
         Registrations(builder.Services).Add([typeof(TActivity)]);
+
         return builder;
     }
 
@@ -38,10 +47,14 @@ public static class ActivityBuilderExtensions
     {
         var registrations = services.FirstOrDefault(service => service.ServiceType == typeof(ActivityRegistrations))?
             .ImplementationInstance as ActivityRegistrations;
-        if (registrations != null) return registrations;
+
+        if (registrations != null)
+            return registrations;
+
         registrations = new(services);
         services.AddSingleton(registrations);
         services.AddSingleton<IActivityRegistry>(_ => registrations.Build());
+
         return registrations;
     }
 }

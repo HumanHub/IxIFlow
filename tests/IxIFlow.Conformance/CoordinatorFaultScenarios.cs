@@ -37,6 +37,7 @@ public sealed class CoordinatorFaultScenarios
         await doomed.StopAsync();
         Assert.Empty(doomed.Fault.Grants);
         Assert.Equal(0, probe.Executions);
+
         Assert.Contains(await profile.NewRepository().GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(polling.Provider)),
             instance => instance.InstanceId == id);
 
@@ -80,6 +81,7 @@ public sealed class CoordinatorFaultScenarios
             var grant = Assert.Single(polling.Fault.Grants.Concat(woken.Fault.Grants));
             Assert.True(grant.Epoch > 0);
             Assert.NotEqual(polling.Fault.Token, woken.Fault.Token);
+
             // Keep the winner inside the activity until both lease calls have returned: the
             // loser must lose to the live lease, rather than observe an already completed row.
             probe.Finish.TrySetResult();
@@ -87,17 +89,23 @@ public sealed class CoordinatorFaultScenarios
             Assert.Equal(1, probe.Executions);
             await AssertConsumedOnceAsync(profile, id);
         }
-        finally { releaseClaims.TrySetResult(); probe.Finish.TrySetResult(); }
+        finally
+        {
+            releaseClaims.TrySetResult();
+            probe.Finish.TrySetResult();
+        }
     }
 
     private static async Task<string> SeedAsync(ProfileStore profile, IWorkflowCatalog registry, Probe probe)
     {
         var definition = Workflow.Create<Data>("CoordinatorFault")
             .Step<Noop>().WaitFor<Approval>("approval").Step<Count>().Build();
+
         await registry.RegisterWorkflowAsync(definition);
         await using var seed = Host(profile, registry, probe, linked: false);
         var result = await seed.Provider.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
+
         return result.InstanceId;
     }
 
@@ -114,25 +122,31 @@ public sealed class CoordinatorFaultScenarios
         services.AddSingleton(probe);
         services.AddTransient<Noop>();
         services.AddTransient<Count>();
-        if (linked) profile.ConfigureHost(services);
+
+        if (linked)
+            profile.ConfigureHost(services);
+
         return new(profile, services.BuildServiceProvider(), fault);
     }
 
     private static async Task NotifyAsync(IServiceProvider writer, string id)
     {
         var appended = await writer.GetRequiredService<IWorkflowStateRepository>().AppendEventAsync(new(id,
-            "approval-once", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)), JsonSerializer.Serialize(new Approval()), Key: "approval"));
+            "approval-once", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)),
+            JsonSerializer.Serialize(new Approval()), Key: "approval"));
+
         Assert.Equal(EventAppendStatus.Stored, appended.Status);
+
         // Real production notification delivery, real authenticated stream, real Wake -> scanner.
         await writer.GetRequiredService<IRunnableNotifier>().NotifyAsync(appended.Notice!, CancellationToken.None);
     }
 
     private static async Task UntilCompletedAsync(ProfileStore profile, string id)
     {
-        using var patience = new CancellationTokenSource(Patience);
         var repository = profile.NewRepository();
-        while ((await repository.GetWorkflowInstanceSummaryAsync(id))?.Status != WorkflowStatus.Completed)
-            await Task.Delay(10, patience.Token);
+
+        await IxIFlow.Tests.Infrastructure.TestEventually.UntilAsync(id, "Completed",
+            () => repository.GetWorkflowInstanceSummaryAsync(id), instance => instance?.Status == WorkflowStatus.Completed, Patience);
     }
 
     private static async Task AssertConsumedOnceAsync(ProfileStore profile, string id)
@@ -154,10 +168,13 @@ public sealed class CoordinatorFaultScenarios
         internal async Task StartScannerAsync()
         {
             var state = provider.GetRequiredService<CoordinationState>();
+
             _scanner = new(provider.GetRequiredService<IServiceScopeFactory>(),
                 provider.GetRequiredService<IWorkflowStateRepository>(), NullLogger<WorkflowRecoveryService>.Instance,
                 Clock, Settings, coordination: state);
+
             await _scanner.StartAsync(CancellationToken.None);
+
             await Clock.WaitForTimerAsync(timer => timer.Pending && timer.DueTime ==
                 (state.Connected ? state.PollInterval : Settings.PollInterval));
         }
@@ -170,11 +187,16 @@ public sealed class CoordinatorFaultScenarios
                 _scanner.Dispose();
                 _scanner = null;
             }
+
             await provider.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
             await profile.StopHostLinksAsync(provider);
         }
 
-        public async ValueTask DisposeAsync() { await StopAsync(); await provider.DisposeAsync(); }
+        public async ValueTask DisposeAsync()
+        {
+            await StopAsync();
+            await provider.DisposeAsync();
+        }
     }
 
     public class ClaimFault : DispatchProxy
@@ -191,8 +213,17 @@ public sealed class CoordinatorFaultScenarios
         {
             if (targetMethod!.Name == nameof(IWorkflowStateRepository.TryAcquireExecutionLeaseAsync))
                 return ClaimAsync(targetMethod, args!);
-            try { return targetMethod.Invoke(Inner, args); }
-            catch (TargetInvocationException error) { ExceptionDispatchInfo.Capture(error.InnerException!).Throw(); throw; }
+
+            try
+            {
+                return targetMethod.Invoke(Inner, args);
+            }
+            catch (TargetInvocationException error)
+            {
+                ExceptionDispatchInfo.Capture(error.InnerException!).Throw();
+
+                throw;
+            }
         }
 
         private async Task<ExecutionLeaseGrant?> ClaimAsync(MethodInfo method, object?[] args)
@@ -200,28 +231,42 @@ public sealed class CoordinatorFaultScenarios
             Interlocked.Increment(ref Attempts);
             Token = (string)args[1]!;
             ClaimEntered.TrySetResult();
-            if (BeforeClaim != null) await BeforeClaim();
+
+            if (BeforeClaim != null)
+                await BeforeClaim();
+
             var grant = await (Task<ExecutionLeaseGrant?>)method.Invoke(Inner, args)!;
-            if (grant != null) Grants.Add(grant);
+
+            if (grant != null)
+                Grants.Add(grant);
+
             ClaimReturned.TrySetResult();
+
             return grant;
         }
     }
 
     public sealed class Data;
+
     public sealed class Approval;
+
     public sealed class Probe
     {
         public int Executions;
         public TaskCompletionSource Finish { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     public sealed class Count(Probe probe) : IAsyncActivity
     {
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Interlocked.Increment(ref probe.Executions); await probe.Finish.Task.WaitAsync(cancellationToken); }
+        {
+            Interlocked.Increment(ref probe.Executions);
+            await probe.Finish.Task.WaitAsync(cancellationToken);
+        }
     }
 }

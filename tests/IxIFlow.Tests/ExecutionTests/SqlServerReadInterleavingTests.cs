@@ -23,59 +23,90 @@ public sealed class SqlServerReadInterleavingTests
     private static async Task Verify(bool recreate, bool afterParts, string entry)
     {
         var cs = SqlTestDatabase<SqlServerReadInterleavingTests>.ConnectionString;
-        var writer = new SqlWorkflowStateRepository(cs);
+        var writer = new SqlServerWorkflowStateRepository(cs);
         var id = Guid.NewGuid().ToString("N");
         var original = CheckpointRaceContract.Instance(id, "old");
         original.WorkflowName = "read-" + id;
         original.CorrelationId = id;
-        Assert.Equal(WorkflowCommitStatus.Applied, (await writer.CommitWorkflowInstanceAsync(CheckpointCommit.Create(original, (await StoreTestSupport.LeaseAsync(writer, original.InstanceId)).Epoch, 0))).Status);
+
+        Assert.Equal(WorkflowCommitStatus.Applied,
+            (await writer.CommitWorkflowInstanceAsync(CheckpointCommit.Create(original,
+                (await StoreTestSupport.LeaseAsync(writer, original.InstanceId)).Epoch, 0))).Status);
+
         var readerName = "interleaving-" + id;
-        var reader = new SqlWorkflowStateRepository(new SqlConnectionStringBuilder(cs) { ApplicationName = readerName }.ConnectionString);
+
+        var reader = new SqlServerWorkflowStateRepository(new SqlConnectionStringBuilder(cs) { ApplicationName = readerName }
+            .ConnectionString);
+
         await reader.GetWorkflowInstanceAsync(id); // Complete schema admission before command interception.
         await using var holder = new SqlConnection(cs);
         await holder.OpenAsync();
         var session = await holder.ExecuteScalarAsync<int>("SELECT @@SPID");
         await using var transaction = await holder.BeginTransactionAsync();
         var resource = "read-pause-" + id;
+
         await holder.ExecuteAsync("""
-            DECLARE @r int;
-            EXEC @r=sys.sp_getapplock @Resource=@Resource, @LockMode='Exclusive', @LockOwner='Transaction', @LockTimeout=10000;
-            IF @r<0 THROW 51000, 'Cannot acquire read barrier', 1;
-            """, new { Resource = resource }, transaction);
+                                  DECLARE @r int;
+                                  EXEC @r=sys.sp_getapplock @Resource=@Resource, @LockMode='Exclusive', @LockOwner='Transaction', @LockTimeout=10000;
+                                  IF @r<0 THROW 51000, 'Cannot acquire read barrier', 1;
+                                  """, new { Resource = resource }, transaction);
+
         using var pause = new CommandPause(readerName, resource, afterParts, entry is "whole" or "summary");
+
         async Task<WorkflowInstance?> Read() => entry switch
         {
             "whole" => await reader.GetWorkflowInstanceAsync(id),
             "summary" => await reader.GetWorkflowInstanceSummaryAsync(id),
-            "name" => Assert.Single(await Task.WhenAll((await reader.QueryInstancesAsync(new InstanceQuery(WorkflowName: original.WorkflowName, Limit: int.MaxValue))).Items.Select(async row => (await reader.GetWorkflowInstanceAsync(row.InstanceId))!))),
-            "correlation" => Assert.Single(await Task.WhenAll((await reader.QueryInstancesAsync(new InstanceQuery(CorrelationId: id, Limit: int.MaxValue))).Items.Select(async row => (await reader.GetWorkflowInstanceAsync(row.InstanceId))!))),
-            _ => Assert.Single(await Task.WhenAll((await reader.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items.Select(async row => (await reader.GetWorkflowInstanceAsync(row.InstanceId))!)), i => i.InstanceId == id)
+            "name" => Assert.Single(await Task.WhenAll(
+                (await reader.QueryInstancesAsync(new InstanceQuery(WorkflowName: original.WorkflowName, Limit: int.MaxValue))).Items
+                .Select(async row => (await reader.GetWorkflowInstanceAsync(row.InstanceId))!))),
+            "correlation" => Assert.Single(await Task.WhenAll(
+                (await reader.QueryInstancesAsync(new InstanceQuery(CorrelationId: id, Limit: int.MaxValue))).Items.Select(async row =>
+                    (await reader.GetWorkflowInstanceAsync(row.InstanceId))!))),
+            _ => Assert.Single(
+                await Task.WhenAll(
+                    (await reader.QueryInstancesAsync(new InstanceQuery(Statuses: [WorkflowStatus.Running], Limit: int.MaxValue))).Items
+                    .Select(async row => (await reader.GetWorkflowInstanceAsync(row.InstanceId))!)), i => i.InstanceId == id)
         };
+
         var reading = Task.Run(Read);
         var replacement = CheckpointRaceContract.Instance(id, "new");
         replacement.WorkflowName = original.WorkflowName;
         replacement.CorrelationId = id;
+
         // Without re-creation the replacement is a later commit, so it names the row's incarnation.
         replacement.Incarnation = original.Incarnation;
+
         try
         {
             await using var observer = new SqlConnection(cs);
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
             while (!await observer.ExecuteScalarAsync<bool>(new CommandDefinition("""
-                SELECT CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id=@Session)
-                THEN 1 ELSE 0 END AS bit)
-                """, new { Session = session }, cancellationToken: timeout.Token))) await Task.Yield();
+                                                                                  SELECT CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.dm_exec_requests WHERE blocking_session_id=@Session)
+                                                                                  THEN 1 ELSE 0 END AS bit)
+                                                                                  """, new { Session = session },
+                       cancellationToken: timeout.Token)))
+                await Task.Yield();
+
             Assert.Equal(1, pause.Hits);
             Assert.False(reading.IsCompleted);
+
             if (recreate)
             {
                 await writer.DeleteWorkflowInstanceAsync(id);
                 await observer.ExecuteAsync("DELETE FROM dbo.IxIFlowWorkflowTombstones WHERE InstanceId=@Id", new { Id = id });
             }
+
             Assert.Equal(WorkflowCommitStatus.Applied, (await writer.CommitWorkflowInstanceAsync(
-                CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(writer, replacement.InstanceId)).Epoch, recreate ? 0 : 1))).Status);
+                CheckpointCommit.Create(replacement, (await StoreTestSupport.LeaseAsync(writer, replacement.InstanceId)).Epoch,
+                    recreate ? 0 : 1))).Status);
         }
-        finally { await transaction.RollbackAsync(); }
+        finally
+        {
+            await transaction.RollbackAsync();
+        }
+
         var saved = Assert.IsType<WorkflowInstance>(await reading.WaitAsync(TimeSpan.FromSeconds(15)));
         using var data = JsonDocument.Parse(saved.WorkflowDataJson.InlineText);
         var marker = data.RootElement.GetProperty("marker").GetString();
@@ -84,7 +115,10 @@ public sealed class SqlServerReadInterleavingTests
         Assert.Equal(recreate || marker == "old" ? 1 : 2, saved.Revision);
         var expected = marker == "old" ? original : replacement;
         Assert.Equal(expected.WorkflowDataJson, saved.WorkflowDataJson);
-        if (entry != "summary") Assert.Equal(expected.ExecutionStateJson, saved.ExecutionStateJson);
+
+        if (entry != "summary")
+            Assert.Equal(expected.ExecutionStateJson, saved.ExecutionStateJson);
+
         await writer.DeleteWorkflowInstanceAsync(id);
     }
 
@@ -98,33 +132,70 @@ public sealed class SqlServerReadInterleavingTests
         private readonly IDisposable _all;
         private int _hits;
         internal int Hits => Volatile.Read(ref _hits);
+
         internal CommandPause(string application, string resource, bool afterParts, bool single)
-        { _application = application; _resource = resource; _afterParts = afterParts; _single = single; _all = DiagnosticListener.AllListeners.Subscribe(this); }
+        {
+            _application = application;
+            _resource = resource;
+            _afterParts = afterParts;
+            _single = single;
+            _all = DiagnosticListener.AllListeners.Subscribe(this);
+        }
+
         public void OnNext(DiagnosticListener listener)
-        { if (listener.Name == "SqlClientDiagnosticListener") _subscriptions.Add(listener.Subscribe(this)); }
+        {
+            if (listener.Name == "SqlClientDiagnosticListener")
+                _subscriptions.Add(listener.Subscribe(this));
+        }
+
         public void OnNext(KeyValuePair<string, object?> value)
         {
-            if (!value.Key.EndsWith("WriteCommandBefore", StringComparison.Ordinal) || value.Value == null) return;
+            if (!value.Key.EndsWith("WriteCommandBefore", StringComparison.Ordinal) || value.Value == null)
+                return;
+
             if (value.Value.GetType().GetProperty("Command")?.GetValue(value.Value) is not SqlCommand command ||
-                command.Connection == null || new SqlConnectionStringBuilder(command.Connection.ConnectionString).ApplicationName != _application) return;
+                command.Connection == null ||
+                new SqlConnectionStringBuilder(command.Connection.ConnectionString).ApplicationName != _application)
+                return;
+
             var sql = command.CommandText;
             var parts = "SELECT InstanceId, PartKey, Json FROM dbo.IxIFlowWorkflowParts";
             var stamp = "SELECT InstanceId, Revision, Incarnation FROM dbo.IxIFlowWorkflowInstances";
             var anchor = _afterParts ? stamp : parts;
-            var eligible = _single || _afterParts ? sql.Contains(anchor, StringComparison.Ordinal)
-                : sql.StartsWith("SELECT InstanceId, StateJson", StringComparison.Ordinal);
-            if (!eligible || Interlocked.CompareExchange(ref _hits, 1, 0) != 0) return;
+
+            var eligible = _single || _afterParts
+                ? sql.Contains(anchor, StringComparison.Ordinal)
+                : sql.StartsWith("SELECT InstanceId, Status, StateJson", StringComparison.Ordinal);
+
+            if (!eligible || Interlocked.CompareExchange(ref _hits, 1, 0) != 0)
+                return;
+
             var barrier = $"""
-                DECLARE @barrier int;
-                EXEC @barrier=sys.sp_getapplock @Resource=N'{_resource}', @LockMode='Shared', @LockOwner='Session', @LockTimeout=20000;
-                IF @barrier<0 THROW 51000, 'Read barrier timed out', 1;
-                EXEC sys.sp_releaseapplock @Resource=N'{_resource}', @LockOwner='Session';
-                """;
-            command.CommandText = _single || _afterParts ? sql.Replace(anchor, barrier + "\n" + anchor, StringComparison.Ordinal)
+                           DECLARE @barrier int;
+                           EXEC @barrier=sys.sp_getapplock @Resource=N'{_resource}', @LockMode='Shared', @LockOwner='Session', @LockTimeout=20000;
+                           IF @barrier<0 THROW 51000, 'Read barrier timed out', 1;
+                           EXEC sys.sp_releaseapplock @Resource=N'{_resource}', @LockOwner='Session';
+                           """;
+
+            command.CommandText = _single || _afterParts
+                ? sql.Replace(anchor, barrier + "\n" + anchor, StringComparison.Ordinal)
                 : sql + ";\n" + barrier;
         }
-        public void OnError(Exception error) { }
-        public void OnCompleted() { }
-        public void Dispose() { _all.Dispose(); foreach (var subscription in _subscriptions) subscription.Dispose(); }
+
+        public void OnError(Exception error)
+        {
+        }
+
+        public void OnCompleted()
+        {
+        }
+
+        public void Dispose()
+        {
+            _all.Dispose();
+
+            foreach (var subscription in _subscriptions)
+                subscription.Dispose();
+        }
     }
 }

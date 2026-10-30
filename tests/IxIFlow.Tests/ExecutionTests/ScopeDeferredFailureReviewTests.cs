@@ -14,13 +14,16 @@ public sealed class ScopeDeferredFailureReviewTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var probe = new Probe();
+
         var definition = new WorkflowBuilder<Data, object>([], "ScopeDeferredFault").WaitFor<Signal>("start")
             .Try(b => b.Scope<Container>(null, body => body.Parallel(p =>
                 p.Do(x => x.Step<ScopeLifetimeTests.Noop>().WithId("selected"))
                     .Do(x => x.Step<ScopeLifetimeTests.Noop>()))))
             .Catch<CodedException, Fault>(b => b.Step<Copy>(s => s.Input(x => x.Code).From(c => c.Fault.Code)
                 .Output(x => x.Code).To(c => c.WorkflowData.Code))).Build();
+
         string id;
+
         using (var services = Services(store, probe))
         {
             var client = services.GetRequiredService<IWorkflowClient>();
@@ -31,7 +34,10 @@ public sealed class ScopeDeferredFailureReviewTests
             var state = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState((await store.GetWorkflowInstanceAsync(id))!));
             var selected = state.Debug.Stop!.BranchId;
             probe.FailReopen = true;
-            Assert.Equal(WorkflowExecutionStatus.Paused, (await operations.StepAsync(id, selected, DebugStepKind.Run, "run-selected")).Status);
+
+            Assert.Equal(WorkflowExecutionStatus.Paused,
+                (await operations.StepAsync(id, selected, DebugStepKind.Run, "run-selected")).Status);
+
             state = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState((await store.GetWorkflowInstanceAsync(id))!));
             var failure = state.Continuations.Single(c => c.Id == selected).DeferredFailure!;
             Assert.NotNull(failure);
@@ -42,6 +48,7 @@ public sealed class ScopeDeferredFailureReviewTests
             Assert.Equal(Assert.Single(state.Scopes).Id, failure.ScopeBoundary!.BodyActivationId);
             Assert.Equal(Assert.Single(state.Scopes).ContinuationId, failure.ScopeBoundary.OwnerContinuationId);
         }
+
         using var recovered = Services(store, probe);
         await recovered.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var result = await recovered.GetRequiredService<IWorkflowOperations>().ContinueAsync(id, "continue");
@@ -52,23 +59,59 @@ public sealed class ScopeDeferredFailureReviewTests
     private static ServiceProvider Services(IWorkflowStateRepository store, Probe probe)
     {
         var collection = new ServiceCollection().AddSingleton(store).AddSingleton(probe);
-        collection.AddIxIFlow(options => { options.Debugging = true; options.VerifyCheckpointParts = true; });
+
+        collection.AddIxIFlow(options =>
+        {
+            options.Debugging = true;
+            options.VerifyCheckpointParts = true;
+        });
+
         return collection.BuildServiceProvider();
     }
-    public sealed class Data { public int Code { get; set; } }
+
+    public sealed class Data
+    {
+        public int Code { get; set; }
+    }
+
     public sealed class Signal;
-    public sealed class Probe { public bool FailReopen; }
-    public sealed class Fault { public int Code { get; set; } }
-    public sealed class CodedException(string message, int number) : Exception(message) { public int Code { get; } = number; }
+
+    public sealed class Probe
+    {
+        public bool FailReopen;
+    }
+
+    public sealed class Fault
+    {
+        public int Code { get; set; }
+    }
+
+    public sealed class CodedException(string message, int number) : Exception(message)
+    {
+        public int Code { get; } = number;
+    }
+
     public sealed class Copy : IAsyncActivity
-    { public int Code { get; set; } public Task ExecuteAsync(IActivityContext context, CancellationToken token) => Task.CompletedTask; }
+    {
+        public int Code { get; set; }
+        public Task ExecuteAsync(IActivityContext context, CancellationToken token) => Task.CompletedTask;
+    }
+
     public sealed class Container(Probe probe) : IScopeActivity<ScopeBuildRuleTests.Value>
     {
         public Task<ScopeBuildRuleTests.Value> OpenAsync(ScopeOpening opening, IScopeContext context, CancellationToken token)
         {
-            if (opening.Reopen && probe.FailReopen) { probe.FailReopen = false; throw new CodedException("reopen-fault", 73); }
+            if (opening.Reopen && probe.FailReopen)
+            {
+                probe.FailReopen = false;
+
+                throw new CodedException("reopen-fault", 73);
+            }
+
             return Task.FromResult(new ScopeBuildRuleTests.Value());
         }
-        public Task CloseAsync(ScopeBuildRuleTests.Value value, ScopeClosing closing, IScopeContext context, CancellationToken token) => Task.CompletedTask;
+
+        public Task CloseAsync(ScopeBuildRuleTests.Value value, ScopeClosing closing, IScopeContext context, CancellationToken token) =>
+            Task.CompletedTask;
     }
 }

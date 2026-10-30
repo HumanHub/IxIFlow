@@ -16,8 +16,10 @@ public sealed class ThrowSampleTests
     [Fact]
     public async Task ThrowSampleFluentAndYamlHaveTheSameContractAndResult()
     {
-        var fluent = ThrowAndRethrow.Definition(); var yaml = GeneratedDefinition();
+        var fluent = ThrowAndRethrow.Definition();
+        var yaml = GeneratedDefinition();
         Assert.Equal(WorkflowDefinitionValidator.Inspect(fluent), WorkflowDefinitionValidator.Inspect(yaml));
+
         foreach (var definition in new[] { fluent, yaml })
         {
             await using var services = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();

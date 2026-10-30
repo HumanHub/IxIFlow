@@ -40,27 +40,36 @@ public sealed class WorkflowHostLeaseShutdownTests : IClassFixture<SqliteTestDat
         CoordinatorService? coordinator = null;
         ServiceProvider? first = null;
         Task? attempt = null, disposal = null;
+
         try
         {
             if (entry == "coordinator")
             {
                 var services = new ServiceCollection();
                 services.AddSingleton(inner);
+
                 services.AddIxIFlow().AddCoordinator(o =>
-                { o.AllowInsecure = true; o.ListenEndpoint = new("http://127.0.0.1:0"); });
+                {
+                    o.AllowInsecure = true;
+                    o.ListenEndpoint = new("http://127.0.0.1:0");
+                });
+
                 server = services.BuildServiceProvider();
                 coordinator = server.GetRequiredService<CoordinatorService>();
                 await coordinator.StartAsync(CancellationToken.None);
             }
+
             first = Services(store, catalog, time, coordinator?.Endpoint);
             var client = first.GetRequiredService<IWorkflowClient>();
             var host = first.GetRequiredService<WorkflowHost>();
             var idle = await client.RunAsync(definition, new Data());
             Assert.Equal(WorkflowExecutionStatus.Suspended, idle.Status);
+
             if (coordinator != null)
             {
                 await first.GetRequiredService<CoordinatorLinks>().StartAsync(CancellationToken.None);
                 await EventuallyAsync(() => first.GetRequiredService<CoordinatorLinks>().ConnectedCount == 1);
+
                 // Finish the initial empty poll. With the clock frozen, only the link's Wake
                 // can start the next pass after the event is appended.
                 var pass = Signal();
@@ -71,23 +80,29 @@ public sealed class WorkflowHostLeaseShutdownTests : IClassFixture<SqliteTestDat
                 state.ClaimPassCompleted -= Completed;
                 void Completed() => pass.TrySetResult();
             }
+
             await AppendAsync(inner, idle.InstanceId);
             barrier.PauseGrant = true;
+
             attempt = entry switch
             {
                 "foreground" => client.RecoverAsync(idle.InstanceId),
                 "without-slot" => host.ReadAsync(slot => slot.RecoverAsync(idle.InstanceId)),
-                "poll" => first.GetServices<IHostedService>().OfType<WorkflowRecoveryService>().Single().RecoverOnceAsync(CancellationToken.None),
+                "poll" => first.GetServices<IHostedService>().OfType<WorkflowRecoveryService>().Single()
+                    .RecoverOnceAsync(CancellationToken.None),
                 _ => null
             };
+
             if (entry == "timer")
             {
                 host.Schedule(idle.InstanceId, time.GetUtcNow().UtcDateTime.AddSeconds(1));
                 time.Advance(TimeSpan.FromSeconds(1));
             }
+
             if (coordinator != null)
                 server!.GetRequiredService<CoordinatorMatcher>().Notify(new(idle.InstanceId, true, false,
                     (await inner.GetWorkflowDemandsAsync(idle.InstanceId)).ToArray(), null));
+
             await barrier.Entered.Task.WaitAsync(Patience);
             Assert.NotNull(barrier.Grant);
             var stoppedHost = first.GetRequiredService<HostSettings>().Id;
@@ -99,13 +114,19 @@ public sealed class WorkflowHostLeaseShutdownTests : IClassFixture<SqliteTestDat
             Assert.False(disposal.IsCompleted);
             barrier.Resume.TrySetResult();
             await disposal.WaitAsync(Patience);
-            if (attempt != null) await ObserveAsync(attempt);
+
+            if (attempt != null)
+                await ObserveAsync(attempt);
 
             Assert.Equal(ExecutionLeaseRenewalStatus.Refused,
                 (await inner.RenewExecutionLeasesAsync([new(idle.InstanceId, barrier.Token!, TimeSpan.FromSeconds(30))]))[0].Status);
+
             await using var second = Services(inner, catalog, time);
             Assert.NotEqual(stoppedHost, second.GetRequiredService<HostSettings>().Id);
-            Assert.Contains(await inner.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(second)), row => row.InstanceId == idle.InstanceId);
+
+            Assert.Contains(await inner.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(second)),
+                row => row.InstanceId == idle.InstanceId);
+
             var done = await second.GetRequiredService<IWorkflowClient>().RecoverAsync(idle.InstanceId).WaitAsync(Patience);
             Assert.Equal(WorkflowExecutionStatus.Success, done.Status);
             Assert.Equal(1, Assert.IsType<Data>(done.WorkflowData).Count);
@@ -114,12 +135,24 @@ public sealed class WorkflowHostLeaseShutdownTests : IClassFixture<SqliteTestDat
         finally
         {
             barrier.Resume.TrySetResult();
-            if (attempt != null) await ObserveAsync(attempt);
-            if (disposal != null) await disposal.WaitAsync(Patience);
-            if (first != null) await first.DisposeAsync();
-            if (coordinator != null) await coordinator.StopAsync(CancellationToken.None);
-            if (server != null) await server.DisposeAsync();
-            if (inner is IAsyncDisposable disposable) await disposable.DisposeAsync();
+
+            if (attempt != null)
+                await ObserveAsync(attempt);
+
+            if (disposal != null)
+                await disposal.WaitAsync(Patience);
+
+            if (first != null)
+                await first.DisposeAsync();
+
+            if (coordinator != null)
+                await coordinator.StopAsync(CancellationToken.None);
+
+            if (server != null)
+                await server.DisposeAsync();
+
+            if (inner is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
         }
     }
 
@@ -140,6 +173,7 @@ public sealed class WorkflowHostLeaseShutdownTests : IClassFixture<SqliteTestDat
         await catalog.RegisterWorkflowAsync(definition);
         await using var first = Services(store, catalog, time);
         Task? attempt = null;
+
         try
         {
             var client = first.GetRequiredService<IWorkflowClient>();
@@ -157,16 +191,23 @@ public sealed class WorkflowHostLeaseShutdownTests : IClassFixture<SqliteTestDat
             await ObserveAsync(attempt);
             Assert.Equal(claims, barrier.Claims);
             await using var second = Services(inner, catalog, time);
+
             Assert.Equal(WorkflowExecutionStatus.Success,
                 (await second.GetRequiredService<IWorkflowClient>().RecoverAsync(idle.InstanceId).WaitAsync(Patience)).Status);
+
             Assert.Equal(time.Start, time.GetUtcNow());
         }
         finally
         {
             barrier.Resume.TrySetResult();
-            if (attempt != null) await ObserveAsync(attempt);
+
+            if (attempt != null)
+                await ObserveAsync(attempt);
+
             await first.DisposeAsync();
-            if (inner is IAsyncDisposable disposable) await disposable.DisposeAsync();
+
+            if (inner is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
         }
     }
 
@@ -180,6 +221,7 @@ public sealed class WorkflowHostLeaseShutdownTests : IClassFixture<SqliteTestDat
         var catalog = new WorkflowCatalog();
         var definition = Definition();
         await catalog.RegisterWorkflowAsync(definition);
+
         try
         {
             await using var provider = Services(store, catalog, time);
@@ -190,16 +232,30 @@ public sealed class WorkflowHostLeaseShutdownTests : IClassFixture<SqliteTestDat
             await using var renewer = new ExecutionLeaseRenewer(store, time);
             watch.Dispose();
             var query = await StoreTestSupport.ClaimAsync(provider);
+
             await Assert.ThrowsAsync<ObjectDisposedException>(() => WorkflowExecutionLease.TryAcquireAsync(store,
                 instance, new(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(10)), watch, renewer, query,
-                _ => { }, _ => { }, _ => { }, time));
+                _ =>
+                {
+                }, _ =>
+                {
+                }, _ =>
+                {
+                }, time));
+
             var token = Guid.NewGuid().ToString("N");
+
             Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, token, TimeSpan.FromSeconds(30),
                 new ClaimQuery(Guid.NewGuid(), query.Capabilities)));
+
             await store.ReleaseExecutionLeaseAsync(instance.InstanceId, token);
             Assert.Equal(time.Start, time.GetUtcNow());
         }
-        finally { if (store is IAsyncDisposable disposable) await disposable.DisposeAsync(); }
+        finally
+        {
+            if (store is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
+        }
     }
 
     private static WorkflowDefinition Definition() => new WorkflowBuilder<Data, object>([], "ShutdownClaim")
@@ -209,17 +265,27 @@ public sealed class WorkflowHostLeaseShutdownTests : IClassFixture<SqliteTestDat
         ? new SqliteWorkflowStateRepository(SqliteTestDatabase<WorkflowHostLeaseShutdownTests>.ConnectionString, time)
         : new InMemoryWorkflowStateRepository(time);
 
-    private static ServiceProvider Services(IWorkflowStateRepository store, IWorkflowCatalog catalog, TimeProvider time, Uri? endpoint = null)
+    private static ServiceProvider Services(IWorkflowStateRepository store, IWorkflowCatalog catalog, TimeProvider time,
+        Uri? endpoint = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton(store);
         services.AddSingleton(time);
         var builder = services.AddIxIFlow(o => o.PollInterval = TimeSpan.FromHours(1));
         services.AddSingleton(catalog);
-        if (endpoint != null) builder.UseCoordinators(o => { o.AllowInsecure = true; o.Coordinators.Add(endpoint); });
+
+        if (endpoint != null)
+            builder.UseCoordinators(o =>
+            {
+                o.AllowInsecure = true;
+                o.Coordinators.Add(endpoint);
+            });
+
         var provider = services.BuildServiceProvider();
+
         // Match generic-host resolution order, before the first slot lazily resolves its lease services.
         _ = provider.GetServices<IHostedService>().ToArray();
+
         return provider;
     }
 
@@ -228,16 +294,28 @@ public sealed class WorkflowHostLeaseShutdownTests : IClassFixture<SqliteTestDat
             WorkflowTypeIdentity.SavedName(typeof(Go)), JsonSerializer.Serialize(new Go()), Key: "go"))).Status);
 
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private static async Task ObserveAsync(Task task)
     {
-        try { await task.WaitAsync(Patience); }
-        catch (OperationCanceledException) { }
-        catch (WorkflowEngineException) { } // The unfixed setup failure is secondary to the lease assertion.
-        catch (ObjectDisposedException) { }
+        try
+        {
+            await task.WaitAsync(Patience);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (WorkflowEngineException)
+        {
+        } // The unfixed setup failure is secondary to the lease assertion.
+        catch (ObjectDisposedException)
+        {
+        }
     }
+
     private static async Task EventuallyAsync(Func<bool> predicate)
     {
         var elapsed = Stopwatch.StartNew();
+
         while (!predicate())
         {
             Assert.True(elapsed.Elapsed < Patience, "Coordinator link did not connect");
@@ -260,43 +338,64 @@ public sealed class WorkflowHostLeaseShutdownTests : IClassFixture<SqliteTestDat
             if (method!.Name == nameof(IWorkflowStateRepository.TryAcquireExecutionLeaseAsync))
             {
                 Interlocked.Increment(ref Claims);
+
                 if (PauseGrant)
                 {
                     PauseGrant = false;
                     Token = (string)args![1]!;
                     HostId = ((ClaimQuery)args[3]!).HostId;
+
                     return HoldGrantAsync((Task<ExecutionLeaseGrant?>)Forward(method, args)!);
                 }
             }
+
             if (method.Name == nameof(IWorkflowStateRepository.GetPendingEventsAsync) && PausePreparation)
             {
                 PausePreparation = false;
+
                 return HoldPreparationAsync((Task<InboxPage>)Forward(method, args)!);
             }
+
             return Forward(method, args);
         }
 
         private object? Forward(MethodInfo method, object?[]? args)
         {
-            try { return method.Invoke(Inner, args); }
-            catch (TargetInvocationException error) { ExceptionDispatchInfo.Capture(error.InnerException!).Throw(); throw; }
+            try
+            {
+                return method.Invoke(Inner, args);
+            }
+            catch (TargetInvocationException error)
+            {
+                ExceptionDispatchInfo.Capture(error.InnerException!).Throw();
+
+                throw;
+            }
         }
+
         private async Task<ExecutionLeaseGrant?> HoldGrantAsync(Task<ExecutionLeaseGrant?> task)
         {
             Grant = await task;
             Entered.TrySetResult();
             await Resume.Task.WaitAsync(Patience);
+
             return Grant;
         }
+
         private async Task<InboxPage> HoldPreparationAsync(Task<InboxPage> task)
         {
             var page = await task;
             Entered.TrySetResult();
             await Resume.Task.WaitAsync(Patience);
+
             return page;
         }
     }
 
-    public sealed class Data { public int Count { get; set; } }
+    public sealed class Data
+    {
+        public int Count { get; set; }
+    }
+
     public sealed class Go;
 }

@@ -15,6 +15,7 @@ public static IHost CreateHost()
 {
     var builder = Host.CreateApplicationBuilder();
     builder.Services.AddIxIFlow(options => options.Slots = 8);
+
     return builder.Build();
 }
 ```
@@ -45,7 +46,7 @@ Starting the generic host registers a member in the store before recovery starts
 
 After registration, each heartbeat tick waits at most one `HeartbeatInterval`, measured by the host's `TimeProvider`, for its capability refresh. If the refresh is still running, the host heartbeats with its last capability snapshot and keeps that same refresh in flight for the next tick; it never starts a second refresh alongside it. A failed refresh is logged and the host still heartbeats with its last snapshot. The snapshot and catalog cursor advance only when a refresh completes successfully. Initial registration still awaits its first capability snapshot.
 
-Automatic capabilities are `os` (`windows`, `linux`, `macos`, or an OS description), `arch` (the process architecture in lowercase), `runtime` (the .NET runtime description), `host` (the GUID), and `workflow:<name>@<version>` (the definition's structure hash) for each registered definition. Set user values through `IxIFlowOptions.Capabilities`, for example `options.Capabilities["region"] = "eu"`. Keys and values are case-sensitive; an empty value can represent a presence-only capability. Configured values cannot replace automatic keys or use the `workflow:` prefix.
+Automatic capabilities are `os` (`windows`, `linux`, `macos`, or an OS description), `arch` (the process architecture in lowercase), `runtime` (the .NET runtime description), `host` (the GUID), and `workflow:<name>@<version>` (the definition's structure hash) for each registered definition. Hosts configured with `UseWorkflowBundles` also advertise the presence-only `bundle-host` capability. Set user values through `IxIFlowOptions.Capabilities`, for example `options.Capabilities["region"] = "eu"`. Keys and values are case-sensitive; an empty value can represent a presence-only capability. Configured values cannot replace automatic keys or use the `workflow:` prefix.
 
 Hosts with bundle hosting enabled use the store-wide catalog revision through `IWorkflowCatalog` for heartbeat refreshes; other hosts advertise only their own registrations and read no catalog versions. An unchanged revision reuses the capability snapshot without reading version rows. A changed revision fetches only versions changed since the host's last revision and updates their cached capability results; Draft bundle rows do not advertise workflow capabilities. Retired versions remain executable for existing-instance recovery; catalog admission still refuses new starts. The bundle compatibility memo retains positive and negative results only for distinct manifests still represented by cached version entries. A revision lower than the host's last one (a restored or replaced store) makes the host reread every version. The complete capability snapshot is republished atomically with the heartbeat.
 
@@ -101,7 +102,7 @@ Demands place compute only: they decide which hosts may run an instance, not whe
 
 For an EU parent and its children, advertise a `region` capability with value `eu` on the EU hosts. On the parent definition, call `Demand` with key `region`, value `eu` and `inherit: true`. The builder sets `WorkflowDemand.Inherit`, whose default is false; the equivalent flag on a demand supplied through `WorkflowOptions.Demands` is `Inherit: true`. When the parent invokes a child, the child's start copies the parent's saved demands whose `Inherit` flag is true and combines them with the child's own definition demands. The inherited flag continues to descendants; conflicting region values reject the child start. `DemandFrom` can instead resolve the value from start data and also accepts `inherit: true`.
 
-This inherited demand keeps parent and child execution on matching hosts. It does not select a database, move data between stores, partition a shared store by region, or create a child in another cluster. Payload bodies remain in the state store, including when large-payload storage by reference becomes available. Applications must also keep their own external effects and data transfers within the required region.
+This inherited demand keeps parent and child execution on matching hosts. It does not select a database, move data between stores, partition a shared store by region, or create a child in another cluster. Payload bodies remain in the state store, including [large-payload bodies stored by reference](large-payloads.md). Applications must also keep their own external effects and data transfers within the required region.
 
 ## Coordinators and deployment
 
@@ -110,3 +111,5 @@ The optional [coordinator package](coordinators.md) provides matching, registry 
 SQL Server and PostgreSQL support zero, one or several coordinators. Hosts connect to every live coordinator and writers send a hint through one available link. Losing the last link immediately restores ordinary polling. Demands, claim filtering, affinity and visibility of unschedulable work run in the stores and host recovery service independently of coordinators. A woken host that dies before claiming leaves its instance runnable; competing coordinator and poll claims are settled by the same fenced lease.
 
 The public executor/host message contract is implemented. In 1.0, workflows run only in the host process; an activity crash can stop that host, and saved instances recover on another compatible host or after restart. Process slots, executor programs, pipe transport and process liveness/resource accounting are after 1.0. See the [roadmap](roadmap.md).
+
+For private certificate trust, `CoordinatorCertificateTrust.RevokedThumbprints` optionally denies SHA-256 certificate hashes. Revocation takes precedence over a leaf pin and is checked on the validated private CA chain as well. Operators can revoke a compromised leaf without rotating the trust anchor.

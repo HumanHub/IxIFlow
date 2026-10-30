@@ -10,41 +10,51 @@ public static class OutboxBuilderExtensions
     public static IIxIFlowBuilder AddOutboxPublisher<TPublisher>(this IIxIFlowBuilder builder)
         where TPublisher : class, IOutboxPublisher
     {
+        ArgumentNullException.ThrowIfNull(builder);
         builder.Services.AddSingleton<IOutboxPublisher, TPublisher>();
+
         return builder;
     }
 
     public static IIxIFlowBuilder AddOutboxPublisher(this IIxIFlowBuilder builder,
         Func<IServiceProvider, IOutboxPublisher> create)
     {
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(create);
         builder.Services.AddSingleton(create);
+
         return builder;
     }
 
     /// <summary>Explicitly opts a publisher into retained events when this host registers it.</summary>
     public static IIxIFlowBuilder ReplayRetainedOutboxEvents(this IIxIFlowBuilder builder, string publisherName)
     {
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(publisherName);
         builder.Services.AddSingleton(new OutboxPublisherStart(publisherName, ReplayRetained: true));
+
         return builder;
     }
 
     /// <summary>Removes the durable subscription and gives up its pending deliveries on host startup.</summary>
     public static IIxIFlowBuilder UnregisterOutboxPublisher(this IIxIFlowBuilder builder, string publisherName)
     {
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(publisherName);
         builder.Services.AddSingleton(new OutboxPublisherRemoval(publisherName));
+
         return builder;
     }
 
     public static IIxIFlowBuilder ConfigureOutbox(this IIxIFlowBuilder builder, int concurrency = 8,
         TimeSpan? leaseDuration = null, TimeSpan? retryHorizon = null)
     {
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentOutOfRangeException.ThrowIfLessThan(concurrency, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(concurrency, 1000);
         var options = new OutboxSettings(concurrency, leaseDuration, retryHorizon);
         builder.Services.Replace(ServiceDescriptor.Singleton(options));
+
         return builder;
     }
 }

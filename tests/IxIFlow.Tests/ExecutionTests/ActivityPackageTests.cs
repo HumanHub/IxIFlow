@@ -26,7 +26,7 @@ public class ActivityPackageTests
 
         var document = Document();
         var options = await ResolvedContracts(registry);
-        var definition = await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, options);
+        var definition = await IxIFlow.Tests.Infrastructure.TestWorkflowCompilation.BuildAsync(document, options);
 
         var result = await provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new EmailWorkflowData());
@@ -61,25 +61,26 @@ public class ActivityPackageTests
     public async Task GeneratedYaml_UsesTheActivityPackageContract()
     {
         const string yaml = """
-            schemaVersion: "1.0"
-            workflow:
-              name: EmailWorkflow
-              version: 1
-              dataType: EmailWorkflowData
-            imports:
-              catalogs:
-                - ixiflow.tests@1.0.0
-            definitions:
-              - kind: activity
-                id: send-email
-                activity: example.email.send
-                activityVersion: "1.0"
-                output:
-                  - source: Sent
-                    to:
-                      kind: path
-                      path: workflow.Sent
-            """;
+                            schemaVersion: "1.0"
+                            workflow:
+                              name: EmailWorkflow
+                              version: 1
+                              dataType: EmailWorkflowData
+                            imports:
+                              catalogs:
+                                - ixiflow.tests@1.0.0
+                            definitions:
+                              - kind: activity
+                                id: send-email
+                                activity: example.email.send
+                                activityVersion: "1.0"
+                                output:
+                                  - source: Sent
+                                    to:
+                                      kind: path
+                                      path: workflow.Sent
+                            """;
+
         var services = new ServiceCollection();
         services.AddIxIFlow().AddActivity<SendTestEmailActivity>();
         using var provider = services.BuildServiceProvider();
@@ -90,7 +91,9 @@ public class ActivityPackageTests
         Assert.Equal("example.email.send", activity.Activity);
         Assert.Equal("1.0", activity.ActivityVersion);
 
-        var definition = await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(rewritten, await ResolvedContracts(registry));
+        var definition =
+            await IxIFlow.Tests.Infrastructure.TestWorkflowCompilation.BuildAsync(rewritten, await ResolvedContracts(registry));
+
         var result = await provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new EmailWorkflowData());
 
@@ -108,22 +111,30 @@ public class ActivityPackageTests
         {
             Catalogs = includeImport ? ["ixiflow.tests@1.0.0"] : []
         },
-        Definitions = [new ActivityStepDocument
-        {
-            Id = "send-email", Activity = "example.email.send", ActivityVersion = activityVersion,
-            Output = [new OutputMappingDocument
+        Definitions =
+        [
+            new ActivityStepDocument
             {
-                Source = "Sent",
-                To = new PathExpressionDocument { Path = "workflow.Sent" }
-            }]
-        }]
+                Id = "send-email", Activity = "example.email.send", ActivityVersion = activityVersion,
+                Output =
+                [
+                    new OutputMappingDocument
+                    {
+                        Source = "Sent",
+                        To = new PathExpressionDocument { Path = "workflow.Sent" }
+                    }
+                ]
+            }
+        ]
     };
 
     private static async Task<WorkflowSourceOptions> ResolvedContracts(IActivityRegistry registry)
     {
         var options = YamlTestContracts.Create(("EmailWorkflowData", typeof(EmailWorkflowData)));
+
         if (registry.Find("example.email.send") is { } activity)
             YamlTestContracts.AddActivity(options, activity);
+
         return options;
     }
 }
@@ -141,6 +152,7 @@ public sealed class SendTestEmailActivity : IAsyncActivity
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Sent = true;
+
         return Task.CompletedTask;
     }
 }

@@ -22,40 +22,51 @@ public sealed class AssignWriteBackAnalyzerTests
     public async Task OnlySettersExecutedByTheLocationCompilerAreAnalyzed(string target, string setter, bool impure)
     {
         var source = $$"""
-            using System.Collections.Generic;
-            using IxIFlow.Builders;
-            public class Node { public int Number { get; set; } }
-            public struct Point
-            {
-                public int X { get; set; }
-                public Node Node { get; set; }
-                public List<Node> Nodes { get; set; }
-            }
-            public struct Nested
-            {
-                public List<int> Items { get; set; }
-                public Point Point { get => new(); set { {{setter}} } }
-            }
-            public class Data
-            {
-                public List<int> Items { get; set; } = new();
-                public Point Point { get => new(); set { {{setter}} } }
-                public Nested Nested { get; set; }
-                public List<Point> Points { get; set; } = new();
-            }
-            public class Author
-            {
-                public void Build() => Workflow.Create<Data>("Assign").Assign(ctx => ctx.WorkflowData.{{target}}, ctx => 1);
-            }
-            """;
+                       using System.Collections.Generic;
+                       using IxIFlow.Builders;
+                       public class Node { public int Number { get; set; } }
+                       public struct Point
+                       {
+                           public int X { get; set; }
+                           public Node Node { get; set; }
+                           public List<Node> Nodes { get; set; }
+                       }
+                       public struct Nested
+                       {
+                           public List<int> Items { get; set; }
+                           public Point Point { get => new(); set { {{setter}} } }
+                       }
+                       public class Data
+                       {
+                           public List<int> Items { get; set; } = new();
+                           public Point Point { get => new(); set { {{setter}} } }
+                           public Nested Nested { get; set; }
+                           public List<Point> Points { get; set; } = new();
+                       }
+                       public class Author
+                       {
+                           public void Build() => Workflow.Create<Data>("Assign").Assign(ctx => ctx.WorkflowData.{{target}}, ctx => 1);
+                       }
+                       """;
+
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator)
-            .Concat(Directory.GetFiles(AppContext.BaseDirectory, "IxIFlow*.dll")).Distinct().Select(path => MetadataReference.CreateFromFile(path));
+            .Concat(Directory.GetFiles(AppContext.BaseDirectory, "IxIFlow*.dll")).Distinct()
+            .Select(path => MetadataReference.CreateFromFile(path));
+
         var compilation = CSharpCompilation.Create("AssignWriteBack", [CSharpSyntaxTree.ParseText(source)], references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
         Assert.Empty(compilation.GetDiagnostics().Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error));
-        var diagnostics = await compilation.WithAnalyzers(ImmutableArray.Create<DiagnosticAnalyzer>(new PurityAnalyzer())).GetAnalyzerDiagnosticsAsync();
+
+        var diagnostics = await compilation.WithAnalyzers(ImmutableArray.Create<DiagnosticAnalyzer>(new PurityAnalyzer()))
+            .GetAnalyzerDiagnosticsAsync();
+
         Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Id == "AD0001");
         Assert.Equal(impure, diagnostics.Any(diagnostic => diagnostic.Id == "IXIF0101"));
-        if (impure) Assert.Contains(diagnostics, diagnostic => diagnostic.Location.SourceTree!.GetText().ToString(diagnostic.Location.SourceSpan).StartsWith("ctx.WorkflowData."));
+
+        if (impure)
+            Assert.Contains(diagnostics,
+                diagnostic => diagnostic.Location.SourceTree!.GetText().ToString(diagnostic.Location.SourceSpan)
+                    .StartsWith("ctx.WorkflowData."));
     }
 }

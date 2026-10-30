@@ -10,12 +10,16 @@ internal sealed record ConformanceShard(int Index, int Count)
 {
     internal static ConformanceShard? Parse(string? value)
     {
-        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
         var parts = value.Split('/');
+
         if (parts.Length != 2 || !int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var index)
             || !int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var count)
             || count < 1 || index < 1 || index > count)
             throw new ArgumentException($"Invalid IXIFLOW_SHARD: {value}. Expected i/n with 1 <= i <= n.");
+
         return new(index, count);
     }
 

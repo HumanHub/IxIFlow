@@ -34,6 +34,7 @@ public sealed class HostRegistryTests
         builder.Services.AddSingleton<TimeProvider>(hostTime);
         builder.Services.AddSingleton<IWorkflowStateRepository>(store);
         builder.Services.AddSingleton(definition);
+
         builder.Services.AddIxIFlow(options =>
         {
             options.HostName = "orders-display";
@@ -41,8 +42,10 @@ public sealed class HostRegistryTests
             options.HeartbeatInterval = interval;
             options.Capabilities["region"] = "eu";
         });
+
         using var host = builder.Build();
         await host.StartAsync();
+
         try
         {
             var initial = Assert.Single(await store.GetLiveMembersAsync());
@@ -56,8 +59,10 @@ public sealed class HostRegistryTests
             Assert.Equal(initial.Id.ToString("D"), initial.Capabilities["host"]);
             Assert.Equal("eu", initial.Capabilities["region"]);
             Assert.False(string.IsNullOrWhiteSpace(initial.EngineVersion));
+
             foreach (var key in new[] { "os", "arch", "runtime" })
                 Assert.False(string.IsNullOrWhiteSpace(initial.Capabilities[key]));
+
             Assert.Equal(new WorkflowScopeCatalog(definition).StructureHash,
                 initial.Capabilities["workflow:RegistryStart@3"]);
 
@@ -75,10 +80,15 @@ public sealed class HostRegistryTests
             storeTime.Advance(interval);
             hostTime.Advance(interval);
             Assert.True(await store.Beats.Reader.ReadAsync().AsTask().WaitAsync(Patience));
+
             Assert.Equal(new WorkflowScopeCatalog(child).StructureHash,
                 Assert.Single(await store.GetLiveMembersAsync()).Capabilities["workflow:RuntimeChild@2"]);
         }
-        finally { await host.StopAsync(); }
+        finally
+        {
+            await host.StopAsync();
+        }
+
         Assert.Empty(await store.GetLiveMembersAsync());
         hostTime.Advance(interval * 3);
         Assert.False(store.Beats.Reader.TryRead(out _));
@@ -94,8 +104,10 @@ public sealed class HostRegistryTests
         var abandoned = MemberRegistryContract.Registration();
         await store.RegisterMemberAsync(abandoned);
         var settings = HostSettings.Default;
+
         using var service = new WorkflowHeartbeatService(store, new WorkflowCatalog(), settings, time,
             NullLogger<WorkflowHeartbeatService>.Instance, new ActivityRegistry([]));
+
         await service.StartAsync(default);
         var initial = await store.Registrations.Reader.ReadAsync().AsTask().WaitAsync(Patience);
         await time.WaitForTimerAsync(timer => timer.Period == settings.HeartbeatInterval && timer.Pending);
@@ -123,8 +135,12 @@ public sealed class HostRegistryTests
     public void TheSameDisplayNameGetsANewIdInEachHost(bool configured)
     {
         var services = new ServiceCollection().AddLogging();
-        if (configured) services.AddIxIFlow(options => options.HostName = "same-name");
-        else services.AddIxIFlow();
+
+        if (configured)
+            services.AddIxIFlow(options => options.HostName = "same-name");
+        else
+            services.AddIxIFlow();
+
         using var first = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
         using var second = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true, ValidateOnBuild = true });
         var one = first.GetRequiredService<HostSettings>();
@@ -169,7 +185,7 @@ public sealed class HostRegistryTests
     public async Task DecoratorsForwardRegistryOperations()
     {
         foreach (var store in new IWorkflowStateRepository[]
-                 { GuardedStateRepository.Wrap(new InMemoryWorkflowStateRepository()), new FaultInjectingRepository() })
+                     { GuardedStateRepository.Wrap(new InMemoryWorkflowStateRepository()), new FaultInjectingRepository() })
         {
             var member = MemberRegistryContract.Registration();
             await store.RegisterMemberAsync(member);
@@ -181,16 +197,18 @@ public sealed class HostRegistryTests
         }
     }
 
-    private sealed class ObservedStore(TimeProvider time) : InMemoryWorkflowStateRepository(time), IWorkflowStateRepository
+    private sealed class ObservedStore(TimeProvider time) : TestWorkflowStateRepository(time), IWorkflowStateRepository
     {
         public Channel<bool> Beats { get; } = Channel.CreateUnbounded<bool>();
         public Channel<MemberRegistration> Registrations { get; } = Channel.CreateUnbounded<MemberRegistration>();
         public bool FailNextHeartbeat { get; set; }
+
         async Task IWorkflowStateRepository.RegisterMemberAsync(MemberRegistration member, CancellationToken token)
         {
             await base.RegisterMemberAsync(member, token);
             Registrations.Writer.TryWrite(member);
         }
+
         async Task<bool> IWorkflowStateRepository.HeartbeatAsync(Guid id, IReadOnlyDictionary<string, string> capabilities,
             CancellationToken token)
         {
@@ -198,15 +216,21 @@ public sealed class HostRegistryTests
             {
                 FailNextHeartbeat = false;
                 Beats.Writer.TryWrite(false);
+
                 throw new IOException("heartbeat unavailable");
             }
+
             var result = await base.HeartbeatAsync(id, capabilities, token);
             Beats.Writer.TryWrite(result);
+
             return result;
         }
     }
 
-    public sealed class RegistryData { }
+    public sealed class RegistryData
+    {
+    }
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken) => Task.CompletedTask;

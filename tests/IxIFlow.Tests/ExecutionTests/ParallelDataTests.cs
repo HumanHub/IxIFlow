@@ -10,7 +10,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
 /// Each parallel branch works on its own copy of the workflow data, taken at the fork, and the join
-/// merges the branches' changes (D-14, spec E-01 to E-10).
+/// merges the branches' changes.
 /// </summary>
 [Trait("Feature", "control-flow")]
 public sealed class ParallelDataTests
@@ -21,6 +21,7 @@ public sealed class ParallelDataTests
     {
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<Data>("IsolatedBranches")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -39,6 +40,7 @@ public sealed class ParallelDataTests
 
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
         var data = Assert.IsType<Data>(finished.WorkflowData);
+
         // The second branch ran after the first had finished, yet read the data as it was at the fork.
         Assert.Equal(("first", "saw:"), (data.First, data.Second));
     }
@@ -49,6 +51,7 @@ public sealed class ParallelDataTests
     {
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<Data>("BranchPredicate")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -59,6 +62,7 @@ public sealed class ParallelDataTests
                     .WaitFor<Go>("go", (go, ctx) => go.Tag == ctx.WorkflowData.First))
                 .Do(second => second.WaitFor<Go>("other")))
             .Build();
+
         var started = await engine.RunAsync(definition, new Data());
 
         // The root's data still has no tag; only the branch's copy does.
@@ -75,6 +79,7 @@ public sealed class ParallelDataTests
     {
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<Data>("ProvisionalMerge")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -86,6 +91,7 @@ public sealed class ParallelDataTests
                         .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.First)))
                 .Do(second => second.WaitFor<Go>("second")))
             .Build();
+
         var started = await engine.RunAsync(definition, new Data());
 
         var finished = await engine.ResumeAsync(started.InstanceId, "first", new Go());
@@ -117,6 +123,7 @@ public sealed class ParallelDataTests
     public async Task ACombinerLetsBranchesWriteOnePropertyAndIsPartOfTheStructureHash()
     {
         using var services = Services();
+
         WorkflowDefinition Define<T>() where T : class, ITagged, new() => Workflow.Create<T>("Tagged")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -131,8 +138,10 @@ public sealed class ParallelDataTests
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(Define<FirstTag>(), new FirstTag());
 
         Assert.Equal("first", Assert.IsType<FirstTag>(result.WorkflowData).Tag);
+
         // The fingerprint covers each data type's combiners, so changing one changes the definition.
         Assert.Contains("Tag=", ParallelRules.CombinerSignature(typeof(FirstTag)));
+
         Assert.NotEqual(ParallelRules.CombinerSignature(typeof(FirstTag)),
             ParallelRules.CombinerSignature(typeof(LastTag)).Replace(nameof(LastTag), nameof(FirstTag)));
     }
@@ -163,6 +172,7 @@ public sealed class ParallelDataTests
         var otherTag = new Shape { Owner = new Person { Name = "ann" }, Tags = ["y"] };
 
         Assert.Equal("Owner", Assert.Throws<JoinConflictException>(() => MergeInto(fork, replaced, renamed)).Path);
+
         // A list is one value, so two branches changing it conflict.
         Assert.Equal("Tags", Assert.Throws<JoinConflictException>(() => MergeInto(fork, addedTag, otherTag)).Path);
     }
@@ -172,7 +182,9 @@ public sealed class ParallelDataTests
     {
         var merge = BranchData.Merge(fork, branches
             .Select(branch => new MergingBranch(BranchData.Changes(fork, branch), () => branch)).ToList());
+
         BranchData.Apply(fork, merge);
+
         return fork;
     }
 
@@ -181,6 +193,7 @@ public sealed class ParallelDataTests
     public async Task AJoinChangesTheDataObjectInPlaceAndKeepsWhatNoBranchChanged()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Data>("InPlaceMerge")
             .Step<Copy>(step => step
                 .Input(activity => activity.Value).From(_ => "kept")
@@ -194,6 +207,7 @@ public sealed class ParallelDataTests
             .Step<Record>(step => step.Input(activity => activity.Value)
                 .From(ctx => ctx.WorkflowData.First + "|" + ctx.WorkflowData.Transient + "|" + (ctx.WorkflowData.Note ?? "null")))
             .Build();
+
         var data = new Data { Transient = "kept" };
 
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, data);
@@ -201,6 +215,7 @@ public sealed class ParallelDataTests
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var saved = Assert.IsType<Data>(result.WorkflowData);
         Assert.Equal(("first", "", (string?)null), (saved.First, saved.Second, saved.Note));
+
         // Ignored state set inside the workflow survives the join, before the result is rebuilt from storage.
         Assert.Equal(["first|kept|null"], services.GetRequiredService<Seen>().Values);
         Assert.Equal(("", "kept", "default"), (data.First, data.Transient, data.Note));
@@ -211,6 +226,7 @@ public sealed class ParallelDataTests
     public async Task AParallelInsideCleanupMergesWhileASiblingsFailureUnwinds()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Data>("CleanupJoin")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -232,6 +248,7 @@ public sealed class ParallelDataTests
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+
         // The cleanup's own join merged into its branch's copy, so the step after it read both values.
         Assert.Equal(["ab"], services.GetRequiredService<Seen>().Values);
     }
@@ -241,6 +258,7 @@ public sealed class ParallelDataTests
     public async Task JoinsNestedDeeperInsideCleanupRunAndMergeWhileASiblingsFailureUnwinds()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Data>("DeepCleanupJoin")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -267,6 +285,7 @@ public sealed class ParallelDataTests
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+
         // A branch forked inside the cleanup, two joins down, is part of it: its join merged, and the
         // step after that join ran.
         Assert.Equal(["ab", "other"], services.GetRequiredService<Seen>().Values.Order());
@@ -279,6 +298,7 @@ public sealed class ParallelDataTests
         var time = new FakeTimeProvider();
         using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<Data>("OwnPrevious")
             .Step<MakeList>()
             .Parallel(parallel => parallel
@@ -291,12 +311,15 @@ public sealed class ParallelDataTests
             .Build();
 
         var started = await engine.RunAsync(definition, new Data());
+
         // The second branch reads the previous step only after its delay, once the first branch has run.
         time.Advance(TimeSpan.FromMinutes(2));
+
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+
         // The first branch grew its list; the second still sees the list as it was at the fork.
         Assert.Equal(["1"], services.GetRequiredService<Seen>().Values);
     }
@@ -326,6 +349,7 @@ public sealed class ParallelDataTests
                     .Input(activity => activity.Value).From(_ => "b")
                     .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.ByName["second"].Value))))
             .Build();
+
         Assert.NotNull(definition);
     }
 
@@ -343,6 +367,7 @@ public sealed class ParallelDataTests
     public async Task ACombinerImplementedExplicitlyMergesTheBranches()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Explicit>("ExplicitCombiner")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -363,11 +388,14 @@ public sealed class ParallelDataTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+
         if (time != null)
             services.AddSingleton(time);
+
         services.AddSingleton<Seen>();
         services.AddTransient<Record>();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -396,14 +424,12 @@ public sealed class ParallelDataTests
 
     public sealed class MisfitCombiner
     {
-        [Combine<FirstWins<string>>]
-        public int Count { get; set; }
+        [Combine<FirstWins<string>>] public int Count { get; set; }
     }
 
     public sealed class Explicit
     {
-        [Combine<JoinWithPlus>]
-        public string Tag { get; set; } = "";
+        [Combine<JoinWithPlus>] public string Tag { get; set; } = "";
     }
 
     public sealed class JoinWithPlus : ICombiner<string>
@@ -418,7 +444,11 @@ public sealed class ParallelDataTests
 
         public IReadOnlyList<string> Values
         {
-            get { lock (_values) return _values.ToArray(); }
+            get
+            {
+                lock (_values)
+                    return _values.ToArray();
+            }
         }
 
         public void Add(string value)
@@ -435,6 +465,7 @@ public sealed class ParallelDataTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             seen.Add(Value);
+
             return Task.CompletedTask;
         }
     }
@@ -468,6 +499,7 @@ public sealed class ParallelDataTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Items.Add("grown");
+
             return Task.CompletedTask;
         }
     }
@@ -492,14 +524,12 @@ public sealed class ParallelDataTests
 
     public sealed class FirstTag : ITagged
     {
-        [Combine<FirstWins<string>>]
-        public string Tag { get; set; } = "";
+        [Combine<FirstWins<string>>] public string Tag { get; set; } = "";
     }
 
     public sealed class LastTag : ITagged
     {
-        [Combine<LastWinsForTest>]
-        public string Tag { get; set; } = "";
+        [Combine<LastWinsForTest>] public string Tag { get; set; } = "";
     }
 
     public sealed class LastWinsForTest : ICombiner<string>

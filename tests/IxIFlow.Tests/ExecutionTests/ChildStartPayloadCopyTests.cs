@@ -23,6 +23,7 @@ public sealed class ChildStartPayloadCopyTests
 
         var parent = Instance("parent", "Parent");
         Assert.ThrowsAny<ArgumentException>(() => CheckpointCommit.Create(parent, 1, 0, childStarts: [copy]));
+
         // Create stamps the incarnation immediately before serializing the parent.
         Assert.Equal(Guid.Empty, parent.Incarnation);
     }
@@ -37,8 +38,10 @@ public sealed class ChildStartPayloadCopyTests
         var original = new ChildStart(child.InstanceId, JsonSerializer.Serialize(child), "child");
         child.WorkflowName = name;
         var copy = original with { Payload = JsonSerializer.Serialize(child) };
+
         var commit = CheckpointCommit.Create(Instance("parent", "Parent"), 1, 0, childStarts: [copy],
             openedWaits: [new("child", WaitKind.Child, "child", ChildCompleted.EventType, null)]);
+
         Assert.Equal(name, Assert.Single(commit.ChildStarts).Instance!.WorkflowName);
         Assert.Equal(name, JsonSerializer.Deserialize<WorkflowInstance>(copy.Payload)!.WorkflowName);
         Assert.Equal(" old-invalid ", original.Instance!.WorkflowName);

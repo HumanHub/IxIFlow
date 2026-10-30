@@ -8,7 +8,7 @@ using Microsoft.Extensions.Time.Testing;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// Timers follow the injected TimeProvider, so they can be tested without real waiting (spec A-06).
+/// Timers follow the injected TimeProvider, so they can be tested without real waiting.
 /// </summary>
 [Trait("Feature", "timers")]
 [Trait("Spec", "A-06")]
@@ -20,6 +20,7 @@ public sealed class InjectedTimeTests
     {
         var time = new FakeTimeProvider();
         using var services = Services(time);
+
         var definition = Workflow.Create<TimeData>("InjectedTimeDelay")
             .Step<NoopActivity>()
             .Delay(TimeSpan.FromHours(1))
@@ -47,6 +48,7 @@ public sealed class InjectedTimeTests
     {
         var time = new FakeTimeProvider();
         using var services = Services(time);
+
         var definition = Workflow.Create<TimeData>("InjectedTimeWaitTimeout")
             .Step<NoopActivity>()
             .WaitFor<Approval>("approval", configure: wait => wait
@@ -75,6 +77,7 @@ public sealed class InjectedTimeTests
     {
         var time = new FakeTimeProvider();
         using var services = Services(time);
+
         var definition = Workflow.Create<TimeData>("InjectedTimeExecutionTimeout")
             .Step<NoopActivity>()
             .WaitFor<Approval>("approval")
@@ -82,6 +85,7 @@ public sealed class InjectedTimeTests
 
         var started = await Engine(services).RunAsync(definition, new TimeData(),
             new WorkflowOptions { ExecutionTimeout = TimeSpan.FromHours(1) });
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         time.Advance(TimeSpan.FromMinutes(30));
@@ -101,6 +105,7 @@ public sealed class InjectedTimeTests
         services.AddIxIFlow();
         services.AddTransient<NoopActivity>();
         services.AddTransient<MarkActivity>();
+
         return services.BuildServiceProvider();
     }
 
@@ -117,11 +122,13 @@ public sealed class InjectedTimeTests
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
         var instance = await InstanceAsync(services, instanceId);
+
         while (instance.Status != expected && DateTime.UtcNow < deadline)
         {
             await Task.Delay(20);
             instance = await InstanceAsync(services, instanceId);
         }
+
         return instance;
     }
 
@@ -130,6 +137,7 @@ public sealed class InjectedTimeTests
         using var scanner = new WorkflowRecoveryService(services.GetRequiredService<IServiceScopeFactory>(),
             services.GetRequiredService<IWorkflowStateRepository>(), NullLogger<WorkflowRecoveryService>.Instance,
             time);
+
         await scanner.RecoverOnceAsync(CancellationToken.None);
     }
 

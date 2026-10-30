@@ -16,15 +16,18 @@ public sealed class MessageContractTests
 {
     internal static readonly Type[] MessageTypeList =
     [
-        typeof(InstanceInspection), typeof(InspectionSummary), typeof(InspectionDebugState), typeof(InspectionThread), typeof(InspectionFrame), typeof(InspectionAttempt), typeof(InspectionWait), typeof(InspectionData), typeof(ReplayOriginTrace), typeof(ThreadPositionTrace), typeof(ReplayPosition),
-            typeof(Assign), typeof(Ready), typeof(Cancel), typeof(Arrivals), typeof(Recycle),
+        typeof(InstanceInspection), typeof(InspectionSummary), typeof(InspectionDebugState), typeof(InspectionThread),
+        typeof(InspectionFrame), typeof(InspectionAttempt), typeof(InspectionWait), typeof(InspectionData), typeof(ReplayOriginTrace),
+        typeof(ThreadPositionTrace), typeof(ReplayPosition),
+        typeof(Assign), typeof(Ready), typeof(Cancel), typeof(Arrivals), typeof(Recycle),
         typeof(Checkpoint), typeof(CheckpointReply), typeof(StartChild), typeof(StartChildReply),
         typeof(ReadInbox), typeof(ReadInboxReply), typeof(ReadWait), typeof(ReadWaitReply),
         typeof(Breakpoint), typeof(RecoveryPreparation), typeof(AcknowledgedCommit), typeof(AssignmentOutcome),
         typeof(BreakpointSource), typeof(BreakpointStop), typeof(BreakpointHitTrace),
         typeof(DataEditTarget), typeof(DataPatch), typeof(DataEditRequest), typeof(DataEditResult), typeof(DataEditedTrace),
-            typeof(DebugStepPosition), typeof(DebugStepping), typeof(BreakpointEvaluation), typeof(BreakpointConditionDiagnostic)
+        typeof(DebugStepPosition), typeof(DebugStepping), typeof(BreakpointEvaluation), typeof(BreakpointConditionDiagnostic)
     ];
+
     public static TheoryData<Type> MessageTypes => new(MessageTypeList);
 
     [Theory]
@@ -33,29 +36,44 @@ public sealed class MessageContractTests
     {
         using var harness = new MessageHarness();
         var assign = await harness.AssignAsync(Workflow.Create<Data>("contract").Step<Noop>().Build());
+
         var reason = new CancellationReason
         {
             ReasonCode = "cancel", RequestedBy = "operator", Description = "reason", RequestedAt = DateTime.UtcNow,
             Metadata = new() { ["number"] = JsonSerializer.SerializeToElement(42) }
         };
+
         assign.Instance.Properties["nested"] = JsonSerializer.SerializeToElement(new { Number = 42, Text = "value" });
+
         assign = assign with
         {
             Recovery = new(["root"], reason, true, true, "operator"),
-            Breakpoints = [new("stop", "root/0", new("flow.yaml", 4), ">= 3")
-                { StructureHash = assign.StructureHash, VerifiedSource = new("flow.yaml", 7), Condition = "context.WorkflowData.Value > 0" }]
+            Breakpoints =
+            [
+                new("stop", "root/0", new("flow.yaml", 4), ">= 3")
+                {
+                    StructureHash = assign.StructureHash, VerifiedSource = new("flow.yaml", 7), Condition = "context.WorkflowData.Value > 0"
+                }
+            ]
         };
+
         var now = DateTime.UtcNow;
+
         var commit = CheckpointCommit.Create(assign.Instance, assign.Epoch, assign.Instance.Revision,
             openedWaits: [new("wait", WaitKind.Event, "go", "event-type", TimeSpan.FromMinutes(1))]);
+
         var child = new ChildStart("child", JsonSerializer.Serialize(new WorkflowInstance
         {
             InstanceId = "child", ParentInstanceId = assign.Instance.InstanceId, ParentWaitId = "child-wait",
             ExecutionStateJson = assign.Instance.ExecutionStateJson, WorkflowDataJson = StoredJson.Inline("{\"Value\":42}")
         }), "child-wait");
-        var page = new InboxPage([new(assign.Instance.InstanceId, "event", 7, "event-type", "go", null,
-            StoredJson.Inline("{\"Answer\":42}"), now, EventOutcome.Pending)], 7, new Dictionary<string, long> { ["wait"] = 3 },
+
+        var page = new InboxPage([
+                new(assign.Instance.InstanceId, "event", 7, "event-type", "go", null,
+                    StoredJson.Inline("{\"Answer\":42}"), now, EventOutcome.Pending)
+            ], 7, new Dictionary<string, long> { ["wait"] = 3 },
             new Dictionary<string, DateTime> { ["wait"] = now.AddMinutes(1) }, now);
+
         object[] messages =
         [
             .. InspectionMessageExamples.Create(now),
@@ -65,7 +83,8 @@ public sealed class MessageContractTests
             new Recycle(assign.AssignmentId), new Checkpoint(assign.AssignmentId, commit),
             new CheckpointReply(assign.AssignmentId, CheckpointReplyKind.Unknown, 5, "lost reply", reason,
                 true, true, ConflictReason.EventsChanged),
-            new StartChild(assign.AssignmentId, assign.Instance.InstanceId, assign.Epoch, "root/0", child, "hash", WorkflowContract.OfType(typeof(Data)).Hash),
+            new StartChild(assign.AssignmentId, assign.Instance.InstanceId, assign.Epoch, "root/0", child, "hash",
+                WorkflowContract.OfType(typeof(Data)).Hash),
             new StartChildReply(assign.AssignmentId, child, WorkflowErrorKind.ArtifactUnavailable, "refused", ConflictReason.NotAssigned),
             new ReadInbox(assign.AssignmentId, assign.Instance.InstanceId, 3, 20), new ReadInboxReply(assign.AssignmentId, page),
             new ReadWait(assign.AssignmentId, assign.Instance.InstanceId, "wait"),
@@ -88,6 +107,7 @@ public sealed class MessageContractTests
             new BreakpointConditionDiagnostic("BPC001", "Refused member", 4, 3, 1, 5),
             new AssignmentOutcome(AssignmentOutcomeKind.Interrupted, "error", "type", "stack", "root/0", "attempt")
         ];
+
         var message = Assert.Single(messages, value => value.GetType() == type);
         Assert.True(type.IsPublic && type.IsSealed);
         Assert.NotNull(type.GetMethod("<Clone>$")); // sealed records, not mutable message classes
@@ -96,13 +116,16 @@ public sealed class MessageContractTests
         var copy = JsonSerializer.Deserialize(bytes, info)!;
         Assert.NotSame(message, copy);
         Assert.Equal(bytes, JsonSerializer.SerializeToUtf8Bytes(copy, info));
+
         if (copy is Assign assigned)
         {
             Assert.NotEqual(Guid.Empty, assigned.Incarnation);
             Assert.Equal(assign.Incarnation, assigned.Incarnation);
             Assert.Equal(42, assigned.Instance.Properties["nested"].GetProperty("Number").GetInt32());
         }
-        if (copy is Checkpoint checkpoint) Assert.Equal(commit.ContentHash, checkpoint.Commit.ContentHash);
+
+        if (copy is Checkpoint checkpoint)
+            Assert.Equal(commit.ContentHash, checkpoint.Commit.ContentHash);
     }
 
     [Fact]
@@ -110,19 +133,25 @@ public sealed class MessageContractTests
     {
         using var harness = new MessageHarness();
         var assign = await harness.AssignAsync(Workflow.Create<Data>("hash").Step<Noop>().Build());
+
         var commit = CheckpointCommit.Create(assign.Instance, assign.Epoch, assign.Instance.Revision,
             settlements: [new("event", EventOutcome.Rejected, Rejection: EventRejection.WaitCancelled)],
             openedWaits: [new("wait", WaitKind.Event, "go", "event-type", TimeSpan.FromMinutes(1))],
             inboxReadThrough: 8, wakeAfter: TimeSpan.FromSeconds(15), parks: true,
             traceEntries: [new() { ActivityName = "activity" }]);
+
         Assert.Equal(commit.ContentHash, SerializedExecutorTests.Rebuild(commit).ContentHash);
         var copy = harness.Cross(new Checkpoint(assign.AssignmentId, commit)).Commit;
         Assert.Equal(commit.ContentHash, copy.ContentHash);
         Assert.Equal(commit.Payload, copy.Payload);
         Assert.Equal(commit.TraceEntries, copy.TraceEntries);
-        Assert.Null(typeof(CheckpointCommit).GetProperty("StoredParts", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance));
+
+        Assert.Null(typeof(CheckpointCommit).GetProperty("StoredParts",
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance));
+
         Assert.Throws<ArgumentException>(() => SerializedExecutorTests.Rebuild(commit,
             metadata: commit.Instance with { Status = WorkflowStatus.Completed }));
+
         var json = JsonSerializer.SerializeToNode(new Checkpoint(assign.AssignmentId, commit), ExecutionMessageContext.Default.Checkpoint)!;
         json["Commit"]!["Instance"]!["Status"] = (int)WorkflowStatus.Completed;
         Assert.Throws<JsonException>(() => json.Deserialize(ExecutionMessageContext.Default.Checkpoint));
@@ -136,15 +165,18 @@ public sealed class MessageContractTests
     {
         using var harness = new MessageHarness();
         var assign = await harness.AssignAsync(Workflow.Create<Data>("rich-commit").Step<Noop>().Build());
+
         var child = new WorkflowInstance
         {
             InstanceId = "child", ParentInstanceId = assign.Instance.InstanceId, ParentWaitId = "child-wait",
             Status = WorkflowStatus.Running, ExecutionStateJson = assign.Instance.ExecutionStateJson,
             WorkflowDataJson = StoredJson.Inline("{\"Value\":\"child-input\"}")
         };
+
         assign.Instance.Status = WorkflowStatus.Completed;
         assign.Instance.ParentInstanceId = "grandparent";
         assign.Instance.ParentWaitId = "grandparent-wait";
+
         var commit = CheckpointCommit.Create(assign.Instance, assign.Epoch, assign.Instance.Revision,
             clearsCrashCount: false, stopped: true, inboxReadThrough: 19,
             openedWaits: [new("child-wait", WaitKind.Child, "child", "child-completed", null)],
@@ -154,11 +186,14 @@ public sealed class MessageContractTests
             childCancellations: [new("former-child", new() { ReasonCode = "parent-ended" }, "former-wait")],
             parentNotice: new("grandparent", "grandparent-wait", "notice", "child-completed", "{\"Result\":42}"),
             traceEntries: [new() { ActivityName = "completed" }]);
+
         var copy = harness.Cross(new Checkpoint(assign.AssignmentId, commit)).Commit;
         Assert.Equal(commit.ContentHash, copy.ContentHash);
         Assert.Equal(commit.ContentHash, SerializedExecutorTests.Rebuild(copy).ContentHash);
+
         Assert.Equal(commit.ChildStarts.Select(child => (child.ChildInstanceId, child.Payload, child.ParentWaitId, child.Instance)),
             copy.ChildStarts.Select(child => (child.ChildInstanceId, child.Payload, child.ParentWaitId, child.Instance)));
+
         Assert.Equal("parent-ended", Assert.Single(copy.ChildCancellations).Reason.ReasonCode);
         Assert.Equal(commit.ParentNotice, copy.ParentNotice);
         Assert.False(copy.ClearsCrashCount);
@@ -173,8 +208,10 @@ public sealed class MessageContractTests
     {
         using var harness = new MessageHarness();
         var assign = await harness.AssignAsync(Workflow.Create<Data>("version").Step<Noop>().Build());
+
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
             harness.ExecuteAsync(assign with { ContractVersion = ExecutionContract.Version + 1 }));
+
         Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
         Assert.Empty(harness.Host.Requests);
         Assert.Equal(0, harness.Probe.Noops);
@@ -189,17 +226,39 @@ public sealed class MessageContractTests
     public void NoMessageGraphContainsAnObjectOrLiveRuntimeMember()
     {
         var seen = new HashSet<Type>();
-        foreach (var type in MessageTypeList) Inspect(type);
+
+        foreach (var type in MessageTypeList)
+            Inspect(type);
+
         void Inspect(Type type)
         {
             Assert.NotEqual(typeof(object), type);
-            Assert.False(typeof(Exception).IsAssignableFrom(type) || typeof(Delegate).IsAssignableFrom(type) || type == typeof(Type), type.FullName);
-            if (!seen.Add(type) || type == typeof(JsonElement) || type == typeof(string) || type.IsPrimitive || type.IsEnum) return;
-            if (type.HasElementType) { Inspect(type.GetElementType()!); return; }
-            if (type.IsGenericType) foreach (var argument in type.GetGenericArguments()) Inspect(argument);
-            if (type.Namespace?.StartsWith("IxIFlow") != true) return;
-            foreach (var property in type.GetProperties(BindingFlags.Instance | BindingFlags.Public)) Inspect(property.PropertyType);
-            foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public)) Inspect(field.FieldType);
+
+            Assert.False(typeof(Exception).IsAssignableFrom(type) || typeof(Delegate).IsAssignableFrom(type) || type == typeof(Type),
+                type.FullName);
+
+            if (!seen.Add(type) || type == typeof(JsonElement) || type == typeof(string) || type.IsPrimitive || type.IsEnum)
+                return;
+
+            if (type.HasElementType)
+            {
+                Inspect(type.GetElementType()!);
+
+                return;
+            }
+
+            if (type.IsGenericType)
+                foreach (var argument in type.GetGenericArguments())
+                    Inspect(argument);
+
+            if (type.Namespace?.StartsWith("IxIFlow") != true)
+                return;
+
+            foreach (var property in type.GetProperties(BindingFlags.Instance | BindingFlags.Public))
+                Inspect(property.PropertyType);
+
+            foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public))
+                Inspect(field.FieldType);
         }
     }
 

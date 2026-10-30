@@ -44,9 +44,10 @@ public sealed class InvocationRetryRound2Scenarios
         fault.Broken = false;
         await second.Client.RecoverAsync(id);
         await Success(second.Client, id);
-        var final = Record((await second.Store.GetWorkflowInstanceAsync(id))!);
-        Assert.Equal(2, final.Attempts.Count);
-        Assert.Equal(1, final.ScheduledRetries);
+        await InvocationTraceAssertions.PrunedAsync(second.Store, id);
+        var final = await InvocationTraceAssertions.AttemptsAsync(second.Store, id, parent);
+        Assert.Equal(2, final.Length);
+        Assert.Single(await InvocationTraceAssertions.RetriesAsync(second.Store, id));
     }
 
     [Theory, MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
@@ -79,7 +80,11 @@ public sealed class InvocationRetryRound2Scenarios
         Assert.Null(attempt.RetryAfterUtc);
         Assert.Equal(before.Attempts[1].EndedAtUtc, attempt.EndedAtUtc);
         var replay = TraceReplay.Load(parent, await host.Store.GetTraceAsync(id));
-        while (replay.StepForward()) { }
+
+        while (replay.StepForward())
+        {
+        }
+
         foreach (var recorded in inspection.Attempts)
         {
             Assert.Equal(WorkflowStatus.Failed, recorded.ChildStatus);
@@ -93,6 +98,7 @@ public sealed class InvocationRetryRound2Scenarios
             Assert.Equal(recorded.Action, fact.Action);
             Assert.Equal(recorded.RetryAfterUtc, fact.RetryAfterUtc);
         }
+
         Assert.All((await host.Store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: id))).Items,
             child => Assert.Equal(WorkflowStatus.Failed, child.Status));
     }
@@ -105,24 +111,35 @@ public sealed class InvocationRetryRound2Scenarios
     {
         await using var fixture = await InvocationRetryProfile.Create(profile);
         var payloads = new UnavailableRecordPayloads();
+
         var host = await fixture.Open(services =>
         {
             services.AddIxIFlow(options =>
             {
                 options.PayloadThresholdBytes = 128;
-                if (mode == "truncated") options.MaxTraceEntriesPerCommit = 1;
-                if (mode == "activities") options.TraceDetail = TraceDetail.Activities;
-                if (mode == "budget") options.MaxTraceEntriesPerInstance = 10_000;
+
+                if (mode == "truncated")
+                    options.MaxTraceEntriesPerCommit = 1;
+
+                if (mode == "activities")
+                    options.TraceDetail = TraceDetail.Activities;
+
+                if (mode == "budget")
+                    options.MaxTraceEntriesPerInstance = 10_000;
             });
+
             services.AddSingleton<IPayloadStore>(payloads);
         });
+
         payloads.Inner = host.Store.PayloadStore;
         var child = new WorkflowBuilder<Data, object>([], "TerminationRound2Child").WaitFor<Signal>("finish").Build();
         await fixture.Catalog.RegisterWorkflowAsync(child);
+
         var parent = new WorkflowBuilder<Data, object>([], "TerminationRound2Invocation").Parallel(paths => paths
             .Do(body => body.Invoke<Data>(child.Name, 1))
             .Do(body => body.Invoke<Data>(child.Name, 1))
             .Do(body => body.Invoke<Data>(child.Name, 1))).Build();
+
         var started = await host.Client.RunAsync(parent, new Data(), new() { EnableTracing = mode != "disabled" });
         await host.Services.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
         var before = (await host.Store.GetWorkflowInstanceAsync(started.InstanceId))!;
@@ -131,19 +148,28 @@ public sealed class InvocationRetryRound2Scenarios
         Assert.Equal(3, records.Length);
         Assert.All(records, part => Assert.NotNull(part.Value.Reference));
         payloads.Broken = records.Select(part => part.Value.Reference!).ToHashSet();
+
         // The host cannot resolve the parent or child and cannot hydrate invocation records.
         var coldCatalog = new WorkflowCatalog();
         await host.DisposeAsync();
+
         var cold = await fixture.Open(services =>
         {
             services.AddIxIFlow(options =>
             {
-                if (mode == "truncated") options.MaxTraceEntriesPerCommit = 1;
-                if (mode == "activities") options.TraceDetail = TraceDetail.Activities;
-                if (mode == "budget") options.MaxTraceEntriesPerInstance = budget;
+                if (mode == "truncated")
+                    options.MaxTraceEntriesPerCommit = 1;
+
+                if (mode == "activities")
+                    options.TraceDetail = TraceDetail.Activities;
+
+                if (mode == "budget")
+                    options.MaxTraceEntriesPerInstance = budget;
             });
+
             services.AddSingleton<IPayloadStore>(payloads);
         }, catalog: coldCatalog);
+
         payloads.Inner = cold.Store.PayloadStore;
         before = (await cold.Store.GetWorkflowInstanceAsync(started.InstanceId))!;
         await cold.Operations.TerminateAsync(started.InstanceId, "unavailable-records");
@@ -153,26 +179,35 @@ public sealed class InvocationRetryRound2Scenarios
         Assert.Equal(before.SavedParts, after.SavedParts);
         var traces = await cold.Store.GetTraceAsync(started.InstanceId);
         var audit = Assert.Single(traces, trace => trace.Entry.EntryType == TraceEntryType.WorkflowTerminated);
+
         // Child shutdown may append refused-completion audits after this commit.
         var termination = traces.Where(trace => trace.CommitEndSequence == audit.CommitEndSequence).ToArray();
         Assert.Single(termination, trace => trace.Entry.EntryType == TraceEntryType.WorkflowTerminated);
-        if (mode == "disabled") Assert.Single(termination);
+
+        if (mode == "disabled")
+            Assert.Single(termination);
         else if (mode == "truncated")
         {
             Assert.Equal(2, termination.Length); // one capacity slot plus the mandatory audit
+
             var marker = Assert.IsType<TraceTruncation>(Assert.Single(termination,
                 trace => trace.Entry.EntryType == TraceEntryType.Truncated).Entry.Payload);
+
             Assert.Equal(3, marker.DroppedCount);
         }
-        else Assert.Equal(3, termination.Count(trace => trace.Entry.Payload is InvocationTrace { Disposition: "Terminated" }));
+        else
+            Assert.Equal(3, termination.Count(trace => trace.Entry.Payload is InvocationTrace { Disposition: "Terminated" }));
+
         if (mode == "budget")
         {
             Assert.Equal(budget, Assert.IsType<TraceBudget>(Assert.Single(termination,
                 trace => trace.Entry.EntryType == TraceEntryType.TraceBudgetReached).Entry.Payload).Limit);
+
             var checkpoint = ExecutionCheckpoint.ReadTrunk(after.ExecutionStateJson);
             Assert.True(checkpoint.TraceBudgetExhausted);
             Assert.Equal(budget, checkpoint.TraceEntriesRecorded);
         }
+
         payloads.Broken.Clear();
         await coldCatalog.RegisterWorkflowAsync(parent);
         await coldCatalog.RegisterWorkflowAsync(child);
@@ -185,9 +220,13 @@ public sealed class InvocationRetryRound2Scenarios
     {
         var child = Workflow.Create<Data>("Round2Child").Step<FailOnce>().Build();
         await fixture.Catalog.RegisterWorkflowAsync(child);
+
         var parent = new WorkflowBuilder<Data, object>([], "Round2Invocation")
-            .Invoke<Data>(child.Name, 1, setup => setup.OnError(error => error.ThenRetry(new RetryPolicy(delay, delay, retries, 1)))).Build();
+            .Invoke<Data>(child.Name, 1, setup => setup.OnError(error => error.ThenRetry(new RetryPolicy(delay, delay, retries, 1))))
+            .Build();
+
         await fixture.Catalog.RegisterWorkflowAsync(parent);
+
         return parent;
     }
 
@@ -199,12 +238,22 @@ public sealed class InvocationRetryRound2Scenarios
         internal IWorkflowCatalog Inner = null!;
         internal string ChildName = "";
         internal bool Broken;
+
         protected override object? Invoke(MethodInfo? method, object?[]? args)
         {
             if (Broken && method!.Name == nameof(IWorkflowCatalog.ResolveWorkflowDefinitionAsync) && (string)args![0]! == ChildName)
                 return Task.FromException<WorkflowDefinitionLease>(new IOException("injected definition lookup interruption"));
-            try { return method!.Invoke(Inner, args); }
-            catch (TargetInvocationException error) { ExceptionDispatchInfo.Capture(error.InnerException!).Throw(); throw; }
+
+            try
+            {
+                return method!.Invoke(Inner, args);
+            }
+            catch (TargetInvocationException error)
+            {
+                ExceptionDispatchInfo.Capture(error.InnerException!).Throw();
+
+                throw;
+            }
         }
     }
 
@@ -213,16 +262,30 @@ public sealed class InvocationRetryRound2Scenarios
         internal IPayloadStore Inner = null!;
         internal HashSet<PayloadReference> Broken = [];
         internal int BrokenReads;
-        public ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> body, IReadOnlyCollection<PayloadReference>? dependencies = null, CancellationToken ct = default) => Inner.PutAsync(body, dependencies, ct);
+
+        public ValueTask<PayloadReference> PutAsync(ReadOnlyMemory<byte> body, IReadOnlyCollection<PayloadReference>? dependencies = null,
+            CancellationToken ct = default) => Inner.PutAsync(body, dependencies, ct);
+
         public ValueTask<ReadOnlyMemory<byte>?> GetAsync(PayloadReference reference, CancellationToken ct = default)
         {
-            if (!Broken.Contains(reference)) return Inner.GetAsync(reference, ct);
+            if (!Broken.Contains(reference))
+                return Inner.GetAsync(reference, ct);
+
             Interlocked.Increment(ref BrokenReads);
+
             return new((ReadOnlyMemory<byte>?)null);
         }
-        public ValueTask<bool> CollectAsync(PayloadReference reference, TimeSpan grace, CancellationToken ct = default) => Inner.CollectAsync(reference, grace, ct);
-        public ValueTask<IReadOnlyList<PayloadReference>> FindCollectionCandidatesAsync(int limit, TimeSpan grace, CancellationToken ct = default) => Inner.FindCollectionCandidatesAsync(limit, grace, ct);
-        public ValueTask InTransactionAsync(Func<IPayloadTransaction, CancellationToken, ValueTask> action, CancellationToken ct = default) => Inner.InTransactionAsync(action, ct);
+
+        public ValueTask<bool> CollectAsync(PayloadReference reference, TimeSpan grace, CancellationToken ct = default) =>
+            Inner.CollectAsync(reference, grace, ct);
+
+        public ValueTask<IReadOnlyList<PayloadReference>> FindCollectionCandidatesAsync(int limit, TimeSpan grace,
+            CancellationToken ct = default) => Inner.FindCollectionCandidatesAsync(limit, grace, ct);
+
+        public ValueTask
+            InTransactionAsync(Func<IPayloadTransaction, CancellationToken, ValueTask> action, CancellationToken ct = default) =>
+            Inner.InTransactionAsync(action, ct);
+
         public IPayloadTransaction Enlist(DbTransaction transaction) => Inner.Enlist(transaction);
     }
 }

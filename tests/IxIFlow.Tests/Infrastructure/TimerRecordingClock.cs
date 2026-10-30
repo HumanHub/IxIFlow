@@ -54,10 +54,13 @@ public sealed class TimerRecordingClock : FakeTimeProvider
     {
         ArgumentNullException.ThrowIfNull(callback);
         int id;
+
         lock (_lock)
             id = ++_timers;
+
         var timer = new RecordingTimer(this, id);
         var arming = timer.Arm(dueTime, period);
+
         // A timer due at once fires inside the base call, before its arming is published; it is then published
         // as fired.
         timer.Inner = base.CreateTimer(target =>
@@ -65,7 +68,9 @@ public sealed class TimerRecordingClock : FakeTimeProvider
             timer.Fire();
             callback(target);
         }, state, dueTime, period);
+
         Publish(arming);
+
         return timer;
     }
 
@@ -77,8 +82,10 @@ public sealed class TimerRecordingClock : FakeTimeProvider
         TimeSpan? patience = null, CancellationToken cancellationToken = default)
     {
         RecordedTimer? found = null;
+
         await WaitUntilAsync(armings => (found = armings.Skip(after).FirstOrDefault(match)) != null,
             $"a matching timer armed after the first {after}", patience, cancellationToken);
+
         return found!;
     }
 
@@ -100,22 +107,28 @@ public sealed class TimerRecordingClock : FakeTimeProvider
     {
         var limit = patience ?? DefaultPatience;
         var elapsed = Stopwatch.StartNew();
+
         while (true)
         {
             Task changed;
             IReadOnlyList<RecordedTimer> armings;
+
             lock (_lock)
             {
                 changed = _changed.Task;
                 armings = _armings.Select(item => item.Snapshot()).ToArray();
             }
+
             if (condition(armings))
                 return;
+
             var remaining = limit - elapsed.Elapsed;
+
             try
             {
                 if (remaining <= TimeSpan.Zero)
                     throw new TimeoutException();
+
                 await changed.WaitAsync(remaining, cancellationToken);
             }
             catch (TimeoutException)
@@ -134,17 +147,20 @@ public sealed class TimerRecordingClock : FakeTimeProvider
             arming.Number = _armings.Count + 1;
             _armings.Add(arming);
         }
+
         Signal();
     }
 
     private void Signal()
     {
         TaskCompletionSource changed;
+
         lock (_lock)
         {
             changed = _changed;
             _changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         }
+
         changed.TrySetResult();
     }
 
@@ -157,15 +173,22 @@ public sealed class TimerRecordingClock : FakeTimeProvider
     /// <param name="Firings">How many times it fired on this arming.</param>
     /// <param name="Replaced">Whether the timer was armed again since.</param>
     /// <param name="Disposed">Whether the timer was disposed.</param>
-    public sealed record RecordedTimer(int Number, int Timer, TimeSpan DueTime, TimeSpan Period,
-        DateTimeOffset SetAt, int Firings, bool Replaced, bool Disposed)
+    public sealed record RecordedTimer(
+        int Number,
+        int Timer,
+        TimeSpan DueTime,
+        TimeSpan Period,
+        DateTimeOffset SetAt,
+        int Firings,
+        bool Replaced,
+        bool Disposed)
     {
         /// <summary>When it first fires on the clock; null for an arming that stops the timer.</summary>
         public DateTimeOffset? DueAt => DueTime == Timeout.InfiniteTimeSpan ? null : SetAt + DueTime;
 
         /// <summary>Whether it is still to fire: running, not replaced or disposed, and periodic or not yet fired.</summary>
         public bool Pending => DueAt != null && !Replaced && !Disposed &&
-                               (Firings == 0 || Period != Timeout.InfiniteTimeSpan);
+            (Firings == 0 || Period != Timeout.InfiniteTimeSpan);
 
         public override string ToString() =>
             $"arming {Number} of timer {Timer}: due in {DueTime} at {DueAt:O}, set at {SetAt:O}, period {Period}, " +
@@ -194,12 +217,15 @@ public sealed class TimerRecordingClock : FakeTimeProvider
         public Arming Arm(TimeSpan dueTime, TimeSpan period)
         {
             var arming = new Arming(id, dueTime, period, clock.GetUtcNow());
+
             lock (clock._lock)
             {
                 if (_current != null)
                     _current.Replaced = true;
+
                 _current = arming;
             }
+
             return arming;
         }
 
@@ -207,6 +233,7 @@ public sealed class TimerRecordingClock : FakeTimeProvider
         {
             lock (clock._lock)
                 _current!.Firings++;
+
             clock.Signal();
         }
 
@@ -215,6 +242,7 @@ public sealed class TimerRecordingClock : FakeTimeProvider
             var arming = Arm(dueTime, period);
             var changed = Inner.Change(dueTime, period);
             clock.Publish(arming);
+
             return changed;
         }
 
@@ -234,6 +262,7 @@ public sealed class TimerRecordingClock : FakeTimeProvider
         {
             lock (clock._lock)
                 _current!.Disposed = true;
+
             clock.Signal();
         }
     }

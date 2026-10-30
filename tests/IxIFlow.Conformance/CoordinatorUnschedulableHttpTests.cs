@@ -19,14 +19,18 @@ public sealed class CoordinatorUnschedulableHttpTests
         var time = new FakeTimeProvider();
         await using var database = await StoreProfiles.CreateAsync(profile, time);
         var store = database.NewRepository(time);
+
         foreach (var id in new[] { "00-hidden", "01-first", "02-denied", "03-second" })
         {
             var definition = Workflow.Create<Data>("Unplaced").Demand("region", "eu").Step<Noop>().Build();
+
             var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, new Data(),
                 new() { InstanceId = id, CorrelationId = id == "00-hidden" ? "hidden" : "visible" }, time.GetUtcNow().UtcDateTime);
+
             ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), scopes, time.GetUtcNow().UtcDateTime);
             await store.SeedAsync(instance, TimeSpan.Zero);
         }
+
         await using var factory = new OperationsHttpFactory(store) { DenyInstance = "02-denied" };
         factory.Scope.Instances = query => query with { CorrelationId = "visible" };
         using var anonymous = factory.CreateClient();
@@ -48,6 +52,7 @@ public sealed class CoordinatorUnschedulableHttpTests
         var last = JsonDocument.Parse(await next.Content.ReadAsStringAsync()).RootElement;
         Assert.Equal("03-second", Assert.Single(last.GetProperty("items").EnumerateArray()).GetProperty("instanceId").GetString());
         Assert.Equal(JsonValueKind.Null, last.GetProperty("nextCursor").ValueKind);
+
         foreach (var query in new[] { "limit=0", "limit=1001", "cursor=invalid", "cursor=e30=", "limit=1&limit=2" })
             Assert.Equal(HttpStatusCode.BadRequest, (await reader.GetAsync("/ops/unschedulable?" + query)).StatusCode);
     }

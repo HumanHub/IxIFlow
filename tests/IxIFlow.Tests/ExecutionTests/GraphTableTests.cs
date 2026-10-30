@@ -13,16 +13,19 @@ public sealed class GraphTableTests
     public async Task MutableLabelMetadataCannotChangeRoutingOrCachedHash()
     {
         object label = new MutableLabel { Value = 7 };
+
         // Keep checkpoint data typed, but pass the authored box unchanged to Case.
         var definition = Workflow.Create<LabelData>("GraphTableLabels").Flowchart(f => f.Start("route")
             .Node("route", e => e.Switch<object>(c => c.WorkflowData.Label).Case(label, "selected").Otherwise("end"))
             .Node("selected", n => n.Step<MarkSelected>())).Build();
+
         var hash = WorkflowDefinitionValidator.Inspect(definition);
         var entry = definition.GraphTable.Single().Transitions[0].Cases.Single();
         var metadata = Assert.IsType<JsonElement>(entry.Label);
         Assert.Equal(JsonValueKind.String, metadata.ValueKind);
         Assert.NotNull(entry.LabelSignature);
         Assert.Equal(entry.LabelSignature, metadata.GetString());
+
         // The catalog descriptor is immutable; mutate the original authored box.
         typeof(MutableLabel).GetProperty(nameof(MutableLabel.Value))!.SetValue(label, 99);
         Assert.Equal(99, ((MutableLabel)label).Value);
@@ -47,15 +50,21 @@ public sealed class GraphTableTests
         public override bool Equals(object? obj) => obj is MutableLabel other && Value == other.Value;
         public override int GetHashCode() => Value;
     }
+
     public sealed class LabelData
     {
         public MutableLabel Label { get; set; } = new() { Value = 7 };
         public bool Selected { get; set; }
     }
+
     public sealed class MarkSelected : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { ((LabelData)context.WorkflowData).Selected = true; return Task.CompletedTask; }
+        {
+            ((LabelData)context.WorkflowData).Selected = true;
+
+            return Task.CompletedTask;
+        }
     }
 
     [Fact]
@@ -79,7 +88,10 @@ public sealed class GraphTableTests
         var pending = machine.Nodes.Single(n => n.Key == "pending");
         Assert.Equal(machine.CatalogId + "/state/pending/exit", pending.ExitScopeId);
         Assert.True(machine.Nodes.Single(n => n.Key == "done").Final);
-        Assert.Equal(new[] { TransitionCause.Activity, TransitionCause.Event, TransitionCause.Timer }, machine.Transitions.Select(t => t.Kind));
+
+        Assert.Equal(new[] { TransitionCause.Activity, TransitionCause.Event, TransitionCause.Timer },
+            machine.Transitions.Select(t => t.Kind));
+
         var activity = machine.Transitions[0];
         Assert.Contains(typeof(Work).FullName!, activity.ActivityType);
         Assert.Null(activity.EventType);
@@ -89,13 +101,22 @@ public sealed class GraphTableTests
         Assert.Equal("go", machine.Transitions[1].Key);
         Assert.Contains(typeof(Signal).FullName!, machine.Transitions[1].EventType);
         Assert.Equal("00:01:00", machine.Transitions[2].After);
+
         foreach (var graph in definition.GraphTable)
         {
             Assert.Contains(definition.StepTable, s => s.CatalogId == graph.CatalogId && s.Kind == graph.Kind);
             Assert.All(graph.Nodes, n => Assert.Contains(definition.StepTable, s => s.CatalogId == n.EnterStepId));
-            Assert.All(graph.Transitions.SelectMany(t => t.Cases), c => Assert.Contains(definition.StepTable, s => s.CatalogId == c.EdgeStepId));
+
+            Assert.All(graph.Transitions.SelectMany(t => t.Cases),
+                c => Assert.Contains(definition.StepTable, s => s.CatalogId == c.EdgeStepId));
         }
-        var clone = new WorkflowDefinition { Name = definition.Name, Version = definition.Version, WorkflowDataType = typeof(Data), Steps = definition.Steps.Select(s => s.Clone()).ToList() };
+
+        var clone = new WorkflowDefinition
+        {
+            Name = definition.Name, Version = definition.Version, WorkflowDataType = typeof(Data),
+            Steps = definition.Steps.Select(s => s.Clone()).ToList()
+        };
+
         WorkflowDefinitionValidator.Validate(clone);
         Assert.Equal(JsonSerializer.Serialize(definition.GraphTable), JsonSerializer.Serialize(clone.GraphTable));
     }
@@ -106,9 +127,11 @@ public sealed class GraphTableTests
         var services = new ServiceCollection().AddLogging();
         services.AddIxIFlow();
         await using var provider = services.BuildServiceProvider();
+
         var definition = Workflow.Create<Data>("GraphTableOperations").StateMachine(m => m.Start("pending")
             .State("pending", s => s.On<Signal>("go", "done"))
             .State("done", s => s.Final())).Build();
+
         var client = provider.GetRequiredService<IWorkflowClient>();
         var start = await client.RunAsync(definition, new Data());
         Assert.Equal(WorkflowExecutionStatus.Suspended, start.Status);
@@ -123,21 +146,25 @@ public sealed class GraphTableTests
         cancelled.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operations.GetGraphTableAsync(start.InstanceId, cancelled.Token));
         await client.ResumeAsync(start.InstanceId, "go", new Signal());
-        Assert.Equal(JsonSerializer.Serialize(definition.GraphTable), JsonSerializer.Serialize(await operations.GetGraphTableAsync(start.InstanceId)));
+
+        Assert.Equal(JsonSerializer.Serialize(definition.GraphTable),
+            JsonSerializer.Serialize(await operations.GetGraphTableAsync(start.InstanceId)));
     }
 
     private static WorkflowDefinition Definition() => Workflow.Create<Data>("GraphTableNested").Flowchart(f => f.Start("route")
         .Node("route", n => n.WaitFor<Signal>("outer", configure: w => w.TimeoutAfter(TimeSpan.FromMinutes(1))
-            .OnTimeout(t => t.Transition("done", sourcePath: "leave.cs", sourceLine: 24)))
+                .OnTimeout(t => t.Transition("done", sourcePath: "leave.cs", sourceLine: 24)))
             .StateMachine(m => m.Start("pending").State("pending", s => s
-                .Exit(e => e.Step<Work>())
-                .OnActivity<Work>(t => t.When(c => c.PreviousStep.Value > 0, "done", a => a.Step<Work>()).Otherwise("end"))
-                .On<Signal>("go", "done").After(TimeSpan.FromMinutes(1), "done"))
+                    .Exit(e => e.Step<Work>())
+                    .OnActivity<Work>(t => t.When(c => c.PreviousStep.Value > 0, "done", a => a.Step<Work>()).Otherwise("end"))
+                    .On<Signal>("go", "done").After(TimeSpan.FromMinutes(1), "done"))
                 .State("done", s => s.Final())), e => e.Always("done"), sourcePath: "author.cs", sourceLine: 20).Named("Route")
         .Node("done")).Build();
 
     public sealed class Data;
+
     public sealed class Signal;
+
     public sealed class Work : IAsyncActivity
     {
         public int Value { get; set; }

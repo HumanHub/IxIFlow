@@ -12,6 +12,10 @@ namespace IxIFlow.Core;
 /// </summary>
 public interface ICombiner<T>
 {
+    /// <summary>Merges changed branch values deterministically without external effects or mutation of the supplied values.</summary>
+    /// <param name="original">The value at the fork.</param>
+    /// <param name="branchValues">Values of branches that changed this property, in declaration order.</param>
+    /// <returns>The value saved at the join.</returns>
     T Combine(T original, IReadOnlyList<T> branchValues);
 }
 
@@ -77,14 +81,17 @@ public sealed class Append<T> : ICombiner<List<T>>
     {
         original ??= [];
         var result = new List<T>(original);
+
         foreach (var branch in branchValues)
         {
-            if (branch.Count < original.Count ||
+            if (branch == null || branch.Count < original.Count ||
                 original.Where((item, index) => !CombinerJson.Same(item, branch[index])).Any())
-                throw new InvalidOperationException(
+                throw new JoinConflictException("",
                     "A branch changed or removed items the list had at the fork, so its additions cannot be appended");
+
             result.AddRange(branch.Skip(original.Count));
         }
+
         return result;
     }
 }
@@ -101,26 +108,35 @@ public sealed class Union<TKey, TValue> : ICombiner<Dictionary<TKey, TValue>> wh
         original ??= [];
         var result = new Dictionary<TKey, TValue>(original);
         var decided = new Dictionary<TKey, (bool Removed, JsonNode? Json)>();
+
         foreach (var branch in branchValues)
         {
+            if (branch == null)
+                throw new JoinConflictException("", "A branch replaced the dictionary with null, so its changes cannot be merged");
+
             var changes = branch.Where(pair => !original.TryGetValue(pair.Key, out var before) ||
-                                               !CombinerJson.Same(before, pair.Value))
+                    !CombinerJson.Same(before, pair.Value))
                 .Select(pair => (pair.Key, Removed: false, Value: pair.Value))
                 .Concat(original.Keys.Where(key => !branch.ContainsKey(key))
                     .Select(key => (Key: key, Removed: true, Value: default(TValue)!)));
+
             foreach (var (key, removed, value) in changes)
             {
                 var json = removed ? null : CombinerJson.Of(value);
+
                 if (decided.TryGetValue(key, out var earlier) &&
                     (earlier.Removed != removed || !JsonNode.DeepEquals(earlier.Json, json)))
-                    throw new InvalidOperationException($"Two branches changed the key '{key}' differently");
+                    throw new JoinConflictException("", $"Two branches changed the key '{key}' differently");
+
                 decided[key] = (removed, json);
+
                 if (removed)
                     result.Remove(key);
                 else
                     result[key] = value;
             }
         }
+
         return result;
     }
 }
@@ -135,21 +151,31 @@ public sealed class Union<T> : ICombiner<HashSet<T>>
     public HashSet<T> Combine(HashSet<T> original, IReadOnlyList<HashSet<T>> branchValues)
     {
         original ??= [];
+
+        if (branchValues.Any(branch => branch == null))
+            throw new JoinConflictException("", "A branch replaced the set with null, so its changes cannot be merged");
+
         var at = original.Select(item => (Item: item, Json: CombinerJson.Of(item))).ToList();
+
         var kept = at.Where(item => branchValues.All(branch => branch.Any(other => CombinerJson.Same(item.Item, other))))
             .Select(item => item.Item);
+
         var result = new HashSet<T>(kept, original.Comparer);
         var added = new List<JsonNode?>();
+
         foreach (var branch in branchValues)
-            foreach (var item in branch)
-            {
-                var json = CombinerJson.Of(item);
-                if (at.Any(old => JsonNode.DeepEquals(old.Json, json)) ||
-                    added.Any(other => JsonNode.DeepEquals(other, json)))
-                    continue;
-                added.Add(json);
-                result.Add(item);
-            }
+        foreach (var item in branch)
+        {
+            var json = CombinerJson.Of(item);
+
+            if (at.Any(old => JsonNode.DeepEquals(old.Json, json)) ||
+                added.Any(other => JsonNode.DeepEquals(other, json)))
+                continue;
+
+            added.Add(json);
+            result.Add(item);
+        }
+
         return result;
     }
 }

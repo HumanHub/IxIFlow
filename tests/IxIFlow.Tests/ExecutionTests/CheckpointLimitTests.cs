@@ -9,7 +9,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
 /// A checkpoint keeps only what can still run, and a checkpoint over the size limit is never saved:
-/// the instance stops at NeedsResolution with its last checkpoint until an operator acts (spec A-08, D-28).
+/// the instance stops at NeedsResolution with its last checkpoint until an operator acts.
 /// </summary>
 [Trait("Feature", "durability")]
 [Trait("Spec", "A-08")]
@@ -22,6 +22,7 @@ public sealed class CheckpointLimitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository, ExecutionLimits.DefaultMaxCheckpointBytes);
+
         var definition = Workflow.Create<LimitData>("PrunedBranches")
             .Step<NoopActivity>()
             .Parallel(parallel => parallel
@@ -34,8 +35,10 @@ public sealed class CheckpointLimitTests
         var result = await Engine(services).RunAsync(definition, new LimitData());
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
+
         var saved = ExecutionCheckpoint.Read((await repository.GetWorkflowInstanceAsync(result.InstanceId))!
             .ExecutionStateJson);
+
         Assert.Single(saved.Continuations);
         Assert.Empty(saved.Joins);
     }
@@ -45,6 +48,7 @@ public sealed class CheckpointLimitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         string instanceId;
+
         using (var limited = Services(repository, 8_000))
         {
             var result = await Engine(limited).RunAsync(GrowingWorkflow(), new LimitData());
@@ -59,6 +63,7 @@ public sealed class CheckpointLimitTests
         Assert.Null(stopped.RunnableAtUtc);
         Assert.DoesNotContain(new string('x', GrownLength), stopped.WorkflowDataJson.InlineText);
         Assert.NotNull(ExecutionCheckpoint.Read(stopped.ExecutionStateJson).OperatorStop);
+
         Assert.DoesNotContain(await repository.GetRunnableInstancesAsync(new ClaimQuery(Guid.Empty, new Dictionary<string, string>(), 100)),
             instance => instance.InstanceId == instanceId);
 
@@ -80,9 +85,11 @@ public sealed class CheckpointLimitTests
     {
         var measured = new InMemoryWorkflowStateRepository();
         long stopBytes;
+
         using (var services = Services(measured, 8_000))
         {
             var first = await Engine(services).RunAsync(GrowingWorkflow(), new LimitData());
+
             stopBytes = CheckpointInspection.CheckpointBytes(
                 (await measured.GetWorkflowInstanceAsync(first.InstanceId))!);
         }
@@ -103,6 +110,7 @@ public sealed class CheckpointLimitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository, 8_000);
+
         var definition = Workflow.Create<LimitData>("StoppedWithWait")
             .Step<NoopActivity>()
             .Parallel(parallel => parallel
@@ -114,22 +122,28 @@ public sealed class CheckpointLimitTests
         var stopped = await Engine(services).RunAsync(definition, new LimitData());
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, stopped.Status);
 
-        // The event is stored for after the release (D-33); the instance stays stopped.
+        // The event is stored for after the release; the instance stays stopped.
         var resumed = await Engine(services).ResumeAsync(stopped.InstanceId, "approval", new Approval(),
             "approval-1");
+
         Assert.Equal(EventOutcome.Pending, resumed.Event!.Outcome);
         Assert.Equal(WorkflowExecutionStatus.NeedsResolution, resumed.Status);
         Assert.Contains("stopped at a resource limit", resumed.ErrorMessage);
+
         var resolved = await Engine(services).ResolveAsync(stopped.InstanceId, "any",
             ActivityResolution.Failed("operator"));
+
         Assert.Contains("stopped at a resource limit", resolved.ErrorMessage);
+
         Assert.Equal(WorkflowStatus.NeedsResolution,
             (await repository.GetWorkflowInstanceAsync(stopped.InstanceId))!.Status);
+
         Assert.Equal(EventOutcome.Pending,
             (await repository.GetEventAsync(stopped.InstanceId, "approval-1"))!.Outcome);
 
         // The release takes it.
         await Engine(services).ReleaseAsync(stopped.InstanceId);
+
         Assert.Equal(EventOutcome.Consumed,
             (await repository.GetEventAsync(stopped.InstanceId, "approval-1"))!.Outcome);
     }
@@ -139,8 +153,10 @@ public sealed class CheckpointLimitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository, 8_000);
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<LimitData>("OversizedChild").Step<NoopActivity>().Build());
+
         var parent = Workflow.Create<LimitData>("ParentOfOversizedChild")
             .Step<NoopActivity>()
             .Invoke<LimitData>("OversizedChild", 1, setup => setup
@@ -167,7 +183,9 @@ public sealed class CheckpointLimitTests
             () => Engine(services).RunAsync(GrowingWorkflow("RefusedStart"),
                 new LimitData { Text = new string('x', GrownLength) }));
 
-        Assert.Empty(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "RefusedStart", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+        Assert.Empty(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "RefusedStart", Limit: int.MaxValue))).Items.Select(async
+                row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
     }
 
     private static WorkflowDefinition GrowingWorkflow(string name = "GrowingCheckpoint") =>
@@ -186,6 +204,7 @@ public sealed class CheckpointLimitTests
         services.AddIxIFlow(options => options.MaxCheckpointBytes = maxCheckpointBytes);
         services.AddTransient<NoopActivity>();
         services.AddTransient<GrowActivity>();
+
         return services.BuildServiceProvider();
     }
 
@@ -213,6 +232,7 @@ public sealed class CheckpointLimitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Text = new string('x', GrownLength);
+
             return Task.CompletedTask;
         }
 

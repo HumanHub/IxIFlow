@@ -8,6 +8,7 @@ public sealed class WorkflowEngineException : Exception
 {
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Exception, object> WorkflowFailures = new();
     private static readonly object WorkflowOrigin = new();
+
     public WorkflowEngineException(WorkflowErrorKind kind, string message, Exception? innerException = null)
         : base(message, innerException)
     {
@@ -52,6 +53,7 @@ public sealed class WorkflowEngineException : Exception
     {
         if (error is not WorkflowEngineException { RaisedByEngineContext: true })
             WorkflowFailures.GetValue(error, _ => WorkflowOrigin);
+
         return error;
     }
 
@@ -67,6 +69,7 @@ public sealed class WorkflowEngineException : Exception
                 StepId == null ? null : $"step '{StepId}'",
                 AttemptId == null ? null : $"attempt '{AttemptId}'"
             }.Where(part => part != null));
+
             return context.Length == 0 ? base.Message : $"{base.Message} ({context})";
         }
     }
@@ -77,6 +80,7 @@ public sealed class WorkflowEngineException : Exception
         InstanceId ??= instanceId;
         StepId ??= stepId;
         AttemptId ??= attemptId;
+
         return this;
     }
 }

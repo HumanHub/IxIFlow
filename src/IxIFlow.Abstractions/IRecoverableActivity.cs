@@ -8,8 +8,10 @@ namespace IxIFlow.Core;
 /// </summary>
 public interface IRecoverableActivity : IAsyncActivity
 {
+    /// <summary>Captures serializable recovery state before invocation without performing external effects or changing mapped inputs.</summary>
     object? CaptureRecoveryStateObject(IActivityContext context);
 
+    /// <summary>Resolves an interrupted invocation from saved state; a completed decision must restore outputs.</summary>
     Task<ActivityRecoveryResolution> RecoverObjectAsync(
         object? state,
         IActivityContext context,
@@ -29,6 +31,8 @@ public sealed record ActivityRecoveryResolution(
     string? Reason = null,
     Exception? Error = null);
 
+/// <summary>An activity that captures typed state and decides whether an interrupted invocation completed, may execute again, or needs resolution.</summary>
+/// <typeparam name="TRecoveryState">Serializable recovery state saved with the invocation.</typeparam>
 public interface IRecoverableActivity<TRecoveryState> : IRecoverableActivity
 {
     /// <summary>
@@ -59,7 +63,9 @@ public interface IRecoverableActivity<TRecoveryState> : IRecoverableActivity
         if (state is not TRecoveryState typedState)
             throw new InvalidOperationException(
                 $"Saved recovery state for '{GetType().Name}' has the wrong type");
+
         var result = await RecoverAsync(typedState, context, cancellationToken);
+
         return result switch
         {
             ActivityRecoveryResult<TRecoveryState>.Completed =>
@@ -99,6 +105,7 @@ public static class ActivityRecoveryContextExtensions
     public static TRecoveryState GetRecoveryState<TRecoveryState>(this IActivityContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
+
         return context.RecoveryState is TRecoveryState state
             ? state
             : throw new InvalidOperationException(

@@ -25,7 +25,9 @@ public sealed partial class ActivityCompilationTests
     public sealed class Syntax
     {
         [Theory]
-        [InlineData("declarations", "}\n[global::IxIFlow.ActivitySdk.WorkflowActivity(\"acme.extra\")]\npublic sealed class Extra : IAsyncActivity {\npublic Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;", "}")]
+        [InlineData("declarations",
+            "}\n[global::IxIFlow.ActivitySdk.WorkflowActivity(\"acme.extra\")]\npublic sealed class Extra : IAsyncActivity {\npublic Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;",
+            "}")]
         [InlineData("body", "}\npublic int Escaped { get; set; }\npublic void Other() {", "}")]
         [InlineData("body", "#region injected\nreturn;\n#endregion", "#region")]
         [InlineData("declarations", "#region injected\nprivate int Number() => 1;\n#endregion", "#region")]
@@ -42,6 +44,7 @@ public sealed partial class ActivityCompilationTests
             var yaml = "activity: {key: acme.test, version: 1}\n" +
                 (member == "declarations" ? "body: |\n  return;\n" : "") +
                 member + ": |4-\n    " + code.Replace("\n", "\n    ");
+
             var result = ActivityCompilation.Compile(yaml, "contained.activity.yaml");
             Assert.False(result.Success);
             Assert.Empty(result.Assembly);
@@ -54,8 +57,10 @@ public sealed partial class ActivityCompilationTests
             Assert.Equal(line + 1, error.Line);
             Assert.Equal(lines[line].IndexOf(anchor, StringComparison.Ordinal) + 1, error.Column);
             var document = Dsl.Documents.WorkflowYamlSerializer.ReadActivity(yaml);
+
             var exception = Assert.Throws<WorkflowSourceException>(() =>
                 ActivitySourceTranslator.Translate(document, yaml, "contained.activity.yaml"));
+
             Assert.Equal(error.Path, exception.Path);
             Assert.Equal(error.Line, exception.Line);
             Assert.Equal(error.Column, exception.Column);
@@ -72,9 +77,11 @@ public sealed partial class ActivityCompilationTests
         {
             var padding = new string(' ', indent);
             var comment = new string(' ', indent - 1) + "#error YAML-only comment\n";
+
             var yaml = "activity: {key: acme.test, version: 1}\nbody: " + indicator + "\n" +
                 padding + "return;\n\n" + comment + "declarations: " + indicator + "\n" +
                 padding + "private static int Number() => 1;\n\n" + comment;
+
             var result = ActivityCompilation.Compile(yaml, "bounds.activity.yaml");
             Assert.True(result.Success, string.Join("\n", result.Diagnostics));
             Assert.Empty(result.Diagnostics);
@@ -95,7 +102,10 @@ public sealed partial class ActivityCompilationTests
         {
             var code = "[global::IxIFlow.ActivitySdk.WorkflowActivity(\"acme.extra\")]\n" + visibility +
                 " sealed class Extra : IAsyncActivity\n{\npublic Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;\n}";
-            if (deeper) code = "public class Helper\n{\n" + code + "\n}";
+
+            if (deeper)
+                code = "public class Helper\n{\n" + code + "\n}";
+
             var yaml = "activity: {key: acme.test, version: 1}\nbody: |\n  return;\ndeclarations: |\n  " + code.Replace("\n", "\n  ");
             var result = ActivityCompilation.Compile(yaml, "one.activity.yaml");
             Assert.False(result.Success);
@@ -113,38 +123,40 @@ public sealed partial class ActivityCompilationTests
         public void ValidAuthoredSyntaxAndNestedHelpersCompileToOneDiscoverableActivity()
         {
             const string yaml = """"
-                activity: {key: acme.syntax, version: 1}
-                body: |
-                  [global::System.ComponentModel.Description("{ local }")]
-                  static string Local()
-                  {
-                      // } { These braces are comments.
-                      /* { } */
-                      var raw = """{ raw }""";
-                      var verbatim = @"{ verbatim ""quoted"" }";
-                      return raw + verbatim;
-                  }
-                  _ = new Helper().Echo(Local());
-                  _ = new GenericHelper<int>().Echo(42);
-                  _ = new PartialHelper().Echo(Local());
-                declarations: |
-                  [global::System.ComponentModel.Description("{ helper }")]
-                  private sealed class Helper
-                  {
-                      public string Echo(string value) => value;
-                      public sealed class Nested { }
-                  }
-                  private sealed class GenericHelper<T>
-                  {
-                      public T Echo(T value) => value;
-                  }
-                  private sealed partial class PartialHelper { public string Echo(string value) => Finish(value); }
-                  private sealed partial class PartialHelper { private static string Finish(string value) => value; }
-                """";
+                                activity: {key: acme.syntax, version: 1}
+                                body: |
+                                  [global::System.ComponentModel.Description("{ local }")]
+                                  static string Local()
+                                  {
+                                      // } { These braces are comments.
+                                      /* { } */
+                                      var raw = """{ raw }""";
+                                      var verbatim = @"{ verbatim ""quoted"" }";
+                                      return raw + verbatim;
+                                  }
+                                  _ = new Helper().Echo(Local());
+                                  _ = new GenericHelper<int>().Echo(42);
+                                  _ = new PartialHelper().Echo(Local());
+                                declarations: |
+                                  [global::System.ComponentModel.Description("{ helper }")]
+                                  private sealed class Helper
+                                  {
+                                      public string Echo(string value) => value;
+                                      public sealed class Nested { }
+                                  }
+                                  private sealed class GenericHelper<T>
+                                  {
+                                      public T Echo(T value) => value;
+                                  }
+                                  private sealed partial class PartialHelper { public string Echo(string value) => Finish(value); }
+                                  private sealed partial class PartialHelper { private static string Finish(string value) => value; }
+                                """";
+
             var result = ActivityCompilation.Compile(yaml);
             Assert.True(result.Success, string.Join("\n", result.Diagnostics));
             Assert.Empty(result.Diagnostics);
             var context = new AssemblyLoadContext("syntax-control", isCollectible: true);
+
             try
             {
                 var assembly = context.LoadFromStream(new MemoryStream(result.Assembly));
@@ -153,8 +165,10 @@ public sealed partial class ActivityCompilationTests
                 Assert.NotNull(assembly.GetType("IxIFlow.Activities.Acme.Syntax+GenericHelper`1"));
                 Assert.NotNull(assembly.GetType("IxIFlow.Activities.Acme.Syntax+PartialHelper"));
             }
-            finally { context.Unload(); }
+            finally
+            {
+                context.Unload();
+            }
         }
-
     }
 }

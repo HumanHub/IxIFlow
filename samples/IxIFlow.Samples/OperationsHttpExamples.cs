@@ -18,6 +18,7 @@ public static class OperationsHttpExamples
             options.ActForPolicy = "workflow-act-for"; // Optional delegation.
             options.MutationWait = TimeSpan.FromSeconds(10);
         });
+
         // end-snippet: operations-http-map
     }
 }

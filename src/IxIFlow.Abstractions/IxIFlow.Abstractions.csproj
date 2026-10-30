@@ -4,9 +4,14 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Suppress missing-member XML warnings for this project; XML documentation is generated and packaged. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Description>Activity, recovery, scope and data-mapping contracts for IxIFlow workflow authors.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="/" />
     <PackageReference Include="Microsoft.Extensions.Compliance.Abstractions" Version="10.10.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
   </ItemGroup>

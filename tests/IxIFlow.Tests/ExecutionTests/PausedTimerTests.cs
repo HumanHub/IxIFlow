@@ -24,13 +24,17 @@ public sealed class PausedTimerTests
         var id = (await h.Client.RunAsync(Waiting(), new Data())).InstanceId;
         await h.Ops.PauseAsync(id, "pause");
         var generation = WorkflowDebugRules.Checkpoint((await h.Store.GetWorkflowInstanceAsync(id))!).PauseGeneration;
+
         Assert.Equal(DebugCommandStatus.StaleGeneration, (await h.Store.RequestDebugCommandAsync(id,
             new("stale", DebugCommandKind.Continue, generation - 1, "actor"))).Status);
+
         await h.Ops.ContinueAsync(id, "continue");
         var command = (await h.Store.GetDebugStatesAsync([id]))[id].Commands.Single(c => c.Kind == DebugCommandKind.Continue);
         Assert.NotNull(command.AcknowledgedRevision);
+
         Assert.Equal(DebugCommandStatus.AlreadyAccepted, (await h.Store.RequestDebugCommandAsync(id,
             new(command.Id, command.Kind, generation, command.Actor))).Status);
+
         await Assert.ThrowsAsync<ArgumentException>(() => h.Store.RequestDebugCommandAsync(id,
             new(command.Id, DebugCommandKind.Pause, generation, command.Actor)));
     }
@@ -74,11 +78,17 @@ public sealed class PausedTimerTests
         await using var h = new Harness(sqlite);
         var definition = Workflow.Create<Data>("ExecutionFirst").Step<Noop>().WaitFor<Go>("go").Step<Count>().Build();
         var id = (await h.Client.RunAsync(definition, new Data(), new() { ExecutionTimeout = Ten })).InstanceId;
-        if (expiredBeforePause) h.Advance(10);
+
+        if (expiredBeforePause)
+            h.Advance(10);
+
         await h.Ops.PauseAsync(id, "pause");
         h.Advance(20);
         Assert.Equal(EventAppendStatus.Stored, (await h.Store.AppendEventAsync(Event(id, "event"))).Status);
-        if (!expiredBeforePause) h.Advance(10);
+
+        if (!expiredBeforePause)
+            h.Advance(10);
+
         Assert.Equal(WorkflowExecutionStatus.TimedOut, (await h.Ops.ContinueAsync(id, "continue")).Status);
         Assert.Equal(0, h.Probe.Count);
         Assert.NotEqual(EventOutcome.Consumed, (await h.Store.GetEventAsync(id, "event"))!.Outcome);
@@ -94,13 +104,20 @@ public sealed class PausedTimerTests
         await h.Services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
         var parent = new WorkflowBuilder<Data, object>([], "PausedParent").Invoke<Data>(child.Name, 1).Step<Count>().Build();
         var id = (await h.Client.RunAsync(parent, new Data())).InstanceId;
-        var childId = Assert.Single((await h.Store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: id, Limit: int.MaxValue))).Items).InstanceId;
-        try { await Until(async () => (await h.Store.GetWorkflowInstanceAsync(childId))!.Status == WorkflowStatus.Suspended); }
+
+        var childId = Assert.Single((await h.Store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: id, Limit: int.MaxValue))).Items)
+            .InstanceId;
+
+        try
+        {
+            await Until(async () => (await h.Store.GetWorkflowInstanceAsync(childId))!.Status == WorkflowStatus.Suspended);
+        }
         catch (OperationCanceledException)
         {
             var childState = (await h.Store.GetWorkflowInstanceAsync(childId))!;
             Assert.Fail($"Child status {childState.Status}: {childState.LastError} / {childState.LastErrorStackTrace}");
         }
+
         await h.Ops.PauseAsync(id, "pause");
         h.Advance(11);
         Assert.Equal(WorkflowExecutionStatus.Success, (await h.Client.RecoverAsync(childId)).Status);
@@ -139,32 +156,62 @@ public sealed class PausedTimerTests
     }
 
     private static WorkflowDefinition Waiting() => Workflow.Create<Data>("PausedWait").Step<Noop>()
-        .WaitFor<Go>("go", configure: w => w.TimeoutAfter(Ten).OnTimeout(b => b.Step<TimeoutMark>(a => a.Output(v => v.TimedOut).To(c => c.WorkflowData.TimedOut))))
+        .WaitFor<Go>("go",
+            configure: w => w.TimeoutAfter(Ten)
+                .OnTimeout(b => b.Step<TimeoutMark>(a => a.Output(v => v.TimedOut).To(c => c.WorkflowData.TimedOut))))
         .Step<Noop>().Build();
-    private static WorkflowEvent Event(string id, string eventId, string? target = null) => new(id, eventId, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Go)), "{}", "go", target);
+
+    private static WorkflowEvent Event(string id, string eventId, string? target = null) => new(id, eventId,
+        IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Go)), "{}", "go", target);
+
     private static async Task Until(Func<Task<bool>> condition)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
-        while (!await condition()) await Task.Delay(10, timeout.Token);
+
+        while (!await condition())
+            await Task.Delay(10, timeout.Token);
     }
-    public sealed class Data { public bool TimedOut { get; set; } }
+
+    public sealed class Data
+    {
+        public bool TimedOut { get; set; }
+    }
+
     public sealed class Go;
-    public sealed class Probe { public int Count; }
+
+    public sealed class Probe
+    {
+        public int Count;
+    }
+
     public sealed class Noop : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask; }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
     public sealed class TimeoutMark : IAsyncActivity
     {
         [ActivityOutput] public bool TimedOut { get; set; } = true;
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     public sealed class Count(Probe probe) : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) { probe.Count++; return Task.CompletedTask; } }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            probe.Count++;
+
+            return Task.CompletedTask;
+        }
+    }
+
     private sealed class ManualTime : TimeProvider
     {
         private DateTimeOffset _now = new(2026, 10, 19, 12, 0, 0, TimeSpan.Zero);
         public override DateTimeOffset GetUtcNow() => _now;
         public void Advance(TimeSpan duration) => _now += duration;
     }
+
     private sealed class Harness : IAsyncDisposable
     {
         public ManualTime StoreTime { get; } = new();
@@ -175,6 +222,7 @@ public sealed class PausedTimerTests
         public IWorkflowClient Client => Services.GetRequiredService<IWorkflowClient>();
         public IWorkflowOperations Ops => Services.GetRequiredService<IWorkflowOperations>();
         private readonly string? _folder;
+
         public Harness(bool sqlite)
         {
             if (sqlite)
@@ -183,7 +231,9 @@ public sealed class PausedTimerTests
                 Directory.CreateDirectory(_folder);
                 Store = new SqliteWorkflowStateRepository($"Data Source={Path.Combine(_folder, "state.db")}", StoreTime);
             }
-            else Store = new InMemoryWorkflowStateRepository(StoreTime);
+            else
+                Store = new InMemoryWorkflowStateRepository(StoreTime);
+
             var services = new ServiceCollection().AddLogging();
             services.AddIxIFlow(o => o.Debugging = true);
             services.AddSingleton<TimeProvider>(HostTime);
@@ -191,13 +241,23 @@ public sealed class PausedTimerTests
             services.AddSingleton(Probe);
             Services = services.BuildServiceProvider();
         }
-        public void Advance(int minutes) { StoreTime.Advance(TimeSpan.FromMinutes(minutes)); HostTime.Advance(TimeSpan.FromMinutes(minutes)); }
+
+        public void Advance(int minutes)
+        {
+            StoreTime.Advance(TimeSpan.FromMinutes(minutes));
+            HostTime.Advance(TimeSpan.FromMinutes(minutes));
+        }
+
         public async ValueTask DisposeAsync()
         {
             await Services.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
             await Services.DisposeAsync();
-            if (Store is IAsyncDisposable disposable) await disposable.DisposeAsync();
-            if (_folder != null) await SqliteTestFiles.DeleteAsync(_folder);
+
+            if (Store is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
+
+            if (_folder != null)
+                await SqliteTestFiles.DeleteAsync(_folder);
         }
     }
 }

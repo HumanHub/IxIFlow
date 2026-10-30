@@ -3,8 +3,15 @@
   "displayName": "IxIFlow Debugger",
   "description": "Attach VS Code to the debugger hosted by an IxIFlow application.",
   "version": "0.1.0",
-  "publisher": "ixiflow-local",
-  "engines": { "vscode": "^1.85.0" },
+  "publisher": "humanhub",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HumanHub/IxIFlow",
+    "directory": "extensions/ixiflow-debug"
+  },
+  "engines": { "vscode": "^1.85.0", "node": ">=18" },
+  "scripts": { "test": "node --test" },
   "main": "./extension.js",
   "activationEvents": ["onDebug:ixiflow"],
   "contributes": {

@@ -12,6 +12,7 @@ public sealed class FlowchartBuilder<TData, TPrevious> where TPrevious : class
     private readonly WorkflowStep _graph;
 
     private readonly Func<List<WorkflowStep>, ISequenceBuilder<TData, TPrevious>> _body;
+
     internal FlowchartBuilder(WorkflowStep graph, Func<List<WorkflowStep>, ISequenceBuilder<TData, TPrevious>> body) =>
         (_graph, _body) = (graph, body);
 
@@ -19,6 +20,7 @@ public sealed class FlowchartBuilder<TData, TPrevious> where TPrevious : class
     public FlowchartBuilder<TData, TPrevious> Start(string key)
     {
         _graph.GraphStart = key;
+
         return this;
     }
 
@@ -35,6 +37,7 @@ public sealed class FlowchartBuilder<TData, TPrevious> where TPrevious : class
         node.Steps.Add(decision);
         edges?.Invoke(new(node, decision));
         _graph.GraphNodes.Add(node);
+
         return this;
     }
 
@@ -49,6 +52,7 @@ public sealed class FlowchartBuilder<TData, TPrevious> where TPrevious : class
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         _graph.GraphNodes[^1].Name = name;
+
         return this;
     }
 
@@ -76,6 +80,7 @@ public sealed class FlowchartEdges<TData, TPrevious> where TPrevious : class
         var edge = Add(to, sourcePath, sourceLine);
         edge.ConditionExpression = whenExpression;
         edge.CompiledCondition = context => evaluate((WorkflowContext<TData, TPrevious>)context);
+
         return this;
     }
 
@@ -90,6 +95,7 @@ public sealed class FlowchartEdges<TData, TPrevious> where TPrevious : class
         _decision.SwitchEquals = (left, right) => EqualityComparer<TValue>.Default.Equals((TValue)left!, (TValue)right!);
         _decision.OutcomeExpression = switchExpression;
         _decision.OutcomeSelector = context => evaluate((WorkflowContext<TData, TPrevious>)context);
+
         return new(this);
     }
 
@@ -98,6 +104,7 @@ public sealed class FlowchartEdges<TData, TPrevious> where TPrevious : class
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         Add(to, sourcePath, sourceLine).IsDefault = true;
+
         return this;
     }
 
@@ -106,6 +113,7 @@ public sealed class FlowchartEdges<TData, TPrevious> where TPrevious : class
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         Add(to, sourcePath, sourceLine);
+
         return this;
     }
 
@@ -117,7 +125,9 @@ public sealed class FlowchartEdges<TData, TPrevious> where TPrevious : class
             WorkflowDataType = typeof(TData), PreviousStepDataType = typeof(TPrevious),
             Runtime = WorkflowStepDelegates.Create<TData, TPrevious>(), SourceLocation = path + ":" + line
         };
+
         _node.Edges.Add([edge]);
+
         return edge;
     }
 }
@@ -133,6 +143,7 @@ public sealed class FlowchartCases<TData, TPrevious, TValue> where TPrevious : c
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         _edges.Add(to, sourcePath, sourceLine).EdgeLabel = value;
+
         return this;
     }
 
@@ -141,6 +152,7 @@ public sealed class FlowchartCases<TData, TPrevious, TValue> where TPrevious : c
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
     {
         _edges.Otherwise(to, sourcePath, sourceLine);
+
         return this;
     }
 }

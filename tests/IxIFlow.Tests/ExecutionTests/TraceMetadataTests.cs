@@ -40,8 +40,12 @@ public sealed class TraceMetadataTests
             EntryType = TraceEntryType.Released,
             Payload = new ReleaseTrace("operator")
         };
+
         var store = new InMemoryWorkflowStateRepository();
-        var commit = CheckpointCommit.Create(new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "trace" }, (await StoreTestSupport.LeaseAsync(store, "trace")).Epoch, 0,
+
+        var commit = CheckpointCommit.Create(
+            new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "trace" },
+            (await StoreTestSupport.LeaseAsync(store, "trace")).Epoch, 0,
             traceEntries: [entry]);
 
         using var json = JsonDocument.Parse(Assert.Single(commit.TraceEntries));
@@ -59,7 +63,10 @@ public sealed class TraceMetadataTests
         var entry = new ExecutionTraceEntry { EntryType = TraceEntryType.ActivityStarted, ActivityName = "Activity" };
         entry.Metadata.Add("Attempt", 2);
         var store = new InMemoryWorkflowStateRepository();
-        var commit = CheckpointCommit.Create(new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "trace" }, (await StoreTestSupport.LeaseAsync(store, "trace")).Epoch, 0,
+
+        var commit = CheckpointCommit.Create(
+            new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "trace" },
+            (await StoreTestSupport.LeaseAsync(store, "trace")).Epoch, 0,
             traceEntries: [entry]);
 
         using var json = JsonDocument.Parse(Assert.Single(commit.TraceEntries));

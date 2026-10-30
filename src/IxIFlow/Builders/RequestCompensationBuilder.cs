@@ -5,7 +5,7 @@ using IxIFlow.Core;
 namespace IxIFlow.Builders;
 
 /// <summary>Builds the compensation of a saga request that reads the request's answer.</summary>
-public sealed class RequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TCurrentStepData, TReply>(
+internal sealed class RequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TCurrentStepData, TReply>(
     CompensationActivityInfo compensationInfo)
     : IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TCurrentStepData, TReply>
     where TWorkflowData : class
@@ -25,7 +25,7 @@ public sealed class RequestCompensationActivityBuilder<TWorkflowData, TCompensat
 }
 
 /// <summary>Maps one input of a request's compensation.</summary>
-public sealed class RequestCompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty,
+internal sealed class RequestCompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty,
     TCurrentStepData, TReply>(
     IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TCurrentStepData, TReply> builder,
     CompensationActivityInfo compensationInfo,
@@ -41,7 +41,9 @@ public sealed class RequestCompensationActivityInputBuilder<TWorkflowData, TComp
     {
         if (property.Body is not MemberExpression member)
             throw new ArgumentException("Expression must be a member access", nameof(property));
+
         var compiled = source.Compile();
+
         compensationInfo.InputMappings.Add(new PropertyMapping
         {
             TargetProperty = member.Member.Name,
@@ -57,6 +59,7 @@ public sealed class RequestCompensationActivityInputBuilder<TWorkflowData, TComp
             TargetType = typeof(TProperty),
             Direction = PropertyMappingDirection.Input
         });
+
         return builder;
     }
 

@@ -21,6 +21,7 @@ public sealed class WorkflowContractBundleTests
     {
         var good = Manifest();
         WorkflowBundleArchive.CheckManifest(good);
+
         var bad = defect switch
         {
             "format" => good with { FormatVersion = 1 },
@@ -29,6 +30,7 @@ public sealed class WorkflowContractBundleTests
             "noncanonical" => good with { Contract = " " + good.Contract },
             _ => good with { ContractHash = new string('0', 64) }
         };
+
         var error = Assert.Throws<WorkflowEngineException>(() => WorkflowBundleArchive.CheckManifest(bad));
         Assert.Equal(WorkflowErrorKind.ArtifactMismatch, error.Kind);
     }
@@ -38,15 +40,17 @@ public sealed class WorkflowContractBundleTests
     {
         using var culture = new UICultureScope("de-DE");
         var store = new InMemoryWorkflowStateRepository();
+
         const string yaml = """
-            workflow:
-              name: ContractBundle
-              version: 1
-              dataType: Data
-            definitions:
-              - kind: activity
-                activity: Echo
-            """;
+                            workflow:
+                              name: ContractBundle
+                              version: 1
+                              dataType: Data
+                            definitions:
+                              - kind: activity
+                                activity: Echo
+                            """;
+
         var options = new WorkflowPublisherOptions();
         options.SourceOptions.Types["Data"] = "global::" + typeof(WorkflowContractData).FullName;
         options.SourceOptions.Types["Echo"] = "global::" + typeof(Echo).FullName;
@@ -63,21 +67,31 @@ public sealed class WorkflowContractBundleTests
         Assert.Equal(expected.ToJson(), bundle.Manifest.Contract);
         Assert.Equal(expected.Hash, bundle.Manifest.ContractHash);
         var cache = Path.Combine(Path.GetTempPath(), "workflow-contract-bundle-" + Guid.NewGuid().ToString("N"));
+
         try
         {
             System.Globalization.CultureInfo.CurrentUICulture = System.Globalization.CultureInfo.GetCultureInfo("tr-TR");
             using var catalog = new WorkflowCatalog(store, artifacts: store, bundles: new(cache));
+
             using (var lease = await catalog.AcquireWorkflowDefinitionAsync(row.Name, 1, row.ArtifactDigest))
                 Assert.Equal(expected.ToJson(), WorkflowDefinitionValidator.GetContract(lease.Definition).ToJson());
+
             var changed = new WorkflowContract([], [], true);
             var manifest = bundle.Manifest with { Contract = changed.ToJson(), ContractHash = changed.Hash };
             var bytes = WorkflowBundleArchive.Create(manifest, bundle.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()));
             var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(bytes));
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.AcquireWorkflowDefinitionAsync(row.Name, 1, digest));
+
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+                catalog.AcquireWorkflowDefinitionAsync(row.Name, 1, digest));
+
             Assert.Equal(WorkflowErrorKind.ArtifactMismatch, error.Kind);
             Assert.Contains("contract", error.Message);
         }
-        finally { if (Directory.Exists(cache)) Directory.Delete(cache, true); }
+        finally
+        {
+            if (Directory.Exists(cache))
+                Directory.Delete(cache, true);
+        }
     }
 
     [Theory]
@@ -87,15 +101,17 @@ public sealed class WorkflowContractBundleTests
     public async Task DefinitionRootStartsValidateHostContextRequiredInputsForABundleDefinition(string path)
     {
         var store = new InMemoryWorkflowStateRepository();
+
         const string yaml = """
-            workflow:
-              name: ContractBundleRoot
-              version: 1
-              dataType: Data
-            definitions:
-              - kind: activity
-                activity: Echo
-            """;
+                            workflow:
+                              name: ContractBundleRoot
+                              version: 1
+                              dataType: Data
+                            definitions:
+                              - kind: activity
+                                activity: Echo
+                            """;
+
         var publisherOptions = new WorkflowPublisherOptions();
         publisherOptions.SourceOptions.Types["Data"] = "global::" + typeof(WorkflowContractData).FullName;
         publisherOptions.SourceOptions.Types["Echo"] = "global::" + typeof(Echo).FullName;
@@ -103,6 +119,7 @@ public sealed class WorkflowContractBundleTests
         var published = await new WorkflowPublisher(store, store, publisherOptions).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
         var cache = Path.Combine(Path.GetTempPath(), "workflow-contract-root-" + Guid.NewGuid().ToString("N"));
+
         try
         {
             await using var provider = PublishedBundleScenario.Host(store, cache);
@@ -110,11 +127,16 @@ public sealed class WorkflowContractBundleTests
             using var lease = await catalog.AcquireWorkflowDefinitionAsync(published.Workflow!.Name, 1, published.Workflow.ArtifactDigest);
             var definition = lease.Definition;
             Assert.NotSame(typeof(WorkflowContractData).Assembly, definition.WorkflowDataType!.Assembly);
-            Assert.Equal(WorkflowTypeIdentity.SavedName(typeof(WorkflowContractData)), WorkflowTypeIdentity.SavedName(definition.WorkflowDataType));
+
+            Assert.Equal(WorkflowTypeIdentity.SavedName(typeof(WorkflowContractData)),
+                WorkflowTypeIdentity.SavedName(definition.WorkflowDataType));
+
             var client = provider.GetRequiredService<IWorkflowClient>();
             await using var renewer = new ExecutionLeaseRenewer(store);
+
             var operations = new WorkflowHost.InstanceOperations(provider, provider.GetRequiredService<IActivityExecutor>(), store,
                 catalog, new InProcessInstanceGate(), renewer);
+
             var rejectedId = Guid.NewGuid().ToString("N");
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => Start(new WorkflowContractData(), rejectedId));
             Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
@@ -129,29 +151,42 @@ public sealed class WorkflowContractBundleTests
             async Task<WorkflowExecutionResult> Start(WorkflowContractData data, string id)
             {
                 var options = new WorkflowOptions { InstanceId = id };
-                if (path == "run") return await client.RunAsync(definition, data, options);
-                if (path == "start") return await client.AwaitAsync(await client.StartAsync(definition, data, options));
+
+                if (path == "run")
+                    return await client.RunAsync(definition, data, options);
+
+                if (path == "start")
+                    return await client.AwaitAsync(await client.StartAsync(definition, data, options));
+
                 return await new WorkflowHost.SlotClient(operations).RunAsync(definition, data, options);
             }
         }
-        finally { if (Directory.Exists(cache)) Directory.Delete(cache, true); }
+        finally
+        {
+            if (Directory.Exists(cache))
+                Directory.Delete(cache, true);
+        }
     }
 
     private sealed class UICultureScope(string name) : IDisposable
     {
         private readonly System.Globalization.CultureInfo _previous = Set(name);
+
         private static System.Globalization.CultureInfo Set(string name)
         {
             var previous = System.Globalization.CultureInfo.CurrentUICulture;
             System.Globalization.CultureInfo.CurrentUICulture = System.Globalization.CultureInfo.GetCultureInfo(name);
+
             return previous;
         }
+
         public void Dispose() => System.Globalization.CultureInfo.CurrentUICulture = _previous;
     }
 
     private static WorkflowBundleManifest Manifest()
     {
         var contract = WorkflowContract.OfType(typeof(WorkflowContractData));
+
         return new(6, "Contract", 1, "hash", WorkflowTypeIdentity.SavedName(typeof(WorkflowContractData)), "Entry", "1.0", 4, "",
             contract.ToJson(), contract.Hash,
             new("5", "latest", "Release", true, "portable"), new Dictionary<string, string>(),

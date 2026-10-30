@@ -15,22 +15,30 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> target,
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TValue>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+
     /// <summary>Raises a business exception constructed from the current context.</summary>
-    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Throw<TException>(Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TException>> value,
+    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Throw<TException>(
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TException>> value,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
+
     /// <summary>Propagates the original error of the lexically enclosing Catch.</summary>
-    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Rethrow([CallerFilePath] string sourcePath = "",
+        [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>Identifies the preceding step and its source.</summary>
-    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
+    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> WithId(string id, [CallerFilePath] string sourcePath = "",
+        [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Adds a step to the saga execution
     /// </summary>
     /// <typeparam name="TActivity">The activity type for this step</typeparam>
     /// <param name="configure">Configuration for the saga activity</param>
+    /// <param name="sourceLine">Source line captured for the workflow step.</param>
+    /// <param name="sourcePath">Source file path captured for the workflow step.</param>
     ISagaActivityBuilder<TWorkflowData, TActivity> Step<TActivity>(
-        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -38,7 +46,8 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     ISagaActivityBuilder<TWorkflowData, TActivity> Request<TActivity>(
         string name,
         Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
-        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>>? subjectExpression = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>
@@ -55,7 +64,8 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     ISagaActivityBuilder<TWorkflowData, TActivity> Request<TActivity>(
         string name,
         Action<ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>>? configure = null,
-        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Func<WorkflowContext<TWorkflowData, TPreviousStepData>, string>? subject = null, [CallerFilePath] string sourcePath = "",
+        [CallerLineNumber] int sourceLine = 0)
         where TActivity : class, IAsyncActivity;
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -63,7 +73,8 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     ISagaActivityBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>>? resumeExpression = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class;
 
     /// <summary>
@@ -74,10 +85,13 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="resumeCondition">Optional condition to resume execution</param>
     /// <param name="configure">Configuration for suspension setup</param>
     /// <returns>A workflow builder for chaining additional steps</returns>
+    /// <param name="sourceLine">Source line captured for the workflow step.</param>
+    /// <param name="sourcePath">Source file path captured for the workflow step.</param>
     ISagaActivityBuilder<TWorkflowData, TResumeEvent> Suspend<TResumeEvent>(
         string suspendReason,
         Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? resumeCondition = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class;
 
     /// <summary>Retains the author expression for validation and definition identity.</summary>
@@ -85,14 +99,22 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     ISagaActivityBuilder<TWorkflowData, TResumeEvent> WaitFor<TResumeEvent>(
         string key,
         Expression<Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>>? matchesExpression = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class;
 
     ISagaActivityBuilder<TWorkflowData, TResumeEvent> WaitFor<TResumeEvent>(
         string key,
         Func<TResumeEvent, WorkflowContext<TWorkflowData, TPreviousStepData>, bool>? matches = null,
-        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>>? configure = null,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TResumeEvent : class;
+
+    /// <summary>Runs cleanup if the compensable body is abandoned by cancellation.</summary>
+    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> CancellationScope(
+        Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> body,
+        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> onCancelled,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
 
     /// <summary>
     /// Selects one compensable case body using a typed selector
@@ -101,13 +123,10 @@ public interface ISagaActivityBuilder<TWorkflowData, TPreviousStepData>
     /// <param name="propertySelector">Expression that selects the property to branch on</param>
     /// <param name="configure">Configuration for the switch cases</param>
     /// <returns>A saga activity builder for continuing the saga flow</returns>
-    ISagaActivityBuilder<TWorkflowData, TPreviousStepData> CancellationScope(
-        Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> body,
-        Action<ISequenceBuilder<TWorkflowData, TPreviousStepData>> onCancelled,
-        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
-
+    /// <param name="sourceLine">Source line captured for the workflow step.</param>
+    /// <param name="sourcePath">Source file path captured for the workflow step.</param>
     ISagaActivityBuilder<TWorkflowData, TPreviousStepData> Switch<TProperty>(
         Expression<Func<WorkflowContext<TWorkflowData, TPreviousStepData>, TProperty>> propertySelector,
-        Action<ISagaSwitchBuilder<TWorkflowData, TPreviousStepData, TProperty>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);
-
+        Action<ISagaSwitchBuilder<TWorkflowData, TPreviousStepData, TProperty>> configure, [CallerFilePath] string sourcePath = "",
+        [CallerLineNumber] int sourceLine = 0);
 }

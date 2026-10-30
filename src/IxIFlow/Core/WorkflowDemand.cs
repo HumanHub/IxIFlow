@@ -12,12 +12,17 @@ public sealed record WorkflowDemand(string Key, string? Value = null, DateTime? 
     /// <summary>Expiry of the value restriction when it ends before the key-presence constraint.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTime? ValueExpiresAtUtc { get; init; }
+
     [JsonIgnore] internal LambdaExpression? Expression { get; init; }
     [JsonIgnore] internal Func<object, string?>? Evaluate { get; init; }
 }
 
 /// <summary>How a start responds when no live host advertises all its demands.</summary>
-public enum WhenUnschedulable { Wait, Fail }
+public enum WhenUnschedulable
+{
+    Wait,
+    Fail
+}
 
 internal sealed record DemandSettings(TimeSpan HostPinLifetime)
 {
@@ -38,60 +43,88 @@ internal static class WorkflowDemands
     {
         if (!Enum.IsDefined(options.WhenUnschedulable))
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Unknown unschedulable policy");
+
         var declarations = definition.Demands.Concat(registrationDemands ?? []).Concat(options.Demands).Append(
             new WorkflowDemand($"workflow:{definition.Name}@{definition.Version}", structureHash));
-        if (definition.BundleDigest != null) declarations = declarations.Append(new WorkflowDemand("bundle-host"));
+
+        if (definition.BundleDigest != null)
+            declarations = declarations.Append(new WorkflowDemand("bundle-host"));
+
         if (options.RequiredHostId is { } host)
         {
             if (host == Guid.Empty)
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "A required host ID cannot be empty");
+
             declarations = declarations.Append(new WorkflowDemand("host", host.ToString("D")));
         }
+
         var resolved = new Dictionary<string, WorkflowDemand>(StringComparer.Ordinal);
+
         foreach (var declaration in declarations)
         {
             Validate(declaration);
             var value = declaration.Evaluate == null ? declaration.Value : declaration.Evaluate(data);
+
             var demand = new WorkflowDemand(declaration.Key, value, declaration.ExpiresAtUtc, declaration.Inherit)
                 { ValueExpiresAtUtc = declaration.ValueExpiresAtUtc };
+
             if (resolved.TryGetValue(demand.Key, out var previous))
             {
                 if (previous.Value != null && value != null && previous.Value != value)
                     throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest,
                         $"Conflicting demands for '{demand.Key}': '{previous.Value}' and '{value}'");
+
                 static DateTime? Later(DateTime? first, DateTime? second) =>
                     first == null || second == null ? null : first > second ? first : second;
+
                 var valueExpiry = previous.Value == null ? demand.ValueExpiresAtUtc ?? demand.ExpiresAtUtc
                     : value == null ? previous.ValueExpiresAtUtc ?? previous.ExpiresAtUtc
                     : Later(previous.ValueExpiresAtUtc ?? previous.ExpiresAtUtc, demand.ValueExpiresAtUtc ?? demand.ExpiresAtUtc);
+
                 var presenceExpiry = Later(previous.ExpiresAtUtc, demand.ExpiresAtUtc);
-                demand = demand with { Value = previous.Value ?? value, Inherit = previous.Inherit || demand.Inherit,
+
+                demand = demand with
+                {
+                    Value = previous.Value ?? value, Inherit = previous.Inherit || demand.Inherit,
                     ExpiresAtUtc = presenceExpiry,
-                    ValueExpiresAtUtc = previous.Value == null && value == null || valueExpiry == presenceExpiry ? null : valueExpiry };
+                    ValueExpiresAtUtc = previous.Value == null && value == null || valueExpiry == presenceExpiry ? null : valueExpiry
+                };
             }
+
             resolved[demand.Key] = demand;
         }
+
         return resolved.Values.OrderBy(demand => demand.Key, StringComparer.Ordinal).ToList();
     }
 
     internal static List<WorkflowDemand> Saved(WorkflowInstance instance) =>
         ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)
-            ? ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson).Demands : [];
+            ? ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson).Demands
+            : [];
 
     // Only the creating transaction knows authoritative time. The immutable commit still hashes the request.
     internal static string StampStartPayload(string payload, DateTime now)
     {
         var instance = JsonSerializer.Deserialize<WorkflowInstance>(payload)!;
-        if (!ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson)) return payload;
+
+        if (!ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson))
+            return payload;
+
         var state = JsonNode.Parse(instance.ExecutionStateJson)!;
-        if (state["HostPinLifetime"] == null) return payload;
+
+        if (state["HostPinLifetime"] == null)
+            return payload;
+
         var lifetime = state["HostPinLifetime"]!.Deserialize<TimeSpan>();
+
         foreach (var demand in state["Demands"]!.AsArray())
             if (demand!["Key"]!.GetValue<string>() == "host")
                 demand["ExpiresAtUtc"] = JsonValue.Create(now + lifetime);
+
         state.AsObject().Remove("HostPinLifetime");
         var root = JsonNode.Parse(payload)!;
         root["ExecutionStateJson"] = state;
+
         return root.ToJsonString();
     }
 

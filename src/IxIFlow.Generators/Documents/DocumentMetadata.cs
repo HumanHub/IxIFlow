@@ -25,6 +25,8 @@ public sealed class DocumentValuesAttribute(params string[] values) : Attribute
 
 /// <summary>A key a document node accepts, with the member it reads into when there is one.</summary>
 /// <param name="IsDiscriminator">The key is the variant's <c>kind</c>, written as the declared kind and checked against it.</param>
+/// <param name="Member">Reflected member backing the key, when available.</param>
+/// <param name="Name">The document key name.</param>
 public readonly record struct DocumentKey(string Name, PropertyInfo? Member, bool IsDiscriminator);
 
 /// <summary>Provides the shared member ordering, names and variant resolution of the document contract.</summary>
@@ -41,19 +43,30 @@ public static class DocumentModel
 
     /// <summary>The serialized members of a document type, base members first, then in declaration order.</summary>
     public static IReadOnlyList<PropertyInfo> GetMembers(Type type) => Members.GetOrAdd(type, static type =>
-        type == typeof(DocumentNode) || type == typeof(object) ? [] :
-        [.. type.BaseType is { } parent ? GetMembers(parent) : [],
-         .. type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly).OrderBy(member => member.MetadataToken)]);
+        type == typeof(DocumentNode) || type == typeof(object)
+            ? []
+            :
+            [
+                .. type.BaseType is { } parent ? GetMembers(parent) : [],
+                .. type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                    .OrderBy(member => member.MetadataToken)
+            ]);
 
     /// <summary>The keys a node of this type accepts, in document order: a variant's kind, the root's schema binding, then the members.</summary>
     public static IReadOnlyList<DocumentKey> GetKeys(Type type) => Keys.GetOrAdd(type, static type =>
     {
         var members = GetMembers(type);
-        var discriminator = GetKind(type) == null ? null : (DocumentKey?)new DocumentKey("kind", members.FirstOrDefault(member => GetName(member) == "kind"), true);
+
+        var discriminator = GetKind(type) == null
+            ? null
+            : (DocumentKey?)new DocumentKey("kind", members.FirstOrDefault(member => GetName(member) == "kind"), true);
+
         return
         [
             .. discriminator is { } kind ? [kind] : Array.Empty<DocumentKey>(),
-            .. type == typeof(WorkflowDocument) || type == typeof(ActivityDocument) || type == typeof(TemplateDocument) ? [new DocumentKey(SchemaKey, null, false)] : Array.Empty<DocumentKey>(),
+            .. type == typeof(WorkflowDocument) || type == typeof(ActivityDocument) || type == typeof(TemplateDocument)
+                ? [new DocumentKey(SchemaKey, null, false)]
+                : Array.Empty<DocumentKey>(),
             .. members.Where(member => member != discriminator?.Member).Select(member => new DocumentKey(GetName(member), member, false))
         ];
     });
@@ -63,22 +76,35 @@ public static class DocumentModel
     /// <summary>Whether an explicitly supplied null is permitted by a member's C# contract.</summary>
     public static bool AllowsNull(PropertyInfo member)
     {
-        if (member.PropertyType.IsValueType) return Nullable.GetUnderlyingType(member.PropertyType) != null;
-        var annotation = member.CustomAttributes.FirstOrDefault(attribute => attribute.AttributeType.FullName == "System.Runtime.CompilerServices.NullableAttribute");
+        if (member.PropertyType.IsValueType)
+            return Nullable.GetUnderlyingType(member.PropertyType) != null;
+
+        var annotation = member.CustomAttributes.FirstOrDefault(attribute =>
+            attribute.AttributeType.FullName == "System.Runtime.CompilerServices.NullableAttribute");
+
         if (annotation != null)
         {
             var argument = annotation.ConstructorArguments[0];
+
             return (argument.Value is byte flag ? flag : (byte)((IList<CustomAttributeTypedArgument>)argument.Value!)[0].Value!) == 2;
         }
+
         for (var type = member.DeclaringType; type != null; type = type.DeclaringType)
         {
-            var context = type.CustomAttributes.FirstOrDefault(attribute => attribute.AttributeType.FullName == "System.Runtime.CompilerServices.NullableContextAttribute");
-            if (context != null) return (byte)context.ConstructorArguments[0].Value! == 2;
+            var context = type.CustomAttributes.FirstOrDefault(attribute =>
+                attribute.AttributeType.FullName == "System.Runtime.CompilerServices.NullableContextAttribute");
+
+            if (context != null)
+                return (byte)context.ConstructorArguments[0].Value! == 2;
         }
+
         return false;
     }
+
     public static string CamelCase(string name) => char.ToLowerInvariant(name[0]) + name.Substring(1);
-    public static DocumentKindAttribute? GetKind(Type type) => Kinds.GetOrAdd(type, static type => type.GetCustomAttribute<DocumentKindAttribute>());
+
+    public static DocumentKindAttribute? GetKind(Type type) =>
+        Kinds.GetOrAdd(type, static type => type.GetCustomAttribute<DocumentKindAttribute>());
 
     /// <summary>The closed set of values a member accepts, or an empty list when the member is open.</summary>
     public static IReadOnlyList<string> GetValues(Type type, string property) => Values.GetOrAdd((type, property), static key =>
@@ -94,29 +120,44 @@ public static class DocumentModel
         GetVariants(type).FirstOrDefault(candidate =>
         {
             var contract = GetKind(candidate)!;
+
             return hasMember("kind") ? contract.Kind == kind : contract.ImpliedBy is { } member && hasMember(member);
         });
+
     public static DocumentLocation GetLocation(DocumentNode document, string? path)
     {
-        if (path != null && document.Members.TryGetValue(path, out var exact)) return exact;
+        if (path != null && document.Members.TryGetValue(path, out var exact))
+            return exact;
+
         object? current = document;
         var location = document.Location;
-        foreach (System.Text.RegularExpressions.Match segment in System.Text.RegularExpressions.Regex.Matches(path ?? "", @"([^\.\[\]]+)|\[(\d+)\]"))
+
+        foreach (System.Text.RegularExpressions.Match segment in System.Text.RegularExpressions.Regex.Matches(path ?? "",
+                     @"([^\.\[\]]+)|\[(\d+)\]"))
         {
             if (current is DocumentNode node)
             {
                 var member = segment.Value;
-                if (document.Members.Count > 0 && !node.Members.ContainsKey(member)) return node.Location;
+
+                if (document.Members.Count > 0 && !node.Members.ContainsKey(member))
+                    return node.Location;
+
                 location = node.Members.TryGetValue(member, out var found) ? found : node.Location;
+
                 current = node.GetType().GetProperties().FirstOrDefault(property =>
                     string.Equals(property.Name, member, StringComparison.OrdinalIgnoreCase))?.GetValue(node);
             }
-            else if (current is System.Collections.IDictionary dictionary) current = dictionary[segment.Value];
+            else if (current is System.Collections.IDictionary dictionary)
+                current = dictionary[segment.Value];
             else if (current is System.Collections.IList list && int.TryParse(segment.Groups[2].Value, out var index) && index < list.Count)
                 current = list[index];
-            else break;
-            if (current is DocumentNode child) location = child.Location;
+            else
+                break;
+
+            if (current is DocumentNode child)
+                location = child.Location;
         }
+
         return location;
     }
 
@@ -126,9 +167,10 @@ public static class DocumentModel
         if (line is > 0 && document.TextLines.TryGetValue(path, out var lines) && line <= lines.Count)
         {
             var start = lines[line.Value - 1];
+
             return new(start.Line, start.Column + Math.Max(0, (column ?? 1) - 1));
         }
+
         return GetLocation(document, path);
     }
-
 }

@@ -53,6 +53,7 @@ public class DslDocumentTests
 
         Assert.NotNull(roundTripped);
         Assert.Equal("OrderProcessing", roundTripped.Workflow.Name);
+
         Assert.Collection(roundTripped.Definitions,
             step => Assert.IsType<ActivityStepDocument>(step),
             step => Assert.IsType<SuspendStepDocument>(step));

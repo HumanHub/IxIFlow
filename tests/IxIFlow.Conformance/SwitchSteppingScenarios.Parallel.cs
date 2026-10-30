@@ -33,7 +33,8 @@ public sealed partial class SwitchSteppingScenarios
     {
         [Theory]
         [MemberData(nameof(NestedStarts))]
-        public Task NestedSwitchStepsPreserveScopeFramesAndOccurrencesAcrossRecovery(string profile, string shape, bool fallback, DebugStepKind kind) =>
+        public Task NestedSwitchStepsPreserveScopeFramesAndOccurrencesAcrossRecovery(string profile, string shape, bool fallback,
+            DebugStepKind kind) =>
             SwitchSteppingScenarios.NestedSwitchStepsPreserveScopeFramesAndOccurrencesAcrossRecovery(profile, shape, fallback, kind);
 
         public static IEnumerable<object[]> NestedStarts =>
@@ -45,7 +46,8 @@ public sealed partial class SwitchSteppingScenarios
     {
         [Theory]
         [MemberData(nameof(NestedStarts))]
-        public Task NestedSwitchStepsPreserveScopeFramesAndOccurrencesAcrossRecovery(string profile, string shape, bool fallback, DebugStepKind kind) =>
+        public Task NestedSwitchStepsPreserveScopeFramesAndOccurrencesAcrossRecovery(string profile, string shape, bool fallback,
+            DebugStepKind kind) =>
             SwitchSteppingScenarios.NestedSwitchStepsPreserveScopeFramesAndOccurrencesAcrossRecovery(profile, shape, fallback, kind);
 
         public static IEnumerable<object[]> NestedStarts =>

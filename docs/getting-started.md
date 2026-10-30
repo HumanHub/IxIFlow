@@ -23,11 +23,14 @@ var definition = Workflow.Create<QuoteData>("QuickStart")
         .Input(activity => activity.Amount).From(ctx => ctx.WorkflowData.Amount)
         .Output(activity => activity.Amount).To(ctx => ctx.WorkflowData.Amount))
     .Build();
+
 WorkflowDefinitionValidator.Validate(definition);
 
 var result = await client.RunAsync(definition, new QuoteData());
+
 if (result.Status != WorkflowExecutionStatus.Success)
     throw new InvalidOperationException(result.ErrorMessage);
+
 Console.WriteLine(((QuoteData)result.WorkflowData!).Amount); // 12.50
 ```
 

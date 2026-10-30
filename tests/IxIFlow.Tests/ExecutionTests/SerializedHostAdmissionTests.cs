@@ -32,27 +32,42 @@ public sealed class SerializedHostAdmissionTests
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         await store.SeedAsync(instance);
         instance = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
+
         // Background control reads bypass the probe; every call by the host is still counted.
         await using var renewer = new ExecutionLeaseRenewer(store, time);
         await using var watch = new CancellationWatch(probe.Inner, time);
+
         await using var owner = (await WorkflowExecutionLease.TryAcquireAsync(store, instance,
-            new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, renewer, await StoreTestSupport.ClaimAsync(services), _ => { }, _ => { }, _ => { }, time))!;
+            new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, renewer, await StoreTestSupport.ClaimAsync(services), _ =>
+            {
+            }, _ =>
+            {
+            }, _ =>
+            {
+            }, time))!;
+
         var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
             store, registry, new InProcessInstanceGate(), renewer, timeProvider: time);
+
         var identity = Guid.NewGuid();
         using var admission = operations.Admit(instance, owner, identity);
         var host = new WorkflowHost.InstanceOperations.ExecutionHost(operations);
         var commit = CheckpointCommit.Create(instance, earlierAssignment ? owner.Epoch : owner.Epoch + 1, instance.Revision);
         var request = new Checkpoint(earlierAssignment ? Guid.NewGuid() : identity, commit);
+
         request = JsonSerializer.Deserialize(JsonSerializer.SerializeToUtf8Bytes(request,
             ExecutionMessageContext.Default.Checkpoint), ExecutionMessageContext.Default.Checkpoint)!;
+
         var before = probe.Calls;
         var reply = await host.CheckpointAsync(request);
+
         reply = JsonSerializer.Deserialize(JsonSerializer.SerializeToUtf8Bytes(reply,
             ExecutionMessageContext.Default.CheckpointReply), ExecutionMessageContext.Default.CheckpointReply)!;
+
         Assert.Equal(CheckpointReplyKind.Conflict, reply.Kind);
         Assert.Equal(ConflictReason.NotAssigned, reply.Conflict);
         Assert.Equal(before, probe.Calls);
+
         Assert.Throws<WorkflowEngineException>(() => operations.AdmitReady(new(identity,
             new(AssignmentOutcomeKind.Idle), null, ExecutionContract.Version + 1)));
     }
@@ -61,15 +76,26 @@ public sealed class SerializedHostAdmissionTests
     {
         public IWorkflowStateRepository Inner = null!;
         public int Calls;
+
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
             Interlocked.Increment(ref Calls);
-            try { return targetMethod!.Invoke(Inner, args); }
+
+            try
+            {
+                return targetMethod!.Invoke(Inner, args);
+            }
             catch (TargetInvocationException error) when (error.InnerException != null)
-            { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error.InnerException).Throw(); throw; }
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error.InnerException).Throw();
+
+                throw;
+            }
         }
     }
+
     public sealed class Data;
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;

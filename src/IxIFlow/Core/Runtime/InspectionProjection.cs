@@ -8,18 +8,28 @@ internal static class InspectionProjection
         ExecutionCheckpoint checkpoint, WorkflowScopeCatalog scopes)
     {
         var count = 0;
+
         foreach (var continuation in checkpoint.Continuations)
         {
-            if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled || continuation.Stack.Count == 0) continue;
+            if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled || continuation.Stack.Count == 0)
+                continue;
+
             count++;
+
             if (!positions.TryGetValue(continuation.Id, out var before) ||
                 before.ParentJoinId != continuation.ParentJoinId || before.Sequence != continuation.Sequence ||
                 before.CancellationUnwind != continuation.CancellationUnwind || before.UnwindCause != continuation.UnwindCause ||
                 before.ForkActivationId != continuation.ForkActivationId || before.Status != continuation.Status.ToString() ||
-                before.Frames.Count != continuation.Stack.Count) return false;
-            var parentId = continuation.ParentJoinId == null ? null :
-                checkpoint.Joins.SingleOrDefault(j => j.Id == continuation.ParentJoinId)?.ParentContinuationId;
-            if (before.ParentContinuationId != parentId) return false;
+                before.Frames.Count != continuation.Stack.Count)
+                return false;
+
+            var parentId = continuation.ParentJoinId == null
+                ? null
+                : checkpoint.Joins.SingleOrDefault(j => j.Id == continuation.ParentJoinId)?.ParentContinuationId;
+
+            if (before.ParentContinuationId != parentId)
+                return false;
+
             for (var index = 0; index < continuation.Stack.Count; index++)
             {
                 var frame = continuation.Stack[index];
@@ -28,18 +38,26 @@ internal static class InspectionProjection
                 var iteration = owner?.StepType == WorkflowStepType.Loop ? parent!.LoopIterationCount : frame.LoopIterationCount;
                 var saved = before.Frames[index];
                 var graph = GraphFrameInfo.Of(scopes, continuation, index, checkpoint);
-                var kind = frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase or FrameKind.CancellationHandler
-                    ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId;
+
+                var kind = frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit
+                    or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase
+                    or FrameKind.CancellationHandler
+                    ? frame.Kind.ToString()
+                    : owner?.StepType.ToString() ?? frame.ScopeId;
+
                 if (saved.ActivationId != frame.ActivationId || saved.ScopeId != frame.ScopeId ||
                     saved.ParentActivationId != parent?.ActivationId || saved.NextStepIndex != frame.NextStepIndex ||
                     saved.LoopIteration != iteration || saved.ForEachItemIndex != frame.ForEachIndex ||
                     saved.DataType != ExecutionSnapshotFactory.FrameDataType(checkpoint, continuation, index, scopes) ||
                     saved.RethrowOwnerId != scopes.Steps(frame.ScopeId).ElementAtOrDefault(frame.NextStepIndex)?.RethrowOwnerId ||
-                    saved.UnwindCause != parent?.CancellationState?.Cause || saved.Kind != kind || saved.Phase != (graph?.Phase ?? parent?.CancellationState?.Phase.ToString()) ||
+                    saved.UnwindCause != parent?.CancellationState?.Cause || saved.Kind != kind ||
+                    saved.Phase != (graph?.Phase ?? parent?.CancellationState?.Phase.ToString()) ||
                     saved.ArmOccurrence != frame.ArmOccurrence || saved.Visit != graph?.Visit || saved.Via != graph?.Via ||
-                    saved.GraphId != graph?.GraphId || saved.Node != graph?.Node || saved.Pending != graph?.Pending) return false;
+                    saved.GraphId != graph?.GraphId || saved.Node != graph?.Node || saved.Pending != graph?.Pending)
+                    return false;
             }
         }
+
         return count == positions.Count;
     }
 
@@ -50,12 +68,16 @@ internal static class InspectionProjection
         // Replay records these typed fields. Building the public snapshot first allocated a
         // string dictionary for every frame, then parsed those same integers back on every pick.
         var threads = new List<InspectionThread>();
+
         foreach (var continuation in checkpoint.Continuations)
         {
-            if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled || continuation.Stack.Count == 0) continue;
+            if (continuation.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled || continuation.Stack.Count == 0)
+                continue;
+
             var position = continuation.Stack[^1];
             var next = scopes.Steps(position.ScopeId).ElementAtOrDefault(position.NextStepIndex);
             var frames = new List<InspectionFrame>();
+
             for (var index = 0; index < continuation.Stack.Count; index++)
             {
                 var frame = continuation.Stack[index];
@@ -63,25 +85,49 @@ internal static class InspectionProjection
                 var owner = parent == null ? null : scopes.Steps(parent.ScopeId).ElementAtOrDefault(parent.NextStepIndex);
                 var iteration = owner?.StepType == WorkflowStepType.Loop ? parent!.LoopIterationCount : frame.LoopIterationCount;
                 var name = owner?.Name ?? frame.ScopeId;
-                if (owner?.StepType == WorkflowStepType.Loop) name += $" (iteration {iteration})";
-                if (frame.Kind == FrameKind.SwitchCase) name += frame.ScopeId.EndsWith("/default", StringComparison.Ordinal) ? " / default" : " / case " + frame.ScopeId[(frame.ScopeId.LastIndexOf('/') + 1)..];
-                if (frame.ForEachIndex is { } itemIndex) name += $" (item {itemIndex})";
+
+                if (owner?.StepType == WorkflowStepType.Loop)
+                    name += $" (iteration {iteration})";
+
+                if (frame.Kind == FrameKind.SwitchCase)
+                    name += frame.ScopeId.EndsWith("/default", StringComparison.Ordinal)
+                        ? " / default"
+                        : " / case " + frame.ScopeId[(frame.ScopeId.LastIndexOf('/') + 1)..];
+
+                if (frame.ForEachIndex is { } itemIndex)
+                    name += $" (item {itemIndex})";
+
                 var graph = GraphFrameInfo.Of(scopes, continuation, index, checkpoint);
-                var kind = frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase or FrameKind.CancellationHandler
-                    ? frame.Kind.ToString() : owner?.StepType.ToString() ?? frame.ScopeId;
+
+                var kind = frame.Kind is FrameKind.Scope or FrameKind.Node or FrameKind.Edge or FrameKind.State or FrameKind.StateExit
+                    or FrameKind.Transition or FrameKind.Case or FrameKind.Run or FrameKind.Listen or FrameKind.SwitchCase
+                    or FrameKind.CancellationHandler
+                    ? frame.Kind.ToString()
+                    : owner?.StepType.ToString() ?? frame.ScopeId;
+
                 frames.Add(new(frame.ActivationId, graph?.Name ?? name, kind,
                     frame.ScopeId, parent?.ActivationId, frame.NextStepIndex, iteration, frame.ForEachIndex)
-                { DataType = ExecutionSnapshotFactory.FrameDataType(checkpoint, continuation, index, scopes),
-                    RethrowOwnerId = scopes.Steps(frame.ScopeId).ElementAtOrDefault(frame.NextStepIndex)?.RethrowOwnerId, Phase = graph?.Phase ?? parent?.CancellationState?.Phase.ToString(), UnwindCause = parent?.CancellationState?.Cause, Visit = graph?.Visit, Via = graph?.Via, ArmOccurrence = frame.ArmOccurrence,
-                    GraphId = graph?.GraphId, Node = graph?.Node, Pending = graph?.Pending });
+                {
+                    DataType = ExecutionSnapshotFactory.FrameDataType(checkpoint, continuation, index, scopes),
+                    RethrowOwnerId = scopes.Steps(frame.ScopeId).ElementAtOrDefault(frame.NextStepIndex)?.RethrowOwnerId,
+                    Phase = graph?.Phase ?? parent?.CancellationState?.Phase.ToString(), UnwindCause = parent?.CancellationState?.Cause,
+                    Visit = graph?.Visit, Via = graph?.Via, ArmOccurrence = frame.ArmOccurrence,
+                    GraphId = graph?.GraphId, Node = graph?.Node, Pending = graph?.Pending
+                });
             }
+
             threads.Add(new(continuation.Id,
                 continuation.ParentJoinId == null ? "Root" : $"Branch {continuation.Sequence} ({continuation.ForkActivationId})",
                 checkpoint.Joins.SingleOrDefault(j => j.Id == continuation.ParentJoinId)?.ParentContinuationId,
                 continuation.ParentJoinId, continuation.Sequence, continuation.ForkActivationId,
                 next == null ? "" : scopes.Id(next), next == null ? "" : scopes.AuthorId(next), position.NextStepIndex,
-                continuation.Status.ToString(), position.ActivationId, frames.ToArray()) { ScopesInForce = ScopeRuntime.IdsOf(continuation), CancellationUnwind = continuation.CancellationUnwind, UnwindCause = continuation.UnwindCause });
+                continuation.Status.ToString(), position.ActivationId, frames.ToArray())
+            {
+                ScopesInForce = ScopeRuntime.IdsOf(continuation), CancellationUnwind = continuation.CancellationUnwind,
+                UnwindCause = continuation.UnwindCause
+            });
         }
+
         return threads.ToArray();
     }
 }

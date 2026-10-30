@@ -9,16 +9,16 @@ namespace IxIFlow.Tests.Conformance;
 public sealed class ActivityPublisherScenarios
 {
     private const string Source = """
-        activity: {key: conformance.published, version: 1}
-        input:
-          Value: {type: int, default: 3}
-        output:
-          Result: {type: int}
-        body: |
-          throw new Exception("Publication must not execute the body");
-        declarations: |
-          public Published() => throw new Exception("Publication must not construct the activity");
-        """;
+                                  activity: {key: conformance.published, version: 1}
+                                  input:
+                                    Value: {type: int, default: 3}
+                                  output:
+                                    Result: {type: int}
+                                  body: |
+                                    throw new Exception("Publication must not execute the body");
+                                  declarations: |
+                                    public Published() => throw new Exception("Publication must not construct the activity");
+                                  """;
 
     [Theory, MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
     public async Task FullActivityDryRunAndAtomicReceiptUseTheSamePortableContract(string profile)
@@ -57,8 +57,14 @@ public sealed class ActivityPublisherScenarios
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
         var publisher = new WorkflowPublisher(store, store);
-        var draft = await store.SaveDefinitionAsync(new("conformance.published", 1, "activity", Source.Replace("throw new Exception(\"Publication must not execute the body\");", "invalid C#")), null);
-        await publisher.UploadPackageAsync(new MemoryStream(PublishingFeed.Package("conformance.published", new() { ["content.txt"] = [1] })));
+
+        var draft = await store.SaveDefinitionAsync(
+            new("conformance.published", 1, "activity",
+                Source.Replace("throw new Exception(\"Publication must not execute the body\");", "invalid C#")), null);
+
+        await publisher.UploadPackageAsync(
+            new MemoryStream(PublishingFeed.Package("conformance.published", new() { ["content.txt"] = [1] })));
+
         var revision = await store.GetCatalogRevisionAsync();
         var result = await publisher.PublishAsync(draft.Id);
         Assert.False(result.Success);
@@ -72,10 +78,16 @@ public sealed class ActivityPublisherScenarios
 
     private sealed class ReadOnlyArtifacts(IArtifactStore inner) : IArtifactStore
     {
-        public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken token = default) => throw new InvalidOperationException("Unexpected put or age refresh");
+        public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken token = default) =>
+            throw new InvalidOperationException("Unexpected put or age refresh");
+
         public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken token = default) => inner.OpenAsync(digest, token);
         public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken token = default) => inner.ExistsAsync(digest, token);
-        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken token = default) => throw new InvalidOperationException("Unexpected delete");
-        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime before, int limit, CancellationToken token = default) => throw new InvalidOperationException("Unexpected purge");
+
+        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken token = default) =>
+            throw new InvalidOperationException("Unexpected delete");
+
+        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime before, int limit,
+            CancellationToken token = default) => throw new InvalidOperationException("Unexpected purge");
     }
 }

@@ -5,7 +5,7 @@ namespace IxIFlow.Core;
 /// <summary>
 ///     Error handler for workflow and saga error handling
 /// </summary>
-public class ErrorHandler
+internal class ErrorHandler
 {
     public Type ExceptionType { get; set; } = typeof(Exception);
     public IErrorHandler Handler { get; set; } = null!;
@@ -34,11 +34,13 @@ public enum SagaContinuationAction
 /// <summary>
 ///     Configuration for saga error handling behavior
 /// </summary>
-public class SagaErrorConfiguration
+internal class SagaErrorConfiguration
 {
     public CompensationStrategy CompensationStrategy { get; set; } = CompensationStrategy.CompensateAll;
+
     /// <summary>What follows the undo; none raises the original error again.</summary>
     public SagaContinuationAction? ContinuationAction { get; set; }
+
     public RetryPolicy? RetryPolicy { get; set; } = new();
     public Type? CompensationTargetType { get; set; }
     public bool IgnoreCompensationErrors { get; set; }

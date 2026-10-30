@@ -24,11 +24,13 @@ public sealed class SqliteHostDisposalReviewTests
         var provider = registrations.BuildServiceProvider();
         var finishRun = Signal();
         Task? running = null, read = null, shutdown = null;
+
         try
         {
             await store.GetWorkflowVersionsAsync();
             var host = provider.GetRequiredService<WorkflowHost>();
             using var watch = host.WatchSettled("becomes-lingering", out var settled);
+
             running = host.RunAsync("becomes-lingering", async (_, _, _) =>
             {
                 read = Task.Run(async () =>
@@ -37,14 +39,19 @@ public sealed class SqliteHostDisposalReviewTests
                     {
                         clock.PauseNextRead();
                         await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.NewGuid(), new Dictionary<string, string>()));
+
                         return true;
                     }, CancellationToken.None, out var inline));
+
                     await inline!;
                 });
+
                 await clock.Entered.Task;
                 await finishRun.Task;
+
                 return true;
             }, CancellationToken.None);
+
             await clock.Entered.Task.WaitAsync(Patience);
 
             // Shutdown snapshots the admitted run before it hands its scope to the inline read.
@@ -60,29 +67,44 @@ public sealed class SqliteHostDisposalReviewTests
             await shutdown.WaitAsync(Patience);
             await provider.DisposeAsync();
             await store.DisposeAsync();
+
             // No independent read wait before verifying that shutdown released the connection.
-            using (File.Open(Path.Combine(folder, "workflows.db"), FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+            using (File.Open(Path.Combine(folder, "workflows.db"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+            }
+
             Directory.Delete(folder, recursive: true);
         }
         finally
         {
             finishRun.TrySetResult();
             clock.Resume.Set();
-            if (running != null) await running.WaitAsync(Patience);
-            if (read != null) await read.WaitAsync(Patience);
-            if (shutdown != null) await shutdown.WaitAsync(Patience);
+
+            if (running != null)
+                await running.WaitAsync(Patience);
+
+            if (read != null)
+                await read.WaitAsync(Patience);
+
+            if (shutdown != null)
+                await shutdown.WaitAsync(Patience);
+
             await provider.DisposeAsync();
             await store.DisposeAsync();
-            if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true);
+
+            if (Directory.Exists(folder))
+                Directory.Delete(folder, recursive: true);
         }
     }
 
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static string ConnectionString(string folder) => "Data Source=" + Path.Combine(folder, "workflows.db");
+
     private static string NewFolder()
     {
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.SqliteDisposalReview", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
+
         return folder;
     }
 
@@ -92,15 +114,20 @@ public sealed class SqliteHostDisposalReviewTests
         public TaskCompletionSource Entered { get; } = Signal();
         public ManualResetEventSlim Resume { get; } = new();
         public void PauseNextRead() => Interlocked.Exchange(ref _pause, 1);
+
         public override DateTimeOffset GetUtcNow()
         {
             if (Interlocked.Exchange(ref _pause, 0) == 1)
             {
                 Entered.TrySetResult();
-                if (!Resume.Wait(Patience)) throw new TimeoutException("The SQLite read was not released");
+
+                if (!Resume.Wait(Patience))
+                    throw new TimeoutException("The SQLite read was not released");
             }
+
             return base.GetUtcNow();
         }
+
         public void Dispose() => Resume.Dispose();
     }
 }

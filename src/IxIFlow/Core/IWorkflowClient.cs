@@ -15,6 +15,8 @@ public interface IWorkflowClient
     /// <summary>Starts by declared identity. Without a version, selects the highest Published version.</summary>
     Task<string> StartAsync<TWorkflowData>(string name, int? version, TWorkflowData workflowData,
         WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class;
+
+    /// <summary>Starts the highest published version of the named workflow and returns its durable instance ID.</summary>
     Task<string> StartAsync<TWorkflowData>(string name, TWorkflowData workflowData,
         WorkflowOptions? options = null, CancellationToken cancellationToken = default) where TWorkflowData : class;
 
@@ -160,10 +162,11 @@ public interface IWorkflowClient
         CancellationToken cancellationToken = default);
 
     /// <summary>The current status, Removed while tombstoned, or null for an unknown ID.</summary>
-    Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId);
+    Task<WorkflowExecutionStatus?> GetStatusAsync(string instanceId, CancellationToken cancellationToken = default);
 
     /// <summary>Lists the saved activity attempts awaiting an operator decision; IsRemoved marks a removed ID.</summary>
-    Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId, CancellationToken cancellationToken = default);
+    Task<WorkflowReadResult<PendingActivityInfo>> GetPendingActivitiesAsync(string instanceId,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Where the instance's branches are and which scopes they are in, computed from its saved checkpoint and
@@ -175,7 +178,7 @@ public interface IWorkflowClient
     /// The instance's trace: what its runs recorded and committed, in order. A run's result carries the
     /// entries of that run. IsRemoved marks a removed ID.
     /// </summary>
-    Task<WorkflowReadResult<ExecutionTraceEntry>> GetTraceAsync(string instanceId);
+    Task<WorkflowReadResult<ExecutionTraceEntry>> GetTraceAsync(string instanceId, CancellationToken cancellationToken = default);
 }
 
 /// <summary>What <see cref="IWorkflowClient.AwaitAsync"/> waits for.</summary>

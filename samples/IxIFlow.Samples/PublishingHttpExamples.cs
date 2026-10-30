@@ -20,7 +20,9 @@ public static class PublishingHttpExamples
                 options.AddPolicy("publishing-" + permission, policy => policy
                     .RequireAuthenticatedUser().RequireClaim("publishing", permission));
         });
+
         services.AddScoped<ICatalogQueryScope, SampleCatalogScope>();
+
         services.AddIxIFlow().AddWorkflowPublishing(new WorkflowPublishingOptions
         {
             ReadPolicy = "publishing-read",
@@ -32,10 +34,12 @@ public static class PublishingHttpExamples
             DownloadPolicy = "publishing-download"
         });
     }
+
     // end-snippet: publishing-register
 
     // snippet: publishing-map
     public static void Map(WebApplication app) => app.MapWorkflowPublishing("/ixiflow/publishing");
+
     // end-snippet: publishing-map
 }
 
@@ -44,8 +48,9 @@ public sealed class SampleCatalogScope : ICatalogQueryScope
 {
     public ValueTask<CatalogScope> ScopeAsync(ClaimsPrincipal user, CancellationToken cancellationToken = default) =>
         ValueTask.FromResult(new CatalogScope(
-            Workflows: new(Names: ["PublishedDouble", "BundledGreeting", "InlineDouble", "DoubleNumber", "NumberBody"], Prefixes: ["Sample"]),
-            Activities: new(Names: ["acme.double"], Prefixes: ["samples."]),
-            Packages: new(Names: ["acme.double"], Prefixes: ["samples."]),
-            Templates: new(Prefixes: ["samples."])));
+            workflows: new(Names: ["PublishedDouble", "BundledGreeting", "InlineDouble", "DoubleNumber", "NumberBody"],
+                Prefixes: ["Sample"]),
+            activities: new(Names: ["acme.double"], Prefixes: ["samples."]),
+            packages: new(Names: ["acme.double"], Prefixes: ["samples."]),
+            templates: new(Prefixes: ["samples."])));
 }

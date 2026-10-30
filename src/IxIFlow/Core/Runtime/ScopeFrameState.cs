@@ -2,7 +2,13 @@ using System.Text.Json.Serialization;
 
 namespace IxIFlow.Core.Runtime;
 
-internal enum ScopePhase { Opening, Open, Closing, Preparing }
+internal enum ScopePhase
+{
+    Opening,
+    Open,
+    Closing,
+    Preparing
+}
 
 internal sealed class ScopeFrameState
 {
@@ -35,8 +41,11 @@ internal sealed class ScopeFailureBoundary
 
     public bool Contains(ContinuationState continuation, int index)
     {
-        if (continuation.Id != OwnerContinuationId) return continuation.InheritedScopes?.Contains(BodyActivationId) == true;
+        if (continuation.Id != OwnerContinuationId)
+            return continuation.InheritedScopes?.Contains(BodyActivationId) == true;
+
         var body = continuation.Stack.FindIndex(frame => frame.ActivationId == BodyActivationId);
+
         return body >= 0 && index >= body;
     }
 }
@@ -44,22 +53,35 @@ internal sealed class ScopeFailureBoundary
 internal sealed class PendingFailure
 {
     private SerializedException _error = null!;
-    [JsonRequired] public required SerializedException Error { get => _error; init => _error = value ?? throw new System.Text.Json.JsonException("Missing pending failure error"); }
+
+    [JsonRequired]
+    public required SerializedException Error
+    {
+        get => _error;
+        init => _error = value ?? throw new System.Text.Json.JsonException("Missing pending failure error");
+    }
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ScopeFailureBoundary? ScopeBoundary { get; init; }
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FailureHandlerRoute? Route { get; set; }
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public PendingFailure? OriginatingFailure { get; set; }
+
     [JsonIgnore] public string Type => Error.Type;
     [JsonIgnore] public string Message => Error.Message;
+
     public PendingFailure DuringCleanup(PendingFailure? original) => new()
     {
         Error = Error, ScopeBoundary = ScopeBoundary, Route = Route,
         OriginatingFailure = OriginatingFailure ?? original
     };
+
     public Exception ForPropagation(ExecutionCheckpoint checkpoint) => Error.ForPropagation(checkpoint);
     public void Propagate(ExecutionCheckpoint checkpoint) => Error.Propagate(checkpoint);
+
     public static PendingFailure Capture(Exception error, WorkflowScopeCatalog scopes,
         ExecutionCheckpoint checkpoint, ContinuationState? continuation, bool newOccurrence) => new()
     {
@@ -74,9 +96,11 @@ internal sealed class DispatchAuthorization
     public int Index { get; set; }
     public int Iteration { get; set; }
     public string? InvocationId { get; set; }
+
     public bool Matches(ContinuationState continuation, string step) => continuation.Stack.LastOrDefault() is { } frame &&
         StepId == step && ActivationId == frame.ActivationId && Index == frame.NextStepIndex && Iteration == frame.LoopIterationCount &&
         (InvocationId == null || continuation.PendingActivity?.Id == InvocationId);
+
     public static DispatchAuthorization For(ContinuationState continuation, string step) => new()
     {
         StepId = step, ActivationId = continuation.Stack[^1].ActivationId, Index = continuation.Stack[^1].NextStepIndex,

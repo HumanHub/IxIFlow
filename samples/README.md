@@ -25,6 +25,9 @@
 | Versioned Liquid templates and message sending | Quote message | C# sample: template publication and sender registration use application APIs | [QuoteMessage.cs](IxIFlow.Samples/QuoteMessage.cs) |
 | Recoverable activity and operator resolution | Reservation | [reservation.workflow.yaml](IxIFlow.Samples/Definitions/reservation.workflow.yaml); operator client calls are C# only | [Recovery.cs](IxIFlow.Samples/Recovery.cs) |
 | Scope resources, named references and explicit workbook save | Connection, mailbox and affine workbook | [scoped-connection.yaml](IxIFlow.Samples/Definitions/scoped-connection.yaml), [scoped-mailbox.yaml](IxIFlow.Samples/Definitions/scoped-mailbox.yaml), [scoped-workbook.yaml](IxIFlow.Samples/Definitions/scoped-workbook.yaml) | [ScopeExamples.cs](IxIFlow.Samples/ScopeExamples.cs), [ConnectionScope.cs](IxIFlow.DemoActivities/ConnectionScope.cs) |
+| Assigning data and preserving the previous value | AssignTotals | [assign-totals.workflow.yaml](IxIFlow.Samples/Definitions/assign-totals.workflow.yaml) | [AssignTotals.cs](IxIFlow.Samples/AssignTotals.cs) |
+| Child invocation retry policies and attempt correlation | InvocationRetries | [invocation-retries.workflow.yaml](IxIFlow.Samples/Definitions/invocation-retries.workflow.yaml), [invocation-retries-child.workflow.yaml](IxIFlow.Samples/Definitions/invocation-retries-child.workflow.yaml) | [InvocationRetries.cs](IxIFlow.Samples/InvocationRetries.cs) |
+| Typed throw, catch and rethrow | ThrowAndRethrow | [throw-and-rethrow.workflow.yaml](IxIFlow.Samples/Definitions/throw-and-rethrow.workflow.yaml) | [ThrowAndRethrow.cs](IxIFlow.Samples/ThrowAndRethrow.cs) |
 
 ## Run the samples
 
@@ -63,13 +66,13 @@ Pure fluent activities can use the public-setter/input and public-getter/output 
 
 [SampleTests.cs](../tests/IxIFlow.Samples.Tests/SampleTests.cs) and [YamlSampleTests.cs](../tests/IxIFlow.Samples.Tests/YamlSampleTests.cs) compare saved structure hashes and serialized results for YAML/fluent pairs, including empty lists, loop boundaries, each parallel join, typed faults, retries, delays, replies and timeouts. Retry checks verify runtime IDs before comparing their roles across instances. [RecipeTests.cs](../tests/IxIFlow.Samples.Tests/RecipeTests.cs) runs every existing recipe on memory with fake time. [ReadmeExamples.cs](../tests/IxIFlow.Samples.Tests/ReadmeExamples.cs) compiles and executes the root README quick start. The existing conformance suite supplies additional store and failure scenarios.
 
-The [root roadmap](../README.md#status-and-roadmap) records release verification and later work. Workflow publishing, coordinators, debugger controls, management HTTP and incoming HTTP triggers are available. Process isolation remains after 1.0; see the [documentation index](../docs/index.md).
+The [root release scope](../README.md#status-and-roadmap) describes 1.0 and links to features after 1.0. Workflow publishing, coordinators, debugger controls, management HTTP and incoming HTTP triggers are available. Process isolation remains after 1.0; see the [documentation index](../docs/index.md).
 
 ## Demo activities
 
 `IxIFlow.DemoActivities` contains sample activities. The classes define inputs, outputs, display metadata, and designer IDs in C#. A host registers the installed assembly with `services.AddIxIFlow().AddActivities(assembly)`, or selects one type with `AddActivity<T>()`. Package identity comes from the assembly; constructor dependencies are registered in DI.
 
-The file activities execute without additional services. `QueryCustomerActivity` requires the host to register `IDemoConnectionFactory`; the workflow contains a connection reference, not credentials.
+The file activities execute without additional services. `QueryCustomerActivity` and `ConnectionScope` require the host to register `IDemoConnectionFactory` and supply a database with the expected `customers` table. `QueryCustomerInScope` requires an enclosing `Scope<ConnectionScope, DbConnection>` that provides its connection. The workflow carries a connection reference; the factory supplies credentials and opens it. The mailbox and workbook scope examples use the application services registered in [ScopeExamples.cs](IxIFlow.Samples/ScopeExamples.cs).
 
 The activities expose designer IDs as catalog metadata. A consuming editor provides the matching controls; the engine loads and runs the .NET activity assembly.
 
@@ -80,8 +83,8 @@ The activities expose designer IDs as catalog metadata. A consuming editor provi
 | Recipe | Shows |
 | --- | --- |
 | `OneApproverRecipe` | A request with a reply token, a subject the answer must match, a timeout path, and a second click refused as already answered |
-| `PaymentRecipe` | Requesting now and waiting later: a provider callback that arrives during the fraud check is kept, "pending" is refused while the wait stays open, and a callback received before the deadline beats it |
-| `SagaPaymentRecipe` | A request inside a saga: a later failure refunds the payment and closes its wait, so a later callback is refused as cancelled (one that arrived before the failure is not taken by the wait, and its token is then refused as already answered), and the saga's retry pays again with a new token |
+| `PaymentRecipe` | Requesting before waiting: a provider callback that arrives during the fraud check is kept, "pending" is refused while the wait stays open, and a callback received before the deadline beats it |
+| `SagaPaymentRecipe` | A request inside a saga: a later failure refunds the payment and closes its wait, so a later callback is refused as cancelled, and the saga's retry pays again with a new token |
 | `AnyApproverRecipe` | Any one of several approvers: a rejection keeps waiting, the first approval wins, and the other approver's late click is refused as cancelled |
 | `EveryApproverRecipe` | Every approver must answer, in any order |
 | `ApprovalPerLineRecipe` | An approval per loop iteration: an earlier line's token can never approve a later line |

@@ -13,7 +13,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>
 /// A parallel step that would make too many branches live stops the instance for an operator before
 /// forking, after its running activities are saved; a run keeps a bounded number of activities in
-/// flight; and lease and cancellation traffic keeps working when the store is saturated (spec B-09).
+/// flight; and lease and cancellation traffic keeps working when the store is saturated.
 /// </summary>
 [Trait("Feature", "host")]
 [Trait("Spec", "B-09")]
@@ -25,6 +25,7 @@ public sealed class ResourceLimitTests
     public async Task AParallelStepOverTheBranchLimitStopsBeforeForking()
     {
         var store = new InMemoryWorkflowStateRepository();
+
         var definition = Workflow.Create<LimitData>("TooManyBranches")
             .Step<QuickActivity>()
             .Parallel(parallel => parallel
@@ -32,7 +33,9 @@ public sealed class ResourceLimitTests
                 .Do(branch => branch.Step<QuickActivity>())
                 .Do(branch => branch.Step<QuickActivity>()))
             .Build();
+
         string instanceId;
+
         using (var limited = Services(store, options => options.MaxActiveBranches = 2))
         {
             // Three branches are one over the limit; the root does not count.
@@ -61,6 +64,7 @@ public sealed class ResourceLimitTests
     public async Task RunningBranchesFinishAndAreSavedBeforeTheStop()
     {
         var store = new InMemoryWorkflowStateRepository();
+
         var definition = Workflow.Create<LimitData>("NestedTooWide")
             .Step<QuickActivity>()
             .Parallel(parallel => parallel
@@ -70,14 +74,15 @@ public sealed class ResourceLimitTests
                     .Do(nested => nested.Step<QuickActivity>())
                     .Do(nested => nested.Step<QuickActivity>()))))
             .Build();
+
         string instanceId;
+
         using (var limited = Services(store, options => options.MaxActiveBranches = 3))
         {
             // The outer fork makes two branches live. The inner one would make four: the gated branch and
             // three nested ones; the branch that forks them waits on its join and does not count.
             var run = Client(limited).RunAsync(definition, new LimitData());
             await Probe(limited).Started.Task.WaitAsync(Patience);
-            await Task.Delay(200);
             Assert.False(run.IsCompleted);
 
             Probe(limited).Gate.SetResult();
@@ -104,6 +109,7 @@ public sealed class ResourceLimitTests
     {
         var store = new InMemoryWorkflowStateRepository();
         using var services = Services(store, options => options.MaxActiveBranches = 3);
+
         var definition = Workflow.Create<LimitData>("CancelledAtTheLimit")
             .Step<QuickActivity>()
             .Parallel(parallel => parallel
@@ -113,9 +119,11 @@ public sealed class ResourceLimitTests
                     .Do(nested => nested.Step<QuickActivity>())
                     .Do(nested => nested.Step<QuickActivity>()))))
             .Build();
+
         var instanceId = Guid.NewGuid().ToString("N");
         var run = Client(services).RunAsync(definition, new LimitData(), new WorkflowOptions { InstanceId = instanceId });
         await Probe(services).Started.Task.WaitAsync(Patience);
+
         // The other branch has run its activity and goes on to the fork that hits the limit.
         await Probe(services).WaitForQuickAsync(2);
 
@@ -136,6 +144,7 @@ public sealed class ResourceLimitTests
     public async Task ABranchThatForksDoesNotCountAgainstItsOwnFork()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), options => options.MaxActiveBranches = 1);
+
         var definition = Workflow.Create<LimitData>("OneLeafAtATime")
             .Step<QuickActivity>()
             .Parallel(outer => outer.Do(branch => branch
@@ -154,6 +163,7 @@ public sealed class ResourceLimitTests
     public async Task AnItemThatCannotAdmitTheNextUnderALowerLimitCompletesAfterARelease()
     {
         var store = new InMemoryWorkflowStateRepository();
+
         var definition = Workflow.Create<LimitData>("CappedBesideAWait")
             .Step<QuickActivity>()
             .Parallel(outer => outer
@@ -162,7 +172,9 @@ public sealed class ResourceLimitTests
                     (body, _) => body.WaitFor<Signal>("item").Step<QuickActivity>(),
                     setup => setup.Parallel(maxConcurrency: 1))))
             .Build();
+
         string instanceId;
+
         using (var roomy = Services(store, options => options.MaxActiveBranches = 10))
             instanceId = (await Client(roomy).RunAsync(definition, new LimitData())).InstanceId;
 
@@ -178,11 +190,14 @@ public sealed class ResourceLimitTests
         using var raised = Services(store, options => options.MaxActiveBranches = 10);
         await raised.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         Assert.Equal(WorkflowExecutionStatus.Suspended, (await Client(raised).ReleaseAsync(instanceId)).Status);
+
         Assert.Equal(WorkflowExecutionStatus.Suspended,
             (await Client(raised).ResumeAsync(instanceId, "item", new Signal())).Status);
+
         var finished = await Client(raised).ResumeAsync(instanceId, "sibling", new Signal());
 
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+
         // The first item's activity ran before the stop and is not run again.
         Assert.Equal(1, Probe(raised).Quick);
     }
@@ -192,6 +207,7 @@ public sealed class ResourceLimitTests
     public async Task AnItemThatDecidesItsJoinCompletesUnderALowerLimit()
     {
         var store = new InMemoryWorkflowStateRepository();
+
         var definition = Workflow.Create<LimitData>("FirstOfTwoBesideAWait")
             .Step<QuickActivity>()
             .Parallel(outer => outer
@@ -200,15 +216,19 @@ public sealed class ResourceLimitTests
                     (body, _) => body.WaitFor<Signal>("item").Step<QuickActivity>(),
                     setup => setup.Parallel(maxConcurrency: 1).WaitAny())))
             .Build();
+
         string instanceId;
+
         using (var roomy = Services(store, options => options.MaxActiveBranches = 10))
             instanceId = (await Client(roomy).RunAsync(definition, new LimitData())).InstanceId;
 
         // The first item's completion decides the join, so it starts no other item and needs no room.
         using var lowered = Services(store, options => options.MaxActiveBranches = 1);
         await lowered.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+
         Assert.Equal(WorkflowExecutionStatus.Suspended,
             (await Client(lowered).ResumeAsync(instanceId, "item", new Signal())).Status);
+
         var finished = await Client(lowered).ResumeAsync(instanceId, "sibling", new Signal());
 
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
@@ -220,6 +240,7 @@ public sealed class ResourceLimitTests
     {
         using var services = Services(new InMemoryWorkflowStateRepository(),
             options => options.MaxActivitiesPerRun = 1);
+
         var definition = Workflow.Create<LimitData>("FairActivities")
             .Step<QuickActivity>()
             .Parallel(parallel => parallel
@@ -239,6 +260,7 @@ public sealed class ResourceLimitTests
     {
         using var services = Services(new InMemoryWorkflowStateRepository(),
             options => options.MaxActivitiesPerRun = 2);
+
         var definition = Workflow.Create<LimitData>("ThrottledActivities")
             .Step<QuickActivity>()
             .Parallel(parallel => parallel
@@ -280,11 +302,19 @@ public sealed class ResourceLimitTests
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task SqlLeasesAndCancellationKeepWorkingWhenTheMainPoolIsExhausted() => VerifyLeasesAndCancellationWithExhaustedMainPool(new SqlConnectionStringBuilder(SqlTestDatabase<ResourceLimitTests>.ConnectionString) { ApplicationName = $"pool-test-{Guid.NewGuid():N}", MaxPoolSize = 1, ConnectTimeout = 2 }.ConnectionString, connectionString => new SqlWorkflowStateRepository(connectionString), connectionString => new SqlConnection(connectionString));
+    public Task SqlLeasesAndCancellationKeepWorkingWhenTheMainPoolIsExhausted() => VerifyLeasesAndCancellationWithExhaustedMainPool(
+        new SqlConnectionStringBuilder(SqlTestDatabase<ResourceLimitTests>.ConnectionString)
+            { ApplicationName = $"pool-test-{Guid.NewGuid():N}", MaxPoolSize = 1, ConnectTimeout = 2 }.ConnectionString,
+        connectionString => new SqlServerWorkflowStateRepository(connectionString),
+        connectionString => new SqlConnection(connectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task PostgreSqlLeasesAndCancellationKeepWorkingWhenTheMainPoolIsExhausted() => VerifyLeasesAndCancellationWithExhaustedMainPool(new NpgsqlConnectionStringBuilder(PostgreSqlTestDatabase<ResourceLimitTests>.ConnectionString) { ApplicationName = $"pool-test-{Guid.NewGuid():N}", MaxPoolSize = 1, Timeout = 2 }.ConnectionString, connectionString => new PostgreSqlWorkflowStateRepository(connectionString), connectionString => new NpgsqlConnection(connectionString));
+    public Task PostgreSqlLeasesAndCancellationKeepWorkingWhenTheMainPoolIsExhausted() => VerifyLeasesAndCancellationWithExhaustedMainPool(
+        new NpgsqlConnectionStringBuilder(PostgreSqlTestDatabase<ResourceLimitTests>.ConnectionString)
+            { ApplicationName = $"pool-test-{Guid.NewGuid():N}", MaxPoolSize = 1, Timeout = 2 }.ConnectionString,
+        connectionString => new PostgreSqlWorkflowStateRepository(connectionString),
+        connectionString => new NpgsqlConnection(connectionString));
 
     [Fact]
     public async Task ALeaseWhoseRenewalHangsIsLostWhenItMayHaveExpired()
@@ -292,17 +322,27 @@ public sealed class ResourceLimitTests
         var time = new FakeTimeProvider();
         var store = new HangingRenewalStore();
         var settings = new ExecutionLeaseSettings(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(1));
-        var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Hanging" };
+
+        var instance = new WorkflowInstance
+            { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "Hanging" };
+
         var loss = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var renewer = new ExecutionLeaseRenewer(store, time);
         await using var watch = new CancellationWatch(store, time);
+
         await using var lease = (await WorkflowExecutionLease.TryAcquireAsync(store, instance, settings,
-            watch, renewer, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), error => loss.TrySetResult(error), _ => { }, _ => { }, time))!;
+            watch, renewer, new ClaimQuery(Guid.Empty, new Dictionary<string, string>()), error => loss.TrySetResult(error), _ =>
+            {
+            }, _ =>
+            {
+            }, time))!;
+
         try
         {
             store.Hang = true;
 
             var started = time.GetUtcNow();
+
             while (!loss.Task.IsCompleted)
             {
                 await Task.Delay(20);
@@ -314,7 +354,10 @@ public sealed class ResourceLimitTests
             Assert.True(time.GetUtcNow() - started <= TimeSpan.FromSeconds(3.5));
             Assert.IsType<TimeoutException>(await loss.Task);
         }
-        finally { store.Reply.TrySetResult([new(ExecutionLeaseRenewalStatus.Refused)]); }
+        finally
+        {
+            store.Reply.TrySetResult([new(ExecutionLeaseRenewalStatus.Refused)]);
+        }
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository store, Action<IxIFlowOptions> configure)
@@ -328,6 +371,7 @@ public sealed class ResourceLimitTests
         services.AddTransient<GatedActivity>();
         services.AddTransient<FirstLaneActivity>();
         services.AddTransient<SecondLaneActivity>();
+
         return services.BuildServiceProvider();
     }
 
@@ -377,11 +421,14 @@ public sealed class ResourceLimitTests
             Interlocked.Increment(ref _gated);
             var now = Interlocked.Increment(ref _inFlight);
             int most;
+
             while (now > (most = Volatile.Read(ref _mostInFlight)) &&
                    Interlocked.CompareExchange(ref _mostInFlight, now, most) != most)
             {
             }
+
             Started.TrySetResult();
+
             try
             {
                 await Gate.Task;
@@ -395,6 +442,7 @@ public sealed class ResourceLimitTests
         public async Task WaitForGatedAsync(int count)
         {
             var deadline = DateTime.UtcNow + Patience;
+
             while (Gated < count)
             {
                 Assert.True(DateTime.UtcNow < deadline, "The activities did not start");
@@ -405,6 +453,7 @@ public sealed class ResourceLimitTests
         public async Task WaitForQuickAsync(int count)
         {
             var deadline = DateTime.UtcNow + Patience;
+
             while (Quick < count)
             {
                 Assert.True(DateTime.UtcNow < deadline, $"Only {Quick} of {count} quick activities ran");
@@ -418,6 +467,7 @@ public sealed class ResourceLimitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.RanQuick();
+
             return Task.CompletedTask;
         }
     }
@@ -427,6 +477,7 @@ public sealed class ResourceLimitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Ran("first");
+
             return Task.CompletedTask;
         }
     }
@@ -436,6 +487,7 @@ public sealed class ResourceLimitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Ran("second");
+
             return Task.CompletedTask;
         }
     }
@@ -450,22 +502,29 @@ public sealed class ResourceLimitTests
     private sealed class HangingRenewalStore : FaultInjectingRepository
     {
         public volatile bool Hang;
+
         public TaskCompletionSource<IReadOnlyList<ExecutionLeaseRenewalResult>> Reply { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public override Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
-            Hang ? Reply.Task : base.RenewExecutionLeasesAsync(leases);
+        public override Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+            IReadOnlyList<ExecutionLeaseRenewal> leases, CancellationToken cancellationToken = default) =>
+            Hang ? Reply.Task : base.RenewExecutionLeasesAsync(leases, cancellationToken: cancellationToken);
     }
-    private static async Task VerifyLeasesAndCancellationWithExhaustedMainPool(string connectionString, Func<string, IWorkflowStateRepository> newRepository, Func<string, System.Data.Common.DbConnection> newConnection)
+
+    private static async Task VerifyLeasesAndCancellationWithExhaustedMainPool(string connectionString,
+        Func<string, IWorkflowStateRepository> newRepository, Func<string, System.Data.Common.DbConnection> newConnection)
     {
         var store = newRepository(connectionString);
         var instanceId = Guid.NewGuid().ToString("N");
+
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(
             new WorkflowInstance
-            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+            {
+                ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId, WorkflowName = "PoolReservation", Status = WorkflowStatus.Running,
                 WorkflowDataJson = StoredJson.Inline("{}")
             }, (await StoreTestSupport.LeaseAsync(store, instanceId)).Epoch, 0))).Status);
+
         Assert.True((await StoreTestSupport.ReleaseAsync(store, instanceId)).Released);
 
         await using (var hog = newConnection(connectionString))
@@ -473,17 +532,22 @@ public sealed class ResourceLimitTests
             await hog.OpenAsync();
             await Assert.ThrowsAnyAsync<Exception>(() => store.GetWorkflowInstanceAsync(instanceId));
 
-            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience, new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
-            Assert.True((await store.RenewExecutionLeasesAsync([new(instanceId, "owner", Patience)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed);
+            Assert.NotNull(await store.TryAcquireExecutionLeaseAsync(instanceId, "owner", Patience,
+                new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+
+            Assert.True((await store.RenewExecutionLeasesAsync([new(instanceId, "owner", Patience)]))[0].Status ==
+                ExecutionLeaseRenewalStatus.Renewed);
+
             Assert.Empty((await store.GetControlRequestsAsync([instanceId])).Cancellations);
+
             Assert.True((await store.RequestCancellationAsync(instanceId,
                 new CancellationReason { ReasonCode = "operator" })).Accepted);
+
             Assert.Equal("operator", (await store.GetCancellationRequestAsync(instanceId))?.ReasonCode);
             Assert.Single((await store.GetControlRequestsAsync([instanceId])).Cancellations);
             Assert.True((await store.ReleaseExecutionLeaseAsync(instanceId, "owner")).Released);
         }
+
         await store.DeleteWorkflowInstanceAsync(instanceId);
     }
-
-
 }

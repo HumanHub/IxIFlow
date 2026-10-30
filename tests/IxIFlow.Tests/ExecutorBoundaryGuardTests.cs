@@ -7,7 +7,7 @@ namespace IxIFlow.Tests;
 
 /// <summary>
 /// The executor contains only transition logic. The store, leases, the engine and other
-/// instances are reached only through the host (spec A-01).
+/// instances are reached only through the host.
 /// </summary>
 [Trait("Feature", "guard")]
 [Trait("Spec", "A-01")]
@@ -60,19 +60,24 @@ public sealed class ExecutorBoundaryGuardTests
     private static IEnumerable<Type> ReferencedTypes(Type type)
     {
         const BindingFlags all = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public |
-                                 BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+
         foreach (var nested in type.GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic))
         foreach (var referenced in ReferencedTypes(nested))
             yield return referenced;
+
         foreach (var field in type.GetFields(all))
         foreach (var referenced in Expand(field.FieldType))
             yield return referenced;
+
         foreach (var method in type.GetMethods(all).Cast<MethodBase>().Concat(type.GetConstructors(all)))
         {
             var signature = method.GetParameters().Select(parameter => parameter.ParameterType)
                 .Concat(method is MethodInfo info ? [info.ReturnType] : []);
+
             foreach (var referenced in signature.SelectMany(Expand))
                 yield return referenced;
+
             foreach (var referenced in BodyReferences(method).SelectMany(Expand))
                 yield return referenced;
         }
@@ -84,9 +89,12 @@ public sealed class ExecutorBoundaryGuardTests
         {
             foreach (var element in Expand(type.GetElementType()!))
                 yield return element;
+
             yield break;
         }
+
         yield return type;
+
         if (type.IsGenericType && !type.IsGenericTypeDefinition)
             foreach (var argument in type.GetGenericArguments().SelectMany(Expand))
                 yield return argument;
@@ -100,17 +108,23 @@ public sealed class ExecutorBoundaryGuardTests
     private static IEnumerable<Type> BodyReferences(MethodBase method)
     {
         var il = method.GetMethodBody()?.GetILAsByteArray();
+
         if (il == null)
             yield break;
+
         var typeArguments = method.DeclaringType!.IsGenericType ? method.DeclaringType.GetGenericArguments() : null;
         var methodArguments = method.IsGenericMethod ? method.GetGenericArguments() : null;
         var position = 0;
+
         while (position < il.Length)
         {
             short value = il[position++];
+
             if (value == 0xFE)
                 value = (short)(0xFE00 | il[position++]);
+
             var code = OpCodesByValue[value];
+
             switch (code.OperandType)
             {
                 case OperandType.InlineMethod:
@@ -119,28 +133,36 @@ public sealed class ExecutorBoundaryGuardTests
                 case OperandType.InlineTok:
                     var token = BitConverter.ToInt32(il, position);
                     var member = method.Module.ResolveMember(token, typeArguments, methodArguments);
+
                     if (member is Type referencedType)
                         yield return referencedType;
                     else if (member != null)
                     {
                         yield return member.DeclaringType!;
+
                         if (member is FieldInfo field)
                             yield return field.FieldType;
+
                         if (member is MethodInfo called)
                         {
                             yield return called.ReturnType;
+
                             foreach (var parameter in called.GetParameters())
                                 yield return parameter.ParameterType;
                         }
                     }
+
                     position += 4;
+
                     break;
                 case OperandType.InlineSwitch:
                     position += 4 + 4 * BitConverter.ToInt32(il, position);
+
                     break;
                 case OperandType.InlineI8:
                 case OperandType.InlineR:
                     position += 8;
+
                     break;
                 case OperandType.InlineNone:
                     break;
@@ -148,12 +170,15 @@ public sealed class ExecutorBoundaryGuardTests
                 case OperandType.ShortInlineI:
                 case OperandType.ShortInlineVar:
                     position += 1;
+
                     break;
                 case OperandType.InlineVar:
                     position += 2;
+
                     break;
                 default:
                     position += 4;
+
                     break;
             }
         }

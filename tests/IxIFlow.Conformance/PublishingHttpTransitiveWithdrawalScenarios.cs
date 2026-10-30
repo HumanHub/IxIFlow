@@ -27,22 +27,32 @@ public sealed class PublishingHttpTransitiveWithdrawalScenarios
 {
     private const string Root = "withdrawal.root";
     private const string Leaf = "withdrawal.leaf";
+
     private static string Yaml(string import) =>
         $"workflow: {{name: Withdrawal, version: 1, dataType: System.Object}}\nimports: {{catalogs: [{import}]}}\ndefinitions: []";
+
     private static string Dependency(string id, string range = "[1.0.0]") => $"<dependency id=\"{id}\" version=\"{range}\"/>";
+
     private static byte[] Package(string id, string dependencies = "", string version = "1.0.0") =>
         PublishingFeed.Package(id, new(), dependencies, version);
+
     private static async Task<WorkflowPackage> Upload(IWorkflowStateRepository store, byte[] bytes) =>
         (await new WorkflowPublisher(store, store).UploadPackageAsync(new MemoryStream(bytes))).Stored;
+
     private static Task Withdraw(IWorkflowStateRepository store, WorkflowPackage package) =>
         store.SetPackageWithdrawnAsync(package.Id, package.Version, true, new(package.LifecycleRevision));
+
     private static void Refused(IEnumerable<WorkflowPublishDiagnostic> diagnostics, string code)
     {
         var diagnostic = Assert.Single(diagnostics);
         Assert.Equal(code, diagnostic.Code);
         Assert.Equal(WorkflowPublishStage.Validate, diagnostic.Stage);
-        Assert.Equal(code == "PUB025" ? WorkflowPublishDiagnosticClass.Conflict : WorkflowPublishDiagnosticClass.Unavailable, diagnostic.Class);
-        if (code == "PUB025") Assert.Contains(Leaf + "@1.0.0", diagnostic.Message);
+
+        Assert.Equal(code == "PUB025" ? WorkflowPublishDiagnosticClass.Conflict : WorkflowPublishDiagnosticClass.Unavailable,
+            diagnostic.Class);
+
+        if (code == "PUB025")
+            Assert.Contains(Leaf + "@1.0.0", diagnostic.Message);
     }
 
     public static IEnumerable<object[]> ClosureCases => StoreProfiles.ProfileNames.SelectMany(profile =>
@@ -57,38 +67,55 @@ public sealed class PublishingHttpTransitiveWithdrawalScenarios
         using var feed = new PublishingFeed();
         var leafBytes = Package(Leaf, version: scenario == "unrelated-withdrawal" ? "2.0.0" : "1.0.0");
         var leaf = scenario == "missing" ? null : await Upload(store, leafBytes);
-        if (scenario == "newer") await Upload(store, Package(Leaf, version: "2.0.0"));
+
+        if (scenario == "newer")
+            await Upload(store, Package(Leaf, version: "2.0.0"));
+
         var dependency = Dependency(Leaf, scenario == "newer" ? "[1.0.0,3.0.0)" : "[1.0.0]");
+
         if (scenario == "alternate")
         {
             await Upload(store, Package("withdrawal.middle", dependency));
             await Upload(store, Package("withdrawal.middle", version: "2.0.0"));
             dependency = Dependency("withdrawal.middle", "[1.0.0,3.0.0)");
         }
+
         // Positive cases register their closure after withdrawal, so the catalog's
         // immutable extraction records the allowed choice from the outset.
-        if (scenario is not ("newer" or "alternate")) await Upload(store, Package(Root, dependency));
+        if (scenario is not ("newer" or "alternate"))
+            await Upload(store, Package(Root, dependency));
+
         if (leaf != null)
         {
-            if (scenario == "unavailable") await store.DeleteAsync(leaf.Digest);
-            else await Withdraw(store, leaf);
+            if (scenario == "unavailable")
+                await store.DeleteAsync(leaf.Digest);
+            else
+                await Withdraw(store, leaf);
         }
-        if (scenario is "newer" or "alternate") await Upload(store, Package(Root, dependency));
+
+        if (scenario is "newer" or "alternate")
+            await Upload(store, Package(Root, dependency));
+
         var options = new WorkflowPublisherOptions();
+
         if (scenario == "feed-listed")
         {
             await File.WriteAllBytesAsync(Path.Combine(feed.Folder, Leaf + ".1.0.0.nupkg"), leafBytes);
             options = new() { NuGetConfigPath = feed.Config };
         }
+
         var publisher = new WorkflowPublisher(store, store, options);
         var draft = await store.SaveDefinitionAsync(new("Withdrawal", 1, "workflow", Yaml(Root + "@1.0.0")), null);
         var report = await publisher.ValidateAsync(draft);
         await using var factory = new PublishingHttpFactory(store) { PublisherOptions = options };
         using var client = factory.Operator();
+
         using var response = await client.PostAsync("/pub/drafts/workflow/Withdrawal/1/validate",
             new StringContent(draft.Source, Encoding.UTF8, "application/yaml"));
+
         using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         var published = await publisher.PublishAsync(draft.Id);
+
         if (scenario is "newer" or "alternate")
         {
             Assert.True(report.IsValid, string.Join("; ", report.Diagnostics));
@@ -109,7 +136,10 @@ public sealed class PublishingHttpTransitiveWithdrawalScenarios
             var diagnostic = Assert.Single(json.RootElement.GetProperty("diagnostics").EnumerateArray());
             Assert.Equal(code, diagnostic.GetProperty("code").GetString());
             Assert.Equal(code == "PUB025" ? "Conflict" : "Unavailable", diagnostic.GetProperty("class").GetString());
-            if (code == "PUB025") Assert.Contains(Leaf + "@1.0.0", diagnostic.GetProperty("message").GetString());
+
+            if (code == "PUB025")
+                Assert.Contains(Leaf + "@1.0.0", diagnostic.GetProperty("message").GetString());
+
             Assert.Equal(draft.Id, (await store.GetDefinitionAsync("workflow", draft.Name, draft.Version))!.Id);
             Assert.Null(await store.GetWorkflowVersionAsync(draft.Name, draft.Version));
         }
@@ -125,8 +155,10 @@ public sealed class PublishingHttpTransitiveWithdrawalScenarios
         await Upload(store, bytes);
         await Withdraw(store, leaf);
         var publisher = new WorkflowPublisher(store, store);
+
         foreach (var import in new[] { Leaf, Leaf + "@1.0.0", Root + "@1.0.0" })
             Refused((await publisher.ValidateAsync(new("Withdrawal", 1, "workflow", Yaml(import)))).Diagnostics, "PUB025");
+
         await Upload(store, Package(Leaf, version: "2.0.0"));
         var latest = await Upload(store, Package(Leaf, version: "3.0.0"));
         await Withdraw(store, latest);
@@ -142,26 +174,35 @@ public sealed class PublishingHttpTransitiveWithdrawalScenarios
     {
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
-        var model = PublishingFeed.Emit("Withdrawal.Model", "namespace WithdrawalModels; public class Model { public string Name {get;set;} = \"Ana\"; }");
+
+        var model = PublishingFeed.Emit("Withdrawal.Model",
+            "namespace WithdrawalModels; public class Model { public string Name {get;set;} = \"Ana\"; }");
+
         var leaf = await Upload(store, PublishingFeed.Package(Leaf, new() { ["lib/net10.0/Withdrawal.Model.dll"] = model }));
         await Upload(store, Package(Root, Dependency(Leaf)));
         var engines = new TemplateEngines([new LiquidTemplateEngine()]);
         var publisher = new WorkflowPublisher(store, store, templateEngines: engines);
+
         var template = await store.SaveDefinitionAsync(new("withdrawal", 1, "template",
             "template: {key: withdrawal, version: 1, engine: liquid, format: text, model: WithdrawalModels.Model}\n" +
             $"imports: {{catalogs: [{Root}@1.0.0]}}\ncontent: 'Hello {{{{ Name }}}}'"), null);
+
         var published = await publisher.PublishAsync(template.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
         Assert.Contains(published.Template!.Version.ModelPackages, pin => pin.Id == Leaf);
         await Withdraw(store, leaf);
+
         Refused((await publisher.ValidateAsync(new("withdrawal-new", 1, "template",
             template.Source.Replace("key: withdrawal,", "key: withdrawal-new,")))).Diagnostics, "PUB025");
+
         var workflow = WorkflowYamlSerializer.Read("""
-            workflow: {name: Withdrawal, version: 1, dataType: System.Object}
-            definitions:
-              - {kind: renderTemplate, id: render, template: withdrawal}
-            """);
-        Refused((await publisher.ValidateAsync(new("Withdrawal", 1, "workflow", WorkflowYamlSerializer.Write(workflow)))).Diagnostics, "PUB025");
+                                                   workflow: {name: Withdrawal, version: 1, dataType: System.Object}
+                                                   definitions:
+                                                     - {kind: renderTemplate, id: render, template: withdrawal}
+                                                   """);
+
+        Refused((await publisher.ValidateAsync(new("Withdrawal", 1, "workflow", WorkflowYamlSerializer.Write(workflow)))).Diagnostics,
+            "PUB025");
     }
 
     [Theory, MemberData(nameof(StoreProfiles.All), MemberType = typeof(StoreProfiles))]
@@ -175,6 +216,7 @@ public sealed class PublishingHttpTransitiveWithdrawalScenarios
         using var folder = new PublishingFeed();
         var options = new WorkflowPublisherOptions { NuGetConfigPath = folder.Config };
         var requests = new ConcurrentQueue<string>();
+
         using var host = Host.CreateDefaultBuilder().ConfigureLogging(logging => logging.ClearProviders()).ConfigureWebHostDefaults(web =>
             web.UseKestrel().UseUrls("http://127.0.0.1:0").ConfigureServices(services =>
             {
@@ -183,6 +225,7 @@ public sealed class PublishingHttpTransitiveWithdrawalScenarios
                     ReadPolicy = "feed", AuthorPolicy = "feed", ExecutePolicy = "feed", PreviewPolicy = "feed",
                     PublishPolicy = "feed", LifecyclePolicy = "feed", DownloadPolicy = "feed"
                 }, options);
+
                 services.RemoveAll<IHostedService>();
                 services.Replace(ServiceDescriptor.Singleton<IWorkflowStateRepository>(store));
                 services.AddSingleton<ICatalogQueryScope>(new PublishingHttpFactory.ScopeProvider());
@@ -195,14 +238,20 @@ public sealed class PublishingHttpTransitiveWithdrawalScenarios
                     context.User = new(new ClaimsIdentity([new Claim(ClaimTypes.Name, "fixture")], "fixture"));
                     await next(context);
                 });
-                app.UseRouting(); app.UseEndpoints(endpoints => endpoints.MapWorkflowPublishing("/pub"));
+
+                app.UseRouting();
+                app.UseEndpoints(endpoints => endpoints.MapWorkflowPublishing("/pub"));
             })).Build();
+
         try
         {
             await host.StartAsync();
             var address = host.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+
             await File.WriteAllTextAsync(folder.Config, "<configuration><packageSources><clear/><add key=\"own\" value=\"" +
-                SecurityElement.Escape(address + "/pub/nuget/index.json") + "\" allowInsecureConnections=\"true\"/></packageSources></configuration>");
+                SecurityElement.Escape(address + "/pub/nuget/index.json") +
+                "\" allowInsecureConnections=\"true\"/></packageSources></configuration>");
+
             using var client = new HttpClient { BaseAddress = new(address) };
             using var listing = JsonDocument.Parse(await client.GetByteArrayAsync($"/pub/nuget/flatcontainer/{Leaf}/index.json"));
             Assert.Contains(listing.RootElement.GetProperty("versions").EnumerateArray(), version => version.GetString() == "1.0.0");
@@ -211,7 +260,10 @@ public sealed class PublishingHttpTransitiveWithdrawalScenarios
             var draft = await store.SaveDefinitionAsync(new("Withdrawal", 1, "workflow", Yaml(Root + "@1.0.0")), null);
             Refused((await publisher.ValidateAsync(draft)).Diagnostics, "PUB025");
             Refused((await publisher.PublishAsync(draft.Id)).Diagnostics, "PUB025");
-            using var response = await client.PostAsync("/pub/drafts/workflow/Withdrawal/1/validate", new StringContent(draft.Source, Encoding.UTF8, "application/yaml"));
+
+            using var response = await client.PostAsync("/pub/drafts/workflow/Withdrawal/1/validate",
+                new StringContent(draft.Source, Encoding.UTF8, "application/yaml"));
+
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
             var diagnostic = Assert.Single(json.RootElement.GetProperty("diagnostics").EnumerateArray());
@@ -221,6 +273,9 @@ public sealed class PublishingHttpTransitiveWithdrawalScenarios
             Assert.Contains($"/pub/nuget/flatcontainer/{Leaf}/index.json", requests);
             Assert.DoesNotContain(requests, path => path.EndsWith(".nupkg", StringComparison.Ordinal));
         }
-        finally { await host.StopAsync(); }
+        finally
+        {
+            await host.StopAsync();
+        }
     }
 }

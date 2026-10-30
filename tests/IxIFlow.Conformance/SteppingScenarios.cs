@@ -14,11 +14,16 @@ public sealed class SteppingScenarios
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
         var registry = new WorkflowCatalog();
+
         var definition = Workflow.Create<Data>("ConformanceStep").Step<Noop>().WaitFor<Go>("go")
             .Sequence(b => b.Step<Noop>().Step<Noop>()).WithId("target").Step<Noop>().Build();
+
         var repository = store.NewRepository();
         var first = Services(repository, registry);
-        string id; BreakpointStop origin; long generation;
+        string id;
+        BreakpointStop origin;
+        long generation;
+
         try
         {
             var client = first.GetRequiredService<IWorkflowClient>();
@@ -26,7 +31,9 @@ public sealed class SteppingScenarios
             await first.GetRequiredService<IWorkflowOperations>().SetBreakpointsAsync(id, [new("bp", "target")], "setter");
             Assert.Equal(WorkflowExecutionStatus.Paused, (await client.ResumeAsync(id, "go", new Go())).Status);
             var debug = WorkflowDebugRules.Checkpoint((await repository.GetWorkflowInstanceAsync(id))!);
-            origin = debug.Stop!; generation = debug.PauseGeneration;
+            origin = debug.Stop!;
+            generation = debug.PauseGeneration;
+
             Assert.Equal(DebugCommandStatus.Accepted, (await repository.RequestDebugCommandAsync(id,
                 new("step", DebugCommandKind.Step, generation, "stepper",
                     ContinuationId: origin.BranchId, StepKind: DebugStepKind.Over))).Status);
@@ -35,8 +42,11 @@ public sealed class SteppingScenarios
         {
             await first.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
             await first.DisposeAsync();
-            if (repository is IAsyncDisposable disposable) await disposable.DisposeAsync();
+
+            if (repository is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
         }
+
         await using var second = Services(store.NewRepository(), registry);
         Assert.Equal(WorkflowExecutionStatus.Paused, (await second.GetRequiredService<IWorkflowClient>().RecoverAsync(id)).Status);
         var secondRepository = second.GetRequiredService<IWorkflowStateRepository>();
@@ -47,20 +57,29 @@ public sealed class SteppingScenarios
         Assert.Equal(generation + 1, stepped.PauseGeneration);
         Assert.Null(saved.RunnableAtUtc);
         Assert.NotNull((await secondRepository.GetDebugStatesAsync([id]))[id].Commands.Single(c => c.Id == "step").AcknowledgedRevision);
+
         Assert.Equal(DebugCommandStatus.StaleGeneration, (await secondRepository.RequestDebugCommandAsync(id,
             new("stale", DebugCommandKind.Step, generation, "stale",
                 ContinuationId: origin.BranchId, StepKind: DebugStepKind.Into))).Status);
-        Assert.Equal(WorkflowExecutionStatus.Success, (await second.GetRequiredService<IWorkflowOperations>().ContinueAsync(id, "continue")).Status);
+
+        Assert.Equal(WorkflowExecutionStatus.Success,
+            (await second.GetRequiredService<IWorkflowOperations>().ContinueAsync(id, "continue")).Status);
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository repository, WorkflowCatalog registry)
     {
-        var services = new ServiceCollection().AddLogging(); services.AddIxIFlow(o => o.Debugging = true);
-        services.AddSingleton(repository); services.AddSingleton<IWorkflowCatalog>(registry);
+        var services = new ServiceCollection().AddLogging();
+        services.AddIxIFlow(o => o.Debugging = true);
+        services.AddSingleton(repository);
+        services.AddSingleton<IWorkflowCatalog>(registry);
+
         return services.BuildServiceProvider();
     }
+
     public sealed class Data;
+
     public sealed class Go;
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;

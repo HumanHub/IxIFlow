@@ -24,9 +24,11 @@ public sealed class FlowchartEventHandoffTests
         registrations.AddSingleton<IWorkflowStateRepository>(new InMemoryWorkflowStateRepository(time));
         registrations.AddBreakpointConditions();
         await using var services = registrations.BuildServiceProvider();
+
         await FlowchartEventHandoffScenario.VerifyAsync(services, _ =>
         {
             time.Advance(TimeSpan.FromMilliseconds(101));
+
             return Task.CompletedTask;
         }, interrupted);
     }
@@ -44,9 +46,11 @@ public sealed class FlowchartEventHandoffTests
         await using var services = registrations.BuildServiceProvider();
         await using var scope = services.CreateAsyncScope();
         var runner = scope.ServiceProvider.GetRequiredService<WorkflowHost.InstanceOperations>();
+
         var definition = new WorkflowBuilder<Data, object>([], "FlowchartEventSnapshot")
             .WaitFor<Data>("go", configure: w => w.Output(e => e.Value).To(c => c.WorkflowData.Value))
             .WaitFor<Data>("answer").Build();
+
         var idle = await runner.StartAsync(definition, new Data(), new(), default);
         var old = (await store.GetWorkflowInstanceAsync(idle.InstanceId))!;
         await runner.DeliverAsync(idle.InstanceId, "go", new Data { Value = 42 }, "go-event");
@@ -58,23 +62,37 @@ public sealed class FlowchartEventHandoffTests
         Assert.Equal(42, Assert.IsType<Data>(result.WorkflowData).Value);
     }
 
-    public sealed class Data { public int Value { get; set; } }
+    public sealed class Data
+    {
+        public int Value { get; set; }
+    }
+
     public class SnapshotProbe : DispatchProxy
     {
         public IWorkflowStateRepository Store = null!;
         public WorkflowInstance? Stale;
         public int StaleReads;
+
         protected override object? Invoke(MethodInfo? method, object?[]? args)
         {
             if (method!.Name == nameof(IWorkflowStateRepository.GetWorkflowInstanceAsync) &&
                 Interlocked.Exchange(ref Stale, null) is { } stale)
             {
                 StaleReads++;
+
                 return Task.FromResult<WorkflowInstance?>(stale);
             }
-            try { return method.Invoke(Store, args); }
+
+            try
+            {
+                return method.Invoke(Store, args);
+            }
             catch (TargetInvocationException error)
-            { ExceptionDispatchInfo.Capture(error.InnerException!).Throw(); throw; }
+            {
+                ExceptionDispatchInfo.Capture(error.InnerException!).Throw();
+
+                throw;
+            }
         }
     }
 }

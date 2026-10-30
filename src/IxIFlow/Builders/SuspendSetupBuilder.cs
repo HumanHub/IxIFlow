@@ -8,7 +8,7 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Builder for configuring suspend/resume operations
 /// </summary>
-public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData> 
+internal class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
     : ISuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
     where TWorkflowData : class
     where TResumeEvent : class
@@ -18,7 +18,7 @@ public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
 
     internal WorkflowStep Step => _step;
 
-    public SuspendSetupBuilder(WorkflowStep step)
+    internal SuspendSetupBuilder(WorkflowStep step)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
     }
@@ -45,6 +45,7 @@ public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
     {
         ArgumentNullException.ThrowIfNull(payload);
         _step.DefaultPayload = payload;
+
         return this;
     }
 
@@ -53,7 +54,9 @@ public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
     {
         if (duration <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(duration), "Wait timeout must be positive");
+
         _step.WaitTimeout = duration;
+
         return this;
     }
 
@@ -61,11 +64,14 @@ public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
         Action<IWorkflowBuilder<TWorkflowData, TPreviousStepData>> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
+
         if (_step.TimeoutSteps.Count != 0)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 "The wait already has a timeout branch");
+
         configure(new WorkflowBuilder<TWorkflowData, TPreviousStepData>(
-            _step.TimeoutSteps, "WaitTimeout", 1));
+            _step.TimeoutSteps, string.Empty, 1));
+
         return this;
     }
 }
@@ -73,7 +79,7 @@ public class SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>
 /// <summary>
 ///     Builder for configuring input mappings for suspend/resume operations
 /// </summary>
-public class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData> 
+internal class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData>
     : ISuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData>
     where TWorkflowData : class
     where TResumeEvent : class
@@ -96,7 +102,7 @@ public class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevio
         new SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>(_step)
             .OnTimeout(configure);
 
-    public SuspendInputBuilder(WorkflowStep step, Expression<Func<TResumeEvent, TProperty>> propertyExpression)
+    internal SuspendInputBuilder(WorkflowStep step, Expression<Func<TResumeEvent, TProperty>> propertyExpression)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
         _propertyExpression = propertyExpression ?? throw new ArgumentNullException(nameof(propertyExpression));
@@ -119,6 +125,7 @@ public class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevio
         {
             if (context is WorkflowContext<TWorkflowData, TPreviousStepData> typedContext)
                 return compiledFunction(typedContext);
+
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}, {typeof(TPreviousStepData).Name}>, got {context.GetType().Name}");
         };
@@ -160,7 +167,9 @@ public class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevio
 
     private string GetPropertyName<T>(Expression<Func<TResumeEvent, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException("Property expression must be a member access expression",
             nameof(propertyExpression));
     }
@@ -169,7 +178,7 @@ public class SuspendInputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevio
 /// <summary>
 ///     Builder for configuring output mappings for suspend/resume operations
 /// </summary>
-public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData> 
+internal class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData>
     : ISuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPreviousStepData>
     where TWorkflowData : class
     where TResumeEvent : class
@@ -192,7 +201,7 @@ public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevi
         new SuspendSetupBuilder<TWorkflowData, TResumeEvent, TPreviousStepData>(_step)
             .OnTimeout(configure);
 
-    public SuspendOutputBuilder(WorkflowStep step, Expression<Func<TResumeEvent, TProperty>> propertyExpression)
+    internal SuspendOutputBuilder(WorkflowStep step, Expression<Func<TResumeEvent, TProperty>> propertyExpression)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
         _propertyExpression = propertyExpression ?? throw new ArgumentNullException(nameof(propertyExpression));
@@ -216,6 +225,7 @@ public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevi
             if (context is WorkflowContext<TWorkflowData> typedContext && value is TProperty typedValue)
                 compiledAssignment(typedContext, typedValue);
             else if (context is WorkflowContext<TWorkflowData> typedContext2 && value == null)
+
                 // Handle null values gracefully
                 compiledAssignment(typedContext2, default!);
             else
@@ -301,12 +311,15 @@ public class SuspendOutputBuilder<TWorkflowData, TResumeEvent, TProperty, TPrevi
         var lambda =
             Expression.Lambda<Action<WorkflowContext<TWorkflowData>, TProperty>>(assignment, contextParameter,
                 valueParameter);
+
         return lambda.Compile();
     }
 
     private string GetPropertyName<T>(Expression<Func<TResumeEvent, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException("Property expression must be a member access expression",
             nameof(propertyExpression));
     }

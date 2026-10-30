@@ -5,27 +5,46 @@ namespace IxIFlow.Generators;
 /// <summary>Names resolved by the authoring host before translation.</summary>
 public sealed class WorkflowSourceOptions
 {
-    public IDictionary<string, TemplateDocumentContract> Templates { get; } = new Dictionary<string, TemplateDocumentContract>(StringComparer.Ordinal);
+    /// <summary>Resolved template contracts keyed by document identity.</summary>
+    public IDictionary<string, TemplateDocumentContract> Templates { get; } =
+        new Dictionary<string, TemplateDocumentContract>(StringComparer.Ordinal);
+
+    /// <summary>Namespace of generated workflow types; defaults to IxIFlow.Generated.</summary>
     public string Namespace { get; set; } = "IxIFlow.Generated";
+
+    /// <summary>Optional class name override for the generated workflow.</summary>
     public string? ClassName { get; set; }
+
     /// <summary>Require every referenced type to have a host-resolved contract.
     /// Without this option, type names are not resolved, so STEP003, STEP009 and WF003 cannot be reported.
     /// </summary>
     public bool RequireResolvedTypes { get; set; }
+
     /// <summary>Resolved activity versions and their declaring package identities.</summary>
     public IDictionary<string, ActivityDocumentContract> Activities { get; } =
         new Dictionary<string, ActivityDocumentContract>(StringComparer.Ordinal);
+
     /// <summary>Package or workflow imports resolved and pinned by the publishing host.</summary>
     public ISet<string> ResolvedImports { get; } = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>Host-resolved CLR type names keyed by authored aliases.</summary>
     public IDictionary<string, string> Types { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
     /// <summary>The data type inferred from a workflow type's IWorkflow&lt;T&gt; contract.</summary>
     public IDictionary<string, string> WorkflowDataTypes { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
     /// <summary>Class identities read from WorkflowAttribute by the compiling host.</summary>
     public IDictionary<string, WorkflowClassIdentity> WorkflowIdentities { get; } =
         new Dictionary<string, WorkflowClassIdentity>(StringComparer.Ordinal);
+
+    /// <summary>Host-resolved member names available to translated expressions.</summary>
     public IDictionary<string, string> Members { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>Resolved workflow data contracts keyed by type name.</summary>
     public IDictionary<string, WorkflowDataDocumentContract> DataContracts { get; } =
         new Dictionary<string, WorkflowDataDocumentContract>(StringComparer.Ordinal);
+
+    /// <summary>Pinned child workflow references keyed by authored workflow identity.</summary>
     public IDictionary<string, WorkflowSourceReference> Workflows { get; } =
         new Dictionary<string, WorkflowSourceReference>(StringComparer.Ordinal);
 }
@@ -42,10 +61,13 @@ public sealed class WorkflowSourceReference(string dataType, int version)
 {
     public string DataType { get; } = dataType;
     public int Version { get; } = version;
+
     /// <summary>Canonical immutable contract read from the publishing catalog.</summary>
     public string? ContractJson { get; init; }
+
     /// <summary>Verified executable entry and pins for published inline composition.</summary>
     public string? EntryType { get; init; }
+
     public string? AssemblyName { get; init; }
     public string? BundleDigest { get; init; }
     public string? StructureHash { get; init; }

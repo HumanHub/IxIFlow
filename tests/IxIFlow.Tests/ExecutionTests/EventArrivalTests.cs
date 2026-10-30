@@ -8,8 +8,8 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// A busy owner learns of new events from the host's watch, not only at its next commit (D-32), and an
-/// event forwarded to a child counts as taken only once the child has decided it (D-33).
+/// A busy owner learns of new events from the host's watch, not only at its next commit, and an
+/// event forwarded to a child counts as taken only once the child has decided it.
 /// </summary>
 [Trait("Feature", "waits")]
 public sealed class EventArrivalTests
@@ -21,6 +21,7 @@ public sealed class EventArrivalTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var gate = services.GetRequiredService<SlowGate>();
+
         var definition = Workflow.Create<RaceData>("ApprovalOrSlowWork")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -28,11 +29,13 @@ public sealed class EventArrivalTests
                     .Output(approval => approval.Approved).To(ctx => ctx.WorkflowData.Approved)))
                 .Do(branch => branch.Step<SlowActivity>()))
             .Build();
+
         var started = await engine.StartAsync(definition, new RaceData());
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
-        while ((await repository.GetOpenWaitsAsync(new WaitQuery(InstanceId: started))).Count == 0)
-            await Task.Delay(10);
+
+        await IxIFlow.Tests.Infrastructure.TestEventually.UntilAsync(started, "an open wait",
+            () => repository.GetOpenWaitsAsync(new WaitQuery(InstanceId: started)), waits => waits.Count > 0);
 
         // The slow activity never finishes on its own; the approval wins the join and cancels it.
         var approved = await engine.ResumeAsync(started, "approval", new Approval { Approved = true })
@@ -51,28 +54,37 @@ public sealed class EventArrivalTests
         var repository = new EventReadingStore();
         using var services = Services(repository);
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<ChildData>("ChildWithApproval")
                 .Step<StartActivity>()
                 .WaitFor<Approval>("approval", configure: wait => wait
                     .Output(approval => approval.Approved).To(ctx => ctx.WorkflowData.Approved))
                 .Build());
+
         var parent = await engine.RunAsync(Workflow.Create<RaceData>("ParentOfChildWithApproval")
             .Step<StartActivity>()
             .Invoke<ChildData>("ChildWithApproval", 1, child => child
                 .Output(data => data.Approved).To(ctx => ctx.WorkflowData.Approved))
             .Build(), new RaceData());
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, parent.Status);
         var childId = await repository.WaitingInstanceAsync("ChildWithApproval", "approval");
-        await repository.AppendEventAsync(new WorkflowEvent(childId, "approval-1",
-            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)), System.Text.Json.JsonSerializer.Serialize(new Approval { Approved = true }), "approval"));
-        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, "other-host", TimeSpan.FromMinutes(1), await StoreTestSupport.ClaimAsync(services)));
 
-        // The event goes to the child (D-17); its owner has not decided it. The caller stores it, tries the
+        await repository.AppendEventAsync(new WorkflowEvent(childId, "approval-1",
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)),
+            System.Text.Json.JsonSerializer.Serialize(new Approval { Approved = true }), "approval"));
+
+        Assert.NotNull(await repository.TryAcquireExecutionLeaseAsync(childId, "other-host", TimeSpan.FromMinutes(1),
+            await StoreTestSupport.ClaimAsync(services)));
+
+        // The event goes to the child; its owner has not decided it. The caller stores it, tries the
         // child, which another host owns, and reads the event back; from then on it can only wait.
         using var attempt = new CancellationTokenSource();
+
         var resume = engine.ResumeAsync(childId, "approval", new Approval { Approved = true }, "approval-1",
             attempt.Token);
+
         await repository.ReadBack("approval-1").WaitAsync(TimeSpan.FromSeconds(10));
         attempt.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resume);
@@ -81,10 +93,13 @@ public sealed class EventArrivalTests
         // Once the child is free, it takes the event, and its completion wakes its parent.
         Assert.True((await repository.ReleaseExecutionLeaseAsync(childId, "other-host")).Released);
         await engine.RecoverAsync(childId);
+
         Assert.Equal(EventOutcome.Consumed,
             (await EventAssert.DecidedAsync(repository, childId, "approval-1")).Outcome);
+
         var finished = await engine.AwaitAsync(parent.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(20));
+
         Assert.True(Assert.IsType<RaceData>(finished.WorkflowData).Approved);
     }
 
@@ -92,11 +107,14 @@ public sealed class EventArrivalTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+
         if (repository != null)
             services.AddSingleton(repository);
+
         services.AddSingleton<SlowGate>();
         services.AddTransient<SlowActivity>();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -108,11 +126,14 @@ public sealed class EventArrivalTests
         /// <summary>Completes once the event, stored, has been read.</summary>
         public Task ReadBack(string eventId) => Read(eventId).Task;
 
-        public override async Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId)
+        public override async Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId,
+            CancellationToken cancellationToken = default)
         {
-            var stored = await base.GetEventAsync(instanceId, eventId);
+            var stored = await base.GetEventAsync(instanceId, eventId, cancellationToken: cancellationToken);
+
             if (stored != null)
                 Read(eventId).TrySetResult();
+
             return stored;
         }
 
@@ -152,6 +173,7 @@ public sealed class EventArrivalTests
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             gate.Entered.TrySetResult();
+
             try
             {
                 await Task.Delay(Timeout.Infinite, cancellationToken);
@@ -159,6 +181,7 @@ public sealed class EventArrivalTests
             catch (OperationCanceledException)
             {
                 gate.Cancelled.TrySetResult();
+
                 throw;
             }
         }

@@ -23,21 +23,28 @@ public sealed class RecipeTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var request = Assert.Single(gateway.Approvals);
         WorkflowExecutionResult result;
+
         if (timeout)
         {
             time.Advance(TimeSpan.FromHours(1));
             result = await client.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
             Assert.True(Assert.IsType<Order>(result.WorkflowData).Escalated);
-            Assert.Equal(EventRejection.WaitTimedOut, (await client.ReplyAsync(request.ReplyToken, new ApprovalDecision())).Event!.Rejection);
+
+            Assert.Equal(EventRejection.WaitTimedOut,
+                (await client.ReplyAsync(request.ReplyToken, new ApprovalDecision())).Event!.Rejection);
         }
         else
         {
             result = await client.ReplyAsync(request.ReplyToken, new ApprovalDecision { Approved = true, By = "manager" });
             Assert.True(Assert.IsType<Order>(result.WorkflowData).Approved);
-            Assert.Equal(EventRejection.WaitAnswered, (await client.ReplyAsync(request.ReplyToken, new ApprovalDecision())).Event!.Rejection);
+
+            Assert.Equal(EventRejection.WaitAnswered,
+                (await client.ReplyAsync(request.ReplyToken, new ApprovalDecision())).Event!.Rejection);
         }
+
         if (!timeout)
             result = await client.ResumeAsync(started.InstanceId, "dispatched", new OrderDispatched());
+
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal(timeout ? "" : "approved", Assert.IsType<Order>(result.WorkflowData).Outcome);
     }
@@ -50,7 +57,10 @@ public sealed class RecipeTests
         var client = SampleTests.Client(services);
         await client.RunAsync(PaymentRecipe.Definition(TimeSpan.FromHours(1)), new Payment { OrderId = "order", Amount = 40 });
         var token = Assert.Single(gateway.Payments);
-        Assert.Equal(EventRejection.NotMatched, (await client.ReplyAsync(token, new PaymentReceived { Status = "pending" })).Event!.Rejection);
+
+        Assert.Equal(EventRejection.NotMatched,
+            (await client.ReplyAsync(token, new PaymentReceived { Status = "pending" })).Event!.Rejection);
+
         var paid = await client.ReplyAsync(token, new PaymentReceived { Status = "paid" });
         Assert.True(paid.Status == WorkflowExecutionStatus.Success, paid.ErrorMessage);
         Assert.Equal("paid", Assert.IsType<Payment>(paid.WorkflowData).PaymentStatus);
@@ -69,6 +79,7 @@ public sealed class RecipeTests
         var first = gateway.Approvals.Single(request => request.Approver == "manager");
         var other = gateway.Approvals.Single(request => request.Approver == "director");
         var result = await client.ReplyAsync(first.ReplyToken, new ApprovalDecision { Approved = true });
+
         if (every)
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
@@ -78,8 +89,11 @@ public sealed class RecipeTests
         else
         {
             Assert.Equal("approved", Assert.IsType<Order>(result.WorkflowData).Outcome);
-            Assert.Equal(EventRejection.WaitCancelled, (await client.ReplyAsync(other.ReplyToken, new ApprovalDecision())).Event!.Rejection);
+
+            Assert.Equal(EventRejection.WaitCancelled,
+                (await client.ReplyAsync(other.ReplyToken, new ApprovalDecision())).Event!.Rejection);
         }
+
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
     }
 
@@ -130,7 +144,10 @@ public sealed class RecipeTests
         var client = SampleTests.Client(services);
         var order = await client.RunAsync(OneApproverRecipe.Definition(TimeSpan.FromHours(1)), new Order());
         var token = Assert.Single(gateway.Approvals).ReplyToken;
-        var fraud = await client.RunAsync(FraudRecipe.Definition(), new FraudCase { OrderInstanceId = order.InstanceId, Reason = "Flagged" });
+
+        var fraud = await client.RunAsync(FraudRecipe.Definition(),
+            new FraudCase { OrderInstanceId = order.InstanceId, Reason = "Flagged" });
+
         Assert.True(fraud.Status == WorkflowExecutionStatus.Success, fraud.ErrorMessage);
         var cancelled = await client.AwaitAsync(order.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(WorkflowExecutionStatus.Cancelled, cancelled.Status);
@@ -157,18 +174,22 @@ public sealed class RecipeTests
     {
         await using var services = Services(new Gateway());
         var client = SampleTests.Client(services);
+
         var basket = await client.RunAsync(PriceLinesRecipe.Definition(), new Basket
         {
             Lines = [new BasketLine { Quantity = 2, UnitPrice = 5 }, new BasketLine { Quantity = 3, UnitPrice = 2 }]
         });
+
         Assert.True(basket.Status == WorkflowExecutionStatus.Success, basket.ErrorMessage);
         var data = Assert.IsType<Basket>(basket.WorkflowData);
         Assert.Equal(16m, data.Total);
         Assert.Equal(new[] { 10m, 6m }, data.LineTotals.Select(result => result.Value));
+
         var invoices = await client.RunAsync(InvoiceCustomersRecipe.Definition(), new Invoicing
         {
             Customers = [new Customer { Name = "Ada", Lines = [new BasketLine { Sku = "pen" }] }]
         });
+
         Assert.True(invoices.Status == WorkflowExecutionStatus.Success, invoices.ErrorMessage);
         Assert.Equal(["Ada #1: pen"], Assert.IsType<Invoicing>(invoices.WorkflowData).InvoiceLines);
     }
@@ -181,17 +202,23 @@ public sealed class RecipeTests
         var gateway = new Gateway();
         await using var services = Services(gateway);
         var client = SampleTests.Client(services);
+
         await client.RunAsync(every ? EveryApproverFromListRecipe.Definition(1) : AnyApproverFromListRecipe.Definition(),
             new ApprovalRound { Approvers = ["manager", "director"] });
+
         Assert.Equal(every ? 1 : 2, gateway.Approvals.Count);
         var first = gateway.Approvals.Single(request => request.Approver == "manager").ReplyToken;
         var result = await client.ReplyAsync(first, new ApprovalDecision { Approved = true, By = "manager" });
+
         if (every)
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
             Assert.Equal(2, gateway.Approvals.Count);
-            result = await client.ReplyAsync(gateway.Approvals.Last().ReplyToken, new ApprovalDecision { Approved = false, By = "director" });
+
+            result = await client.ReplyAsync(gateway.Approvals.Last().ReplyToken,
+                new ApprovalDecision { Approved = false, By = "director" });
         }
+
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var decisions = Assert.IsType<ApprovalRound>(result.WorkflowData).Decisions;
         Assert.Equal(2, decisions.Count);
@@ -234,7 +261,10 @@ public sealed class RecipeTests
         Assert.Equal(2, gateway.Payments.Count);
         var tokens = gateway.Payments.ToArray();
         Assert.NotEqual(tokens[0], tokens[1]);
-        Assert.Equal(EventRejection.WaitCancelled, (await client.ReplyAsync(tokens[0], new PaymentReceived { Status = "paid" })).Event!.Rejection);
+
+        Assert.Equal(EventRejection.WaitCancelled,
+            (await client.ReplyAsync(tokens[0], new PaymentReceived { Status = "paid" })).Event!.Rejection);
+
         var end = await client.ReplyAsync(tokens[1], new PaymentReceived { Status = "paid" });
         Assert.True(end.Status == WorkflowExecutionStatus.Success, end.ErrorMessage);
         Assert.Equal("pay-2", Assert.IsType<Payment>(end.WorkflowData).PaymentReference);
@@ -251,6 +281,7 @@ public sealed class RecipeTests
         services.AddSingleton<IStock>(gateway);
         services.AddSingleton<IFraudChecks>(gateway);
         services.AddSingleton<IShipping>(gateway);
+
         return services.BuildServiceProvider();
     }
 
@@ -272,18 +303,21 @@ public sealed class RecipeTests
         {
             Approvals.Enqueue(request);
             _sent.Release();
+
             return Task.CompletedTask;
         }
 
         public Task<string> CreatePaymentAsync(decimal amount, string replyToken, CancellationToken cancellationToken)
         {
             Payments.Enqueue(replyToken);
+
             return Task.FromResult("pay-" + Payments.Count);
         }
 
         public Task RefundAsync(string reference, CancellationToken cancellationToken)
         {
             Refunds.Enqueue(reference);
+
             return Task.CompletedTask;
         }
 

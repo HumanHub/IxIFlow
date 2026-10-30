@@ -1,5 +1,13 @@
 namespace IxIFlow.Templates;
 
+/// <summary>The host has no registered engine for the requested template language.</summary>
+public sealed class TemplateEngineNotFoundException(string engineName)
+    : TemplateException($"No template engine named '{engineName}' is registered in this host")
+{
+    /// <summary>The requested engine name.</summary>
+    public string EngineName { get; } = engineName;
+}
+
 /// <summary>A template version failed its engine's validation when it was published.</summary>
 public sealed class TemplateValidationException : TemplateException
 {

@@ -1,9 +1,15 @@
 using IxIFlow.Core.Runtime;
+
 namespace IxIFlow.Core;
 
 /// <summary>A step's stable catalog address, author identity and source call site.</summary>
-public sealed record StepTableEntry(string CatalogId, string AuthorId, string Name,
-    WorkflowStepType Kind, string ScopePath, string? SourceLocation)
+public sealed record StepTableEntry(
+    string CatalogId,
+    string AuthorId,
+    string Name,
+    WorkflowStepType Kind,
+    string ScopePath,
+    string? SourceLocation)
 {
     public CancellationScopeDescriptor? CancellationScope { get; init; }
     public AssignmentDescriptor? Assignment { get; init; }
@@ -30,18 +36,28 @@ public sealed class StepTable : System.Collections.Generic.IReadOnlyList<StepTab
     {
         var sites = inlineWorkflows.SelectMany(pin => pin.Sites.Select(site => (Pin: pin, Prefix: site + "/inline/")))
             .OrderByDescending(site => site.Prefix.Length).ToArray();
+
         return new(_entries.Select(entry =>
         {
             var source = entry.SourceLocation;
             var colon = source?.LastIndexOf(':') ?? -1;
-            if (colon <= 0) return entry;
+
+            if (colon <= 0)
+                return entry;
+
             var path = source![..colon];
-            if (path is not (WorkflowBundleArchive.YamlPath or WorkflowBundleArchive.SourcePath)) return entry;
+
+            if (path is not (WorkflowBundleArchive.YamlPath or WorkflowBundleArchive.SourcePath))
+                return entry;
+
             var owner = sites.FirstOrDefault(site => entry.CatalogId.StartsWith(site.Prefix, StringComparison.Ordinal)).Pin;
-            return owner?.BundleDigest == null ? entry : entry with
-            {
-                SourceLocation = WorkflowBundleIdentity.InlineSourceDirectory(owner.Name, owner.Version) + source
-            };
+
+            return owner?.BundleDigest == null
+                ? entry
+                : entry with
+                {
+                    SourceLocation = WorkflowBundleIdentity.InlineSourceDirectory(owner.Name, owner.Version) + source
+                };
         }).ToArray());
     }
 
@@ -50,15 +66,19 @@ public sealed class StepTable : System.Collections.Generic.IReadOnlyList<StepTab
         _entries = catalog.AllSteps.Select(pair => new StepTableEntry(
             pair.Key, catalog.AuthorId(pair.Value), pair.Value.Name, pair.Value.StepType,
             pair.Key[..pair.Key.LastIndexOf('/')], pair.Value.SourceLocation)
-            {
-                CancellationScope = pair.Value.StepType == WorkflowStepType.CancellationScope ?
-                    new(catalog.SequenceScope(pair.Value), catalog.CancellationScope(pair.Value)) : null,
-                Assignment = pair.Value.Assignment is { } assignment ?
-                    new(assignment.TargetPath!, WorkflowTypeIdentity.StableName(assignment.ValueType)) : null,
-                ExceptionType = pair.Value.StepType == WorkflowStepType.Throw ? WorkflowTypeIdentity.StableName(pair.Value.ExceptionType) : null,
-                RethrowOwnerId = pair.Value.RethrowOwnerId
-            }).ToArray();
+        {
+            CancellationScope = pair.Value.StepType == WorkflowStepType.CancellationScope
+                ? new(catalog.SequenceScope(pair.Value), catalog.CancellationScope(pair.Value))
+                : null,
+            Assignment = pair.Value.Assignment is { } assignment
+                ? new(assignment.TargetPath!, WorkflowTypeIdentity.StableName(assignment.ValueType))
+                : null,
+            ExceptionType =
+                pair.Value.StepType == WorkflowStepType.Throw ? WorkflowTypeIdentity.StableName(pair.Value.ExceptionType) : null,
+            RethrowOwnerId = pair.Value.RethrowOwnerId
+        }).ToArray();
     }
+
     public int Count => _entries.Length;
     public StepTableEntry this[int index] => _entries[index];
     public IEnumerator<StepTableEntry> GetEnumerator() => ((IEnumerable<StepTableEntry>)_entries).GetEnumerator();

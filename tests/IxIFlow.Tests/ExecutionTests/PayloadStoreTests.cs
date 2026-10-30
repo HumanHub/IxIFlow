@@ -24,9 +24,18 @@ public sealed class PayloadStoreTests
         var time = new FakeTimeProvider();
         var repository = new InMemoryWorkflowStateRepository(time, payloadSettings: new(1024));
         var store = repository.PayloadStore;
-        var rows = () => (Dictionary<string, PayloadRecord>)store.GetType().GetField("_rows", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
+
+        var rows = () =>
+            (Dictionary<string, PayloadRecord>)
+            store.GetType().GetField("_rows", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
+
         return new PayloadStoreContract(store,
-            (reference, body) => { rows()[reference.Digest].Body = body; return Task.CompletedTask; }).VerifyAsync();
+            (reference, body) =>
+            {
+                rows()[reference.Digest].Body = body;
+
+                return Task.CompletedTask;
+            }).VerifyAsync();
     }
 
     [Fact]
@@ -36,12 +45,18 @@ public sealed class PayloadStoreTests
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.Payloads", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         var connectionString = "Data Source=" + Path.Combine(folder, "payloads.db");
+
         try
         {
             await using var repository = new SqliteWorkflowStateRepository(connectionString, payloadSettings: new(1024));
-            await VerifyRelational(repository.PayloadStore, () => new SqliteConnection(new SqliteConnectionStringBuilder(connectionString) { Pooling = false }.ConnectionString));
+
+            await VerifyRelational(repository.PayloadStore,
+                () => new SqliteConnection(new SqliteConnectionStringBuilder(connectionString) { Pooling = false }.ConnectionString));
         }
-        finally { await SqliteTestFiles.DeleteAsync(folder); }
+        finally
+        {
+            await SqliteTestFiles.DeleteAsync(folder);
+        }
     }
 
     [SqlServerFact]
@@ -49,7 +64,8 @@ public sealed class PayloadStoreTests
     public Task SqlServerPayloadStoreContract()
     {
         var connectionString = SqlTestDatabase<PayloadStoreTests>.ConnectionString;
-        return VerifyRelational(new SqlWorkflowStateRepository(connectionString, payloadSettings: new(1024)).PayloadStore,
+
+        return VerifyRelational(new SqlServerWorkflowStateRepository(connectionString, payloadSettings: new(1024)).PayloadStore,
             () => new SqlConnection(connectionString));
     }
 
@@ -58,6 +74,7 @@ public sealed class PayloadStoreTests
     public Task PostgreSqlPayloadStoreContract()
     {
         var connectionString = PostgreSqlTestDatabase<PayloadStoreTests>.ConnectionString;
+
         return VerifyRelational(new PostgreSqlWorkflowStateRepository(connectionString, payloadSettings: new(1024)).PayloadStore,
             () => new NpgsqlConnection(connectionString));
     }
@@ -70,7 +87,9 @@ public sealed class PayloadStoreTests
             var table = connection is SqlConnection ? "dbo.IxIFlowWorkflowPayloads" : "ixiflow_workflow_payloads";
             var column = connection is SqlConnection ? "Body" : "body";
             var digest = connection is SqlConnection ? "Digest" : "digest";
-            await connection.ExecuteAsync($"UPDATE {table} SET {column}=@Body WHERE {digest}=@Digest", new { Body = body, reference.Digest });
+
+            await connection.ExecuteAsync($"UPDATE {table} SET {column}=@Body WHERE {digest}=@Digest",
+                new { Body = body, reference.Digest });
         }).VerifyAsync();
 
         // Enlist uses the caller's transaction: rollback and commit decide pin visibility together with
@@ -79,6 +98,7 @@ public sealed class PayloadStoreTests
         var reference = await store.PutAsync(body);
         await using var connection = open();
         await connection.OpenAsync();
+
         await using (var transaction = await connection.BeginTransactionAsync())
         {
             var pins = store.Enlist(transaction);
@@ -86,13 +106,16 @@ public sealed class PayloadStoreTests
             await pins.PinAsync(new("reader", "enlisted"), reference);
             await transaction.RollbackAsync();
         }
+
         Assert.True(await store.CollectAsync(reference, TimeSpan.Zero));
         await store.PutAsync(body);
+
         await using (var transaction = await connection.BeginTransactionAsync())
         {
             await store.Enlist(transaction).PinAsync(new("reader", "enlisted"), reference);
             await transaction.CommitAsync();
         }
+
         Assert.False(await store.CollectAsync(reference, TimeSpan.Zero));
     }
 
@@ -104,8 +127,10 @@ public sealed class PayloadStoreTests
         using var provider = services.BuildServiceProvider();
         Assert.Equal(0, provider.GetRequiredService<PayloadStoreSettings>().PayloadThresholdBytes);
         Assert.Equal(17, provider.GetRequiredService<PayloadStoreSettings>().MaxPayloadBytes);
+
         Assert.Same(provider.GetRequiredService<IWorkflowStateRepository>().PayloadStore,
             provider.GetRequiredService<IPayloadStore>());
+
         Assert.Equal(64L * 1024 * 1024, new IxIFlowOptions().MaxPayloadBytes);
         Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(o => o.MaxPayloadBytes = 0));
         Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(o => o.PayloadThresholdBytes = -1));

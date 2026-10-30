@@ -6,7 +6,7 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Compensation error handler
 /// </summary>
-public class CompensationErrorHandler : IErrorHandler
+internal class CompensationErrorHandler : IErrorHandler
 {
     public CompensationStrategy Strategy { get; set; }
     public Type? CompensationTargetType { get; set; }
@@ -16,7 +16,7 @@ public class CompensationErrorHandler : IErrorHandler
 /// <summary>
 ///     Retry error handler
 /// </summary>
-public class RetryErrorHandler : IErrorHandler
+internal class RetryErrorHandler : IErrorHandler
 {
     public required RetryPolicy RetryPolicy { get; set; }
     public CompensationErrorHandler? PreExecute { get; set; }
@@ -25,7 +25,7 @@ public class RetryErrorHandler : IErrorHandler
 /// <summary>
 ///     Termination error handler
 /// </summary>
-public class TerminationErrorHandler : IErrorHandler
+internal class TerminationErrorHandler : IErrorHandler
 {
     public CompensationErrorHandler? PreExecute { get; set; }
     public SagaErrorConfiguration? SagaErrorConfig { get; set; }
@@ -34,7 +34,7 @@ public class TerminationErrorHandler : IErrorHandler
 /// <summary>
 ///     Continuation error handler
 /// </summary>
-public class ContinuationErrorHandler : IErrorHandler
+internal class ContinuationErrorHandler : IErrorHandler
 {
     public bool IgnoreCompensationErrors { get; set; }
     public CompensationErrorHandler? PreExecute { get; set; }

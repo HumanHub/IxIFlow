@@ -7,7 +7,9 @@ public sealed class DocumentNumber
 {
     public DocumentNumber(string literal)
     {
-        if (!IsLiteral(literal)) throw new ArgumentException("Expected a numeric literal", nameof(literal));
+        if (!IsLiteral(literal))
+            throw new ArgumentException("Expected a numeric literal", nameof(literal));
+
         Literal = literal;
     }
 
@@ -29,6 +31,7 @@ public sealed class DocumentNumber
             var point = mantissa.IndexOf('.');
             var integer = (point < 0 ? mantissa : mantissa.Substring(0, point)).TrimStart('0');
             var fraction = point < 0 ? "" : mantissa.Substring(point + 1);
+
             return (Literal[0] == '-' ? "-" : "") + (integer.Length == 0 ? "0" : integer) +
                 (point < 0 ? "" : "." + (fraction.Length == 0 ? "0" : fraction)) + suffix;
         }

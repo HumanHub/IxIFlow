@@ -19,10 +19,14 @@ public sealed class SagaRetryPolicyTests
                 .OnError(handler => handler.ThenRetry(attempts))))
             .OnError(handler => handler.Compensate().ThenRetry(attempts))
             .Build();
+
         var saga = definition.Steps[1];
+
         var stepHandlers = Assert.IsType<List<StepErrorHandlerInfo>>(
             Assert.Single(saga.SequenceSteps).StepMetadata["StepErrorHandlers"]);
+
         Assert.Equal(2, stepHandlers.Count);
+
         var sagaPolicy = Assert.IsType<SagaErrorConfiguration>(
             Assert.Single(saga.CatchBlocks).StepMetadata["SagaErrorConfig"]).RetryPolicy;
 
@@ -44,6 +48,7 @@ public sealed class SagaRetryPolicyTests
         var policy = immediate
             ? new RetryPolicy(4)
             : new RetryPolicy(TimeSpan.FromMilliseconds(7), TimeSpan.FromMilliseconds(50), 4, 3);
+
         var definition = Workflow.Create<Data>("ExplicitRetryPolicy")
             .Step<Noop>()
             .Saga(saga => saga.Step<Noop>(step => step
@@ -51,13 +56,18 @@ public sealed class SagaRetryPolicyTests
                 .OnError(handler => handler.ThenRetry(policy))))
             .OnError(handler => handler.Compensate().ThenRetry(policy))
             .Build();
+
         var saga = definition.Steps[1];
+
         var stepHandlers = Assert.IsType<List<StepErrorHandlerInfo>>(
             Assert.Single(saga.SequenceSteps).StepMetadata["StepErrorHandlers"]);
+
         Assert.Equal(2, stepHandlers.Count);
         Assert.All(stepHandlers, handler => Assert.Same(policy, handler.RetryPolicy));
+
         Assert.Same(policy, Assert.IsType<SagaErrorConfiguration>(
             Assert.Single(saga.CatchBlocks).StepMetadata["SagaErrorConfig"]).RetryPolicy);
+
         Assert.Equal(4, policy.MaximumAttempts);
         Assert.Equal(immediate ? TimeSpan.Zero : TimeSpan.FromMilliseconds(7), policy.InitialInterval);
         Assert.Equal(immediate ? TimeSpan.Zero : TimeSpan.FromMilliseconds(50), policy.MaximumInterval);
@@ -73,6 +83,7 @@ public sealed class SagaRetryPolicyTests
             .OnError(handler =>
             {
                 var continuation = handler.Compensate();
+
                 if (policy == null)
                     continuation.ThenRetry(3);
                 else
@@ -81,8 +92,10 @@ public sealed class SagaRetryPolicyTests
             .Build();
 
         var structureHash = new WorkflowScopeCatalog(Build(null)).StructureHash;
+
         Assert.Equal(new WorkflowScopeCatalog(Build(new RetryPolicy { MaximumAttempts = 3 })).StructureHash,
             structureHash);
+
         Assert.NotEqual(new WorkflowScopeCatalog(Build(new RetryPolicy(3))).StructureHash, structureHash);
     }
 

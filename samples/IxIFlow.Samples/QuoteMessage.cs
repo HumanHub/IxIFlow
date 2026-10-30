@@ -21,6 +21,7 @@ public static class QuoteMessage
     {
         // snippet: template-setup
         services.AddIxIFlow().AddIxIFlowTemplates().AddLiquid();
+
         // end-snippet: template-setup
         services.AddSingleton(sender);
     }
@@ -32,6 +33,7 @@ public static class QuoteMessage
             TemplateVersion.Create<QuoteData>("quote", 1, "liquid", TemplateFormat.Text,
                 new TemplateVariant("", "Quote for {{ Customer }}"),
                 new TemplateVariant("fr", "Devis pour {{ Customer }}")));
+
         // end-snippet: template-publish
     }
 

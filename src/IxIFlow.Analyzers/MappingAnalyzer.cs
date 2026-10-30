@@ -38,19 +38,27 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.Analyze | GeneratedCodeAnalysisFlags.ReportDiagnostics);
         context.EnableConcurrentExecution();
+
         context.RegisterCompilationStartAction(start =>
         {
             if (EngineSymbols.For(start.Compilation) is not { } engine)
                 return;
+
             var checkedActivities = new ConcurrentDictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
             var checkedWorkflows = new ConcurrentDictionary<INamedTypeSymbol, byte>(SymbolEqualityComparer.Default);
+
             start.RegisterOperationAction(operation =>
             {
                 var invocation = (IInvocationOperation)operation.Operation;
+
                 if (!engine.IsBuilderMethod(invocation.TargetMethod))
                     return;
+
                 CheckMapping(operation, engine, invocation);
-                CheckContract(operation, engine, invocation, invocation.TargetMethod.Name == "Invoke" ? checkedWorkflows : checkedActivities);
+
+                CheckContract(operation, engine, invocation,
+                    invocation.TargetMethod.Name == "Invoke" ? checkedWorkflows : checkedActivities);
+
                 CheckRequiredInputs(operation, engine, invocation);
                 CheckWaitRequiredInputs(operation, engine, invocation);
             }, OperationKind.Invocation);
@@ -61,22 +69,30 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     private static void CheckMapping(OperationAnalysisContext context, EngineSymbols engine, IInvocationOperation completion)
     {
         var input = completion.TargetMethod.Name == "From";
+
         if (!input && completion.TargetMethod.Name != "To" || completion.Instance == null ||
             MappingReceiver(engine, completion.Instance) is not IInvocationOperation mapping ||
             mapping.TargetMethod.Name != (input ? "Input" : "Output") || !engine.IsBuilderMethod(mapping.TargetMethod) ||
             Selected(mapping) is not ({ } owner, { } name, { } location) ||
             Kind(engine, owner, mapping.TargetMethod.ContainingType) is not { } kind)
             return;
+
         var properties = PublicProperties(owner);
+
         if (!properties.TryGetValue(name, out var property))
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.NoPublicProperty, location, kind, owner.MetadataName, name));
+
             return;
         }
+
         var workflow = kind == WorkflowKind;
+
         var marked = (kind == ActivityKind || workflow && UsesCallerView(engine, mapping)) &&
             PublicProperties(owner, publicOnly: false).Values.Any(each => Marked(engine, each, workflow));
+
         var qualified = $"{owner.MetadataName}.{property.Name}";
+
         // Accessor errors remain actionable even when the effective contract is supplied separately.
         if (input && property.SetMethod is not { DeclaredAccessibility: Accessibility.Public })
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnInput, location, kind, qualified, "public setter"));
@@ -84,13 +100,17 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnOutput, location, kind, qualified, "public getter"));
         else if (input && marked && !Input(engine, property, true, workflow))
         {
-            if (workflow) context.ReportDiagnostic(Diagnostic.Create(Descriptors.WorkflowNotAnInput, location, qualified));
-            else context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnInput, location, kind, qualified, "[ActivityInput]"));
+            if (workflow)
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.WorkflowNotAnInput, location, qualified));
+            else
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnInput, location, kind, qualified, "[ActivityInput]"));
         }
         else if (!input && marked && !Output(engine, property, true, workflow))
         {
-            if (workflow) context.ReportDiagnostic(Diagnostic.Create(Descriptors.WorkflowNotAnOutput, location, qualified));
-            else context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnOutput, location, kind, qualified, "[ActivityOutput]"));
+            if (workflow)
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.WorkflowNotAnOutput, location, qualified));
+            else
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.NotAnOutput, location, kind, qualified, "[ActivityOutput]"));
         }
     }
 
@@ -99,17 +119,24 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         if (Declared(engine, invocation) is not ({ } activity, var setup))
             return;
+
         var properties = PublicProperties(activity).Values.ToList();
         var workflow = invocation.TargetMethod.Name == "Invoke";
         var marked = PublicProperties(activity, publicOnly: false).Values.Any(property => Marked(engine, property, workflow));
-        if (workflow && (!marked || HasContract(invocation))) return;
+
+        if (workflow && (!marked || HasContract(invocation)))
+            return;
+
         var required = properties
             .Where(property => Input(engine, property, marked, workflow) && Attribute(engine.Required, property) != null &&
                 Attribute(engine.DefaultValue, property) == null)
             .ToList();
+
         if (required.Count == 0)
             return;
+
         HashSet<string> mapped;
+
         if (setup == null || setup.ArgumentKind == ArgumentKind.DefaultValue ||
             EngineSymbols.Unwrapped(setup.Value) is ILiteralOperation { ConstantValue: { HasValue: true, Value: null } })
             mapped = [];
@@ -118,12 +145,16 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
             mapped = seen;
         else
             return;
+
         var location = NameLocation(invocation);
+
         foreach (var property in required.Where(property => !mapped.Contains(property.Name)))
-            if (workflow) context.ReportDiagnostic(Diagnostic.Create(Descriptors.WorkflowRequiredInputNotMapped, location,
-                $"{activity.MetadataName}.{property.Name}"));
-            else context.ReportDiagnostic(Diagnostic.Create(Descriptors.RequiredInputNotMapped, location, ActivityKind,
-                $"{activity.MetadataName}.{property.Name}"));
+            if (workflow)
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.WorkflowRequiredInputNotMapped, location,
+                    $"{activity.MetadataName}.{property.Name}"));
+            else
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.RequiredInputNotMapped, location, ActivityKind,
+                    $"{activity.MetadataName}.{property.Name}"));
     }
 
     private static void CheckWaitRequiredInputs(OperationAnalysisContext context, EngineSymbols engine,
@@ -131,6 +162,7 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         if (invocation.TargetMethod.Name is not ("WaitFor" or "Suspend"))
             return;
+
         foreach (var argument in invocation.Arguments)
         {
             if (argument.Parameter?.Type is not INamedTypeSymbol { Name: "Action", TypeArguments.Length: 1 } action ||
@@ -138,12 +170,15 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
                 InputOwner(builder) is not INamedTypeSymbol owner ||
                 EngineSymbols.Unwrapped(argument.Value) is not IAnonymousFunctionOperation setup)
                 continue;
+
             // A supplied payload may provide required values; inspect its value at build time instead.
             if (setup.Body.Descendants().OfType<IInvocationOperation>().Any(call =>
                     call.TargetMethod.Name == "DefaultPayload" && engine.IsBuilderMethod(call.TargetMethod)))
                 return;
+
             if (MappedInputs(engine, setup, owner) is not { Count: > 0 } mapped)
                 return;
+
             foreach (var property in PublicProperties(owner).Values.Where(property =>
                          Attribute(engine.Required, property) != null && !mapped.Contains(property.Name)))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.RequiredInputNotMapped, NameLocation(invocation),
@@ -162,11 +197,14 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
                 action.TypeArguments[0] is INamedTypeSymbol builder && EngineSymbols.InNamespace(builder, "IxIFlow.Builders") &&
                 InputOwner(builder) is INamedTypeSymbol owner)
                 return Kind(engine, owner, builder) is ActivityKind or WorkflowKind ? (owner, argument) : (null, null);
+
         var method = invocation.TargetMethod;
+
         if (method.Name is "Step" or "Scope" or "CompensateWith" &&
             !method.Parameters.Any(parameter => parameter.Type is INamedTypeSymbol { Name: "Action" }) &&
             method.TypeArguments.FirstOrDefault(engine.IsActivity) is INamedTypeSymbol activity)
             return (activity, null);
+
         return (null, null);
     }
 
@@ -190,50 +228,64 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         if (ExclusiveBuilders(engine, setup, traceContinuations: workflow) is not { } exclusive)
             return null;
+
         var mapped = new HashSet<string>();
         var builders = new HashSet<ILocalSymbol>(SymbolEqualityComparer.Default);
         var nested = new List<IOperation>();
+
         foreach (var operation in Outside(setup.Body, nested))
         {
             switch (operation)
             {
                 case IVariableDeclaratorOperation declarator when IsBuilder(declarator.Symbol.Type):
                     builders.Add(declarator.Symbol);
+
                     break;
                 case IArgumentOperation argument when IsBuilder(EngineSymbols.Unwrapped(argument.Value).Type):
                 case ISimpleAssignmentOperation assignment when IsBuilder(assignment.Value.Type) &&
-                                                               assignment.Target is not ILocalReferenceOperation:
+                    assignment.Target is not ILocalReferenceOperation:
                 case IReturnOperation { ReturnedValue: { } returned } when IsBuilder(returned.Type):
                     return null;
                 case IInvocationOperation { TargetMethod.Name: "From", Instance: { } instance } completion
                     when engine.IsBuilderMethod(completion.TargetMethod):
-                    if (MappingReceiver(engine, instance) is not IInvocationOperation { TargetMethod.Name: "Input", Instance: { } receiver } input ||
+                    if (MappingReceiver(engine, instance) is not IInvocationOperation
+                        {
+                            TargetMethod.Name: "Input", Instance: { } receiver
+                        } input ||
                         !engine.IsBuilderMethod(input.TargetMethod) || Selected(input) is not ({ } owner, { } name, _))
                         return null;
+
                     if (!SymbolEqualityComparer.Default.Equals(owner, activity))
                         break;
+
                     // A mapping counts on the step's own builder, not on another lambda's; one whose builder cannot be
                     // traced may be either.
                     var receiverRoot = Root(engine, receiver, resolveLocals: !workflow);
+
                     if (workflow && ReferencedBuilder(receiverRoot) is { } symbol && exclusive.Contains(symbol))
                     {
                         mapped.Add(name);
+
                         break;
                     }
+
                     switch (receiverRoot)
                     {
                         case IParameterReferenceOperation root
                             when SymbolEqualityComparer.Default.Equals(root.Parameter, setup.Symbol.Parameters.FirstOrDefault()):
                             mapped.Add(name);
+
                             break;
                         case IParameterReferenceOperation:
                             break;
                         default:
                             return null;
                     }
+
                     break;
             }
         }
+
         // ExclusiveBuilders already checks workflow-local captures, with the nameof exemption.
         // Activity/event continuations retain their existing nested-use check.
         foreach (var inner in workflow ? Enumerable.Empty<IOperation>() : nested)
@@ -243,6 +295,7 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
                     _ => false
                 }))
                 return null;
+
         return mapped;
     }
 
@@ -251,15 +304,20 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         var pending = new Stack<IOperation>();
         pending.Push(root);
+
         while (pending.Count > 0)
         {
             var operation = pending.Pop();
+
             if (operation != root && operation is IAnonymousFunctionOperation or ILocalFunctionOperation)
             {
                 nested.Add(operation);
+
                 continue;
             }
+
             yield return operation;
+
             foreach (var child in operation.ChildOperations)
                 pending.Push(child);
         }
@@ -275,12 +333,15 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
         for (var depth = 0; depth < 64; depth++)
         {
             operation = Resolved(operation);
+
             if (operation is not IInvocationOperation { TargetMethod.Name: "OnError", Instance: { } receiver } call ||
                 !engine.IsBuilderMethod(call.TargetMethod) ||
                 !IsInvocationBuilder(call.TargetMethod.ContainingType))
                 return operation;
+
             operation = receiver;
         }
+
         return operation;
     }
 
@@ -295,7 +356,9 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
             selector.Body.Operations.Length != 1 ||
             selector.Body.Operations[0] is not IReturnOperation { ReturnedValue: IMemberReferenceOperation member })
             return (null, null, null);
+
         var syntax = member.Syntax is MemberAccessExpressionSyntax access ? access.Name : member.Syntax;
+
         return (owner, member.Member.Name, syntax.GetLocation());
     }
 
@@ -305,14 +368,16 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         if (IsInvocationBuilder(builder))
             return WorkflowKind;
+
         if (builder.Name.Contains("Suspend"))
             return "Event";
+
         return engine.IsActivity(owner) ? ActivityKind : null;
     }
 
     private static bool IsInvocationBuilder(INamedTypeSymbol builder) =>
         builder.Name.Contains("WorkflowInvocationSetup") ||
-        builder.Name.StartsWith("FaultInvocation", System.StringComparison.Ordinal);
+        builder.Name.StartsWith("IFaultInvocation", System.StringComparison.Ordinal);
 
     // The value an operation stands for, through locals that are set once where they are declared.
     private static IOperation Resolved(IOperation operation)
@@ -320,11 +385,14 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
         for (var depth = 0; depth < 8; depth++)
         {
             operation = EngineSymbols.Unwrapped(operation);
+
             if (operation is not ILocalReferenceOperation reference ||
                 EngineSymbols.Initializer(reference, default) is not { } value)
                 return operation;
+
             operation = value;
         }
+
         return operation;
     }
 
@@ -335,10 +403,13 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
         for (var depth = 0; depth < 64; depth++)
         {
             receiver = resolveLocals ? Resolved(receiver) : EngineSymbols.Unwrapped(receiver);
+
             if (receiver is not IInvocationOperation { Instance: { } instance } call || !engine.IsBuilderMethod(call.TargetMethod))
                 return receiver;
+
             receiver = instance;
         }
+
         return receiver;
     }
 
@@ -346,12 +417,14 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     private static Dictionary<string, IPropertySymbol> PublicProperties(INamedTypeSymbol type, bool publicOnly = true)
     {
         var properties = new Dictionary<string, IPropertySymbol>();
+
         for (var each = type; each != null; each = each.BaseType)
             foreach (var property in each.GetMembers().OfType<IPropertySymbol>())
                 if (property is { IsStatic: false, IsIndexer: false } &&
                     (!publicOnly || property.DeclaredAccessibility == Accessibility.Public) &&
                     !properties.ContainsKey(property.Name))
                     properties.Add(property.Name, property);
+
         return properties;
     }
 
@@ -360,23 +433,28 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         if (attribute == null)
             return null;
+
         for (var each = property; each != null; each = each.OverriddenProperty)
             if (each.GetAttributes().FirstOrDefault(data =>
                     SymbolEqualityComparer.Default.Equals(data.AttributeClass, attribute)) is { } found)
                 return found;
+
         return null;
     }
 
     private static bool Marked(EngineSymbols engine, IPropertySymbol property, bool workflow = false) =>
-        Attribute(workflow ? engine.WorkflowInput : engine.Input, property) != null || Attribute(workflow ? engine.WorkflowOutput : engine.Output, property) != null ||
+        Attribute(workflow ? engine.WorkflowInput : engine.Input, property) != null ||
+        Attribute(workflow ? engine.WorkflowOutput : engine.Output, property) != null ||
         Attribute(workflow ? engine.WorkflowInputOutput : engine.InputOutput, property) != null;
 
     private static bool Input(EngineSymbols engine, IPropertySymbol property, bool marked, bool workflow = false) => marked
-        ? Attribute(workflow ? engine.WorkflowInput : engine.Input, property) != null || Attribute(workflow ? engine.WorkflowInputOutput : engine.InputOutput, property) != null
+        ? Attribute(workflow ? engine.WorkflowInput : engine.Input, property) != null ||
+        Attribute(workflow ? engine.WorkflowInputOutput : engine.InputOutput, property) != null
         : property.SetMethod is { DeclaredAccessibility: Accessibility.Public };
 
     private static bool Output(EngineSymbols engine, IPropertySymbol property, bool marked, bool workflow = false) => marked
-        ? Attribute(workflow ? engine.WorkflowOutput : engine.Output, property) != null || Attribute(workflow ? engine.WorkflowInputOutput : engine.InputOutput, property) != null
+        ? Attribute(workflow ? engine.WorkflowOutput : engine.Output, property) != null ||
+        Attribute(workflow ? engine.WorkflowInputOutput : engine.InputOutput, property) != null
         : property.GetMethod is { DeclaredAccessibility: Accessibility.Public };
 
     // Check the contract when a type is used as an activity, including properties no mapping selects. The same type
@@ -386,31 +464,43 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         if (Declared(engine, invocation) is not ({ } activity, _))
             return;
+
         var workflow = invocation.TargetMethod.Name == "Invoke";
-        if (workflow && HasContract(invocation) || !checkedActivities.TryAdd(activity, 0)) return;
+
+        if (workflow && HasContract(invocation) || !checkedActivities.TryAdd(activity, 0))
+            return;
+
         var properties = PublicProperties(activity, publicOnly: false).Values.ToList();
         var marked = properties.Any(property => Marked(engine, property, workflow));
+
         foreach (var property in properties)
         {
             var location = property.Locations.FirstOrDefault(each => each.IsInSource) ?? NameLocation(invocation);
             var qualified = $"{activity.MetadataName}.{property.Name}";
+
             if (Marked(engine, property, workflow))
             {
                 if (Input(engine, property, true, workflow) && property.SetMethod is not { DeclaredAccessibility: Accessibility.Public })
                     Report(workflow ? Descriptors.WorkflowInputNeedsSetter : Descriptors.InputNeedsSetter);
+
                 if (Output(engine, property, true, workflow) && property.GetMethod is not { DeclaredAccessibility: Accessibility.Public })
                     Report(workflow ? Descriptors.WorkflowOutputNeedsGetter : Descriptors.OutputNeedsGetter);
             }
+
             if (Attribute(engine.Required, property) != null && Output(engine, property, marked, workflow) &&
                 !Input(engine, property, marked, workflow))
                 Report(workflow ? Descriptors.WorkflowRequiredOnOutput : Descriptors.RequiredOnOutput);
+
             if (Attribute(engine.DefaultValue, property) is { } fallback)
             {
                 if (property.SetMethod is not { DeclaredAccessibility: Accessibility.Public })
                     Report(workflow ? Descriptors.WorkflowDefaultNeedsSetter : Descriptors.DefaultNeedsSetter);
+
                 if (!ActivityDefaults.CanConvert(engine.Compilation, fallback, property.Type))
-                    context.ReportDiagnostic(Diagnostic.Create(workflow ? Descriptors.WorkflowInvalidDefault : Descriptors.InvalidDefault, location, qualified, property.Type.MetadataName));
+                    context.ReportDiagnostic(Diagnostic.Create(workflow ? Descriptors.WorkflowInvalidDefault : Descriptors.InvalidDefault,
+                        location, qualified, property.Type.MetadataName));
             }
+
             void Report(DiagnosticDescriptor descriptor) =>
                 context.ReportDiagnostic(Diagnostic.Create(descriptor, location, qualified));
         }
@@ -434,35 +524,46 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
     {
         if (setup.Symbol.Parameters.FirstOrDefault() is not { } parameter)
             return null;
+
         var builders = new HashSet<ISymbol>(SymbolEqualityComparer.Default) { parameter };
         var pending = new Queue<ISymbol>();
         pending.Enqueue(parameter);
         var references = setup.Body.Descendants().Where(operation => ReferencedBuilder(operation) != null).ToList();
+
         while (pending.Count > 0)
         {
             var builder = pending.Dequeue();
+
             foreach (var reference in references.Where(reference =>
                          SymbolEqualityComparer.Default.Equals(ReferencedBuilder(reference), builder)))
             {
                 var nameOnly = false;
+
                 for (var parent = reference.Parent; parent != null && parent != setup; parent = parent.Parent)
                 {
                     if (parent is INameOfOperation)
                     {
                         nameOnly = true;
+
                         break;
                     }
+
                     if (parent is IAnonymousFunctionOperation or ILocalFunctionOperation)
                         return null;
                 }
+
                 if (nameOnly)
                     continue;
+
                 if (reference.Parent is not IInvocationOperation call || call.Instance != reference ||
                     !engine.IsBuilderMethod(call.TargetMethod))
                     return null;
+
                 if (!traceContinuations)
                     continue;
+
                 IOperation chain = call;
+
                 while (true)
                 {
                     if (chain.Parent is IInvocationOperation next && next.Instance == chain &&
@@ -473,10 +574,12 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
                     else
                         break;
                 }
+
                 if (chain.Parent is IVariableInitializerOperation { Parent: IVariableDeclaratorOperation declaration })
                 {
                     if (declaration.Symbol.RefKind != RefKind.None)
                         return null;
+
                     if (builders.Add(declaration.Symbol))
                         pending.Enqueue(declaration.Symbol);
                 }
@@ -484,6 +587,7 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
                     return null;
             }
         }
+
         return builders;
     }
 
@@ -493,12 +597,14 @@ public sealed class MappingAnalyzer : DiagnosticAnalyzer
         if (mapping.Instance == null ||
             ReferencedBuilder(Root(engine, mapping.Instance, resolveLocals: false)) is not { } root)
             return false;
+
         for (var each = mapping.Parent; each != null; each = each.Parent)
             if (each is IArgumentOperation { Parent: IInvocationOperation invocation } argument &&
                 engine.IsWorkflowInvoke(invocation) && Declared(engine, invocation).Setup == argument &&
                 EngineSymbols.Unwrapped(argument.Value) is IAnonymousFunctionOperation setup &&
                 ExclusiveBuilders(engine, setup, traceContinuations: true) is { } builders && builders.Contains(root))
                 return !HasContract(invocation);
+
         // A helper or extracted delegate may be used with an explicit contract.
         return false;
     }

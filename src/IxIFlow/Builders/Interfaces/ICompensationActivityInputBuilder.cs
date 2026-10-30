@@ -6,7 +6,7 @@ namespace IxIFlow.Builders.Interfaces;
 /// <summary>
 /// Builder for configuring input properties of compensation activities
 /// </summary>
-public interface ICompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty> 
+public interface ICompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty>
     : ICompensationActivityBuilder<TWorkflowData, TCompensationActivity>
     where TCompensationActivity : IAsyncActivity
 {
@@ -36,7 +36,8 @@ public interface ICompensationActivityInputBuilder<TWorkflowData, TCompensationA
 /// <summary>
 /// Builder for configuring input properties of compensation activities with access to previous step data and activity
 /// </summary>
-public interface ICompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty, TPreviousStepData, TPreviousChainActivity> :
+public interface ICompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty, TPreviousStepData,
+    TPreviousChainActivity> :
     ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData, TPreviousChainActivity>
     where TCompensationActivity : IAsyncActivity
     where TPreviousStepData : class

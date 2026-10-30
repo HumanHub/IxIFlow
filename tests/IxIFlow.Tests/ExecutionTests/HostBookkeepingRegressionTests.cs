@@ -24,6 +24,7 @@ public sealed class HostBookkeepingRegressionTests
         await using var host = new Harness();
         await using var run = await host.AssignAsync();
         CheckpointCommit? first = null;
+
         for (var index = 0; index < 512; index++)
         {
             run.Instance.WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data { Value = index.ToString() }));
@@ -32,9 +33,11 @@ public sealed class HostBookkeepingRegressionTests
             var reply = await host.Endpoint.CheckpointAsync(new(run.Identity, commit));
             Assert.Equal(CheckpointReplyKind.Ack, reply.Kind);
             run.Instance.Revision = reply.Revision;
+
             if (index % 16 == 0)
             {
                 Assert.Equal(reply, await host.Endpoint.CheckpointAsync(new(run.Identity, commit)));
+
                 Assert.Equal(CheckpointReplyKind.Ack,
                     (await host.Endpoint.CheckpointAsync(new(run.Identity, first))).Kind);
             }
@@ -42,12 +45,15 @@ public sealed class HostBookkeepingRegressionTests
             var receipt = Receipts(host).Single();
             Assert.Equal(reply.Revision, Field<WorkflowInstance>(receipt, "Instance").Revision);
             Assert.Equal(run.Instance.WorkflowDataJson, Field<WorkflowInstance>(receipt, "Instance").WorkflowDataJson);
+
             // With tracing disabled, no receipt collection may grow with the number of Acks.
             foreach (var field in receipt.GetType().GetFields(Fields))
                 if (field.GetValue(receipt) is IEnumerable entries and not string)
                     Assert.Empty(entries);
+
             Assert.Empty(Field<IDictionary>(run.Admission, "_outstanding"));
         }
+
         Assert.Equal(run.Instance.Revision, Field<WorkflowInstance>(run.Admission, "_saved").Revision);
     }
 
@@ -57,15 +63,25 @@ public sealed class HostBookkeepingRegressionTests
         await using var host = new Harness();
         await using var run = await host.AssignAsync();
         var commits = new List<CheckpointCommit>();
+
         for (var index = 0; index < 2; index++)
         {
             run.Instance.WorkflowDataJson = StoredJson.Inline(JsonSerializer.Serialize(new Data { Value = index.ToString() }));
+
             var commit = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision,
-                traceEntries: [new ExecutionTraceEntry { TraceId = index.ToString(),
-                    Timestamp = host.Time.GetUtcNow().UtcDateTime, EntryType = TraceEntryType.LoopIteration }]);
+                traceEntries:
+                [
+                    new ExecutionTraceEntry
+                    {
+                        TraceId = index.ToString(),
+                        Timestamp = host.Time.GetUtcNow().UtcDateTime, EntryType = TraceEntryType.LoopIteration
+                    }
+                ]);
+
             commits.Add(commit);
             run.Instance.Revision = (await host.Endpoint.CheckpointAsync(new(run.Identity, commit))).Revision;
         }
+
         for (var index = 0; index < 3; index++)
             foreach (var commit in commits.AsEnumerable().Reverse())
                 Assert.Equal(CheckpointReplyKind.Ack,
@@ -84,14 +100,18 @@ public sealed class HostBookkeepingRegressionTests
     {
         await using var host = new Harness();
         var definition = Workflow.Create<Data>("ManyInstances").Step<Noop>().Build();
+
         for (var index = 0; index < 128; index++)
         {
             var result = await host.Operations.StartAsync(definition, new Data(),
                 new WorkflowOptions { InstanceId = "finished-" + index }, default).WaitAsync(Patience);
+
             Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         }
+
         Assert.Empty(Receipts(host));
         Assert.Empty(Field<IDictionary>(host.Operations, "_assignments"));
+
         // Inspect retained queue maps as well as the live assignments: a removed assignment must
         // not leave its queue rooted in a separate host dictionary.
         foreach (var field in host.Operations.GetType().GetFields(Fields))
@@ -111,18 +131,21 @@ public sealed class HostBookkeepingRegressionTests
     public async Task AFinalUncertainReplyIsReplayedAfterRenewalFails(string ending, bool retry)
     {
         await using var host = new Harness();
+
         var definition = ending switch
         {
             "parked" => Workflow.Create<Data>("LostPark").Step<Noop>()
-                .Saga(body => body.Step<Fail>(step => step.OnError<InvalidOperationException>(
-                    handler => handler.ThenRetry(new RetryPolicy(TimeSpan.FromHours(1), TimeSpan.FromHours(1), 1, 1)))))
+                .Saga(body => body.Step<Fail>(step => step.OnError<InvalidOperationException>(handler =>
+                    handler.ThenRetry(new RetryPolicy(TimeSpan.FromHours(1), TimeSpan.FromHours(1), 1, 1)))))
                 .Build(),
             "idle" => Workflow.Create<Data>("LostIdle").Step<Noop>().Delay(TimeSpan.FromHours(1)).Build(),
             _ => Workflow.Create<Data>("LostComplete").Step<Noop>().Build()
         };
+
         var instance = await host.SeedAsync(definition);
         host.Store.LoseFinalReply = true;
         host.Store.ReturnRetry = retry;
+
         host.Store.CurrentOwner = () => Field<IDictionary>(host.Operations, "_assignments")
             .Values.Cast<WorkflowHost.InstanceOperations.HostedRun>().Single().Owner;
 
@@ -134,11 +157,15 @@ public sealed class HostBookkeepingRegressionTests
         Assert.Single(host.Store.FinalCommitIds.Distinct());
         Assert.Equal(1, host.Store.RejectedRenewals);
         Assert.True(host.Store.LossBeforeReply);
+
         Assert.Equal(ending == "completed" ? WorkflowExecutionStatus.Success :
             ending == "parked" ? WorkflowExecutionStatus.Scheduled : WorkflowExecutionStatus.Suspended, result.Status);
+
         Assert.Equal(ending == "completed" ? WorkflowStatus.Completed :
             ending == "parked" ? WorkflowStatus.Running : WorkflowStatus.Suspended, saved.Status);
+
         Assert.Equal("assigned", Assert.IsType<Data>(result.WorkflowData).Value);
+
         if (ending != "completed")
             await host.Time.WaitForTimerDueAtAsync(new DateTimeOffset(saved.RunnableAtUtc!.Value));
     }
@@ -154,19 +181,29 @@ public sealed class HostBookkeepingRegressionTests
         host.Store.UncertainNext = true;
         host.Store.ReturnRetry = retry;
         var commit = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision, "unresolved");
+
         Assert.Equal(retry ? CheckpointReplyKind.Retry : CheckpointReplyKind.Unknown,
             (await host.Endpoint.CheckpointAsync(new(run.Identity, commit))).Kind);
+
         host.Time.Advance(TimeSpan.FromMinutes(2));
         Assert.Throws<ExecutionOwnershipLostException>(run.Owner.ThrowIfLost);
-        Assert.NotNull(await host.Store.TryAcquireExecutionLeaseAsync(run.Instance.InstanceId, "takeover", TimeSpan.FromHours(1), await StoreTestSupport.ClaimAsync(host.Services)));
+
+        Assert.NotNull(await host.Store.TryAcquireExecutionLeaseAsync(run.Instance.InstanceId, "takeover", TimeSpan.FromHours(1),
+            await StoreTestSupport.ClaimAsync(host.Services)));
+
         var calls = host.Store.Calls;
 
         run.Instance.WorkflowDataJson = StoredJson.Inline("{\"Value\":\"changed\"}");
         var changed = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, commit.ExpectedRevision, commit.CommitId);
         var fresh = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, commit.ExpectedRevision);
-        foreach (var request in new[] { new Checkpoint(run.Identity, changed), new(run.Identity, fresh),
-                     new(Guid.NewGuid(), commit) })
+
+        foreach (var request in new[]
+                 {
+                     new Checkpoint(run.Identity, changed), new(run.Identity, fresh),
+                     new(Guid.NewGuid(), commit)
+                 })
             Assert.Equal(ConflictReason.NotAssigned, (await host.Endpoint.CheckpointAsync(request)).Conflict);
+
         Assert.Equal(calls, host.Store.Calls);
 
         var replay = await host.Endpoint.CheckpointAsync(new(run.Identity, commit));
@@ -178,6 +215,7 @@ public sealed class HostBookkeepingRegressionTests
 
     private static T Field<T>(object target, string name) =>
         (T)target.GetType().GetField(name, Fields)!.GetValue(target)!;
+
     private static IEnumerable<object> Receipts(Harness host) => Field<IDictionary>(host.Operations, "_assignments")
         .Values.Cast<object>().Select(run => Field<object>(run, "Receipt"));
 
@@ -205,8 +243,10 @@ public sealed class HostBookkeepingRegressionTests
             control.OnScheduled(scheduler.Schedule);
             control.OnUnscheduled(scheduler.Unschedule);
             _watch = new CancellationWatch(Store, Time);
+
             Operations = new(Services, Services.GetRequiredService<IActivityExecutor>(), Store,
-                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), Services.GetRequiredService<ExecutionLeaseRenewer>(),
+                Services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(),
+                Services.GetRequiredService<ExecutionLeaseRenewer>(),
                 timeProvider: Time, watch: _watch, control: control,
                 limits: new ExecutionLimits { MaxTraceEntriesPerInstance = 0 });
         }
@@ -214,19 +254,32 @@ public sealed class HostBookkeepingRegressionTests
         public async Task<WorkflowInstance> SeedAsync(WorkflowDefinition definition)
         {
             await Services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+
             var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition,
                 new Data { Value = "assigned" }, new(), Time.GetUtcNow().UtcDateTime);
+
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
             await Store.SeedAsync(instance);
+
             return (await Store.GetWorkflowInstanceAsync(instance.InstanceId))!;
         }
 
         public async Task<Assignment> AssignAsync()
         {
             var instance = await SeedAsync(Workflow.Create<Data>("Bookkeeping").Step<Noop>().Build());
+
             var owner = (await WorkflowExecutionLease.TryAcquireAsync(Store, instance,
-                ExecutionLeaseSettings.Default, _watch, Services.GetRequiredService<ExecutionLeaseRenewer>(), await StoreTestSupport.ClaimAsync(Services), _ => { }, _ => { }, _ => { }, Time))!;
+                ExecutionLeaseSettings.Default, _watch, Services.GetRequiredService<ExecutionLeaseRenewer>(),
+                await StoreTestSupport.ClaimAsync(Services), _ =>
+                {
+                }, _ =>
+                {
+                }, _ =>
+                {
+                }, Time))!;
+
             var identity = Guid.NewGuid();
+
             return new(instance, owner, identity, Operations.Admit(instance, owner, identity));
         }
 
@@ -237,7 +290,10 @@ public sealed class HostBookkeepingRegressionTests
         }
     }
 
-    private sealed record Assignment(WorkflowInstance Instance, WorkflowExecutionLease Owner, Guid Identity,
+    private sealed record Assignment(
+        WorkflowInstance Instance,
+        WorkflowExecutionLease Owner,
+        Guid Identity,
         WorkflowHost.InstanceOperations.HostedRun Admission) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
@@ -259,30 +315,46 @@ public sealed class HostBookkeepingRegressionTests
         public readonly List<WorkflowCommitStatus> FinalStatuses = [];
         public readonly List<string> FinalCommitIds = [];
 
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
             Calls++;
+
             if (UncertainNext)
             {
                 UncertainNext = false;
+
                 return Uncertain();
             }
-            var result = await base.CommitWorkflowInstanceAsync(commit);
+
+            var result = await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
+
             if (LoseFinalReply && (commit.Parks || commit.Instance.Status != WorkflowStatus.Running))
             {
                 FinalStatuses.Add(result.Status);
                 FinalCommitIds.Add(commit.CommitId);
+
                 if (FinalStatuses.Count == 1)
                 {
                     var owner = CurrentOwner!();
                     time.Advance(ExecutionLeaseSettings.Default.RenewalInterval);
+
                     // The renewal task ends only after it delivers the ownership-loss signal.
                     await Field<Task>(owner, "_renewal").WaitAsync(Patience);
-                    try { owner.ThrowIfLost(); }
-                    catch (ExecutionOwnershipLostException) { LossBeforeReply = true; }
+
+                    try
+                    {
+                        owner.ThrowIfLost();
+                    }
+                    catch (ExecutionOwnershipLostException)
+                    {
+                        LossBeforeReply = true;
+                    }
+
                     return Uncertain();
                 }
             }
+
             return result;
         }
 
@@ -290,19 +362,26 @@ public sealed class HostBookkeepingRegressionTests
             ? new(WorkflowCommitStatus.Retry, 0)
             : throw new IOException("The commit reply was lost");
 
-        public override async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
+        public override async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+            IReadOnlyList<ExecutionLeaseRenewal> leases, CancellationToken cancellationToken = default)
         {
-            var renewed = await base.RenewExecutionLeasesAsync(leases);
+            var renewed = await base.RenewExecutionLeasesAsync(leases, cancellationToken: cancellationToken);
             Interlocked.Add(ref RejectedRenewals, renewed.Count(result => result.Status != ExecutionLeaseRenewalStatus.Renewed));
+
             return renewed;
         }
     }
 
-    public sealed class Data { public string Value { get; set; } = ""; }
+    public sealed class Data
+    {
+        public string Value { get; set; } = "";
+    }
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     public sealed class Fail : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>

@@ -10,7 +10,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>
 /// Every checkpoint is a fenced, idempotent commit: it carries the owner's execution epoch, a commit
 /// ID, the expected revision and a payload hash, and conflicts, stale owners, retries and unknown
-/// outcomes are distinct (spec A-03).
+/// outcomes are distinct.
 /// </summary>
 [Trait("Feature", "durability")]
 [Trait("Spec", "A-03")]
@@ -23,7 +23,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlEpochsRiseAndFenceFormerOwners() =>
-        VerifyEpochFencing(new SqlWorkflowStateRepository(SqlTestDatabase<CommitProtocolTests>.ConnectionString));
+        VerifyEpochFencing(new SqlServerWorkflowStateRepository(SqlTestDatabase<CommitProtocolTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
@@ -46,7 +46,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlStaleEpochAndRevisionConflictAreDistinct() =>
-        VerifyDistinctResults(new SqlWorkflowStateRepository(SqlTestDatabase<CommitProtocolTests>.ConnectionString));
+        VerifyDistinctResults(new SqlServerWorkflowStateRepository(SqlTestDatabase<CommitProtocolTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
@@ -90,51 +90,74 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
     private static async Task VerifyEpochFencing(IWorkflowStateRepository repository)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
-            var first = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+            var first = await repository.TryAcquireExecutionLeaseAsync(instanceId, "first", TimeSpan.FromSeconds(10),
+                new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+
             Assert.True(first?.Epoch > 0);
+
             var instance = new WorkflowInstance
-            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+            {
+                ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId, WorkflowName = "EpochFencing", Status = WorkflowStatus.Running,
                 WorkflowDataJson = StoredJson.Inline("{}")
             };
+
             Assert.Equal(WorkflowCommitStatus.Applied,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, first!.Epoch, 0))).Status);
+
             Assert.True((await repository.ReleaseExecutionLeaseAsync(instanceId, "first")).Released);
 
             // A released lease keeps its epoch, so the next owner is always newer.
-            var second = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+            var second = await repository.TryAcquireExecutionLeaseAsync(instanceId, "second", TimeSpan.FromSeconds(10),
+                new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+
             Assert.True(second?.Epoch > first!.Epoch);
             instance.Revision = 1;
+
             Assert.Equal(WorkflowCommitStatus.StaleEpoch,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, first!.Epoch, 1))).Status);
+
             Assert.Equal(WorkflowCommitStatus.StaleEpoch,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, second!.Epoch + 1, 1))).Status);
 
             instance.Status = WorkflowStatus.Completed;
+
             Assert.Equal(WorkflowCommitStatus.Applied,
                 (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, second!.Epoch, 1))).Status);
+
             // A terminal commit releases the lease; terminal work cannot be claimed again.
-            var third = await repository.TryAcquireExecutionLeaseAsync(instanceId, "third", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+            var third = await repository.TryAcquireExecutionLeaseAsync(instanceId, "third", TimeSpan.FromSeconds(10),
+                new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+
             Assert.Null(third);
 
             // Deletion removes the lease and reserves the ID against a former owner.
             await repository.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention: TimeSpan.FromSeconds(1));
-            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+
+            Assert.Null(await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10),
+                new ClaimQuery(Guid.Empty, new Dictionary<string, string>())));
+
             instance.Status = WorkflowStatus.Running;
             instance.Revision = 0;
+
             Assert.Equal(WorkflowErrorKind.InstanceRemoved, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
                 repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, second!.Epoch, 0)))).Kind);
 
             var elapsed = System.Diagnostics.Stopwatch.StartNew();
             ExecutionLeaseGrant? fourth = null;
+
             while (fourth == null && elapsed.Elapsed < TimeSpan.FromSeconds(3))
             {
-                fourth = await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+                fourth = await repository.TryAcquireExecutionLeaseAsync(instanceId, "fourth", TimeSpan.FromSeconds(10),
+                    new ClaimQuery(Guid.Empty, new Dictionary<string, string>()));
+
                 if (fourth == null)
                     await Task.Delay(50);
             }
+
             Assert.NotNull(fourth);
             Assert.True(fourth.Epoch > second!.Epoch);
         }
@@ -147,23 +170,32 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
     private static async Task VerifyDistinctResults(IWorkflowStateRepository repository)
     {
         var instanceId = Guid.NewGuid().ToString("N");
+
         try
         {
-            var epoch = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromSeconds(10), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!.Epoch;
+            var epoch = (await repository.TryAcquireExecutionLeaseAsync(instanceId, "owner", TimeSpan.FromSeconds(10),
+                new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!.Epoch;
+
             var instance = new WorkflowInstance
-            { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+            {
+                ExecutionStateJson = StoreTestSupport.CheckpointJson,
                 InstanceId = instanceId, WorkflowName = "DistinctResults", Status = WorkflowStatus.Running,
                 WorkflowDataJson = StoredJson.Inline("{}")
             };
+
             CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1),
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, epoch, 0, "first")));
 
             instance.WorkflowDataJson = StoredJson.Inline("\"next\"");
+
             CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Conflict, 1),
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, epoch, 0, "behind")));
+
             instance = (await repository.GetWorkflowInstanceAsync(instanceId))!;
+
             CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, 1),
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, epoch + 1, 1, "future")));
+
             CommitAssert.Equal(new WorkflowCommitResult(WorkflowCommitStatus.Applied, 2),
                 await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, epoch, 1, "second")));
         }
@@ -177,6 +209,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
     {
         var resent = store.Commits.GroupBy(commit => commit.CommitId).Single(group => group.Count() > 1).ToList();
         Assert.Equal(retries + 1, resent.Count);
+
         Assert.All(resent, commit =>
         {
             Assert.Equal(resent[0].ContentHash, commit.ContentHash);
@@ -198,6 +231,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
         services.AddSingleton(store);
         services.AddIxIFlow();
         services.AddTransient<MarkActivity>();
+
         return services.BuildServiceProvider();
     }
 
@@ -215,22 +249,29 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
         public ConcurrentQueue<CheckpointCommit> Commits { get; } = new();
         public ConcurrentQueue<WorkflowCommitStatus> Results { get; } = new();
 
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
             Commits.Enqueue(commit);
             var completes = commit.ReadTrunk().Status == WorkflowStatus.Completed;
+
             if (completes && RetriesBeforeApply > 0)
             {
                 RetriesBeforeApply--;
+
                 return new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0);
             }
-            var result = await base.CommitWorkflowInstanceAsync(commit);
+
+            var result = await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
             Results.Enqueue(result.Status);
+
             if (completes && LostAcknowledgments > 0)
             {
                 LostAcknowledgments--;
+
                 throw new IOException("Commit acknowledgment lost");
             }
+
             return result;
         }
     }
@@ -247,6 +288,7 @@ public sealed class CommitProtocolTests : IClassFixture<SqliteTestDatabase<Commi
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Marked = true;
+
             return Task.CompletedTask;
         }
     }

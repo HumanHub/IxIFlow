@@ -8,7 +8,7 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Builder for configuring suspend/resume operations
 /// </summary>
-public class FaultSuspendSetupBuilder<TWorkflowData, TFault, TResumeEvent, TPreviousStepData>
+internal class FaultSuspendSetupBuilder<TWorkflowData, TFault, TResumeEvent, TPreviousStepData>
     : IFaultSuspendSetupBuilder<TWorkflowData, TFault, TResumeEvent, TPreviousStepData>
     where TWorkflowData : class
     where TResumeEvent : class
@@ -16,7 +16,7 @@ public class FaultSuspendSetupBuilder<TWorkflowData, TFault, TResumeEvent, TPrev
 {
     private readonly WorkflowStep _step;
 
-    public FaultSuspendSetupBuilder(WorkflowStep step)
+    internal FaultSuspendSetupBuilder(WorkflowStep step)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
     }
@@ -43,6 +43,7 @@ public class FaultSuspendSetupBuilder<TWorkflowData, TFault, TResumeEvent, TPrev
     {
         ArgumentNullException.ThrowIfNull(payload);
         _step.DefaultPayload = payload;
+
         return this;
     }
 
@@ -51,7 +52,9 @@ public class FaultSuspendSetupBuilder<TWorkflowData, TFault, TResumeEvent, TPrev
     {
         if (duration <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(duration), "Wait timeout must be positive");
+
         _step.WaitTimeout = duration;
+
         return this;
     }
 
@@ -59,11 +62,14 @@ public class FaultSuspendSetupBuilder<TWorkflowData, TFault, TResumeEvent, TPrev
         Action<IFaultTimeoutWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> configure)
     {
         ArgumentNullException.ThrowIfNull(configure);
+
         if (_step.TimeoutSteps.Count != 0)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 "The wait already has a timeout branch");
+
         configure(new FaultTimeoutWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>(
             _step.TimeoutSteps, typeof(Exception)));
+
         return this;
     }
 }
@@ -71,7 +77,7 @@ public class FaultSuspendSetupBuilder<TWorkflowData, TFault, TResumeEvent, TPrev
 /// <summary>
 ///     Builder for configuring input mappings for suspend/resume operations
 /// </summary>
-public class FaultSuspendInputBuilder<TWorkflowData, TFault, TResumeEvent, TProperty, TPreviousStepData>
+internal class FaultSuspendInputBuilder<TWorkflowData, TFault, TResumeEvent, TProperty, TPreviousStepData>
     : IFaultSuspendInputBuilder<TWorkflowData, TFault, TResumeEvent, TProperty, TPreviousStepData>
     where TWorkflowData : class
     where TResumeEvent : class
@@ -94,7 +100,7 @@ public class FaultSuspendInputBuilder<TWorkflowData, TFault, TResumeEvent, TProp
         new FaultSuspendSetupBuilder<TWorkflowData, TFault, TResumeEvent, TPreviousStepData>(_step)
             .OnTimeout(configure);
 
-    public FaultSuspendInputBuilder(WorkflowStep step, Expression<Func<TResumeEvent, TProperty>> propertyExpression)
+    internal FaultSuspendInputBuilder(WorkflowStep step, Expression<Func<TResumeEvent, TProperty>> propertyExpression)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
         _propertyExpression = propertyExpression ?? throw new ArgumentNullException(nameof(propertyExpression));
@@ -117,6 +123,7 @@ public class FaultSuspendInputBuilder<TWorkflowData, TFault, TResumeEvent, TProp
         {
             if (context is FaultContext<TWorkflowData, TFault, TPreviousStepData> typedContext)
                 return compiledFunction(typedContext);
+
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}, {typeof(TPreviousStepData).Name}>, got {context.GetType().Name}");
         };
@@ -158,7 +165,9 @@ public class FaultSuspendInputBuilder<TWorkflowData, TFault, TResumeEvent, TProp
 
     private string GetPropertyName<T>(Expression<Func<TResumeEvent, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException("Property expression must be a member access expression",
             nameof(propertyExpression));
     }
@@ -167,7 +176,7 @@ public class FaultSuspendInputBuilder<TWorkflowData, TFault, TResumeEvent, TProp
 /// <summary>
 ///     Builder for configuring output mappings for suspend/resume operations
 /// </summary>
-public class FaultSuspendOutputBuilder<TWorkflowData, TFault, TResumeEvent, TProperty, TPreviousStepData>
+internal class FaultSuspendOutputBuilder<TWorkflowData, TFault, TResumeEvent, TProperty, TPreviousStepData>
     : IFaultSuspendOutputBuilder<TWorkflowData, TFault, TResumeEvent, TProperty, TPreviousStepData>
     where TWorkflowData : class
     where TResumeEvent : class
@@ -190,7 +199,7 @@ public class FaultSuspendOutputBuilder<TWorkflowData, TFault, TResumeEvent, TPro
         new FaultSuspendSetupBuilder<TWorkflowData, TFault, TResumeEvent, TPreviousStepData>(_step)
             .OnTimeout(configure);
 
-    public FaultSuspendOutputBuilder(WorkflowStep step, Expression<Func<TResumeEvent, TProperty>> propertyExpression)
+    internal FaultSuspendOutputBuilder(WorkflowStep step, Expression<Func<TResumeEvent, TProperty>> propertyExpression)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
         _propertyExpression = propertyExpression ?? throw new ArgumentNullException(nameof(propertyExpression));
@@ -214,6 +223,7 @@ public class FaultSuspendOutputBuilder<TWorkflowData, TFault, TResumeEvent, TPro
             if (context is WorkflowContext<TWorkflowData> typedContext && value is TProperty typedValue)
                 compiledAssignment(typedContext, typedValue);
             else if (context is WorkflowContext<TWorkflowData> typedContext2 && value == null)
+
                 // Handle null values gracefully
                 compiledAssignment(typedContext2, default!);
             else
@@ -299,12 +309,15 @@ public class FaultSuspendOutputBuilder<TWorkflowData, TFault, TResumeEvent, TPro
         var lambda =
             Expression.Lambda<Action<WorkflowContext<TWorkflowData>, TProperty>>(assignment, contextParameter,
                 valueParameter);
+
         return lambda.Compile();
     }
 
     private string GetPropertyName<T>(Expression<Func<TResumeEvent, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException("Property expression must be a member access expression",
             nameof(propertyExpression));
     }

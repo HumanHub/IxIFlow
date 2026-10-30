@@ -10,8 +10,11 @@ internal static class AssignmentLocationChain
     // ends write-back: changing an object reached through a struct does not change the struct itself.
     internal static IEnumerable<int> WrittenLinks<T>(IReadOnlyList<T> links, Func<T, bool> valueType)
     {
-        if (links.Count == 0) yield break;
+        if (links.Count == 0)
+            yield break;
+
         yield return links.Count - 1;
+
         for (var index = links.Count - 2; index >= 0 && valueType(links[index]); index--)
             yield return index;
     }

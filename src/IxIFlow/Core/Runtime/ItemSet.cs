@@ -19,13 +19,18 @@ internal sealed class ItemSet : IEnumerable<int>
     public bool Add(int index)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(index);
+
         if (index / 8 >= _bits.Length)
             Array.Resize(ref _bits, Math.Max(index / 8 + 1, _bits.Length * 2));
+
         var mask = (byte)(1 << index % 8);
+
         if ((_bits[index / 8] & mask) != 0)
             return false;
+
         _bits[index / 8] |= mask;
         Count++;
+
         return true;
     }
 
@@ -47,8 +52,10 @@ internal sealed class ItemSet : IEnumerable<int>
         {
             var bits = _bits.AsSpan(chunk * ChunkBytes, Math.Min(ChunkBytes, _bits.Length - chunk * ChunkBytes));
             var length = bits.Length;
+
             while (length > 0 && bits[length - 1] == 0)
                 length--;
+
             if (length > 0)
                 yield return (chunk, Convert.ToBase64String(bits[..length]));
         }
@@ -58,6 +65,7 @@ internal sealed class ItemSet : IEnumerable<int>
     public void AddChunk(int chunk, string bits)
     {
         var bytes = Convert.FromBase64String(bits);
+
         for (var index = 0; index < bytes.Length * 8; index++)
             if ((bytes[index / 8] & 1 << index % 8) != 0)
                 Add(chunk * ChunkItems + index);
@@ -78,8 +86,10 @@ internal sealed class ItemSet : IEnumerable<int>
         {
             var bits = reader.GetBytesFromBase64();
             var set = new ItemSet { _bits = bits };
+
             foreach (var value in bits)
                 set.Count += System.Numerics.BitOperations.PopCount(value);
+
             return set;
         }
 
@@ -87,8 +97,10 @@ internal sealed class ItemSet : IEnumerable<int>
         public override void Write(Utf8JsonWriter writer, ItemSet value, JsonSerializerOptions options)
         {
             var length = value._bits.Length;
+
             while (length > 0 && value._bits[length - 1] == 0)
                 length--;
+
             writer.WriteBase64StringValue(value._bits.AsSpan(0, length));
         }
     }

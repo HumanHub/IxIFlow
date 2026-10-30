@@ -15,42 +15,71 @@ internal sealed partial class TraceBuffer
     public void CapturePositions(DateTime? timestamp = null)
     {
         if (_capturing || !_enabled || _detail != TraceDetail.Full || _checkpoint == null || _scopes == null || _instance == null ||
-            _checkpoint.StructureHash != _scopes.StructureHash) return;
+            _checkpoint.StructureHash != _scopes.StructureHash)
+            return;
+
         _capturing = true;
+
         try
         {
             var now = timestamp ?? _time.GetUtcNow().UtcDateTime;
+
             if (!_origin)
             {
                 _origin = true;
                 var resumed = _checkpoint.TraceReplayInitialized;
+
                 var initial = !_checkpoint.TraceBudgetExhausted
-                    ? InspectionProjection.Threads(_instance, _checkpoint, _scopes, now) : [];
+                    ? InspectionProjection.Threads(_instance, _checkpoint, _scopes, now)
+                    : [];
+
                 if (!resumed)
                 {
                     _checkpoint.TraceReplayInitialized = true;
-                    Add(new() { Timestamp = now, EntryType = TraceEntryType.ReplayOrigin,
+
+                    Add(new()
+                    {
+                        Timestamp = now, EntryType = TraceEntryType.ReplayOrigin,
                         Payload = new ReplayOriginTrace(_instanceId, _checkpoint.StructureHash, _instance.Revision, _detail)
-                            { Threads = initial } });
+                            { Threads = initial }
+                    });
                 }
+
                 // Recovery starts from the saved position, already present in a complete trace.
                 _positions = initial.ToDictionary(t => t.ContinuationId, StringComparer.Ordinal);
             }
-            if (_detail != TraceDetail.Full || _checkpoint.TraceBudgetExhausted || _truncated != null) return;
-            if (InspectionProjection.Unchanged(_positions, _checkpoint, _scopes)) return;
+
+            if (_detail != TraceDetail.Full || _checkpoint.TraceBudgetExhausted || _truncated != null)
+                return;
+
+            if (InspectionProjection.Unchanged(_positions, _checkpoint, _scopes))
+                return;
+
             var current = InspectionProjection.Threads(_instance, _checkpoint, _scopes, now)
                 .ToDictionary(t => t.ContinuationId, StringComparer.Ordinal);
+
             foreach (var id in _positions.Keys.Union(current.Keys).ToArray())
             {
-                _positions.TryGetValue(id, out var before); current.TryGetValue(id, out var after);
-                if (SamePosition(before, after)) continue;
-                Add(new() { Timestamp = now, EntryType = TraceEntryType.ThreadPosition, ContinuationId = id,
+                _positions.TryGetValue(id, out var before);
+                current.TryGetValue(id, out var after);
+
+                if (SamePosition(before, after))
+                    continue;
+
+                Add(new()
+                {
+                    Timestamp = now, EntryType = TraceEntryType.ThreadPosition, ContinuationId = id,
                     FrameActivationId = after?.FrameId ?? before?.FrameId, StepId = after?.StepId ?? before?.StepId,
-                    Payload = new ThreadPositionTrace(id, after) });
+                    Payload = new ThreadPositionTrace(id, after)
+                });
             }
+
             _positions = current;
         }
-        finally { _capturing = false; }
+        finally
+        {
+            _capturing = false;
+        }
     }
 
     private static bool SamePosition(InspectionThread? before, InspectionThread? after) =>
@@ -62,5 +91,4 @@ internal sealed partial class TraceBuffer
         before.StepIndex == after.StepIndex && before.Status == after.Status && before.FrameId == after.FrameId &&
         before.CancellationUnwind == after.CancellationUnwind && before.UnwindCause == after.UnwindCause &&
         before.Frames.SequenceEqual(after.Frames);
-
 }

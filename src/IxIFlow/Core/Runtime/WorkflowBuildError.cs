@@ -7,7 +7,9 @@ internal static class WorkflowBuildError
 
     public static WorkflowEngineException At(WorkflowStep step, WorkflowEngineException error)
     {
-        if (!error.Data.Contains(StepKey)) error.Data[StepKey] = step;
+        if (!error.Data.Contains(StepKey))
+            error.Data[StepKey] = step;
+
         return error;
     }
 
@@ -18,7 +20,13 @@ internal static class WorkflowBuildError
 
     public static T Check<T>(WorkflowStep step, Func<T> check)
     {
-        try { return check(); }
-        catch (WorkflowEngineException error) { throw At(step, error); }
+        try
+        {
+            return check();
+        }
+        catch (WorkflowEngineException error)
+        {
+            throw At(step, error);
+        }
     }
 }

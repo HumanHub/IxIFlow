@@ -27,6 +27,7 @@ public sealed class GeneratedWorkflowTests
                 .Input(act => act.Value).From(ctx => ctx.WorkflowData.Result)
                 .Output(act => act.Result).To(ctx => ctx.WorkflowData.Result)).WithId("final"))
             .WithId("conditional").Build();
+
         var generated = Workflow_arithmetic.Build();
         Assert.Equal(Shape(fluent), Shape(generated));
         var first = await Execute(fluent, new FlowData { Value = 4 });
@@ -47,6 +48,7 @@ public sealed class GeneratedWorkflowTests
                 .Input(act => act.Value).From(ctx => ctx.WorkflowData.Value)
                 .Output(act => act.Result).To(ctx => ctx.WorkflowData.Result))
             .WithId("child").Build();
+
         var generated = Workflow_waiting.Build();
         Assert.Equal(Shape(fluent), Shape(generated));
         var first = await Execute(fluent, new FlowData(), resume: true);
@@ -83,6 +85,7 @@ public sealed class GeneratedWorkflowTests
         var step = definition.Steps[0].Clone();
         var data = new FlowData { Value = 5 };
         await using var services = Services();
+
         var prepared = await services.GetRequiredService<IActivityExecutor>()
             .PrepareTypedActivityAsync(new TypedActivityExecutionRequest<FlowData, object>
             {
@@ -94,6 +97,7 @@ public sealed class GeneratedWorkflowTests
                     WorkflowInstance = new WorkflowInstance { InstanceId = "typed-clone" }
                 }
             }, true, "invocation", "attempt");
+
         Assert.Equal(5, Assert.IsType<Multiply>(prepared.Activity).Value);
     }
 
@@ -102,6 +106,7 @@ public sealed class GeneratedWorkflowTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -112,16 +117,20 @@ public sealed class GeneratedWorkflowTests
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(Workflow_child.Build());
         var client = services.GetRequiredService<IWorkflowClient>();
         var result = await client.RunAsync(definition, data);
+
         if (resume)
         {
             Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
             result = await client.ResumeAsync(result.InstanceId, "answer", new Answer { Value = 7 });
         }
+
         if (result.Status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended)
             result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10));
+
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(result.InstanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
+
         return (Assert.IsAssignableFrom<FlowData>(result.WorkflowData), checkpoint.RootElement.GetProperty("StructureHash").GetString()!);
     }
 
@@ -137,8 +146,14 @@ public sealed class GeneratedWorkflowTests
         Data = step.WorkflowDataType?.FullName, Previous = step.PreviousStepDataType?.FullName,
         Activity = step.ActivityType?.FullName, Event = step.ResumeEventType?.FullName,
         step.WorkflowName, step.WorkflowVersion, Invoked = step.InvokedDataType?.FullName,
-        Inputs = step.InputMappings.Select(mapping => new { mapping.TargetProperty, Expression = mapping.Expression == null ? null : WorkflowExpressionSignature.Of(mapping.Expression) }),
-        Outputs = step.OutputMappings.Select(mapping => new { mapping.TargetProperty, Expression = mapping.Expression == null ? null : WorkflowExpressionSignature.Of(mapping.Expression) }),
+        Inputs = step.InputMappings.Select(mapping => new
+        {
+            mapping.TargetProperty, Expression = mapping.Expression == null ? null : WorkflowExpressionSignature.Of(mapping.Expression)
+        }),
+        Outputs = step.OutputMappings.Select(mapping => new
+        {
+            mapping.TargetProperty, Expression = mapping.Expression == null ? null : WorkflowExpressionSignature.Of(mapping.Expression)
+        }),
         WaitKey = step.StepMetadata.GetValueOrDefault("WaitKey"), step.WaitTimeout, step.DelayDuration,
         step.ParallelJoinMode, step.ForEachParallel, step.ForEachMaxConcurrency,
         Result = step.ResultType?.FullName, step.ForEachIntoPath,

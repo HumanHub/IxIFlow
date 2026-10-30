@@ -33,18 +33,22 @@ public sealed partial class DebugPayloadFixTests
         await using var h = new Harness(sqlite);
         var catalog = h.Services.GetRequiredService<IWorkflowCatalog>();
         await catalog.RegisterWorkflowAsync(Workflow.Create<Data>("large-child").Step<Noop>().Build());
+
         var parent = Workflow.Create<Data>("large-parent").Step<Noop>()
             .Invoke<Data>("large-child", 1, s => s.Input(d => d.Text).From(c => c.WorkflowData.Text)
                 .Output(d => d.Text).To(c => c.WorkflowData.Text)).WaitFor<Go>("parent-end").Build();
+
         var first = await h.Client.RunAsync(parent, new Data { Text = new string('y', 8 * 1024 * 1024) });
         var child = Assert.Single((await h.Store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: first.InstanceId))).Items);
         var savedChild = (await h.Store.GetWorkflowInstanceAsync(child.InstanceId))!;
+
         for (var attempt = 0; attempt < 200 && !WorkflowStoreRules.IsTerminal(savedChild.Status); attempt++)
         {
             await h.Client.RecoverAsync(child.InstanceId);
             await Task.Delay(10);
             savedChild = (await h.Store.GetWorkflowInstanceAsync(child.InstanceId))!;
         }
+
         Assert.NotNull(savedChild.WorkflowDataJson.Reference);
         Assert.Equal(WorkflowStatus.Completed, savedChild.Status);
         var notice = (await h.Store.GetEventAsync(first.InstanceId, "child-completed-" + child.InstanceId))!;
@@ -64,6 +68,7 @@ public sealed partial class DebugPayloadFixTests
     {
         await using var h = new Harness(true);
         await h.Store.GetWorkflowInstanceSummaryAsync("absent");
+
         await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection(h.ConnectionString))
         {
             await connection.OpenAsync();
@@ -73,6 +78,7 @@ public sealed partial class DebugPayloadFixTests
             command.CommandText = "ALTER TABLE ixiflow_workflow_events RENAME COLUMN stored_payload_json TO payload_json";
             await command.ExecuteNonQueryAsync();
         }
+
         await ((SqliteWorkflowStateRepository)h.Store).DisposeAsync();
         await using var reopened = new SqliteWorkflowStateRepository(h.ConnectionString);
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => reopened.GetWorkflowInstanceSummaryAsync("absent"));
@@ -87,11 +93,17 @@ public sealed partial class DebugPayloadFixTests
     {
         await using var h = new Harness(sqlite);
         var firstBytes = JsonSerializer.Serialize(new Data { Text = Large });
-        var arrival = new WorkflowEvent("absent", "event", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)), firstBytes, "data")
+
+        var arrival = new WorkflowEvent("absent", "event", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)), firstBytes,
+                "data")
             { PayloadThresholdBytes = 64 };
+
         Assert.Equal(EventAppendStatus.NotFound, (await h.Store.AppendEventAsync(arrival)).Status);
         Assert.Null(await h.Store.PayloadStore.GetAsync(PayloadReference.Of(System.Text.Encoding.UTF8.GetBytes(firstBytes))));
-        var started = await h.Client.RunAsync(Workflow.Create<Data>("event-rollback").Step<Noop>().WaitFor<Data>("data").Build(), new Data());
+
+        var started = await h.Client.RunAsync(Workflow.Create<Data>("event-rollback").Step<Noop>().WaitFor<Data>("data").Build(),
+            new Data());
+
         arrival = arrival with { InstanceId = started.InstanceId };
         Assert.Equal(EventAppendStatus.Stored, (await h.Store.AppendEventAsync(arrival)).Status);
         var conflictingBytes = JsonSerializer.Serialize(new Data { Text = Large + "conflict" });

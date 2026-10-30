@@ -9,6 +9,7 @@ public sealed class TemplateEngines
     public TemplateEngines(IEnumerable<ITemplateEngine> engines)
     {
         ArgumentNullException.ThrowIfNull(engines);
+
         foreach (var engine in engines)
         {
             if (!_engines.TryAdd(engine.Name, engine) && !ReferenceEquals(_engines[engine.Name], engine))
@@ -16,9 +17,9 @@ public sealed class TemplateEngines
         }
     }
 
-    /// <summary>The engine named <paramref name="name"/>; throws <see cref="TemplateNotFoundException"/> without it.</summary>
+    /// <summary>The engine named <paramref name="name"/>; throws <see cref="TemplateEngineNotFoundException"/> without it.</summary>
     public ITemplateEngine Get(string name) =>
         _engines.TryGetValue(name, out var engine)
             ? engine
-            : throw new TemplateNotFoundException($"No template engine named '{name}' is registered in this host");
+            : throw new TemplateEngineNotFoundException(name);
 }

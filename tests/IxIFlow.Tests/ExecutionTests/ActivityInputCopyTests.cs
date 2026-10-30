@@ -8,7 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// An activity runs on copies of its inputs, read back from what its attempt saves (A-09), on its first attempt as
+/// An activity runs on copies of its inputs, read back from what its attempt saves, on its first attempt as
 /// after a recovery. A change it makes to an input reaches the workflow data only through an output mapping, whether
 /// or not the host crashed, and every attempt starts from the saved inputs.
 /// </summary>
@@ -27,18 +27,22 @@ public sealed class ActivityInputCopyTests
         var probe = new Probe();
         var definition = Appending($"InPlace{mapped}{crash}", mapped);
         var instanceId = Guid.NewGuid().ToString("N");
+
         using (var first = Services(store, probe))
         {
             // The host dies as it saves the appending activity's end, after the activity ran.
             if (crash)
                 store.FailCommit = _ => probe.Appends > 0;
+
             var run = first.GetRequiredService<IWorkflowClient>().RunAsync(definition, Data(),
                 new WorkflowOptions { InstanceId = instanceId });
+
             if (crash)
                 await Assert.ThrowsAnyAsync<Exception>(() => run);
             else
                 await run;
         }
+
         store.FailCommit = _ => false;
         using var second = Services(store, probe);
         await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
@@ -60,6 +64,7 @@ public sealed class ActivityInputCopyTests
     {
         var probe = new Probe();
         using var services = Services(new InMemoryWorkflowStateRepository(), probe);
+
         var definition = Workflow.Create<ListData>("RetryFromSavedInputs")
             .Step<CountsNames>(step => step.Input(activity => activity.Names).From(ctx => ctx.WorkflowData.Items))
             .Saga(saga => saga.Step<AppendThenFailOnce>(step => step
@@ -82,6 +87,7 @@ public sealed class ActivityInputCopyTests
     {
         var probe = new Probe();
         using var services = Services(new InMemoryWorkflowStateRepository(), probe);
+
         var definition = Workflow.Create<ListData>("RetryKeepsSavedInputs")
             .Step<CountsNames>(step => step.Input(activity => activity.Names).From(ctx => ctx.WorkflowData.Items))
             .Saga(saga => saga.Step<ChangesTheDataThenFailsOnce>(step => step
@@ -104,6 +110,7 @@ public sealed class ActivityInputCopyTests
         var probe = new Probe();
         var store = new InMemoryWorkflowStateRepository();
         using var services = Services(store, probe);
+
         var definition = Workflow.Create<ListData>("CancelledRetry")
             .Step<CountsNames>(step => step.Input(activity => activity.Names).From(ctx => ctx.WorkflowData.Items))
             .Saga(saga => saga.Step<ChangesTheDataThenFailsOnce>(step => step
@@ -111,11 +118,14 @@ public sealed class ActivityInputCopyTests
                 .OnError<InvalidOperationException>(handler => handler.ThenRetry(
                     new RetryPolicy(TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(10), 2, 1)))))
             .Build();
+
         var client = services.GetRequiredService<IWorkflowClient>();
         var instanceId = Guid.NewGuid().ToString("N");
+
         // The run parks until its retry is due, keeping the failed attempt's inputs.
         var running = client.RunAsync(definition, new ListData { Seen = 10 }, new WorkflowOptions { InstanceId = instanceId });
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
         while (await store.GetWorkflowInstanceAsync(instanceId) is not { RunnableAtUtc: not null } parked ||
                !parked.ExecutionStateJson.Contains("RetryInputs"))
         {
@@ -135,6 +145,7 @@ public sealed class ActivityInputCopyTests
     public async Task NumberHandlingOnAnInterfaceInputKeepsTheValuesType()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+
         var definition = Workflow.Create<ListData>("NumberHandledInput")
             .Step<ReadsNumberedLine>(step => step
                 .Input(activity => activity.Line).From(_ => new PublicLine { Quantity = 5 })
@@ -152,6 +163,7 @@ public sealed class ActivityInputCopyTests
     public async Task AConverterOnAnObjectInputAppliesToItsValue()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+
         var definition = Workflow.Create<ListData>("ConvertedObjectInput")
             .Step<TakesBoxed>(step => step
                 .Input(activity => activity.Boxed).From(_ => new Fixed(6))
@@ -170,6 +182,7 @@ public sealed class ActivityInputCopyTests
     public async Task AnActivityInputWithAnIgnoredConvertedPropertyIsReadBack()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+
         var definition = Workflow.Create<ListData>("IgnoredConverterActivityInput")
             .Step<TakesIgnoring>(step => step
                 .Input(activity => activity.Other).From(_ => new IgnoresAConvertedProperty { Count = 3 })
@@ -187,6 +200,7 @@ public sealed class ActivityInputCopyTests
     public async Task TheRecoveryStateIsTakenFromTheInputsTheActivityRunsOn()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+
         var definition = Workflow.Create<ListData>("RecoveryStateFromInputs")
             .Step<KeepsItsInput>(step => step
                 .Input(activity => activity.Items).From(ctx => ctx.WorkflowData.Items)
@@ -203,6 +217,7 @@ public sealed class ActivityInputCopyTests
     public async Task ALazySequenceIsSavedUnderTheInputsDeclaredType()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+
         var definition = Workflow.Create<ListData>("LazySequenceInput")
             .Step<CountsNames>(step => step
                 .Input(activity => activity.Names).From(ctx => ctx.WorkflowData.Items.Where(item => item != "b"))
@@ -220,6 +235,7 @@ public sealed class ActivityInputCopyTests
     public async Task ANullInsideAnInputReadsBackAsNull()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+
         var definition = Workflow.Create<ListData>("NullInsideInput")
             .Step<ReadsNote>(step => step
                 .Input(activity => activity.Sparse).From(ctx => ctx.WorkflowData.Sparse)
@@ -239,6 +255,7 @@ public sealed class ActivityInputCopyTests
     {
         var probe = new Probe();
         using var services = Services(new InMemoryWorkflowStateRepository(), probe);
+
         var definition = Workflow.Create<ListData>("UnreadableInput")
             .Step<TakesFixed>(step => step.Input(activity => activity.Fixed).From(_ => new Fixed(7)))
             .Build();
@@ -256,6 +273,7 @@ public sealed class ActivityInputCopyTests
     public async Task AnInputOfANonPublicTypeKeepsItsType()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+
         var definition = Workflow.Create<ListData>("NonPublicInput")
             .Step<ReadsLine>(step => step
                 .Input(activity => activity.Line).From(_ => new HiddenLine { Quantity = 4 })
@@ -274,6 +292,7 @@ public sealed class ActivityInputCopyTests
     public async Task AConverterOnTheInputPropertyAppliesToADerivedValue()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), new Probe());
+
         var definition = Workflow.Create<ListData>("ConvertedInput")
             .Step<TakesMoney>(step => step
                 .Input(activity => activity.Amount).From(_ => new TaggedMoney(250))
@@ -292,6 +311,7 @@ public sealed class ActivityInputCopyTests
     {
         var probe = new Probe();
         using var services = Services(new InMemoryWorkflowStateRepository(), probe);
+
         var definition = Workflow.Create<ListData>("UnrestorableExceptionInput")
             .Step<TakesError>(step => step.Input(activity => activity.Error).From(_ => new HiddenStateException("kept")))
             .Build();
@@ -310,6 +330,7 @@ public sealed class ActivityInputCopyTests
     {
         var probe = new Probe();
         using var services = Services(new InMemoryWorkflowStateRepository(), probe);
+
         var definition = Workflow.Create<ListData>("UnreadableActivityInput")
             .Step<TakesActivity>(step => step.Input(activity => activity.Other).From(_ => new Computes()))
             .Build();
@@ -327,6 +348,7 @@ public sealed class ActivityInputCopyTests
             .Step<AppendsToItsInput>(step =>
             {
                 step.Input(activity => activity.Items).From(ctx => ctx.WorkflowData.Items);
+
                 if (mapped)
                     step.Output(activity => activity.Items).To(ctx => ctx.WorkflowData.Items);
             })
@@ -353,6 +375,7 @@ public sealed class ActivityInputCopyTests
         services.AddTransient<IgnoresAConvertedProperty>();
         services.AddTransient<TakesActivity>();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -392,6 +415,7 @@ public sealed class ActivityInputCopyTests
         {
             Items.Add("added");
             probe.Appended();
+
             return Task.CompletedTask;
         }
 
@@ -410,6 +434,7 @@ public sealed class ActivityInputCopyTests
         {
             Items.Add("added");
             probe.Appended();
+
             return probe.Appends == 1
                 ? throw new InvalidOperationException("Planned failure after changing the input")
                 : Task.CompletedTask;
@@ -424,9 +449,12 @@ public sealed class ActivityInputCopyTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Appended();
+
             if (probe.Appends > 1)
                 return Task.CompletedTask;
+
             ((ListData)context.WorkflowData).Seen = 20;
+
             throw new InvalidOperationException("Planned failure after changing the data");
         }
     }
@@ -440,7 +468,8 @@ public sealed class ActivityInputCopyTests
         {
             // The state is the list the activity runs on, and that list is a copy, not the data's.
             SameObject = ReferenceEquals(context.RecoveryState, Items) &&
-                         !ReferenceEquals(Items, ((ListData)context.WorkflowData).Items);
+                !ReferenceEquals(Items, ((ListData)context.WorkflowData).Items);
+
             return Task.CompletedTask;
         }
 
@@ -459,6 +488,7 @@ public sealed class ActivityInputCopyTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Count = Names.Count();
+
             return Task.CompletedTask;
         }
     }
@@ -471,6 +501,7 @@ public sealed class ActivityInputCopyTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             NoteWasNull = Sparse is { Note: null };
+
             return Task.CompletedTask;
         }
     }
@@ -494,11 +525,13 @@ public sealed class ActivityInputCopyTests
     {
         [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
         public ILine? Line { get; set; }
+
         public int Quantity { get; private set; }
 
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Quantity = Line!.Quantity;
+
             return Task.CompletedTask;
         }
     }
@@ -511,6 +544,7 @@ public sealed class ActivityInputCopyTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Quantity = Line!.Quantity;
+
             return Task.CompletedTask;
         }
     }
@@ -539,11 +573,13 @@ public sealed class ActivityInputCopyTests
     {
         [JsonConverter(typeof(MoneyConverter))]
         public Money? Amount { get; set; }
+
         public int Cents { get; private set; }
 
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Cents = Amount!.Value;
+
             return Task.CompletedTask;
         }
     }
@@ -561,6 +597,7 @@ public sealed class ActivityInputCopyTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Appended();
+
             return Task.CompletedTask;
         }
     }
@@ -577,13 +614,13 @@ public sealed class ActivityInputCopyTests
 
     public sealed class TakesBoxed : IAsyncActivity
     {
-        [JsonConverter(typeof(BoxConverter))]
-        public object? Boxed { get; set; }
+        [JsonConverter(typeof(BoxConverter))] public object? Boxed { get; set; }
         public int Number { get; private set; }
 
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Number = ((Fixed)Boxed!).Number;
+
             return Task.CompletedTask;
         }
     }
@@ -620,6 +657,7 @@ public sealed class ActivityInputCopyTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Count = Other!.Count;
+
             return Task.CompletedTask;
         }
     }
@@ -640,6 +678,7 @@ public sealed class ActivityInputCopyTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Appended();
+
             return Task.CompletedTask;
         }
     }
@@ -651,6 +690,7 @@ public sealed class ActivityInputCopyTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Appended();
+
             return Task.CompletedTask;
         }
     }

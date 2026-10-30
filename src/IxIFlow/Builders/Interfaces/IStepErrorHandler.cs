@@ -8,17 +8,20 @@ public interface IStepErrorHandler
     /// <summary>
     /// Configures retry behavior for the failed step
     /// </summary>
-    /// <param name="maxRetries">Maximum number of retry attempts (default: 3)</param>
+    /// <param name="maxRetries">Additional retries after the original attempt (default: 3); zero disables retries.</param>
     void ThenRetry(int maxRetries = 3);
+
     /// <summary>
     /// Configures retry behavior using a custom retry policy
     /// </summary>
     /// <param name="retryPolicy">The retry policy configuration</param>
     void ThenRetry(RetryPolicy retryPolicy);
+
     /// <summary>
     /// Propagates the original failure to enclosing handlers
     /// </summary>
     void ThenTerminate();
+
     /// <summary>
     /// Ignores the error and continues execution
     /// </summary>

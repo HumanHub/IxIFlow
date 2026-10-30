@@ -9,6 +9,7 @@ public interface IActivityContext
 {
     TValue Scope<TValue>() where TValue : class => throw new InvalidOperationException($"No enclosing scope provides {typeof(TValue)}");
     TValue? ScopeOrDefault<TValue>() where TValue : class => null;
+
     /// <summary>
     ///     Service provider for dependency injection
     /// </summary>
@@ -69,11 +70,6 @@ public interface IActivityContext
     ///     When the activity started executing
     /// </summary>
     DateTime ActivityStartedAt { get; }
-
-    ///// <summary>
-    /////     Additional properties for the activity
-    ///// </summary>
-    //IDictionary<string, object> Properties { get; }
 
     /// <summary>
     ///     Logger for the activity

@@ -97,7 +97,7 @@ code names, `defaults`, `arguments` and `parameters`. The document root may carr
 `$schema` to bind an editor; readers ignore it. Quote string values that look like numbers
 or Booleans, such as `activityVersion: "1.2"`: the reader takes them as text, but editors
 type them first. The schema is generated from the document model by
-`WorkflowDocumentSchema.Write()` in Authoring.
+`DocumentSchema.Write()` in Authoring.
 
 The YAML and JSON readers reject unknown or miscased members; generator errors use
 IXIYAML001 at the member. The JSON writer writes `kind` on every typed node, including

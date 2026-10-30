@@ -16,21 +16,25 @@ internal sealed class InProcessInstanceGate
         while (true)
         {
             var entry = _entries.GetOrAdd(instanceId, _ => new Entry());
+
             lock (entry.Sync)
             {
                 if (entry.Retired)
                     continue;
+
                 entry.Users++;
             }
 
             try
             {
                 await entry.Semaphore.WaitAsync(cancellationToken);
+
                 return new Lease(this, instanceId, entry);
             }
             catch
             {
                 Leave(instanceId, entry, acquired: false);
+
                 throw;
             }
         }
@@ -42,9 +46,11 @@ internal sealed class InProcessInstanceGate
             entry.Semaphore.Release();
 
         var remove = false;
+
         lock (entry.Sync)
         {
             entry.Users--;
+
             if (entry.Users == 0)
             {
                 entry.Retired = true;
@@ -72,6 +78,7 @@ internal sealed class InProcessInstanceGate
         {
             if (_disposed)
                 return;
+
             _disposed = true;
             owner.Leave(instanceId, entry, acquired: true);
         }

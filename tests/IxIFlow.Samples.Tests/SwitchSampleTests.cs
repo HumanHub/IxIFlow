@@ -22,6 +22,7 @@ public sealed class SwitchSampleTests
         var yaml = GeneratedDefinition();
         Assert.Equal(WorkflowDefinitionValidator.Inspect(fluent), WorkflowDefinitionValidator.Inspect(yaml));
         string? savedHash = null;
+
         foreach (var definition in new[] { fluent, yaml })
         {
             await using var services = SampleTests.Services();
@@ -32,7 +33,10 @@ public sealed class SwitchSampleTests
             var saved = await repository.GetWorkflowInstanceAsync(result.InstanceId);
             using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
             var hash = checkpoint.RootElement.GetProperty("StructureHash").GetString();
-            if (savedHash != null) Assert.Equal(savedHash, hash);
+
+            if (savedHash != null)
+                Assert.Equal(savedHash, hash);
+
             savedHash = hash;
         }
     }

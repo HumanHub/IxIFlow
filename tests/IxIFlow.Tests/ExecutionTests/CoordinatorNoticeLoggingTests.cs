@@ -17,6 +17,7 @@ public sealed class CoordinatorNoticeLoggingTests
     {
         var time = new FakeTimeProvider();
         long measuredDrops = 0;
+
         using var listener = new MeterListener
         {
             InstrumentPublished = (instrument, owner) =>
@@ -25,6 +26,7 @@ public sealed class CoordinatorNoticeLoggingTests
                     owner.EnableMeasurementEvents(instrument);
             }
         };
+
         listener.SetMeasurementEventCallback<long>((_, value, _, _) => Interlocked.Add(ref measuredDrops, value));
         listener.Start();
         using var provider = new ServiceCollection().AddSingleton<TimeProvider>(time).BuildServiceProvider();
@@ -52,21 +54,26 @@ public sealed class CoordinatorNoticeLoggingTests
     {
         internal readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public async Task NotifyAsync(RunnableNotice notice, CancellationToken cancellationToken)
         {
             Entered.TrySetResult();
             await Release.Task.WaitAsync(cancellationToken);
         }
     }
+
     private sealed class WarningLogger : ILogger<RunnableNotifications>
     {
         internal readonly ConcurrentQueue<Dictionary<string, object?>> Warnings = new();
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
-        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
         {
             if (logLevel == LogLevel.Warning)
-                Warnings.Enqueue(((IEnumerable<KeyValuePair<string, object?>>)(object)state!).ToDictionary(item => item.Key, item => item.Value));
+                Warnings.Enqueue(
+                    ((IEnumerable<KeyValuePair<string, object?>>)(object)state!).ToDictionary(item => item.Key, item => item.Value));
         }
     }
 }

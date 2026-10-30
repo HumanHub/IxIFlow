@@ -24,14 +24,17 @@ public sealed class TemplatePublisher(IWorkflowCatalogStore store, IArtifactStor
         ArgumentNullException.ThrowIfNull(modelType);
         version = await TemplateModelBinder.BindAsync(version, modelType, store, cancellationToken);
         var engine = engines.Get(version.Engine);
+
         foreach (var variant in version.Variants)
         {
             var source = TemplateSource.Of(version, variant);
             var diagnostics = await engine.ValidateAsync(source, modelType, cancellationToken);
+
             if (diagnostics.Count > 0)
                 throw new TemplateValidationException(source, diagnostics);
         }
+
         cancellationToken.ThrowIfCancellationRequested();
-        await store.RegisterTemplateVersionAsync(version, artifacts);
+        await store.RegisterTemplateVersionAsync(version, artifacts, cancellationToken: cancellationToken);
     }
 }

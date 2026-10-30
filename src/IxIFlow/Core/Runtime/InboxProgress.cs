@@ -8,7 +8,8 @@ namespace IxIFlow.Core.Runtime;
 internal sealed class InboxProgress
 {
     private HashSet<string> _committedWaits = new(StringComparer.Ordinal);
-    // Committed waits whose timeout the store has, so it stamped their deadline (D-35).
+
+    // Committed waits whose timeout the store has, so it stamped their deadline.
     private HashSet<string> _committedTimeouts = new(StringComparer.Ordinal);
     private HashSet<string> _committedSuggestions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, WaitCloseReason> _closures = new(StringComparer.Ordinal);
@@ -31,6 +32,7 @@ internal sealed class InboxProgress
     {
         var progress = new InboxProgress();
         progress.Acknowledged(checkpoint, false);
+
         return progress;
     }
 
@@ -71,18 +73,21 @@ internal sealed class InboxProgress
         var current = Rows(checkpoint).ToArray();
         var currentIds = current.Select(wait => wait.WaitId).ToHashSet(StringComparer.Ordinal);
         var opened = current.Where(wait => !_committedWaits.Contains(wait.WaitId)).ToArray();
+
         var armed = current.Where(wait => _committedWaits.Contains(wait.WaitId) &&
                 (wait.Timeout != null && !_committedTimeouts.Contains(wait.WaitId) ||
-                 wait.DefaultPayloadJson != null && !_committedSuggestions.Contains(wait.WaitId)))
+                    wait.DefaultPayloadJson != null && !_committedSuggestions.Contains(wait.WaitId)))
             .Select(wait => new ArmedWait(wait.WaitId,
                 _committedTimeouts.Contains(wait.WaitId) ? null : wait.Timeout,
                 _committedSuggestions.Contains(wait.WaitId) ? null : wait.DefaultPayloadJson))
             .ToArray();
+
         // A wait removed without a recorded reason went with its scope.
         var closed = _committedWaits.Where(id => !currentIds.Contains(id))
             .Order(StringComparer.Ordinal)
             .Select(id => new ClosedWait(id, _closures.GetValueOrDefault(id, WaitCloseReason.Cancelled)))
             .ToArray();
+
         return (opened, armed, closed);
     }
 
@@ -91,12 +96,16 @@ internal sealed class InboxProgress
     {
         var rows = Rows(checkpoint).ToArray();
         _committedWaits = rows.Select(wait => wait.WaitId).ToHashSet(StringComparer.Ordinal);
+
         _committedTimeouts = rows.Where(wait => wait.Timeout != null).Select(wait => wait.WaitId)
             .ToHashSet(StringComparer.Ordinal);
+
         _committedSuggestions = rows.Where(wait => wait.DefaultPayloadJson != null).Select(wait => wait.WaitId)
             .ToHashSet(StringComparer.Ordinal);
+
         _closures.Clear();
         _settlements.Clear();
+
         if (ReadThrough != null && unreadEvents)
             MayHaveUnread = true;
     }
@@ -108,9 +117,9 @@ internal sealed class InboxProgress
         foreach (var wait in checkpoint.Waits)
             yield return new OpenedWait(wait.Id, wait.TableKind, wait.Key, wait.EventType, wait.Timeout,
                 wait.DefaultPayloadJson);
+
         if (checkpoint.ExecutionTimerOpen)
             yield return new OpenedWait(checkpoint.ExecutionTimerId!, WaitKind.Execution, "execution", "",
                 checkpoint.ExecutionTimeout);
     }
-
 }

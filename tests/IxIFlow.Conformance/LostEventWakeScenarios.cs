@@ -22,22 +22,27 @@ public sealed class LostEventWakeScenarios
     {
         var activity = new ActivityGate();
         var hostNumber = 0;
+
         await using var cluster = await ConformanceCluster.CreateAsync(profile, services =>
         {
             services.AddSingleton(activity);
             services.AddTransient<Hold>();
             services.AddTransient<Count>();
+
             // Freeze only the publisher's retry timer. Its initial WakeNow must lose to the owner;
             // the release must make progress without a timer retry hiding a missing handoff.
             if (Interlocked.Increment(ref hostNumber) == 1 && delivery == "publish")
                 services.AddSingleton<TimeProvider>(new FakeTimeProvider(DateTimeOffset.UtcNow));
         });
+
         RepositoryGate writer = null!;
         RepositoryGate owner = null!;
         var first = cluster.AddHost(inner => RepositoryGate.Wrap(inner, out writer));
         var second = cluster.AddHost(inner => RepositoryGate.Wrap(inner, out owner));
+
         var definition = Workflow.Create<Data>("LostEventWake")
             .Step<Hold>().WaitFor<Signal>("approval").Step<Count>().WaitFor<Signal>("approval").Build();
+
         await cluster.Registry.RegisterWorkflowAsync(definition);
         const string id = "lost-event-wake";
         using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(45));
@@ -45,9 +50,11 @@ public sealed class LostEventWakeScenarios
         Task<WorkflowExecutionResult>? recovering = null;
         Task<WorkflowExecutionResult>? sending = null;
         Task<IReadOnlyList<EventDelivery>>? publishing = null;
+
         try
         {
             await activity.Entered.Task.WaitAsync(Patience);
+
             // Read a Running checkpoint, but do not claim until its owner has suspended.
             owner.HoldClaim = true;
             recovering = second.RecoverAsync(id, cancellation.Token);
@@ -57,26 +64,34 @@ public sealed class LostEventWakeScenarios
 
             // A first delivery makes the idle checkpoint due, so the stale recovery can claim it.
             var store = cluster.NewRepository();
+
             Assert.Equal(EventAppendStatus.Stored, (await store.AppendEventAsync(new(id, "earlier",
                 WorkflowTypeIdentity.SavedName(typeof(OtherSignal)), "{}", Key: "approval"))).Status);
+
             owner.ContinueClaim.TrySetResult();
             await owner.BeforeRelease.Task.WaitAsync(Patience);
+
             // The revision check aborted this owner without assigning an executor or committing.
             // Its lease is still live. No checkpoint will inspect the arrival below.
             var wait = Assert.Single(await first.GetOpenWaitsAsync(new(InstanceId: id), cancellation.Token));
             writer.ObserveRefusal = true;
+
             switch (delivery)
             {
                 case "resume":
                     sending = first.ResumeAsync(id, "approval", new Signal(), "delivery-1", cancellation.Token);
+
                     break;
                 case "reply":
                     sending = first.ReplyAsync(wait.Token, new Signal(), "delivery-1", cancellation.Token);
+
                     break;
                 default:
                     publishing = first.PublishAsync("approval", new Signal(), "delivery-1", cancellation.Token);
+
                     break;
             }
+
             await writer.RefusedClaim.Task.WaitAsync(Patience);
             Assert.Equal(EventOutcome.Pending, (await store.GetEventAsync(id, "delivery-1"))!.Outcome);
             Assert.Equal(WorkflowStatus.Suspended, (await store.GetWorkflowInstanceAsync(id))!.Status);
@@ -85,16 +100,21 @@ public sealed class LostEventWakeScenarios
 
             owner.ContinueRelease.TrySetResult();
             Assert.Contains("changed before recovery", (await recovering.WaitAsync(Patience)).ErrorMessage);
+
             // No recovery service or manual scan runs in this cluster. A publish has no waiting caller,
             // so only the release's wake can take it; a waiting resume or reply caller also retries its
             // take, so either host may decide it, and the exactly-once checks below hold either way.
             if (publishing != null)
                 await owner.Reclaimed.Task.WaitAsync(Patience);
+
             await activity.Counted.Task.WaitAsync(Patience);
+
             if (sending != null)
                 Assert.NotEqual(EventOutcome.Pending, (await sending.WaitAsync(Patience)).Event!.Outcome);
+
             if (publishing != null)
                 Assert.Equal(EventAppendStatus.Stored, Assert.Single(await publishing.WaitAsync(Patience)).Status);
+
             await second.AwaitAsync(id, cancellationToken: cancellation.Token).WaitAsync(Patience);
             Assert.Equal(1, activity.Executions);
             Assert.Equal(EventOutcome.Rejected, (await store.GetEventAsync(id, "earlier"))!.Outcome);
@@ -107,9 +127,19 @@ public sealed class LostEventWakeScenarios
             owner.ContinueClaim.TrySetResult();
             owner.ContinueRelease.TrySetResult();
             await cancellation.CancelAsync();
+
             // Observe every caller before disposing the stores, including the expected red failure.
             foreach (var task in new Task?[] { starting, recovering, sending, publishing })
-                if (task != null) { try { await task.WaitAsync(Patience); } catch (OperationCanceledException) { } }
+                if (task != null)
+                {
+                    try
+                    {
+                        await task.WaitAsync(Patience);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+                }
         }
     }
 
@@ -122,20 +152,27 @@ public sealed class LostEventWakeScenarios
         var idle = await client.RunAsync(definition, new Data());
         var store = cluster.NewRepository();
         var query = await StoreTestSupport.ClaimAsync(cluster.Registry);
+
         Assert.Equal(EventAppendStatus.Stored, (await store.AppendEventAsync(new(idle.InstanceId, "earlier",
             WorkflowTypeIdentity.SavedName(typeof(Signal)), "{}", Key: "approval"))).Status);
+
         var grant = Assert.IsType<ExecutionLeaseGrant>(await store.TryAcquireExecutionLeaseAsync(idle.InstanceId,
             "owner", TimeSpan.FromMinutes(1), query));
+
         var snapshot = (await store.GetWorkflowInstanceAsync(idle.InstanceId))!;
         var page = await store.GetPendingEventsAsync(idle.InstanceId, 0, 100);
         Assert.Single(page.Events);
+
         // An event arriving after this owner's final inbox read must survive its idle checkpoint.
         var appended = await store.AppendEventAsync(new(idle.InstanceId, "delivery-1",
             WorkflowTypeIdentity.SavedName(typeof(Signal)), "{}", Key: "approval"));
+
         Assert.True(appended.MadeRunnable);
         Assert.Null(appended.Notice);
+
         var commit = CheckpointCommit.Create(snapshot, grant.Epoch, snapshot.Revision,
             inboxReadThrough: page.ReadThrough);
+
         var committed = await store.CommitWorkflowInstanceAsync(commit);
         Assert.Equal(WorkflowCommitStatus.Applied, committed.Status);
         Assert.True(committed.UnreadEvents);
@@ -177,6 +214,7 @@ public sealed class LostEventWakeScenarios
             var proxy = Create<IWorkflowStateRepository, RepositoryGate>();
             gate = (RepositoryGate)proxy;
             gate._inner = inner;
+
             return proxy;
         }
 
@@ -184,16 +222,25 @@ public sealed class LostEventWakeScenarios
         {
             if (method!.Name == nameof(IWorkflowStateRepository.TryAcquireExecutionLeaseAsync))
                 return ClaimAsync(method, args);
+
             if (method.Name == nameof(IWorkflowStateRepository.ReleaseExecutionLeaseAsync) && HoldClaim)
                 return ReleaseAsync(method, args);
+
             return Forward(method, args);
         }
 
         private object? Forward(MethodInfo method, object?[]? args)
         {
-            try { return method.Invoke(_inner, args); }
+            try
+            {
+                return method.Invoke(_inner, args);
+            }
             catch (TargetInvocationException error) when (error.InnerException != null)
-            { ExceptionDispatchInfo.Capture(error.InnerException).Throw(); throw; }
+            {
+                ExceptionDispatchInfo.Capture(error.InnerException).Throw();
+
+                throw;
+            }
         }
 
         private async Task<ExecutionLeaseGrant?> ClaimAsync(MethodInfo method, object?[]? args)
@@ -203,9 +250,15 @@ public sealed class LostEventWakeScenarios
                 BeforeClaim.TrySetResult();
                 await ContinueClaim.Task.WaitAsync(Patience);
             }
+
             var grant = await (Task<ExecutionLeaseGrant?>)Forward(method, args)!;
-            if (grant == null && ObserveRefusal) RefusedClaim.TrySetResult();
-            if (grant != null && !HoldClaim && BeforeRelease.Task.IsCompleted) Reclaimed.TrySetResult();
+
+            if (grant == null && ObserveRefusal)
+                RefusedClaim.TrySetResult();
+
+            if (grant != null && !HoldClaim && BeforeRelease.Task.IsCompleted)
+                Reclaimed.TrySetResult();
+
             return grant;
         }
 
@@ -215,12 +268,16 @@ public sealed class LostEventWakeScenarios
             await ContinueRelease.Task.WaitAsync(Patience);
             HoldClaim = false;
             var released = await (Task<ExecutionLeaseReleaseResult>)Forward(method, args)!;
-            if (released.Claimable) Interlocked.Increment(ref ClaimableReleases);
+
+            if (released.Claimable)
+                Interlocked.Increment(ref ClaimableReleases);
+
             return released;
         }
     }
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public sealed class ActivityGate
     {
         public readonly TaskCompletionSource Entered = NewSignal();
@@ -228,11 +285,18 @@ public sealed class LostEventWakeScenarios
         public readonly TaskCompletionSource Counted = NewSignal();
         public int Executions;
     }
+
     public sealed class Data;
+
     public sealed class Signal;
+
     public sealed class OtherSignal;
+
     public sealed class Noop : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask; }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
     public sealed class Hold(ActivityGate gate) : IAsyncActivity
     {
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
@@ -241,12 +305,14 @@ public sealed class LostEventWakeScenarios
             await gate.Continue.Task.WaitAsync(cancellationToken);
         }
     }
+
     public sealed class Count(ActivityGate gate) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref gate.Executions);
             gate.Counted.TrySetResult();
+
             return Task.CompletedTask;
         }
     }

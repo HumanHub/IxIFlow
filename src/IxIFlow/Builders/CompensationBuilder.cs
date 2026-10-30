@@ -8,7 +8,7 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Compensation activity builder for saga pattern
 /// </summary>
-public class CompensationActivityBuilder<TWorkflowData, TCompensationActivity, TCurrentStepData> : ICompensationActivityBuilder<
+internal class CompensationActivityBuilder<TWorkflowData, TCompensationActivity, TCurrentStepData> : ICompensationActivityBuilder<
     TWorkflowData, TCompensationActivity, TCurrentStepData>
     where TWorkflowData : class
     where TCompensationActivity : IAsyncActivity
@@ -16,7 +16,7 @@ public class CompensationActivityBuilder<TWorkflowData, TCompensationActivity, T
 {
     private readonly CompensationActivityInfo _compensationInfo;
 
-    public CompensationActivityBuilder(CompensationActivityInfo compensationInfo)
+    internal CompensationActivityBuilder(CompensationActivityInfo compensationInfo)
     {
         _compensationInfo = compensationInfo ?? throw new ArgumentNullException(nameof(compensationInfo));
     }
@@ -39,7 +39,7 @@ public class CompensationActivityBuilder<TWorkflowData, TCompensationActivity, T
 /// <summary>
 ///     Compensation activity builder with access to previous chain activities
 /// </summary>
-public class CompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
+internal class CompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
     TPreviousChainActivity> : ICompensationActivityBuilder<TWorkflowData, TCompensationActivity,
     TPreviousStepData, TPreviousChainActivity>
     where TWorkflowData : class
@@ -49,7 +49,7 @@ public class CompensationActivityBuilder<TWorkflowData, TCompensationActivity, T
 {
     private readonly CompensationActivityInfo _compensationInfo;
 
-    public CompensationActivityBuilder(CompensationActivityInfo compensationInfo)
+    internal CompensationActivityBuilder(CompensationActivityInfo compensationInfo)
     {
         _compensationInfo = compensationInfo ?? throw new ArgumentNullException(nameof(compensationInfo));
     }
@@ -74,7 +74,7 @@ public class CompensationActivityBuilder<TWorkflowData, TCompensationActivity, T
 /// <summary>
 ///     Compensation activity input builder
 /// </summary>
-public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty, TCurrentStepData> :
+internal class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty, TCurrentStepData> :
     ICompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty, TCurrentStepData>
     where TWorkflowData : class
     where TCompensationActivity : IAsyncActivity
@@ -84,13 +84,14 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
     private readonly CompensationActivityInfo _compensationInfo;
     private readonly Expression<Func<TCompensationActivity, TProperty>> _propertyExpression;
 
-    public CompensationActivityInputBuilder(
+    internal CompensationActivityInputBuilder(
         ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TCurrentStepData> builder,
         CompensationActivityInfo compensationInfo,
         Expression<Func<TCompensationActivity, TProperty>> propertyExpression)
     {
         _builder = (CompensationActivityBuilder<TWorkflowData, TCompensationActivity, TCurrentStepData>)builder ??
-                   throw new ArgumentNullException(nameof(builder));
+            throw new ArgumentNullException(nameof(builder));
+
         _compensationInfo = compensationInfo ?? throw new ArgumentNullException(nameof(compensationInfo));
         _propertyExpression = propertyExpression ?? throw new ArgumentNullException(nameof(propertyExpression));
     }
@@ -115,6 +116,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         };
 
         _compensationInfo.InputMappings.Add(mapping);
+
         return _builder;
     }
 
@@ -133,7 +135,9 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
 
     private string GetPropertyName<T, TProp>(Expression<Func<T, TProp>> expression)
     {
-        if (expression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (expression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException("Expression must be a member access", nameof(expression));
     }
 
@@ -141,9 +145,11 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
     {
         // Compile expression directly (same pattern as SagaBuilder)
         var compiled = expression.Compile();
+
         return context =>
         {
-            if (context is TContext typedContext) return compiled(typedContext);
+            if (context is TContext typedContext)
+                return compiled(typedContext);
 
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected {typeof(TContext).FullName}, got {context.GetType().FullName}");
@@ -154,7 +160,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
 /// <summary>
 ///     Compensation activity input builder with access to previous chain activities
 /// </summary>
-public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty,
+internal class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty,
     TPreviousStepData,
     TPreviousChainActivity> : ICompensationActivityInputBuilder<TWorkflowData, TCompensationActivity,
     TProperty, TPreviousStepData, TPreviousChainActivity>
@@ -169,7 +175,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
     private readonly CompensationActivityInfo _compensationInfo;
     private readonly Expression<Func<TCompensationActivity, TProperty>> _propertyExpression;
 
-    public CompensationActivityInputBuilder(
+    internal CompensationActivityInputBuilder(
         ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TPreviousStepData,
             TPreviousChainActivity> builder,
         CompensationActivityInfo compensationInfo,
@@ -200,6 +206,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         };
 
         _compensationInfo.InputMappings.Add(mapping);
+
         return _builder;
     }
 
@@ -223,6 +230,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         };
 
         _compensationInfo.InputMappings.Add(mapping);
+
         return _builder;
     }
 
@@ -246,6 +254,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         };
 
         _compensationInfo.InputMappings.Add(mapping);
+
         return _builder;
     }
 
@@ -267,7 +276,9 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
 
     private string GetPropertyName<T, TProp>(Expression<Func<T, TProp>> expression)
     {
-        if (expression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (expression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException("Expression must be a member access", nameof(expression));
     }
 
@@ -275,9 +286,11 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
     {
         // Compile expression directly (same pattern as SagaBuilder)
         var compiled = expression.Compile();
+
         return context =>
         {
-            if (context is TContext typedContext) return compiled(typedContext);
+            if (context is TContext typedContext)
+                return compiled(typedContext);
 
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected {typeof(TContext).FullName}, got {context.GetType().FullName}");
@@ -288,7 +301,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
 /// <summary>
 ///     Compensation activity output builder
 /// </summary>
-public class CompensationActivityOutputBuilder<TWorkflowData, TCompensationActivity, TProperty> :
+internal class CompensationActivityOutputBuilder<TWorkflowData, TCompensationActivity, TProperty> :
     ICompensationActivityOutputBuilder<TWorkflowData, TCompensationActivity, TProperty>,
     ICompensationActivityBuilder<TWorkflowData, TCompensationActivity>
     where TWorkflowData : class
@@ -298,7 +311,7 @@ public class CompensationActivityOutputBuilder<TWorkflowData, TCompensationActiv
     private readonly CompensationActivityInfo _compensationInfo;
     private readonly Expression<Func<TCompensationActivity, TProperty>> _propertyExpression;
 
-    public CompensationActivityOutputBuilder(
+    internal CompensationActivityOutputBuilder(
         object builder,
         CompensationActivityInfo compensationInfo,
         Expression<Func<TCompensationActivity, TProperty>> propertyExpression)
@@ -352,7 +365,9 @@ public class CompensationActivityOutputBuilder<TWorkflowData, TCompensationActiv
 
     private string GetPropertyName<T, TProp>(Expression<Func<T, TProp>> expression)
     {
-        if (expression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (expression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException("Expression must be a member access", nameof(expression));
     }
 
@@ -396,6 +411,7 @@ public class CompensationActivityOutputBuilder<TWorkflowData, TCompensationActiv
             if (context is TContext typedContext && value is TValue typedValue)
                 compiled(typedContext, typedValue);
             else if (context is TContext typedContext2 && value == null)
+
                 // Handle null values gracefully
                 compiled(typedContext2, default!);
             else
@@ -403,20 +419,19 @@ public class CompensationActivityOutputBuilder<TWorkflowData, TCompensationActiv
                     $"Expected {typeof(TContext).Name} and {typeof(TValue).Name}, got {context.GetType().Name} and {value?.GetType().Name}");
         };
     }
-
 }
 
 /// <summary>
 ///     Compensation activity builder with 2 generics (for interface compatibility)
 /// </summary>
-public class CompensationActivityBuilder<TWorkflowData, TCompensationActivity> 
+internal class CompensationActivityBuilder<TWorkflowData, TCompensationActivity>
     : ICompensationActivityBuilder<TWorkflowData, TCompensationActivity>
     where TWorkflowData : class
     where TCompensationActivity : IAsyncActivity
 {
     private readonly CompensationActivityInfo _compensationInfo;
 
-    public CompensationActivityBuilder(CompensationActivityInfo compensationInfo)
+    internal CompensationActivityBuilder(CompensationActivityInfo compensationInfo)
     {
         _compensationInfo = compensationInfo ?? throw new ArgumentNullException(nameof(compensationInfo));
     }
@@ -439,7 +454,7 @@ public class CompensationActivityBuilder<TWorkflowData, TCompensationActivity>
 /// <summary>
 ///     Compensation activity input builder with 2 generics (for interface compatibility)
 /// </summary>
-public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty> :
+internal class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty> :
     ICompensationActivityInputBuilder<TWorkflowData, TCompensationActivity, TProperty>
     where TWorkflowData : class
     where TCompensationActivity : IAsyncActivity
@@ -448,7 +463,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
     private readonly CompensationActivityInfo _compensationInfo;
     private readonly Expression<Func<TCompensationActivity, TProperty>> _propertyExpression;
 
-    public CompensationActivityInputBuilder(
+    internal CompensationActivityInputBuilder(
         CompensationActivityBuilder<TWorkflowData, TCompensationActivity> builder,
         CompensationActivityInfo compensationInfo,
         Expression<Func<TCompensationActivity, TProperty>> propertyExpression)
@@ -478,6 +493,7 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
         };
 
         _compensationInfo.InputMappings.Add(mapping);
+
         return _builder;
     }
 
@@ -495,16 +511,21 @@ public class CompensationActivityInputBuilder<TWorkflowData, TCompensationActivi
 
     private string GetPropertyName<T, TProp>(Expression<Func<T, TProp>> expression)
     {
-        if (expression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (expression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException("Expression must be a member access", nameof(expression));
     }
 
     private Func<object, object?> CompileToFunction<TContext, TValue>(Expression<Func<TContext, TValue>> expression)
     {
         var compiled = expression.Compile();
+
         return context =>
         {
-            if (context is TContext typedContext) return compiled(typedContext);
+            if (context is TContext typedContext)
+                return compiled(typedContext);
+
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected {typeof(TContext).Name}, got {context.GetType().Name}");
         };

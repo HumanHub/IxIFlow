@@ -13,6 +13,7 @@ public sealed partial class DebugPayloadFixTests
     public void CachedCommitMetadataStillReturnsDetachedSnapshots()
     {
         var value = System.Text.Json.JsonSerializer.SerializeToElement(7);
+
         var instance = new WorkflowInstance
         {
             InstanceId = "cached-trunk", WorkflowName = "cached-trunk", Status = WorkflowStatus.Running,
@@ -20,6 +21,7 @@ public sealed partial class DebugPayloadFixTests
             Properties = new() { ["value"] = value },
             CancellationReason = new() { ReasonCode = "saved", Metadata = new() { ["value"] = value } }
         };
+
         var commit = CheckpointCommit.Create(instance, 1, 0);
         var hash = commit.ContentHash;
         instance.Properties.Clear();
@@ -56,16 +58,26 @@ public sealed partial class DebugPayloadFixTests
         var instance = (await store.GetWorkflowInstanceAsync(initial.InstanceId))!;
         await using var watch = new CancellationWatch(store);
         await using var renewer = new ExecutionLeaseRenewer(store);
+
         await using var owner = (await WorkflowExecutionLease.TryAcquireAsync(store, instance,
-            ExecutionLeaseSettings.Default, watch, renewer, await StoreTestSupport.ClaimAsync(services), _ => { }, _ => { }, _ => { }))!;
+            ExecutionLeaseSettings.Default, watch, renewer, await StoreTestSupport.ClaimAsync(services), _ =>
+            {
+            }, _ =>
+            {
+            }, _ =>
+            {
+            }))!;
+
         var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
             store, catalog, new InProcessInstanceGate(), renewer, watch: watch);
+
         var identity = Guid.NewGuid();
         using var admission = operations.Admit(instance, owner, identity);
         var endpoint = new WorkflowHost.InstanceOperations.ExecutionHost(operations);
         var context = new PostingContext();
         var previous = SynchronizationContext.Current;
         Task<CheckpointReply> reply;
+
         try
         {
             SynchronizationContext.SetSynchronizationContext(context);
@@ -73,7 +85,11 @@ public sealed partial class DebugPayloadFixTests
             Assert.True(reply.IsCompletedSuccessfully);
             Assert.Equal(0, context.Posts);
         }
-        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(previous);
+        }
+
         Assert.Equal(CheckpointReplyKind.Ack, (await reply).Kind);
     }
 
@@ -87,8 +103,10 @@ public sealed partial class DebugPayloadFixTests
         registrations.AddTransient<Noop>();
         await using var services = registrations.BuildServiceProvider();
         var client = services.GetRequiredService<IWorkflowClient>();
+
         var started = await client.RunAsync(Workflow.Create<Data>("ordinary-path")
             .Step<Noop>().WaitFor<Go>("go").Step<Noop>().Build(), new Data { Text = "inline data" });
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
         var resumed = await client.ResumeAsync(started.InstanceId, "go", new Go());
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
@@ -100,8 +118,10 @@ public sealed partial class DebugPayloadFixTests
     public async Task TurningClaimCheckOffStillReleasesPreviouslyReferencedData(bool sqlite)
     {
         await using var h = new Harness(sqlite);
+
         var definition = Workflow.Create<Data>("claim-check-off")
             .Step<Noop>().WaitFor<Go>("go").Step<ClearText>().Build();
+
         var started = await h.Client.RunAsync(definition, new Data { Text = Large });
         var reference = (await h.Store.GetWorkflowInstanceAsync(started.InstanceId))!.WorkflowDataJson.Reference!;
         var registrations = new ServiceCollection().AddLogging();
@@ -117,7 +137,7 @@ public sealed partial class DebugPayloadFixTests
         Assert.True(await h.Store.PayloadStore.CollectAsync(reference, TimeSpan.Zero));
     }
 
-    private sealed class OrdinaryStore : InMemoryWorkflowStateRepository
+    private sealed class OrdinaryStore : TestWorkflowStateRepository
     {
         public override IPayloadStore PayloadStore => throw new InvalidOperationException("Ordinary execution accessed payload storage");
     }
@@ -126,6 +146,7 @@ public sealed partial class DebugPayloadFixTests
     {
         private int _posts;
         public int Posts => Volatile.Read(ref _posts);
+
         public override void Post(SendOrPostCallback callback, object? state)
         {
             Interlocked.Increment(ref _posts);
@@ -136,6 +157,10 @@ public sealed partial class DebugPayloadFixTests
     public sealed class ClearText : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { ((Data)context.WorkflowData).Text = ""; return Task.CompletedTask; }
+        {
+            ((Data)context.WorkflowData).Text = "";
+
+            return Task.CompletedTask;
+        }
     }
 }

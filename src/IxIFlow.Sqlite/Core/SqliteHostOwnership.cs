@@ -16,13 +16,17 @@ internal sealed class SqliteHostOwnership : IDisposable
     {
         var source = new SqliteConnectionStringBuilder(connectionString);
         var path = Path.GetFullPath(source.DataSource);
+
         // On Unix, DriveType queries the directory's file system, including mounted network volumes.
         var drive = new DriveInfo(Path.GetDirectoryName(path)!);
+
         if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal) ||
             drive.DriveType == DriveType.Network)
             throw new ArgumentException("SQLite requires a local database file; UNC and network paths are unsupported",
                 nameof(connectionString));
+
         var file = path + ".ixiflow-owner";
+
         try
         {
             _owner = new FileStream(file, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
@@ -33,6 +37,7 @@ internal sealed class SqliteHostOwnership : IDisposable
                 $"SQLite database '{source.DataSource}' is already owned. SQLite accepts one host and no coordinator.",
                 error);
         }
+
         try
         {
             if (!EnforcesLock(file))
@@ -42,6 +47,7 @@ internal sealed class SqliteHostOwnership : IDisposable
         catch
         {
             _owner.Dispose();
+
             throw;
         }
     }
@@ -51,6 +57,7 @@ internal sealed class SqliteHostOwnership : IDisposable
         try
         {
             using var probe = new FileStream(file, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
             return false;
         }
         catch (IOException error) when (IsSharingViolation(error))

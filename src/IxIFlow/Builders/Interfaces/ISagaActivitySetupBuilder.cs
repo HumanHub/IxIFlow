@@ -8,7 +8,7 @@ namespace IxIFlow.Builders.Interfaces;
 /// Configures saga activities with compensation and error handling capabilities
 /// </summary>
 public interface ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>
-    where TActivity : class, IAsyncActivity 
+    where TActivity : class, IAsyncActivity
     where TPreviousStepData : class
 {
     /// <summary>
@@ -45,7 +45,8 @@ public interface ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousSt
     /// Configures a compensation activity for this step
     /// </summary>
     /// <typeparam name="TCompensationActivity">Type of the compensation activity</typeparam>
-    ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity>([CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+    ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity>(
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TCompensationActivity : IAsyncActivity;
 
     /// <summary>
@@ -53,8 +54,11 @@ public interface ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousSt
     /// </summary>
     /// <typeparam name="TCompensationActivity">Type of the compensation activity</typeparam>
     /// <param name="configure">Configuration for the compensation activity</param>
+    /// <param name="sourceLine">Source line captured for the workflow step.</param>
+    /// <param name="sourcePath">Source file path captured for the workflow step.</param>
     ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity>(
-        Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<ICompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TCompensationActivity : IAsyncActivity;
 
     // For accessing a specific previous step in the saga chain
@@ -64,6 +68,9 @@ public interface ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousSt
     /// <typeparam name="TCompensationActivity">Type of the compensation activity</typeparam>
     /// <typeparam name="TPreviousChainActivity">Type of the previous activity to access</typeparam>
     /// <param name="configure">Configuration for the compensation activity</param>
+    /// <param name="sourceLine">Source line captured for the workflow step.</param>
+    /// <param name="sourcePath">Source file path captured for the workflow step.</param>
+
     // Preferred over the answer overload when a lambda fits both, such as one that configures nothing.
     [System.Runtime.CompilerServices.OverloadResolutionPriority(1)]
     ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity,
@@ -82,8 +89,11 @@ public interface ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousSt
     /// <typeparam name="TCompensationActivity">Type of the compensation activity</typeparam>
     /// <typeparam name="TReply">The answer type of the request</typeparam>
     /// <param name="configure">Configuration for the compensation activity</param>
+    /// <param name="sourceLine">Source line captured for the workflow step.</param>
+    /// <param name="sourcePath">Source file path captured for the workflow step.</param>
     ISagaActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> CompensateWith<TCompensationActivity, TReply>(
-        Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
+        Action<IRequestCompensationActivityBuilder<TWorkflowData, TCompensationActivity, TActivity, TReply>> configure,
+        [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0)
         where TCompensationActivity : IAsyncActivity
         where TReply : class;
 }

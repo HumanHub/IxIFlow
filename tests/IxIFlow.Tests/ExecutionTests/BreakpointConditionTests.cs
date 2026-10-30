@@ -18,14 +18,18 @@ public sealed class BreakpointConditionTests
     [InlineData(2, WorkflowExecutionStatus.Paused)]
     public async Task DataConditionPausesOnlyWhenTrue(int value, WorkflowExecutionStatus expected)
     {
-        var store = new Store(); var probe = new Probe(); await using var services = Services(store, probe);
+        var store = new Store();
+        var probe = new Probe();
+        await using var services = Services(store, probe);
         var definition = Definition("DataCondition");
-        var client = services.GetRequiredService<IWorkflowClient>(); var ops = services.GetRequiredService<IWorkflowOperations>();
+        var client = services.GetRequiredService<IWorkflowClient>();
+        var ops = services.GetRequiredService<IWorkflowOperations>();
         var idle = await client.RunAsync(definition, new Data { Value = value });
         await ops.SetBreakpointsAsync(idle.InstanceId, [new("bp", "target", Condition: "context.WorkflowData.Value == 2")], "setter");
         Assert.Equal(expected, (await client.ResumeAsync(idle.InstanceId, "go", new Go())).Status);
         Assert.Equal(expected == WorkflowExecutionStatus.Paused ? 0 : 1, probe.Count);
         Assert.Equal(1, Assert.Single(await ops.GetBreakpointsAsync(idle.InstanceId)).HitCount);
+
         if (expected == WorkflowExecutionStatus.Paused)
         {
             Assert.Equal(WorkflowExecutionStatus.Success, (await ops.ContinueAsync(idle.InstanceId, "continue")).Status);
@@ -36,10 +40,15 @@ public sealed class BreakpointConditionTests
     [Fact]
     public async Task PreviousStepIsTypedAtTheTarget()
     {
-        var store = new Store(); var probe = new Probe(); await using var services = Services(store, probe);
+        var store = new Store();
+        var probe = new Probe();
+        await using var services = Services(store, probe);
+
         var definition = new WorkflowBuilder<Data, object>([], "PreviousCondition").WaitFor<Go>("go")
             .Step<Previous>().Step<Count>().WithId("target").Build();
-        var client = services.GetRequiredService<IWorkflowClient>(); var ops = services.GetRequiredService<IWorkflowOperations>();
+
+        var client = services.GetRequiredService<IWorkflowClient>();
+        var ops = services.GetRequiredService<IWorkflowOperations>();
         var idle = await client.RunAsync(definition, new Data());
         await ops.SetBreakpointsAsync(idle.InstanceId, [new("bp", "target", Condition: "context.PreviousStep.Value == 7")], "setter");
         Assert.Equal(WorkflowExecutionStatus.Paused, (await client.ResumeAsync(idle.InstanceId, "go", new Go())).Status);
@@ -51,14 +60,25 @@ public sealed class BreakpointConditionTests
     [InlineData(true)]
     public async Task ForEachItemAndIndexAreTyped(bool parallel)
     {
-        var store = new Store(); var probe = new Probe(); await using var services = Services(store, probe);
+        var store = new Store();
+        var probe = new Probe();
+        await using var services = Services(store, probe);
+
         var definition = new WorkflowBuilder<Data, object>([], "ItemCondition").WaitFor<Go>("go")
             .ForEach(c => c.WorkflowData.Items, (body, item) => body.Step<Count>().WithId("target"),
-                setup => { if (parallel) setup.Parallel(2); }).Build();
-        var client = services.GetRequiredService<IWorkflowClient>(); var ops = services.GetRequiredService<IWorkflowOperations>();
+                setup =>
+                {
+                    if (parallel)
+                        setup.Parallel(2);
+                }).Build();
+
+        var client = services.GetRequiredService<IWorkflowClient>();
+        var ops = services.GetRequiredService<IWorkflowOperations>();
         var idle = await client.RunAsync(definition, new Data());
+
         await ops.SetBreakpointsAsync(idle.InstanceId,
             [new("bp", "target", Condition: "context.Item == 2 && context.Index == 1")], "setter");
+
         Assert.Equal(WorkflowExecutionStatus.Paused, (await client.ResumeAsync(idle.InstanceId, "go", new Go())).Status);
         Assert.Equal(WorkflowExecutionStatus.Success, (await ops.ContinueAsync(idle.InstanceId, "continue")).Status);
         Assert.Equal(3, probe.Count);
@@ -119,12 +139,17 @@ public sealed class BreakpointConditionTests
     [Fact]
     public async Task RefusedConditionLeavesTheInstalledSetIntact()
     {
-        var store = new Store(); var probe = new Probe(); await using var services = Services(store, probe);
-        var client = services.GetRequiredService<IWorkflowClient>(); var ops = services.GetRequiredService<IWorkflowOperations>();
+        var store = new Store();
+        var probe = new Probe();
+        await using var services = Services(store, probe);
+        var client = services.GetRequiredService<IWorkflowClient>();
+        var ops = services.GetRequiredService<IWorkflowOperations>();
         var idle = await client.RunAsync(Definition("RefusedSet"), new Data());
         await ops.SetBreakpointsAsync(idle.InstanceId, [new("old", "target")], "setter");
+
         var error = await Assert.ThrowsAsync<BreakpointConditionException>(() => ops.SetBreakpointsAsync(idle.InstanceId,
             [new("new", "target", Condition: "context.WorkflowData.Helper()")], "setter"));
+
         Assert.NotEmpty(error.Diagnostics);
         Assert.Equal("old", Assert.Single(await ops.GetBreakpointsAsync(idle.InstanceId)).Id);
     }
@@ -134,59 +159,85 @@ public sealed class BreakpointConditionTests
     [InlineData(true)]
     public async Task StoredConditionOnAnIncapableHostFailsClosed(bool invalid)
     {
-        var store = new Store(); var probe = new Probe();
+        var store = new Store();
+        var probe = new Probe();
         await using var owner = Services(store, probe, compiler: invalid);
         var client = owner.GetRequiredService<IWorkflowClient>();
         var definition = Definition("IncapableHost");
         var idle = await client.RunAsync(definition, new Data());
+
         var breakpoint = Assert.Single(BreakpointResolver.Resolve(definition,
             [new("bp", "target", Condition: invalid ? "DateTime.Now.Year > 0" : "false")]));
+
         Assert.Equal(DebugCommandStatus.Accepted, (await store.RequestDebugCommandAsync(idle.InstanceId,
             new("set", DebugCommandKind.SetBreakpoints, 0, "setter", [breakpoint]))).Status);
+
         Assert.Equal(WorkflowExecutionStatus.Paused,
             (await owner.GetRequiredService<IWorkflowClient>().ResumeAsync(idle.InstanceId, "go", new Go())).Status);
+
         var stop = WorkflowDebugRules.Checkpoint((await store.GetWorkflowInstanceAsync(idle.InstanceId))!).Stop!;
         Assert.Equal(invalid ? "ConditionCompilationFailed" : "ConditionCompilerUnavailable", stop.Reason);
-        if (invalid) Assert.NotEmpty(stop.Diagnostics);
+
+        if (invalid)
+            Assert.NotEmpty(stop.Diagnostics);
+
         Assert.Equal(0, probe.Count);
     }
 
     [Fact]
     public async Task HostWithoutCompilerRefusesToInstallACondition()
     {
-        var store = new Store(); var probe = new Probe(); await using var services = Services(store, probe, compiler: false);
+        var store = new Store();
+        var probe = new Probe();
+        await using var services = Services(store, probe, compiler: false);
         var idle = await services.GetRequiredService<IWorkflowClient>().RunAsync(Definition("NoCompiler"), new Data());
+
         var error = await Assert.ThrowsAsync<BreakpointConditionException>(() => services.GetRequiredService<IWorkflowOperations>()
             .SetBreakpointsAsync(idle.InstanceId, [new("bp", "target", Condition: "true")], "setter"));
+
         Assert.Equal("BPC000", Assert.Single(error.Diagnostics).Code);
     }
 
     [Fact]
     public async Task ThrowingConditionPausesWithItsReason()
     {
-        var store = new Store(); var probe = new Probe(); await using var services = Services(store, probe);
-        var client = services.GetRequiredService<IWorkflowClient>(); var ops = services.GetRequiredService<IWorkflowOperations>();
+        var store = new Store();
+        var probe = new Probe();
+        await using var services = Services(store, probe);
+        var client = services.GetRequiredService<IWorkflowClient>();
+        var ops = services.GetRequiredService<IWorkflowOperations>();
         var idle = await client.RunAsync(Definition("ThrowingCondition"), new Data());
+
         await ops.SetBreakpointsAsync(idle.InstanceId,
             [new("bp", "target", Condition: "context.WorkflowData.Value / context.WorkflowData.Zero > 0")], "setter");
+
         Assert.Equal(WorkflowExecutionStatus.Paused, (await client.ResumeAsync(idle.InstanceId, "go", new Go())).Status);
         var stop = WorkflowDebugRules.Checkpoint((await store.GetWorkflowInstanceAsync(idle.InstanceId))!).Stop!;
         Assert.Equal("ConditionEvaluationFailed", stop.Reason);
         Assert.Contains("DivideByZeroException", Assert.Single(stop.Diagnostics).Message);
         var trace = await store.GetTraceAsync(idle.InstanceId);
+
         Assert.Equal(stop.Reason, Assert.IsType<BreakpointHitTrace>(
             Assert.Single(trace, t => t.Entry.EntryType == TraceEntryType.BreakpointHit).Entry.Payload).Reason);
+
         Assert.Equal(0, probe.Count);
     }
 
     [Fact]
     public async Task AConditionFailureTakesPrecedenceOverAnUnconditionalHit()
     {
-        var store = new Store(); var probe = new Probe(); await using var services = Services(store, probe);
-        var client = services.GetRequiredService<IWorkflowClient>(); var ops = services.GetRequiredService<IWorkflowOperations>();
+        var store = new Store();
+        var probe = new Probe();
+        await using var services = Services(store, probe);
+        var client = services.GetRequiredService<IWorkflowClient>();
+        var ops = services.GetRequiredService<IWorkflowOperations>();
         var idle = await client.RunAsync(Definition("MultipleConditions"), new Data());
-        await ops.SetBreakpointsAsync(idle.InstanceId, [new("ordinary", "target"),
-            new("failure", "target", Condition: "context.WorkflowData.Value / context.WorkflowData.Zero > 0")], "setter");
+
+        await ops.SetBreakpointsAsync(idle.InstanceId, [
+            new("ordinary", "target"),
+            new("failure", "target", Condition: "context.WorkflowData.Value / context.WorkflowData.Zero > 0")
+        ], "setter");
+
         Assert.Equal(WorkflowExecutionStatus.Paused, (await client.ResumeAsync(idle.InstanceId, "go", new Go())).Status);
         var stop = WorkflowDebugRules.Checkpoint((await store.GetWorkflowInstanceAsync(idle.InstanceId))!).Stop!;
         Assert.Equal("failure", stop.BreakpointId);
@@ -199,35 +250,64 @@ public sealed class BreakpointConditionTests
     [InlineData(false)]
     public async Task RecoveryReusesPersistedTimeAndCountForTheSameHit(bool matches)
     {
-        var store = new Store(); var probe = new Probe();
+        var store = new Store();
+        var probe = new Probe();
         var time = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
-        await using var first = Services(store, probe, time: time); await using var second = Services(store, probe, time: time);
-        var client = first.GetRequiredService<IWorkflowClient>(); var ops = first.GetRequiredService<IWorkflowOperations>();
+        await using var first = Services(store, probe, time: time);
+        await using var second = Services(store, probe, time: time);
+        var client = first.GetRequiredService<IWorkflowClient>();
+        var ops = first.GetRequiredService<IWorkflowOperations>();
         var idle = await client.RunAsync(Definition("ClockRecovery"), new Data());
-        await ops.SetBreakpointsAsync(idle.InstanceId, [new("bp", "target", Condition: matches ?
-            "context.UtcNow.Day == 1" : "context.UtcNow.Day != 1")], "setter");
+
+        await ops.SetBreakpointsAsync(idle.InstanceId,
+            [new("bp", "target", Condition: matches ? "context.UtcNow.Day == 1" : "context.UtcNow.Day != 1")], "setter");
+
         store.FailAfterPreparation = true;
-        await Assert.ThrowsAsync<WorkflowEngineException>(() => client.ResumeAsync(idle.InstanceId, "go", new Go()));
+        var interrupted = client.ResumeAsync(idle.InstanceId, "go", new Go());
+        using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+        while (Volatile.Read(ref store.Preparations) == 0)
+            await Task.Delay(1, patience.Token);
+
+        var hitAt = time.GetUtcNow().UtcDateTime;
+
+        while (!interrupted.IsCompleted)
+        {
+            time.Advance(TimeSpan.FromMilliseconds(25));
+            await Task.Delay(1, patience.Token);
+        }
+
+        await Assert.ThrowsAsync<WorkflowEngineException>(() => interrupted);
         var saved = WorkflowDebugRules.Checkpoint((await store.GetWorkflowInstanceAsync(idle.InstanceId))!);
-        Assert.Equal(time.GetUtcNow().UtcDateTime, saved.Evaluation!.HitAtUtc);
+        Assert.Equal(hitAt, saved.Evaluation!.HitAtUtc);
         Assert.Equal(1, Assert.Single(saved.Breakpoints).HitCount);
-        time.Advance(TimeSpan.FromDays(1)); store.FailAfterPreparation = false;
+        time.Advance(TimeSpan.FromDays(1));
+        store.FailAfterPreparation = false;
         var result = await second.GetRequiredService<IWorkflowClient>().RecoverAsync(idle.InstanceId);
         Assert.Equal(matches ? WorkflowExecutionStatus.Paused : WorkflowExecutionStatus.Success, result.Status);
         var recovered = WorkflowDebugRules.Checkpoint((await store.GetWorkflowInstanceAsync(idle.InstanceId))!);
         Assert.Null(recovered.Evaluation);
         Assert.Equal(1, Assert.Single(recovered.Breakpoints).HitCount);
-        if (matches) Assert.Equal(saved.Evaluation.HitAtUtc, recovered.Stop!.HitAtUtc);
+
+        if (matches)
+            Assert.Equal(saved.Evaluation.HitAtUtc, recovered.Stop!.HitAtUtc);
     }
 
     [Fact]
     public async Task HitConditionRunsBeforeConditionEvaluation()
     {
-        var store = new Store(); var probe = new Probe(); await using var services = Services(store, probe);
-        var client = services.GetRequiredService<IWorkflowClient>(); var ops = services.GetRequiredService<IWorkflowOperations>();
+        var store = new Store();
+        var probe = new Probe();
+        await using var services = Services(store, probe);
+        var client = services.GetRequiredService<IWorkflowClient>();
+        var ops = services.GetRequiredService<IWorkflowOperations>();
         var idle = await client.RunAsync(Definition("HitBeforeCondition"), new Data());
-        await ops.SetBreakpointsAsync(idle.InstanceId, [new("bp", "target", HitCondition: "== 2",
-            Condition: "context.WorkflowData.Value / context.WorkflowData.Zero > 0")], "setter");
+
+        await ops.SetBreakpointsAsync(idle.InstanceId, [
+            new("bp", "target", HitCondition: "== 2",
+                Condition: "context.WorkflowData.Value / context.WorkflowData.Zero > 0")
+        ], "setter");
+
         Assert.Equal(WorkflowExecutionStatus.Success, (await client.ResumeAsync(idle.InstanceId, "go", new Go())).Status);
         Assert.Equal(0, store.Preparations);
     }
@@ -239,35 +319,48 @@ public sealed class BreakpointConditionTests
 
         static async Task<(long Count, int Value)[]> Run(bool crash)
         {
-            var store = new Store(); var probe = new Probe();
-            await using var first = Services(store, probe); await using var recovery = Services(store, probe);
+            var store = new Store();
+            var probe = new Probe();
+            await using var first = Services(store, probe);
+            await using var recovery = Services(store, probe);
+
             var definition = new WorkflowBuilder<Data, object>([], "LoopCondition").WaitFor<Go>("go")
                 .WhileDo(c => c.WorkflowData.Value < 4, body => body.Step<Increment>(s => s
-                    .Input(a => a.Value).From(c => c.WorkflowData.Value).Output(a => a.Value).To(c => c.WorkflowData.Value))
+                        .Input(a => a.Value).From(c => c.WorkflowData.Value).Output(a => a.Value).To(c => c.WorkflowData.Value))
                     .WithId("target")).Build();
-            var client = first.GetRequiredService<IWorkflowClient>(); var ops = first.GetRequiredService<IWorkflowOperations>();
+
+            var client = first.GetRequiredService<IWorkflowClient>();
+            var ops = first.GetRequiredService<IWorkflowOperations>();
             var idle = await client.RunAsync(definition, new Data());
+
             await ops.SetBreakpointsAsync(idle.InstanceId,
                 [new("bp", "target", Condition: "context.WorkflowData.Value % 2 == 1")], "setter");
+
             store.FailAfterPreparation = crash;
             WorkflowExecutionResult result;
+
             if (crash)
             {
                 await Assert.ThrowsAsync<WorkflowEngineException>(() => client.ResumeAsync(idle.InstanceId, "go", new Go()));
                 store.FailAfterPreparation = false;
                 result = await recovery.GetRequiredService<IWorkflowClient>().RecoverAsync(idle.InstanceId);
             }
-            else result = await client.ResumeAsync(idle.InstanceId, "go", new Go());
+            else
+                result = await client.ResumeAsync(idle.InstanceId, "go", new Go());
+
             var hits = new List<(long, int)>();
+
             while (result.Status == WorkflowExecutionStatus.Paused && hits.Count < 5)
             {
                 var stop = WorkflowDebugRules.Checkpoint((await store.GetWorkflowInstanceAsync(idle.InstanceId))!).Stop!;
                 hits.Add((stop.HitCount, Assert.IsType<Data>(result.WorkflowData).Value));
                 result = await ops.ContinueAsync(idle.InstanceId, "continue");
             }
+
             Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
             Assert.Equal([(2L, 1), (4L, 3)], hits);
             Assert.Equal(4, Assert.Single(await ops.GetBreakpointsAsync(idle.InstanceId)).HitCount);
+
             return hits.ToArray();
         }
     }
@@ -293,11 +386,19 @@ public sealed class BreakpointConditionTests
 
     private static ServiceProvider Services(Store store, Probe probe, bool compiler = true, TimeProvider? time = null)
     {
-        var services = new ServiceCollection().AddLogging(); services.AddIxIFlow(o => o.Debugging = true);
-        if (compiler) services.AddBreakpointConditions();
-        services.AddSingleton<IWorkflowStateRepository>(store); services.AddSingleton(probe);
+        var services = new ServiceCollection().AddLogging();
+        services.AddIxIFlow(o => o.Debugging = true);
+
+        if (compiler)
+            services.AddBreakpointConditions();
+
+        services.AddSingleton<IWorkflowStateRepository>(store);
+        services.AddSingleton(probe);
         services.AddSingleton<IWorkflowCatalog>(probe.Registry);
-        if (time != null) services.AddSingleton(time);
+
+        if (time != null)
+            services.AddSingleton(time);
+
         return services.BuildServiceProvider();
     }
 
@@ -314,34 +415,65 @@ public sealed class BreakpointConditionTests
         public IEnumerable<int> Custom { get; set; } = [1, 2, 3];
         public bool Helper() => true;
     }
+
     public sealed class Go;
-    public sealed class Probe { public WorkflowCatalog Registry { get; } = new(); public int Count; }
+
+    public sealed class Probe
+    {
+        public WorkflowCatalog Registry { get; } = new();
+        public int Count;
+    }
+
     public sealed class Count(Probe probe) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Interlocked.Increment(ref probe.Count); return Task.CompletedTask; }
+        {
+            Interlocked.Increment(ref probe.Count);
+
+            return Task.CompletedTask;
+        }
     }
+
     public sealed class Previous : IAsyncActivity
     {
         public int Value { get; set; }
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Value = 7; return Task.CompletedTask; }
+        {
+            Value = 7;
+
+            return Task.CompletedTask;
+        }
     }
+
     public sealed class Increment : IAsyncActivity
     {
         [ActivityInputOutput] public int Value { get; set; }
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Value++; return Task.CompletedTask; }
+        {
+            Value++;
+
+            return Task.CompletedTask;
+        }
     }
-    private sealed class Store : InMemoryWorkflowStateRepository
+
+    private sealed class Store : TestWorkflowStateRepository
     {
         public bool FailAfterPreparation;
         public int Preparations;
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
-            if (FailAfterPreparation && Preparations > 0) throw new IOException("Crash after condition preparation");
-            var result = await base.CommitWorkflowInstanceAsync(commit);
-            if (WorkflowDebugRules.Checkpoint(commit.ReadTrunk()).Evaluation != null) Preparations++;
+            if (FailAfterPreparation && Preparations > 0)
+                throw new IOException("Crash after condition preparation");
+
+            var result = await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
+
+            if (WorkflowDebugRules.Checkpoint(commit.ReadTrunk()).Evaluation != null)
+                Preparations++;
+
             return result;
         }
     }

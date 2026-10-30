@@ -15,7 +15,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
 /// A store can wake a host when an instance becomes runnable, so the host claims it before its next poll; PostgreSQL
-/// does it through LISTEN/NOTIFY. The host keeps polling, so a store that cannot wake it costs only latency (C-13).
+/// does it through LISTEN/NOTIFY. The host keeps polling, so a store that cannot wake it costs only latency.
 /// Hosts run on a fake clock that the tests do not move, so nothing but a wake-up can make them claim.
 /// </summary>
 [Trait("Feature", "recovery")]
@@ -53,15 +53,18 @@ public sealed class RunnableWakeUpTests
         var scans = ScanCounter.Wrap(repository);
         await using var host = await StartAsync(Services(time, scans.Store, wakeUps));
         await scans.SettledAsync(after: 0);
+
         await time.WaitUntilAsync(timers => timers.Count(timer => timer.Pending &&
-            timer.DueTime == PollInterval && timer.Period == Timeout.InfiniteTimeSpan) >= 2,
+                timer.DueTime == PollInterval && timer.Period == Timeout.InfiniteTimeSpan) >= 2,
             "the poll and failed-listener retry timers");
+
         await AppendApprovalAsync(repository, instanceId);
 
         // Fire one poll and listener retry, then keep lease time fixed while the host runs.
         time.Advance(PollInterval);
         await CompletedAsync(repository, instanceId);
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
         while (wakeUps.Attempts < 2)
         {
             Assert.True(DateTime.UtcNow < deadline, "The host never retried listening");
@@ -74,12 +77,14 @@ public sealed class RunnableWakeUpTests
     // append can make the host claim the instance.
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task AnEventStoredElsewhereWakesAPostgreSqlHost() => VerifyEventStoredElsewhereWakesHost(PostgreSqlTestDatabase<RunnableWakeUpTests>.ConnectionString);
+    public Task AnEventStoredElsewhereWakesAPostgreSqlHost() =>
+        VerifyEventStoredElsewhereWakesHost(PostgreSqlTestDatabase<RunnableWakeUpTests>.ConnectionString);
 
     // The connection drops; the host polls, listens again a poll interval later, and is woken again.
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task APostgreSqlHostListensAgainAfterItsConnectionDrops() => VerifyHostListensAfterConnectionDrops(PostgreSqlTestDatabase<RunnableWakeUpTests>.ConnectionString);
+    public Task APostgreSqlHostListensAgainAfterItsConnectionDrops() =>
+        VerifyHostListensAfterConnectionDrops(PostgreSqlTestDatabase<RunnableWakeUpTests>.ConnectionString);
 
     // The process ID of the host's listening connection, once it is listening: one not in except, which holds the
     // connections of hosts that are gone or about to go. Moving the clock lets a host that lost its connection try again.
@@ -87,10 +92,12 @@ public sealed class RunnableWakeUpTests
         FakeTimeProvider? time = null)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
         while (true)
         {
             if ((await ListenersAsync(connectionString)).Except(except).ToArray() is [var pid])
                 return pid;
+
             Assert.True(DateTime.UtcNow < deadline, "The host never listened");
             time?.Advance(PollInterval);
             await Task.Delay(20);
@@ -102,15 +109,19 @@ public sealed class RunnableWakeUpTests
     {
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync();
+
         await using var find = new NpgsqlCommand($"""
-            SELECT pid FROM pg_stat_activity
-            WHERE datname = current_database() AND application_name LIKE '%IxIFlow wake-ups'
-              AND query = 'LISTEN {PostgreSqlWorkflowStateRepository.RunnableChannel}'
-            """, connection);
+                                                  SELECT pid FROM pg_stat_activity
+                                                  WHERE datname = current_database() AND application_name LIKE '%IxIFlow wake-ups'
+                                                    AND query = 'LISTEN {PostgreSqlWorkflowStateRepository.RunnableChannel}'
+                                                  """, connection);
+
         var pids = new List<int>();
         await using var reader = await find.ExecuteReaderAsync();
+
         while (await reader.ReadAsync())
             pids.Add(reader.GetInt32(0));
+
         return pids.ToArray();
     }
 
@@ -120,7 +131,9 @@ public sealed class RunnableWakeUpTests
         {
             var result = await services.GetRequiredService<IWorkflowClient>()
                 .RunAsync(Definition(), new WakeData());
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
+
             return result.InstanceId;
         }
     }
@@ -133,6 +146,7 @@ public sealed class RunnableWakeUpTests
     private static async Task CompletedAsync(IWorkflowStateRepository repository, string instanceId)
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
         while ((await repository.GetWorkflowInstanceAsync(instanceId))!.Status != WorkflowStatus.Completed)
         {
             Assert.True(DateTime.UtcNow < deadline, "The host was never woken");
@@ -152,10 +166,13 @@ public sealed class RunnableWakeUpTests
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton(time);
         services.AddSingleton(repository);
+
         if (wakeUps != null)
             services.AddSingleton(wakeUps);
+
         services.AddIxIFlow(options => options.PollInterval = PollInterval);
         services.AddTransient<Noop>();
+
         return Registered(services.BuildServiceProvider());
     }
 
@@ -165,6 +182,7 @@ public sealed class RunnableWakeUpTests
         services.AddSingleton(time);
         services.AddIxIFlow(options => options.PollInterval = PollInterval).UsePostgreSql(connectionString);
         services.AddTransient<Noop>();
+
         return Registered(services.BuildServiceProvider());
     }
 
@@ -172,14 +190,17 @@ public sealed class RunnableWakeUpTests
     {
         services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(Definition())
             .GetAwaiter().GetResult();
+
         return services;
     }
 
     private static async Task<RunningHost> StartAsync(ServiceProvider services)
     {
         var hosted = services.GetServices<IHostedService>().ToArray();
+
         foreach (var service in hosted)
             await service.StartAsync(CancellationToken.None);
+
         return new RunningHost(services, hosted);
     }
 
@@ -189,6 +210,7 @@ public sealed class RunnableWakeUpTests
         {
             foreach (var service in hosted.Reverse())
                 await service.StopAsync(CancellationToken.None);
+
             await services.DisposeAsync();
         }
     }
@@ -210,6 +232,7 @@ public sealed class RunnableWakeUpTests
             var counter = (ScanCounter)(object)store;
             counter._inner = inner;
             counter.Store = store;
+
             return counter;
         }
 
@@ -217,6 +240,7 @@ public sealed class RunnableWakeUpTests
         public async Task FinishedAsync(int scans)
         {
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
             while (Volatile.Read(ref _finished) < scans || Started != Volatile.Read(ref _finished))
             {
                 Assert.True(DateTime.UtcNow < deadline, "The host's scans never finished");
@@ -229,6 +253,7 @@ public sealed class RunnableWakeUpTests
         {
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
             var last = -1;
+
             for (var quiet = 0; quiet < 5;)
             {
                 Assert.True(DateTime.UtcNow < deadline, "The host's scans never settled");
@@ -245,12 +270,15 @@ public sealed class RunnableWakeUpTests
             {
                 if (method!.Name != nameof(IWorkflowStateRepository.GetRunnableInstancesAsync))
                     return method.Invoke(_inner, args);
+
                 Interlocked.Increment(ref _started);
+
                 return CountAsync((Task<IReadOnlyList<RunnableInstance>>)method.Invoke(_inner, args)!);
             }
             catch (TargetInvocationException error) when (error.InnerException != null)
             {
                 ExceptionDispatchInfo.Throw(error.InnerException);
+
                 throw;
             }
         }
@@ -282,6 +310,7 @@ public sealed class RunnableWakeUpTests
         public async Task WokenAsync(int times)
         {
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
             while (Volatile.Read(ref _wakes) < times)
             {
                 Assert.True(DateTime.UtcNow < deadline, "The store never woke the host");
@@ -323,6 +352,7 @@ public sealed class RunnableWakeUpTests
         public Task ListenAsync(Action wake, CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _attempts);
+
             throw new IOException("The store cannot be listened to");
         }
     }
@@ -336,6 +366,7 @@ public sealed class RunnableWakeUpTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
+
     private static async Task VerifyEventStoredElsewhereWakesHost(string connectionString)
     {
         var time = new FakeTimeProvider();
@@ -365,6 +396,7 @@ public sealed class RunnableWakeUpTests
         var gone = await ListenersAsync(connectionString);
         await using var host = await StartAsync(Services(time, scans.Store, wakeUps));
         var dropped = await ListenerAsync(connectionString, except: gone);
+
         await using (var admin = new NpgsqlConnection(connectionString))
         {
             await admin.OpenAsync();
@@ -372,8 +404,10 @@ public sealed class RunnableWakeUpTests
             terminate.Parameters.AddWithValue("Pid", dropped);
             await terminate.ExecuteScalarAsync();
         }
+
         await ListenerAsync(connectionString, except: [.. gone, dropped], time);
         var instanceId = await SuspendAsync(PostgreSqlServices(time, connectionString));
+
         // The polls the moving clock caused are not counted, so the scans are taken as over once the one the new
         // connection's wake-up asked for has started and none has started for a while.
         await wakeUps.WokenAsync(times: 2);
@@ -384,6 +418,4 @@ public sealed class RunnableWakeUpTests
         await CompletedAsync(store, instanceId);
         await store.DeleteWorkflowInstanceAsync(instanceId);
     }
-
-
 }

@@ -19,13 +19,18 @@ public sealed class PublishingHttpSampleTests
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         PublishingHttpExamples.Register(builder.Services);
         await using var app = builder.Build();
+
         app.Use((http, next) =>
         {
             var permissions = http.Request.Headers["Sample-Permissions"].ToString().Split(',');
+
             http.User = new ClaimsPrincipal(new ClaimsIdentity(
-                permissions.Select(permission => new Claim("publishing", permission)).Append(new Claim(ClaimTypes.Name, "sample-author")), "sample"));
+                permissions.Select(permission => new Claim("publishing", permission)).Append(new Claim(ClaimTypes.Name, "sample-author")),
+                "sample"));
+
             return next(http);
         });
+
         app.UseAuthorization();
         PublishingHttpExamples.Map(app);
         await app.StartAsync();
@@ -33,7 +38,10 @@ public sealed class PublishingHttpSampleTests
         http.DefaultRequestHeaders.Add("Sample-Permissions", "read");
         const string path = "/ixiflow/publishing/drafts/workflow/SampleDraft/1";
         const string yaml = "workflow: {name: SampleDraft, dataType: IxIFlow.Samples.PublishedNumber}\ndefinitions: []";
-        using var deniedRequest = new HttpRequestMessage(HttpMethod.Put, path) { Content = new StringContent(yaml, Encoding.UTF8, "application/yaml") };
+
+        using var deniedRequest = new HttpRequestMessage(HttpMethod.Put, path)
+            { Content = new StringContent(yaml, Encoding.UTF8, "application/yaml") };
+
         deniedRequest.Headers.TryAddWithoutValidation("If-None-Match", "*");
         using var denied = await http.SendAsync(deniedRequest);
         Assert.Equal(HttpStatusCode.Forbidden, denied.StatusCode);
@@ -41,7 +49,10 @@ public sealed class PublishingHttpSampleTests
         http.DefaultRequestHeaders.Add("Sample-Permissions", "read,author,download");
         using var missing = await http.PutAsync(path, new StringContent(yaml, Encoding.UTF8, "application/yaml"));
         Assert.Equal((HttpStatusCode)428, missing.StatusCode);
-        using var request = new HttpRequestMessage(HttpMethod.Put, path) { Content = new StringContent(yaml, Encoding.UTF8, "application/yaml") };
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, path)
+            { Content = new StringContent(yaml, Encoding.UTF8, "application/yaml") };
+
         request.Headers.TryAddWithoutValidation("If-None-Match", "*");
         using var saved = await http.SendAsync(request);
         Assert.Equal(HttpStatusCode.Created, saved.StatusCode);

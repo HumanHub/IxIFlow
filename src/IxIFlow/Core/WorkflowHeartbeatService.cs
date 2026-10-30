@@ -10,9 +10,15 @@ using Microsoft.Extensions.Logging;
 namespace IxIFlow.Core;
 
 /// <summary>Publishes this process and a fresh capability snapshot for as long as its host runs.</summary>
-internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository repository, IWorkflowCatalog registry,
-    HostSettings settings, TimeProvider time, ILogger<WorkflowHeartbeatService> logger, IActivityRegistry activities,
-    ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null, InspectionRedactionPolicy? inspectionPolicy = null) : BackgroundService
+internal sealed class WorkflowHeartbeatService(
+    IWorkflowStateRepository repository,
+    IWorkflowCatalog registry,
+    HostSettings settings,
+    TimeProvider time,
+    ILogger<WorkflowHeartbeatService> logger,
+    IActivityRegistry activities,
+    ILogger<SensitiveDiagnostics>? sensitiveDiagnostics = null,
+    InspectionRedactionPolicy? inspectionPolicy = null) : BackgroundService
 {
     private IReadOnlyDictionary<string, string> _registeredCapabilities = null!;
 
@@ -25,7 +31,8 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
     internal static Dictionary<string, string> BaseCapabilities(HostSettings settings) =>
         new(settings.Capabilities, StringComparer.Ordinal)
         {
-            ["os"] = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsLinux() ? "linux"
+            ["os"] = OperatingSystem.IsWindows() ? "windows"
+                : OperatingSystem.IsLinux() ? "linux"
                 : OperatingSystem.IsMacOS() ? "macos" : RuntimeInformation.OSDescription,
             ["arch"] = RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant(),
             ["runtime"] = RuntimeInformation.FrameworkDescription,
@@ -47,9 +54,12 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
 
         internal bool Compatible(string? json, ISet<string> retained, ILogger? logger)
         {
-            if (json == null) return false;
+            if (json == null)
+                return false;
+
             var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
             retained.Add(hash);
+
             return _entries.GetOrAdd(hash, _ => new Lazy<bool>(() =>
             {
                 try
@@ -61,6 +71,7 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
                 {
                     // Do not log untrusted manifest content or exception details.
                     logger?.LogWarning("Could not validate bundle manifest {ManifestHash}; treating it as incompatible", hash);
+
                     return false;
                 }
             })).Value;
@@ -69,7 +80,8 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
         internal void Retain(IReadOnlySet<string> hashes)
         {
             foreach (var hash in _entries.Keys)
-                if (!hashes.Contains(hash)) _entries.TryRemove(hash, out _);
+                if (!hashes.Contains(hash))
+                    _entries.TryRemove(hash, out _);
         }
     }
 
@@ -81,13 +93,21 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
 
     public override async Task StartAsync(CancellationToken cancellationToken)
     {
+        if (registry is WorkflowCatalog catalog)
+            await catalog.InitializeAsync(cancellationToken: cancellationToken).WaitAsync(cancellationToken);
+
         var capabilities = await settings.RefreshCapabilitiesAsync(registry, cancellationToken);
         await RegisterAsync(capabilities, cancellationToken);
         _registeredCapabilities = capabilities;
-        try { await base.StartAsync(cancellationToken); }
+
+        try
+        {
+            await base.StartAsync(cancellationToken);
+        }
         catch
         {
             await repository.UnregisterMemberAsync(settings.Id, CancellationToken.None);
+
             throw;
         }
     }
@@ -95,8 +115,14 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
     private async Task<IReadOnlyDictionary<string, string>?> ObserveRefreshAsync(
         Task<IReadOnlyDictionary<string, string>> refresh, CancellationToken stoppingToken)
     {
-        try { return await refresh; }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return null; }
+        try
+        {
+            return await refresh;
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            return null;
+        }
         catch (Exception error)
         {
             // This observer outlives the heartbeat waiter, including during shutdown. Even
@@ -106,7 +132,10 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
                 (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Warning, error,
                     "Could not refresh capabilities for host {HostId}; heartbeating with its last snapshot", settings.Id);
             }
-            catch { }
+            catch
+            {
+            }
+
             return null;
         }
     }
@@ -115,9 +144,11 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
     {
         using var timer = new PeriodicTimer(settings.HeartbeatInterval, time);
         Task<IReadOnlyDictionary<string, string>?>? refresh = null;
+
         // HostSettings may also serve placement reads for a different catalog object.
         // Only this heartbeat's registration and completed refreshes supply its fallback.
         var capabilities = _registeredCapabilities;
+
         try
         {
             while (await timer.WaitForNextTickAsync(stoppingToken))
@@ -130,19 +161,35 @@ internal sealed class WorkflowHeartbeatService(IWorkflowStateRepository reposito
                         // refresh in flight, and bound only the heartbeat's wait for its result.
                         refresh ??= ObserveRefreshAsync(Task.Run(
                             () => settings.RefreshCapabilitiesAsync(registry, stoppingToken), stoppingToken), stoppingToken);
+
                         capabilities = await refresh.WaitAsync(settings.HeartbeatInterval, time, stoppingToken) ?? capabilities;
                         refresh = null;
                     }
-                    catch (TimeoutException) { }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
+                    catch (TimeoutException)
+                    {
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+
                     if (!await repository.HeartbeatAsync(settings.Id, capabilities, stoppingToken))
                         await RegisterAsync(capabilities, stoppingToken);
                 }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (Exception error) { (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Warning, error, "Could not heartbeat host {HostId}", settings.Id); }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception error)
+                {
+                    (inspectionPolicy ?? InspectionRedactionPolicy.Default).Log(logger, sensitiveDiagnostics, LogLevel.Warning, error,
+                        "Could not heartbeat host {HostId}", settings.Id);
+                }
             }
         }
-        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

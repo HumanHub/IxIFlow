@@ -6,9 +6,9 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.Conformance;
 
 /// <summary>
-/// A sequential <c>ForEach</c> whose body asks and waits, in every profile (J-02): each item's request and
+/// A sequential <c>ForEach</c> whose body asks and waits, in every profile: each item's request and
 /// answer are its own, the item is read again from the saved list on another host, and the results are
-/// stored in item order (D-34, spec E-11, E-13).
+/// stored in item order.
 /// </summary>
 [Trait("Spec", "E-11")]
 [Trait("Spec", "E-13")]
@@ -19,11 +19,14 @@ public sealed class ForEachScenarios
     public async Task EachItemAsksAndWaitsForItsOwnAnswerOnAnyHost(string profile)
     {
         var asked = new Asked();
+
         await using var cluster = await ConformanceCluster.CreateAsync(profile, services => services
             .AddSingleton(asked)
             .AddTransient<AskAboutLine>());
+
         var first = cluster.AddHost();
         var second = cluster.AddHost();
+
         var definition = Workflow.Create<Lines>("AskPerLine")
             .Step<StartLines>()
             .ForEach(ctx => ctx.WorkflowData.Names,
@@ -44,12 +47,15 @@ public sealed class ForEachScenarios
         EventAssert.Consumed(await second.ReplyAsync(pen.Token, new LineAnswer { Answer = "yes" }));
         var ink = asked.Requests[1];
         Assert.Equal("ink", ink.Name);
+
         EventAssert.Rejected(await second.ReplyAsync(pen.Token, new LineAnswer { Answer = "again" }),
             EventRejection.WaitAnswered);
+
         var finished = await first.ReplyAsync(ink.Token, new LineAnswer { Answer = "no" });
 
         EventAssert.Consumed(finished);
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+
         Assert.Equal(
             [
                 new ItemResult<string>(0, ItemStatus.Completed, "0:pen:yes"),
@@ -75,7 +81,11 @@ public sealed class ForEachScenarios
 
         public IReadOnlyList<(string Token, string Name)> Requests
         {
-            get { lock (_requests) return _requests.ToArray(); }
+            get
+            {
+                lock (_requests)
+                    return _requests.ToArray();
+            }
         }
 
         public void Add(string token, string name)
@@ -98,6 +108,7 @@ public sealed class ForEachScenarios
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             asked.Add(context.Reply!.Token, Name);
+
             return Task.CompletedTask;
         }
     }

@@ -23,22 +23,23 @@ public sealed class DeclaredStructureHashTests
     public void TypedChildIdentityChangesTheParentHashWithTheSameClrTypes()
     {
         const string source = """
-            using IxIFlow.Builders;
-            using IxIFlow.Builders.Interfaces;
-            using IxIFlow.Core;
-            using IxIFlow.Tests.ExecutionTests.StructureHashFixtures;
-            [Workflow("Declared child", Version = 3)]
-            public sealed class Child : IWorkflow<StructureHashData>
-            {
-                public Child() => throw new System.InvalidOperationException("Must not construct for identity");
-                public void Build(IWorkflowBuilder<StructureHashData> builder) => builder.Step<StructureHashMultiply>();
-            }
-            public static class Definition
-            {
-                public static WorkflowDefinition Build() => Workflow.Create<StructureHashData>("Parent")
-                    .Step<StructureHashMultiply>().Invoke<Child, StructureHashData>().Build();
-            }
-            """;
+                              using IxIFlow.Builders;
+                              using IxIFlow.Builders.Interfaces;
+                              using IxIFlow.Core;
+                              using IxIFlow.Tests.ExecutionTests.StructureHashFixtures;
+                              [Workflow("Declared child", Version = 3)]
+                              public sealed class Child : IWorkflow<StructureHashData>
+                              {
+                                  public Child() => throw new System.InvalidOperationException("Must not construct for identity");
+                                  public void Build(IWorkflowBuilder<StructureHashData> builder) => builder.Step<StructureHashMultiply>();
+                              }
+                              public static class Definition
+                              {
+                                  public static WorkflowDefinition Build() => Workflow.Create<StructureHashData>("Parent")
+                                      .Step<StructureHashMultiply>().Invoke<Child, StructureHashData>().Build();
+                              }
+                              """;
+
         using var original = new Compiled(source);
         using var version = new Compiled(source.Replace("Version = 3", "Version = 4"));
         using var name = new Compiled(source.Replace("Declared child", "Renamed child"));
@@ -60,6 +61,7 @@ public sealed class DeclaredStructureHashTests
             var services = new ServiceCollection();
             AssertIdentityError(() => services.RegisterWorkflow<TWorkflow>());
             AssertIdentityError(() => services.RegisterWorkflow<TWorkflow, StructureHashData>());
+
             AssertIdentityError(() => Workflow.Create<StructureHashData>("Parent")
                 .Step<StructureHashMultiply>().Invoke<TWorkflow, StructureHashData>());
         }
@@ -115,9 +117,11 @@ public sealed class DeclaredStructureHashTests
     public void ClosureLayoutParameterNamesAndCapturedValuesKeepTheHash()
     {
         using var first = new Compiled(Source);
+
         using var second = new Compiled(Source.Replace("int limit = 7", "int limit = 70")
             .Replace("// additional closure", "Func<int, int> unrelated = n => n * limit;")
             .Replace("ctx => ctx.WorkflowData.Value + limit", "renamed => renamed.WorkflowData.Value + limit"));
+
         Assert.Equal(Hash(first.Definition), Hash(second.Definition));
     }
 
@@ -126,16 +130,19 @@ public sealed class DeclaredStructureHashTests
     {
         var source = Source.Replace("StructureHashData", "LocalData") + """
 
-            public sealed class LocalData
-            {
-                [Combine<FirstWins<int>>]
-                public int Value { get; set; }
-            }
-            """;
+                                                                        public sealed class LocalData
+                                                                        {
+                                                                            [Combine<FirstWins<int>>]
+                                                                            public int Value { get; set; }
+                                                                        }
+                                                                        """;
+
         using var first = new Compiled(source);
         using var second = new Compiled(source.Replace("FirstWins<int>", "LastWins<int>"));
+
         Assert.Equal(WorkflowTypeIdentity.StableName(first.Definition.WorkflowDataType),
             WorkflowTypeIdentity.StableName(second.Definition.WorkflowDataType));
+
         Assert.NotEqual(Hash(first.Definition), Hash(second.Definition));
     }
 
@@ -143,9 +150,17 @@ public sealed class DeclaredStructureHashTests
     public void EmptyBranchesStillContributeToTopology()
     {
         var first = Workflow.Create<StructureHashData>("Topology").Step<StructureHashMultiply>(step => step
-            .Input(activity => activity.Value).From(ctx => 1)).Parallel(parallel => parallel.Do(_ => { })).Build();
+            .Input(activity => activity.Value).From(ctx => 1)).Parallel(parallel => parallel.Do(_ =>
+        {
+        })).Build();
+
         var second = Workflow.Create<StructureHashData>("Topology").Step<StructureHashMultiply>(step => step
-            .Input(activity => activity.Value).From(ctx => 1)).Parallel(parallel => parallel.Do(_ => { }).Do(_ => { })).Build();
+            .Input(activity => activity.Value).From(ctx => 1)).Parallel(parallel => parallel.Do(_ =>
+        {
+        }).Do(_ =>
+        {
+        })).Build();
+
         Assert.NotEqual(Hash(first), Hash(second));
     }
 
@@ -175,6 +190,7 @@ public sealed class DeclaredStructureHashTests
     {
         WorkflowDefinition Parent() => Workflow.Create<StructureHashData>("Parent", 1)
             .Step<StructureHashMultiply>().Invoke<TypedChild, StructureHashData>().Build();
+
         var parent = Parent();
         Assert.Equal("Pinned child", parent.Steps[1].WorkflowName);
         Assert.Equal(3, parent.Steps[1].WorkflowVersion);
@@ -184,27 +200,36 @@ public sealed class DeclaredStructureHashTests
         using var provider = services.BuildServiceProvider();
         var registered = provider.GetRequiredService<IWorkflowCatalog>();
         var client = provider.GetRequiredService<IWorkflowClient>();
+
         Assert.Equal(WorkflowExecutionStatus.Success,
             (await client.RunToEndAsync(parent, new StructureHashData())).Status);
+
         var child = Assert.Single((await provider.GetRequiredService<IWorkflowStateRepository>()
             .QueryInstancesAsync(new(WorkflowName: "Pinned child", Limit: int.MaxValue))).Items);
+
         Assert.Equal(3, child.WorkflowVersion);
         var wrongParent = Parent();
         wrongParent.Name = "Wrong version parent";
         wrongParent.Steps[1].WorkflowVersion = 4;
+
         var wrongVersion = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
             client.RunAsync(wrongParent, new StructureHashData()));
+
         Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, wrongVersion.Kind);
         Assert.Contains("v3", wrongVersion.Message);
         Assert.Contains("v4", wrongVersion.Message);
 
-        var replacement = Workflow.Create<StructureHashData>("Pinned child", 3).Step<StructureHashMultiply>().Step<StructureHashMultiply>().Build();
+        var replacement = Workflow.Create<StructureHashData>("Pinned child", 3).Step<StructureHashMultiply>().Step<StructureHashMultiply>()
+            .Build();
+
         var registry = new WorkflowCatalog();
         await registry.RegisterWorkflowAsync(replacement);
         services.AddSingleton<IWorkflowCatalog>(registry);
         using var mismatchedProvider = services.BuildServiceProvider();
+
         var mismatch = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
             mismatchedProvider.GetRequiredService<IWorkflowClient>().RunAsync(Parent(), new StructureHashData()));
+
         Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, mismatch.Kind);
         var original = (await registered.GetWorkflowDefinitionAsync("Pinned child", 3))!;
         Assert.Contains("differs from its registered definition: registered structure hash", mismatch.Message);
@@ -247,15 +272,19 @@ public sealed class DeclaredStructureHashTests
         Assert.NotEqual(Hash(original), Hash(changed));
         using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         string id;
+
         using (var first = Services(store))
         {
             var started = await first.GetRequiredService<IWorkflowClient>().RunAsync(original, new StructureHashData(),
                 cancellationToken: patience.Token);
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             id = started.InstanceId;
         }
+
         var before = (await store.GetWorkflowInstanceAsync(id))!;
         var noExecution = new Mock<IActivityExecutor>(MockBehavior.Strict);
+
         // This case models a host loading different code, independently of the durable catalog
         // rejection covered below. A host-local catalog supplies that capability snapshot.
         var secondServices = new ServiceCollection().AddLogging();
@@ -266,29 +295,38 @@ public sealed class DeclaredStructureHashTests
         using var second = secondServices.BuildServiceProvider();
         await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(changed);
         var client = second.GetRequiredService<IWorkflowClient>();
+
         if (operation == "start")
         {
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.RunAsync(changed,
                 new StructureHashData(), new WorkflowOptions { InstanceId = id }, patience.Token));
+
             AssertMismatch(error.Message, original, changed);
         }
+
         using (var scope = second.CreateScope())
         {
             var operations = scope.ServiceProvider.GetRequiredService<WorkflowHost.InstanceOperations>();
             WorkflowExecutionResult result;
+
             if (operation == "resume")
                 result = await operations.ResumeAsync(id, "go", new StructureHashAnswer(), patience.Token, "ready")
                     .WaitAsync(patience.Token);
             else
             {
                 if (operation == "recover")
-                    await store.AppendEventAsync(new WorkflowEvent(id, "ready", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(StructureHashAnswer)), "{}", "go"));
+                    await store.AppendEventAsync(new WorkflowEvent(id, "ready",
+                        IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(StructureHashAnswer)), "{}", "go"));
+
                 result = await client.RecoverAsync(id, patience.Token).WaitAsync(patience.Token);
             }
+
             Assert.Equal(WorkflowExecutionStatus.Scheduled, result.Status);
+
             if (operation is "resume" or "recover")
                 Assert.Equal(EventOutcome.Pending, (await store.GetEventAsync(id, "ready"))!.Outcome);
         }
+
         noExecution.VerifyNoOtherCalls();
         var saved = (await store.GetWorkflowInstanceAsync(id))!;
         Assert.Equal(Hash(original), ExecutionCheckpoint.ReadTrunk(saved.ExecutionStateJson).StructureHash);
@@ -300,8 +338,10 @@ public sealed class DeclaredStructureHashTests
 
         using var correct = Services(store);
         await correct.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(original);
+
         var completed = await correct.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(id, "go", new StructureHashAnswer(), "ready", patience.Token).WaitAsync(patience.Token);
+
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(EventOutcome.Consumed, (await store.GetEventAsync(id, "ready"))!.Outcome);
     }
@@ -323,12 +363,14 @@ public sealed class DeclaredStructureHashTests
         var changed = insert ? Waiting(insert: true) : Waiting(reverse: true);
         Assert.NotEqual(Hash(original), Hash(changed));
         string id;
+
         using (var first = Services(seedStore))
         {
             var started = await first.GetRequiredService<IWorkflowClient>().RunAsync(original, new StructureHashData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             id = started.InstanceId;
         }
+
         await store.RegisterWorkflowVersionAsync((await seedStore.GetWorkflowVersionAsync(original.Name, original.Version))!);
         using var second = Services(store);
         var catalog = second.GetRequiredService<IWorkflowCatalog>();
@@ -339,6 +381,7 @@ public sealed class DeclaredStructureHashTests
 
         // Registration is immutable; exercise the execution safety net with a mismatched saved hash.
         var instance = (await seedStore.GetWorkflowInstanceAsync(id))!;
+
         // Import the corrupt snapshot as a first fixture commit; an idle row cannot be reclaimed
         // merely to edit its checkpoint under the filtered lease API.
         instance.Revision = 0;
@@ -347,32 +390,41 @@ public sealed class DeclaredStructureHashTests
         instance.ExecutionStateJson = checkpoint.ToJsonString();
         var sourceWaits = await seedStore.GetOpenWaitsAsync(new WaitQuery(InstanceId: id));
         var owner = await StoreTestSupport.LeaseAsync(store, id);
+
         Assert.Equal(WorkflowCommitStatus.Applied, (await store.CommitWorkflowInstanceAsync(
             CheckpointCommit.Create(instance, owner.Epoch, 0, openedWaits: sourceWaits.Select(wait =>
                 new OpenedWait(wait.WaitId, wait.Kind, wait.Key, wait.EventType, null, wait.DefaultPayloadJson)).ToArray()))).Status);
+
         await StoreTestSupport.ReleaseAsync(store, id);
         var checkpointJson = (await store.GetWorkflowInstanceAsync(id))!.ExecutionStateJson;
         var client = second.GetRequiredService<IWorkflowClient>();
+
         if (operation == "start")
         {
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.RunAsync(original,
                 new StructureHashData(), new WorkflowOptions { InstanceId = id }));
+
             AssertMismatch(error.Message, original, changed);
         }
         else
         {
             WorkflowExecutionResult result;
+
             if (operation == "resume")
                 result = await client.ResumeAsync(id, "go", new StructureHashAnswer());
             else
             {
                 if (operation == "recover")
-                    await store.AppendEventAsync(new WorkflowEvent(id, "ready", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(StructureHashAnswer)), "{}", "go"));
+                    await store.AppendEventAsync(new WorkflowEvent(id, "ready",
+                        IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(StructureHashAnswer)), "{}", "go"));
+
                 result = await client.RecoverAsync(id);
             }
+
             Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
             AssertMismatch(result.ErrorMessage!, original, changed);
         }
+
         var saved = (await store.GetWorkflowInstanceAsync(id))!;
         Assert.Equal(Hash(changed), ExecutionCheckpoint.ReadTrunk(saved.ExecutionStateJson).StructureHash);
         Assert.Equal(checkpointJson, saved.ExecutionStateJson);
@@ -383,8 +435,10 @@ public sealed class DeclaredStructureHashTests
     public void OldCheckpointSchemaIsRefusedWithoutMigration()
     {
         var current = JsonSerializer.Serialize(new ExecutionCheckpoint { StructureHash = "current" });
+
         var old = current.Replace("\"SchemaVersion\":1", "\"SchemaVersion\":13")
             .Replace("\"StructureHash\"", "\"DefinitionFingerprint\"");
+
         foreach (var read in new Func<string, ExecutionCheckpoint>[] { ExecutionCheckpoint.ReadTrunk, ExecutionCheckpoint.Read })
         {
             var error = Assert.Throws<WorkflowEngineException>(() => read(old));
@@ -393,6 +447,7 @@ public sealed class DeclaredStructureHashTests
             Assert.Contains("expected 1.", error.Message);
             Assert.Contains("no migration", error.Message);
         }
+
         Assert.Equal(1, ExecutionCheckpoint.ReadTrunk(current).SchemaVersion);
     }
 
@@ -400,10 +455,16 @@ public sealed class DeclaredStructureHashTests
     {
         var builder = Workflow.Create<StructureHashData>("Positions", 3);
         var steps = builder.Step<StructureHashMultiply>(step => step.Input(activity => activity.Value).From(ctx => 1));
-        if (insert) steps = steps.Step<StructureHashMultiply>(step => step.Input(activity => activity.Value).From(ctx => 2));
+
+        if (insert)
+            steps = steps.Step<StructureHashMultiply>(step => step.Input(activity => activity.Value).From(ctx => 2));
+
         var definition = steps.WaitFor<StructureHashAnswer>("go").Step<StructureHashMultiply>(step => step
             .Input(activity => activity.Value).From(ctx => 3)).Build();
-        if (reverse) (definition.Steps[0], definition.Steps[1]) = (definition.Steps[1], definition.Steps[0]);
+
+        if (reverse)
+            (definition.Steps[0], definition.Steps[1]) = (definition.Steps[1], definition.Steps[0]);
+
         return definition;
     }
 
@@ -412,7 +473,10 @@ public sealed class DeclaredStructureHashTests
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton(store);
         services.AddIxIFlow();
-        if (executor != null) services.AddSingleton(executor);
+
+        if (executor != null)
+            services.AddSingleton(executor);
+
         return services.BuildServiceProvider();
     }
 
@@ -435,17 +499,22 @@ public sealed class DeclaredStructureHashTests
             LanguageVersion language = LanguageVersion.CSharp14)
         {
             var paths = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator)
-                .Concat([typeof(WorkflowDefinition).Assembly.Location, typeof(IAsyncActivity).Assembly.Location,
-                    typeof(StructureHashData).Assembly.Location]).Distinct(StringComparer.OrdinalIgnoreCase);
+                .Concat([
+                    typeof(WorkflowDefinition).Assembly.Location, typeof(IAsyncActivity).Assembly.Location,
+                    typeof(StructureHashData).Assembly.Location
+                ]).Distinct(StringComparer.OrdinalIgnoreCase);
+
             var compilation = CSharpCompilation.Create("StructureHashFixture",
                 [CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(language))],
                 paths.Select(path => MetadataReference.CreateFromFile(path)),
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, optimizationLevel: optimization));
+
             using var stream = new MemoryStream();
             var emitted = compilation.Emit(stream);
             Assert.True(emitted.Success, string.Join(Environment.NewLine, emitted.Diagnostics));
             stream.Position = 0;
             var assembly = _context.LoadFromStream(stream);
+
             Definition = (WorkflowDefinition)assembly.GetTypes().Single(type => type.GetMethod("Build")?.IsStatic == true)
                 .GetMethod("Build")!.Invoke(null, null)!;
         }
@@ -454,23 +523,23 @@ public sealed class DeclaredStructureHashTests
     }
 
     private const string Source = """
-        using System;
-        using IxIFlow.Builders;
-        using IxIFlow.Core;
-        using IxIFlow.Tests.ExecutionTests.StructureHashFixtures;
-        public static class Definition
-        {
-            public static WorkflowDefinition Build()
-            {
-                int limit = 7;
-                // additional closure
-                return Workflow.Create<StructureHashData>("Compiler independent", 3)
-                    .Step<StructureHashMultiply>(step => step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Value + limit))
-                    .WhileDo((Func<WorkflowContext<StructureHashData, StructureHashMultiply>, bool>)(ctx => { int value = Adjust(ctx.WorkflowData.Value); return value > limit; }),
-                        body => body.Step<StructureHashMultiply>(step => step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Value)))
-                    .Build();
-            }
-            private static int Adjust(int value) => value + 1;
-        }
-        """;
+                                  using System;
+                                  using IxIFlow.Builders;
+                                  using IxIFlow.Core;
+                                  using IxIFlow.Tests.ExecutionTests.StructureHashFixtures;
+                                  public static class Definition
+                                  {
+                                      public static WorkflowDefinition Build()
+                                      {
+                                          int limit = 7;
+                                          // additional closure
+                                          return Workflow.Create<StructureHashData>("Compiler independent", 3)
+                                              .Step<StructureHashMultiply>(step => step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Value + limit))
+                                              .WhileDo((Func<WorkflowContext<StructureHashData, StructureHashMultiply>, bool>)(ctx => { int value = Adjust(ctx.WorkflowData.Value); return value > limit; }),
+                                                  body => body.Step<StructureHashMultiply>(step => step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Value)))
+                                              .Build();
+                                      }
+                                      private static int Adjust(int value) => value + 1;
+                                  }
+                                  """;
 }

@@ -22,7 +22,13 @@ public sealed class ScopeCheckpointTests
         Assert.DoesNotContain("NEVER-SAVE-LIVE-VALUE", split.Trunk + string.Join("", split.Parts.Values.Select(value => value.InlineText)));
         var restored = ExecutionCheckpoint.Read(StoredCheckpoint.AssembleState(split.Trunk, split.Parts));
         Assert.Equal(2, restored.Scopes.Count);
-        Assert.All(restored.Scopes, entry => { Assert.Null(entry.Value); Assert.Null(entry.LiveActivity); Assert.Null(entry.Scheduler); });
+
+        Assert.All(restored.Scopes, entry =>
+        {
+            Assert.Null(entry.Value);
+            Assert.Null(entry.LiveActivity);
+            Assert.Null(entry.Scheduler);
+        });
     }
 
     [Fact]
@@ -38,7 +44,12 @@ public sealed class ScopeCheckpointTests
         var entry = Entry("root", "root-value");
         entry.CloseError = Failure("close");
         state.Scopes.Add(entry);
-        state.Continuations.Add(new() { Id = "branch", Sequence = 1, ParentJoinId = "join", DeferredFailure = Failure("branch"), Stack = [new() { ScopeId = "root" }] });
+
+        state.Continuations.Add(new()
+        {
+            Id = "branch", Sequence = 1, ParentJoinId = "join", DeferredFailure = Failure("branch"), Stack = [new() { ScopeId = "root" }]
+        });
+
         var saved = StoredCheckpoint.Split(state, StoredJson.Inline("{}"));
         var restored = ExecutionCheckpoint.Read(StoredCheckpoint.AssembleState(saved.Trunk, saved.Parts));
         var restoredRoot = restored.Continuations[0];
@@ -51,9 +62,13 @@ public sealed class ScopeCheckpointTests
         Assert.Equal("close", restored.Scopes[0].CloseError!.Message);
         Assert.Equal("body-close", restored.Scopes[0].CloseError!.ScopeBoundary!.BodyActivationId);
         Assert.Equal("owner-unhandled", restored.UnhandledError!.ScopeBoundary!.OwnerContinuationId);
-        foreach (var failure in new[] { restoredRoot.Stack[0].TryState!.Error!, restoredRoot.Stack[0].SagaState!.Error!,
-            restoredRoot.Stack[0].SagaState!.HandlerError!, restoredRoot.DeferredFailure!, restoredRoot.UnwindFailure!,
-            restored.UnhandledError!, restored.Scopes[0].CloseError!, restored.Continuations[1].DeferredFailure! })
+
+        foreach (var failure in new[]
+                 {
+                     restoredRoot.Stack[0].TryState!.Error!, restoredRoot.Stack[0].SagaState!.Error!,
+                     restoredRoot.Stack[0].SagaState!.HandlerError!, restoredRoot.DeferredFailure!, restoredRoot.UnwindFailure!,
+                     restored.UnhandledError!, restored.Scopes[0].CloseError!, restored.Continuations[1].DeferredFailure!
+                 })
         {
             Assert.Equal("owner-" + failure.Message, failure.ScopeBoundary!.OwnerContinuationId);
             Assert.Equal("body-" + failure.Message, failure.ScopeBoundary.BodyActivationId);
@@ -63,7 +78,8 @@ public sealed class ScopeCheckpointTests
     [Theory, InlineData("OwnerContinuationId", ""), InlineData("BodyActivationId", " ")]
     public void BlankBoundaryIdentifiersAreInvalidCheckpointState(string property, string value)
     {
-        var state = Checkpoint(); state.UnhandledError = Failure("bad");
+        var state = Checkpoint();
+        state.UnhandledError = Failure("bad");
         var json = JsonSerializer.SerializeToNode(state)!;
         json["UnhandledError"]!["ScopeBoundary"]![property] = value;
         Assert.Throws<JsonException>(() => ExecutionCheckpoint.Read(json.ToJsonString()));
@@ -72,16 +88,23 @@ public sealed class ScopeCheckpointTests
     [Theory, InlineData(false), InlineData(true)]
     public void MissingOrNullErrorIsInvalidCheckpointState(bool missing)
     {
-        var state = Checkpoint(); state.UnhandledError = Failure("bad");
+        var state = Checkpoint();
+        state.UnhandledError = Failure("bad");
         var json = JsonSerializer.SerializeToNode(state)!;
-        if (missing) ((JsonObject)json["UnhandledError"]!).Remove("Error"); else json["UnhandledError"]!["Error"] = null;
+
+        if (missing)
+            ((JsonObject)json["UnhandledError"]!).Remove("Error");
+        else
+            json["UnhandledError"]!["Error"] = null;
+
         Assert.Throws<JsonException>(() => ExecutionCheckpoint.Read(json.ToJsonString()));
     }
 
     [Fact]
     public void BoundaryCanOutliveItsBodyFrame()
     {
-        var state = Checkpoint(); state.UnhandledError = Failure("ended-body");
+        var state = Checkpoint();
+        state.UnhandledError = Failure("ended-body");
         var restored = ExecutionCheckpoint.Read(JsonSerializer.Serialize(state));
         Assert.False(restored.UnhandledError!.ScopeBoundary!.Contains(restored.Continuations[0], 0));
     }
@@ -124,8 +147,12 @@ public sealed class ScopeCheckpointTests
         var state = Checkpoint();
         var owner = new ContinuationState { Id = "owner", ParentJoinId = "join", Sequence = 1, Stack = [new() { ScopeId = "root" }] };
         state.Continuations.Add(owner);
-        var entry = Entry(owner.Id, "scope"); state.Scopes.Add(entry);
-        state.Continuations.Add(new() { Id = "needing", ParentJoinId = "nested", Sequence = 2, InheritedScopes = [entry.Id], Stack = [new() { ScopeId = "root" }] });
+        var entry = Entry(owner.Id, "scope");
+        state.Scopes.Add(entry);
+
+        state.Continuations.Add(new()
+            { Id = "needing", ParentJoinId = "nested", Sequence = 2, InheritedScopes = [entry.Id], Stack = [new() { ScopeId = "root" }] });
+
         var first = StoredCheckpoint.Split(state, StoredJson.Inline("{}"), verify: true);
         state.TakeMarks();
         entry.RecordedOpens++;
@@ -144,7 +171,10 @@ public sealed class ScopeCheckpointTests
     {
         using var services = ScopeActivityTests.Services(new());
         var state = Checkpoint();
-        if (branchOwner) state.Continuations.Add(new() { Id = "branch", ParentJoinId = "join", Sequence = 1, Stack = [new() { ScopeId = "root" }] });
+
+        if (branchOwner)
+            state.Continuations.Add(new() { Id = "branch", ParentJoinId = "join", Sequence = 1, Stack = [new() { ScopeId = "root" }] });
+
         var entry = Entry(branchOwner ? "branch" : "root", "large");
         entry.Activity = SerializedValue.From(new ScopeActivityTests.Copy { Text = new string('x', 4096) });
         state.Scopes.Add(entry);
@@ -153,24 +183,35 @@ public sealed class ScopeCheckpointTests
         var bodies = payloads.Pending.ToDictionary(value => value.Identity, value => value.Encoded);
         Assert.NotEmpty(saved.PayloadReferences);
         Assert.DoesNotContain(new string('x', 100), saved.Trunk);
-        var parts = saved.Parts.ToDictionary(pair => pair.Key, pair => pair.Value.Reference is { } reference ? StoredJson.FromReference(reference) : pair.Value);
+
+        var parts = saved.Parts.ToDictionary(pair => pair.Key,
+            pair => pair.Value.Reference is { } reference ? StoredJson.FromReference(reference) : pair.Value);
+
         var reader = new PayloadReader(reference => Task.FromResult(bodies[reference]), new PayloadBudget(1_000_000));
-        foreach (var (key, value) in parts) if (key.StartsWith("c/", StringComparison.Ordinal)) await reader.ReadAsync(value);
+
+        foreach (var (key, value) in parts)
+            if (key.StartsWith("c/", StringComparison.Ordinal))
+                await reader.ReadAsync(value);
+
         var restored = ExecutionCheckpoint.Read(StoredCheckpoint.AssembleState(saved.Trunk, parts));
         await reader.HydrateAsync(Assert.Single(restored.Scopes).Activity);
         Assert.Equal(new string('x', 4096), Assert.IsType<ScopeActivityTests.Copy>(restored.Scopes[0].Activity!.Read(services)).Text);
     }
 
-    private static ExecutionCheckpoint Checkpoint() => new() { StructureHash = "test", Continuations = [new() { Id = "root", Stack = [new() { ScopeId = "root" }] }] };
+    private static ExecutionCheckpoint Checkpoint() => new()
+        { StructureHash = "test", Continuations = [new() { Id = "root", Stack = [new() { ScopeId = "root" }] }] };
+
     private static ScopeFrameState Entry(string owner, string id) => new()
     {
         ContinuationId = owner, Id = id, StepId = "root/0", InvocationId = "invocation-" + id,
         Phase = ScopePhase.Open, Activity = SerializedValue.From(new ScopeBuildRuleTests.PlainScope()),
         Value = "NEVER-SAVE-LIVE-VALUE", LiveActivity = new object()
     };
+
     private static PendingFailure Failure(string message) => new()
     {
-        Error = SerializedException.Capture(new InvalidOperationException(message), new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true),
+        Error = SerializedException.Capture(new InvalidOperationException(message), new WorkflowScopeCatalog(new WorkflowDefinition()),
+            new ExecutionCheckpoint(), null, newOccurrence: true),
         ScopeBoundary = new() { OwnerContinuationId = "owner-" + message, BodyActivationId = "body-" + message }
     };
 }

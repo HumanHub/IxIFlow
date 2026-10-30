@@ -12,8 +12,13 @@ public sealed class WorkflowContractMessageTests
     {
         var contract = WorkflowContract.OfType(typeof(Data));
         using var harness = new MessageHarness();
-        var assignment = await harness.AssignAsync(Workflow.Create<MessageHarness.Data>("HashTransport").Step<MessageHarness.Noop>().Build());
-        var message = new StartChild(Guid.NewGuid(), "parent", 2, "root/0", new("child", JsonSerializer.Serialize(assignment.Instance), "wait"), "structure", contract.Hash);
+
+        var assignment =
+            await harness.AssignAsync(Workflow.Create<MessageHarness.Data>("HashTransport").Step<MessageHarness.Noop>().Build());
+
+        var message = new StartChild(Guid.NewGuid(), "parent", 2, "root/0",
+            new("child", JsonSerializer.Serialize(assignment.Instance), "wait"), "structure", contract.Hash);
+
         var json = JsonSerializer.SerializeToUtf8Bytes(message, ExecutionMessageContext.Default.StartChild);
         var restored = JsonSerializer.Deserialize(json, ExecutionMessageContext.Default.StartChild)!;
         Assert.Equal(message.Start.Payload, restored.Start.Payload);
@@ -23,5 +28,8 @@ public sealed class WorkflowContractMessageTests
         Assert.Equal(14, ExecutionContract.Version);
     }
 
-    public sealed class Data { public int Value { get; set; } }
+    public sealed class Data
+    {
+        public int Value { get; set; }
+    }
 }

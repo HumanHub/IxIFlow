@@ -12,8 +12,7 @@ public sealed class ReminderData
 [WorkflowActivity("samples.stamp-time")]
 public sealed class StampTime : IAsyncActivity
 {
-    [ActivityInputOutput]
-    public DateTimeOffset At { get; set; }
+    [ActivityInputOutput] public DateTimeOffset At { get; set; }
 
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
         Task.CompletedTask;

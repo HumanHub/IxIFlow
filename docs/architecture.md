@@ -31,8 +31,10 @@ One store supplies instance state, checkpoint parts, inboxes, wait indexes, trac
 | `IxIFlow.Webhooks` | Outgoing signed HTTP delivery of outbox events |
 | `IxIFlow.Templates` | Immutable template versions, rendering and message activities |
 | `IxIFlow.Templates.Liquid` | Liquid template rendering through Fluid |
+| `IxIFlow.Debugging` | Optional breakpoint condition compiler and hosted Debug Adapter Protocol endpoint |
+| `IxIFlow.Generators` | Packaged YAML document model, validation, translation and source generation |
 
-The generator and analyzers are build-time components bundled in the engine package. The schema ships with that package. See [YAML authoring](yaml-authoring.md) for the compiler pipeline.
+The engine bundles its generator and analyzers as build-time components. `IxIFlow.Generators` also ships as a library dependency of Authoring; the analyzer and code-fix projects are not separate packages. The schema ships with that package. See [YAML authoring](yaml-authoring.md) for the compiler pipeline.
 
 ## Hosting and distribution
 

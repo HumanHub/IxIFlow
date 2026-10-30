@@ -14,7 +14,11 @@ public sealed class IncomingWebhookRetryTests
 {
     private static readonly WorkflowDefinition Definition = Workflow.Create<Data>("RetryAdmission").Step<Noop>().Build();
     private static readonly WorkflowAdmission Admission = new("sender", "trigger", "key", new string('A', 64), "owner");
-    public sealed class Data { }
+
+    public sealed class Data
+    {
+    }
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
@@ -25,6 +29,7 @@ public sealed class IncomingWebhookRetryTests
         public List<string> Messages { get; } = [];
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
     }
@@ -34,6 +39,7 @@ public sealed class IncomingWebhookRetryTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -43,26 +49,37 @@ public sealed class IncomingWebhookRetryTests
         await using var services = Services();
         var store = new Mock<IWorkflowStateRepository>();
         var commits = new List<CheckpointCommit>();
+
         store.Setup(s => s.AdmitWorkflowInstanceAsync(It.IsAny<CheckpointCommit>(), Admission))
             .Returns<CheckpointCommit, WorkflowAdmission>((commit, _) =>
             {
                 commits.Add(commit);
-                return Task.FromResult(commits.Count < 3 ? new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0)
+
+                return Task.FromResult(commits.Count < 3
+                    ? new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0)
                     : new WorkflowCommitResult(WorkflowCommitStatus.Applied, 1)
                     {
                         Admission = new("sender", "trigger", "key", Admission.Fingerprint, commit.InstanceId,
                             Definition.Name, Definition.Version, DateTime.UtcNow.AddDays(1), commit.Incarnation)
                     });
             });
+
         var log = new CaptureLogger();
+
         var ingress = new WorkflowIngressClient(store.Object, new WorkflowCatalog(), services.GetRequiredService<WorkflowHost>(),
             ExecutionLimits.Default, TimeProvider.System, log);
+
         var result = await ingress.AdmitAsync(Definition, new Data(), Admission);
         Assert.Equal(3, commits.Count);
         Assert.All(commits, commit => Assert.Same(commits[0], commit));
         Assert.Equal(commits[0].InstanceId, result.InstanceId);
         Assert.Equal(2, log.Messages.Count);
-        Assert.All(log.Messages, message => { Assert.Contains("Retry", message); Assert.Contains("trigger", message); });
+
+        Assert.All(log.Messages, message =>
+        {
+            Assert.Contains("Retry", message);
+            Assert.Contains("trigger", message);
+        });
     }
 
     [Theory]
@@ -74,6 +91,7 @@ public sealed class IncomingWebhookRetryTests
     public async Task ArbitraryStoreExceptionsIncludingCancellationAndInfrastructureAreNeverRetried(int kind)
     {
         await using var services = Services();
+
         Exception error = kind switch
         {
             0 => new InvalidOperationException("bug"),
@@ -82,11 +100,14 @@ public sealed class IncomingWebhookRetryTests
             3 => new ArgumentException("invalid"),
             _ => new IOException("connection lost")
         };
+
         var store = new Mock<IWorkflowStateRepository>();
         store.Setup(s => s.AdmitWorkflowInstanceAsync(It.IsAny<CheckpointCommit>(), Admission)).ThrowsAsync(error);
         var log = new CaptureLogger();
+
         var ingress = new WorkflowIngressClient(store.Object, new WorkflowCatalog(), services.GetRequiredService<WorkflowHost>(),
             ExecutionLimits.Default, TimeProvider.System, log);
+
         var thrown = await Record.ExceptionAsync(() => ingress.AdmitAsync(Definition, new Data(), Admission));
         Assert.Same(error, thrown);
         store.Verify(s => s.AdmitWorkflowInstanceAsync(It.IsAny<CheckpointCommit>(), Admission), Times.Once);
@@ -101,9 +122,13 @@ public sealed class IncomingWebhookRetryTests
     {
         await using var services = Services();
         var store = new Mock<IWorkflowStateRepository>();
-        store.Setup(s => s.AdmitWorkflowInstanceAsync(It.IsAny<CheckpointCommit>(), Admission)).ReturnsAsync(new WorkflowCommitResult(status, 0));
+
+        store.Setup(s => s.AdmitWorkflowInstanceAsync(It.IsAny<CheckpointCommit>(), Admission))
+            .ReturnsAsync(new WorkflowCommitResult(status, 0));
+
         var ingress = new WorkflowIngressClient(store.Object, new WorkflowCatalog(), services.GetRequiredService<WorkflowHost>(),
             ExecutionLimits.Default, TimeProvider.System);
+
         await Assert.ThrowsAsync<WorkflowEngineException>(() => ingress.AdmitAsync(Definition, new Data(), Admission));
         store.Verify(s => s.AdmitWorkflowInstanceAsync(It.IsAny<CheckpointCommit>(), Admission), Times.Once);
     }
@@ -114,15 +139,22 @@ public sealed class IncomingWebhookRetryTests
         await using var services = Services();
         using var cancellation = new CancellationTokenSource();
         var store = new Mock<IWorkflowStateRepository>();
+
         store.Setup(s => s.AdmitWorkflowInstanceAsync(It.IsAny<CheckpointCommit>(), Admission)).Returns(() =>
         {
             cancellation.Cancel();
+
             return Task.FromResult(new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0));
         });
+
         var log = new CaptureLogger();
+
         var ingress = new WorkflowIngressClient(store.Object, new WorkflowCatalog(), services.GetRequiredService<WorkflowHost>(),
             ExecutionLimits.Default, TimeProvider.System, log);
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ingress.AdmitAsync(Definition, new Data(), Admission, cancellation.Token));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            ingress.AdmitAsync(Definition, new Data(), Admission, cancellation.Token));
+
         store.Verify(s => s.AdmitWorkflowInstanceAsync(It.IsAny<CheckpointCommit>(), Admission), Times.Once);
         Assert.Empty(log.Messages);
     }
@@ -132,11 +164,15 @@ public sealed class IncomingWebhookRetryTests
     {
         await using var services = Services();
         var store = new Mock<IWorkflowStateRepository>();
+
         store.Setup(s => s.AdmitWorkflowInstanceAsync(It.IsAny<CheckpointCommit>(), Admission))
             .ReturnsAsync(new WorkflowCommitResult(WorkflowCommitStatus.Retry, 0));
+
         var log = new CaptureLogger();
+
         var ingress = new WorkflowIngressClient(store.Object, new WorkflowCatalog(), services.GetRequiredService<WorkflowHost>(),
             ExecutionLimits.Default, TimeProvider.System, log);
+
         await Assert.ThrowsAsync<WorkflowEngineException>(() => ingress.AdmitAsync(Definition, new Data(), Admission));
         store.Verify(s => s.AdmitWorkflowInstanceAsync(It.IsAny<CheckpointCommit>(), Admission), Times.Exactly(3));
         Assert.Equal(2, log.Messages.Count);

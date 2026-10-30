@@ -22,7 +22,8 @@ public static class Descriptors
         "{0} property '{1}' is not an input: it has no {2}",
         Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
         description: "An input mapping must target an [ActivityInput] or [ActivityInputOutput] property when the activity marks its " +
-                     "properties, and a property with a public setter otherwise.");
+        "properties, and a property with a public setter otherwise.",
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0001");
 
     /// <summary>An output mapping reads a property that is not an output.</summary>
     public static readonly DiagnosticDescriptor NotAnOutput = new(
@@ -31,7 +32,8 @@ public static class Descriptors
         "{0} property '{1}' is not an output: it has no {2}",
         Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
         description: "An output mapping must read an [ActivityOutput] or [ActivityInputOutput] property when the activity marks its " +
-                     "properties, and a property with a public getter otherwise.");
+        "properties, and a property with a public getter otherwise.",
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0002");
 
     /// <summary>A required input of an activity is neither mapped nor defaulted.</summary>
     public static readonly DiagnosticDescriptor RequiredInputNotMapped = new(
@@ -40,7 +42,8 @@ public static class Descriptors
         "{0} property '{1}' is a required input and is not mapped",
         Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
         description: "Every input with [Required] and without [DefaultValue] must be mapped where the " +
-                     "activity is used.");
+        "activity is used.",
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0003");
 
     /// <summary>A mapping names a member that is not a public instance property.</summary>
     public static readonly DiagnosticDescriptor NoPublicProperty = new(
@@ -48,82 +51,103 @@ public static class Descriptors
         "Mapping names no public property",
         "{0} '{1}' has no public property '{2}' to map",
         Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
-        description: "Mappings are applied to public instance properties by name.");
+        description: "Mappings are applied to public instance properties by name.",
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0004");
 
     /// <summary>Activity input needs a public setter.</summary>
     public static readonly DiagnosticDescriptor InputNeedsSetter = new(
         "IXIF0005",
         "Activity input needs a public setter",
         "Activity property '{0}' is marked as an input but has no public setter",
-        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0005");
 
     /// <summary>Activity output needs a public getter.</summary>
     public static readonly DiagnosticDescriptor OutputNeedsGetter = new(
         "IXIF0006",
         "Activity output needs a public getter",
         "Activity property '{0}' is marked as an output but has no public getter",
-        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0006");
 
     /// <summary>Required is invalid on an output.</summary>
     public static readonly DiagnosticDescriptor RequiredOnOutput = new(
         "IXIF0007",
         "Required is invalid on an output",
         "Activity property '{0}' has [Required] but is output-only",
-        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0007");
 
     /// <summary>DefaultValue needs a public setter.</summary>
     public static readonly DiagnosticDescriptor DefaultNeedsSetter = new(
         "IXIF0008",
         "DefaultValue needs a public setter",
         "Activity property '{0}' has [DefaultValue] but has no public setter",
-        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0008");
 
     /// <summary>DefaultValue cannot be converted.</summary>
     public static readonly DiagnosticDescriptor InvalidDefault = new(
         "IXIF0009",
         "DefaultValue cannot be converted",
         "Activity property '{0}' has a [DefaultValue] that cannot be converted to {1}",
-        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0009");
 
-    /// <summary>WorkflowNotAnInput.</summary>
+    /// <summary>Child workflow mapping requires an input.</summary>
     public static readonly DiagnosticDescriptor WorkflowNotAnInput = new(
-        "IXIF0010", "WorkflowNotAnInput",
-        "Child workflow property '{0}' is not an input: it has no [WorkflowInput]", Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        "IXIF0010", "Child workflow mapping requires an input",
+        "Child workflow property '{0}' is not an input: it has no [WorkflowInput]", Contracts, DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0010");
 
-    /// <summary>WorkflowNotAnOutput.</summary>
+    /// <summary>Child workflow mapping requires an output.</summary>
     public static readonly DiagnosticDescriptor WorkflowNotAnOutput = new(
-        "IXIF0011", "WorkflowNotAnOutput",
-        "Child workflow property '{0}' is not an output: it has no [WorkflowOutput]", Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        "IXIF0011", "Child workflow mapping requires an output",
+        "Child workflow property '{0}' is not an output: it has no [WorkflowOutput]", Contracts, DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0011");
 
-    /// <summary>WorkflowRequiredInputNotMapped.</summary>
+    /// <summary>Required child workflow input is not mapped.</summary>
     public static readonly DiagnosticDescriptor WorkflowRequiredInputNotMapped = new(
-        "IXIF0012", "WorkflowRequiredInputNotMapped",
-        "Child workflow property '{0}' is a required input and is not mapped", Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        "IXIF0012", "Required child workflow input is not mapped",
+        "Child workflow property '{0}' is a required input and is not mapped", Contracts, DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0012");
 
-    /// <summary>WorkflowInputNeedsSetter.</summary>
+    /// <summary>Workflow input needs a public setter.</summary>
     public static readonly DiagnosticDescriptor WorkflowInputNeedsSetter = new(
-        "IXIF0013", "WorkflowInputNeedsSetter",
-        "Workflow property '{0}' is marked as an input but has no public setter", Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        "IXIF0013", "Workflow input needs a public setter",
+        "Workflow property '{0}' is marked as an input but has no public setter", Contracts, DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0013");
 
-    /// <summary>WorkflowOutputNeedsGetter.</summary>
+    /// <summary>Workflow output needs a public getter.</summary>
     public static readonly DiagnosticDescriptor WorkflowOutputNeedsGetter = new(
-        "IXIF0014", "WorkflowOutputNeedsGetter",
-        "Workflow property '{0}' is marked as an output but has no public getter", Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        "IXIF0014", "Workflow output needs a public getter",
+        "Workflow property '{0}' is marked as an output but has no public getter", Contracts, DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0014");
 
-    /// <summary>WorkflowRequiredOnOutput.</summary>
+    /// <summary>Required is invalid on a workflow output.</summary>
     public static readonly DiagnosticDescriptor WorkflowRequiredOnOutput = new(
-        "IXIF0015", "WorkflowRequiredOnOutput",
-        "Workflow property '{0}' has [Required] but is output-only", Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        "IXIF0015", "Required is invalid on a workflow output",
+        "Workflow property '{0}' has [Required] but is output-only", Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0015");
 
-    /// <summary>WorkflowDefaultNeedsSetter.</summary>
+    /// <summary>Workflow default value needs a public setter.</summary>
     public static readonly DiagnosticDescriptor WorkflowDefaultNeedsSetter = new(
-        "IXIF0016", "WorkflowDefaultNeedsSetter",
-        "Workflow property '{0}' has [DefaultValue] but has no public setter", Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        "IXIF0016", "Workflow default value needs a public setter",
+        "Workflow property '{0}' has [DefaultValue] but has no public setter", Contracts, DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0016");
 
-    /// <summary>WorkflowInvalidDefault.</summary>
+    /// <summary>Workflow default value cannot be converted.</summary>
     public static readonly DiagnosticDescriptor WorkflowInvalidDefault = new(
-        "IXIF0017", "WorkflowInvalidDefault",
-        "Workflow property '{0}' has a [DefaultValue] that cannot be converted to {1}", Contracts, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        "IXIF0017", "Workflow default value cannot be converted",
+        "Workflow property '{0}' has a [DefaultValue] that cannot be converted to {1}", Contracts, DiagnosticSeverity.Error,
+        isEnabledByDefault: true,
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0017");
 
     /// <summary>A workflow expression uses a member that is not pure.</summary>
     public static readonly DiagnosticDescriptor ImpureExpression = new(
@@ -132,7 +156,8 @@ public static class Descriptors
         "The expression uses {0}. Expressions are " + PurityReason + "; do that in an activity and map its output.",
         Purity, DiagnosticSeverity.Error, isEnabledByDefault: true,
         description: "Conditions, mappings, wait predicates, loop conditions and selectors are evaluated again " +
-                     "after a recovery and must be pure; read time from the workflow context's UtcNow.");
+        "after a recovery and must be pure; read time from the workflow context's UtcNow.",
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0101");
 
     /// <summary>A combiner uses a member that is not pure.</summary>
     public static readonly DiagnosticDescriptor ImpureCombiner = new(
@@ -140,7 +165,8 @@ public static class Descriptors
         "Combiner is not pure",
         "Combiner '{0}' uses {1}. Combiners are " + PurityReason + ".",
         Purity, DiagnosticSeverity.Error, isEnabledByDefault: true,
-        description: "A combiner may run again after a recovery and must be pure.");
+        description: "A combiner may run again after a recovery and must be pure.",
+        helpLinkUri: "https://github.com/HumanHub/IxIFlow/blob/main/docs/diagnostics.md#ixif0102");
 
     /// <summary>The diagnostic property that holds the code the clock fix writes in place of the member.</summary>
     public const string ClockReplacement = "Replacement";

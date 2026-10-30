@@ -10,7 +10,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>
 /// A parallel <c>ForEach</c> runs each item as a branch from a copy of the data at the fork, at most
 /// <c>maxConcurrency</c> at a time, joins them as a parallel step does, and stores one result per item
-/// with its status (D-34, spec E-12, E-13).
+/// with its status.
 /// </summary>
 [Trait("Feature", "control-flow")]
 [Trait("Spec", "E-12")]
@@ -21,6 +21,7 @@ public sealed class ParallelForEachTests
     public async Task EveryItemRunsFromTheForkDataAndTheJoinMergesThemInItemOrder()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Approvals>("EveryItem")
             .Step<Noop>()
             .ForEach(ctx => ctx.WorkflowData.Approvers,
@@ -37,8 +38,10 @@ public sealed class ParallelForEachTests
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var data = Assert.IsType<Approvals>(result.WorkflowData);
+
         // Each item saw only its own signature: the data at the fork plus its own change.
         Assert.Equal(["ann", "bob", "cid"], data.Signatures);
+
         Assert.Equal(
             [
                 new ItemResult<int>(0, ItemStatus.Completed, 1),
@@ -54,6 +57,7 @@ public sealed class ParallelForEachTests
         using var services = Services();
         var engine = Engine(services);
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<Approvals>("CappedRequests")
             .Step<Noop>()
             .ForEach(ctx => ctx.WorkflowData.Approvers,
@@ -71,12 +75,15 @@ public sealed class ParallelForEachTests
         Assert.Equal(["ann", "bob"], outbox.Names);
         EventAssert.Consumed(await engine.ReplyAsync(outbox.TokenOf("bob"), new Answer { Approved = true }));
         Assert.Equal(["ann", "bob", "cid"], outbox.Names);
+
         foreach (var name in new[] { "ann", "cid", "dan", "eve" })
             await engine.ReplyAsync(outbox.TokenOf(name), new Answer { Approved = name != "dan" });
 
         var finished = await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished)
             .WaitAsync(TimeSpan.FromSeconds(10));
+
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+
         Assert.Equal([true, true, true, false, true],
             Assert.IsType<Approvals>(finished.WorkflowData).Answers.Select(item => item.Value));
     }
@@ -88,6 +95,7 @@ public sealed class ParallelForEachTests
         using var services = Services();
         var engine = Engine(services);
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<Approvals>("AnyApprover")
             .Step<Noop>()
             .ForEach(ctx => ctx.WorkflowData.Approvers,
@@ -98,11 +106,13 @@ public sealed class ParallelForEachTests
                     .Result(ctx => ctx.PreviousStep.Approved),
                 setup => setup.Parallel(maxConcurrency: 2).WaitAny().Into(ctx => ctx.WorkflowData.Answers))
             .Build();
+
         var started = await engine.RunAsync(definition, new Approvals { Approvers = ["ann", "bob", "cid"] });
 
         var finished = await engine.ReplyAsync(outbox.TokenOf("bob"), new Answer { Approved = true });
 
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+
         Assert.Equal(
             [
                 new ItemResult<bool>(0, ItemStatus.Cancelled, false),
@@ -110,9 +120,12 @@ public sealed class ParallelForEachTests
                 new ItemResult<bool>(2, ItemStatus.NotStarted, false)
             ],
             Assert.IsType<Approvals>(finished.WorkflowData).Answers);
+
         Assert.Equal(["ann", "bob"], outbox.Names);
+
         EventAssert.Rejected(await engine.ReplyAsync(outbox.TokenOf("ann"), new Answer { Approved = true }),
             EventRejection.WaitCancelled);
+
         Assert.Equal(started.InstanceId, finished.InstanceId);
     }
 
@@ -123,6 +136,7 @@ public sealed class ParallelForEachTests
         using var services = Services();
         var engine = Engine(services);
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<Approvals>("TwoApprovals")
             .Step<Noop>()
             .ForEach(ctx => ctx.WorkflowData.Approvers,
@@ -135,6 +149,7 @@ public sealed class ParallelForEachTests
                     .WaitConditionally<bool>((_, results) => results.Count(item => item.Value) >= 2)
                     .Into(ctx => ctx.WorkflowData.Answers))
             .Build();
+
         var started = await engine.RunAsync(definition, new Approvals { Approvers = ["ann", "bob", "cid", "dan"] });
 
         await engine.ReplyAsync(outbox.TokenOf("ann"), new Answer { Approved = false });
@@ -142,8 +157,10 @@ public sealed class ParallelForEachTests
         var finished = await engine.ReplyAsync(outbox.TokenOf("dan"), new Answer { Approved = true });
 
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+
         Assert.Equal([ItemStatus.Completed, ItemStatus.Cancelled, ItemStatus.Completed, ItemStatus.Completed],
             Assert.IsType<Approvals>(finished.WorkflowData).Answers.Select(item => item.Status));
+
         Assert.Equal(started.InstanceId, finished.InstanceId);
     }
 
@@ -152,6 +169,7 @@ public sealed class ParallelForEachTests
     public async Task AnEmptyListCompletesAtOnceAndAFailedItemStoresNoResults()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Approvals>("FailingItem")
             .Step<Noop>()
             .Try(attempt => attempt.ForEach(ctx => ctx.WorkflowData.Approvers,
@@ -166,6 +184,7 @@ public sealed class ParallelForEachTests
             .Build();
 
         var empty = await Engine(services).RunAsync(definition, new Approvals { Answers = null! });
+
         var failed = await Engine(services).RunAsync(definition,
             new Approvals { Approvers = ["ann", "bob"], Answers = [new ItemResult<bool>(9, ItemStatus.Completed, true)] });
 
@@ -177,7 +196,7 @@ public sealed class ParallelForEachTests
         Assert.Equal(9, Assert.Single(data.Answers).Index);
     }
 
-    // Recipe 20 of spec D-17: the host dies after some items started. Another host continues the same
+    // The host dies after some items started. Another host continues the same
     // items from the saved list, and an approver added to the source afterwards is never asked.
     [Fact]
     [Trait("Spec", "D-17")]
@@ -185,6 +204,7 @@ public sealed class ParallelForEachTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var outbox = new Outbox();
+
         var definition = Workflow.Create<Approvals>("ContinuedFanOut")
             .Step<Noop>()
             .ForEach(_ => Source.Approvers,
@@ -195,16 +215,21 @@ public sealed class ParallelForEachTests
                     .Result(ctx => ctx.PreviousStep.Approved),
                 setup => setup.Parallel(maxConcurrency: 2).Into(ctx => ctx.WorkflowData.Answers))
             .Build();
+
         Source.Approvers = ["ann", "bob", "cid"];
         string instanceId;
+
         using (var first = Services(store, outbox))
             instanceId = (await Engine(first).RunAsync(definition, new Approvals())).InstanceId;
+
         Source.Approvers = ["ann", "bob", "cid", "zed"];
 
         using var second = Services(store, outbox);
         await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+
         foreach (var name in new[] { "ann", "bob" })
             await Engine(second).ReplyAsync(outbox.TokenOf(name), new Answer { Approved = true });
+
         var finished = await Engine(second).ReplyAsync(outbox.TokenOf("cid"), new Answer { Approved = false });
 
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
@@ -223,18 +248,22 @@ public sealed class ParallelForEachTests
         var outbox = new Outbox();
         var definition = CappedApprovals("DiesAtAdmission");
         string instanceId;
+
         using (var first = Services(store, outbox))
         {
             instanceId = (await Engine(first).RunAsync(definition,
                 new Approvals { Approvers = ["ann", "bob", "cid"] })).InstanceId;
+
             // The commit that records item 1 as the only one finished.
             store.FailCommit = instance => IxIFlow.Core.Runtime.ExecutionCheckpoint.IsStructured(instance.ExecutionStateJson) &&
                 IxIFlow.Core.Runtime.ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations
                     .SelectMany(continuation => continuation.Stack)
                     .Any(frame => frame.ForEach?.Finished is { } finished && finished.SequenceEqual([1]));
+
             await IgnoreFailureAsync(Engine(first).ReplyAsync(outbox.TokenOf("bob"), new Answer { Approved = true }));
             Assert.True(store.FailedCommits > 0);
         }
+
         store.FailCommit = _ => false;
 
         using var second = Services(store, outbox);
@@ -257,6 +286,7 @@ public sealed class ParallelForEachTests
     {
         var store = new FaultInjectingRepository();
         var outbox = new Outbox();
+
         var definition = Workflow.Create<Approvals>("DecidedThenDied")
             .Step<Noop>()
             .ForEach(ctx => ctx.WorkflowData.Approvers,
@@ -271,25 +301,34 @@ public sealed class ParallelForEachTests
                     .WaitConditionally<bool>((_, results) => results.Count(item => item.Value) >= Source.Needed)
                     .Into(ctx => ctx.WorkflowData.Answers))
             .Build();
+
         Source.Needed = 2;
         string instanceId;
+
         using (var first = Services(store, outbox))
         {
             instanceId = (await Engine(first).RunAsync(definition,
                 new Approvals { Approvers = ["ann", "bob", "cid"] })).InstanceId;
+
             await Engine(first).ReplyAsync(outbox.TokenOf("ann"), new Answer { Approved = true });
+
             // The host dies in the first commit after the one that saved the decision.
             var decided = false;
+
             store.FailCommit = instance =>
             {
                 if (decided)
                     return true;
+
                 decided = instance.ExecutionStateJson.Contains("\"IsCompleting\":true");
+
                 return false;
             };
+
             await IgnoreFailureAsync(Engine(first).ReplyAsync(outbox.TokenOf("bob"), new Answer { Approved = true }));
             Assert.True(decided);
         }
+
         store.FailCommit = _ => false;
         Source.Needed = 3;
 
@@ -298,8 +337,10 @@ public sealed class ParallelForEachTests
         var finished = await Engine(second).RecoverAsync(instanceId);
 
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
+
         Assert.Equal([ItemStatus.Completed, ItemStatus.Completed, ItemStatus.Cancelled],
             Assert.IsType<Approvals>(finished.WorkflowData).Answers.Select(item => item.Status));
+
         EventAssert.Rejected(await Engine(second).ReplyAsync(outbox.TokenOf("cid"), new Answer { Approved = true }),
             EventRejection.WaitCancelled);
     }
@@ -309,6 +350,7 @@ public sealed class ParallelForEachTests
     public async Task AParallelForEachChoosesACombinerForAProperty()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Approvals>("CountedItems")
             .Step<Noop>()
             .ForEach(ctx => ctx.WorkflowData.Approvers,
@@ -322,6 +364,7 @@ public sealed class ParallelForEachTests
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(3, Assert.IsType<Approvals>(result.WorkflowData).Total);
+
         // A sequential ForEach has no join to merge in.
         Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Approvals>("SequentialChoice")
             .Step<Noop>()
@@ -334,6 +377,7 @@ public sealed class ParallelForEachTests
     public async Task ParallelForEachesNestInsideEachOtherAParallelBranchAndASequentialForEach()
     {
         using var services = Services();
+
         var nested = Workflow.Create<Approvals>("NestedFanOut")
             .Step<Noop>()
             .ForEach(ctx => ctx.WorkflowData.Approvers,
@@ -347,6 +391,7 @@ public sealed class ParallelForEachTests
                     .Result(ctx => ctx.WorkflowData.Signatures.Count),
                 setup => setup.Parallel().Into(ctx => ctx.WorkflowData.Results))
             .Build();
+
         var inBranch = Workflow.Create<Approvals>("FanOutInABranch")
             .Step<Noop>()
             .Parallel(parallel => parallel
@@ -360,6 +405,7 @@ public sealed class ParallelForEachTests
                     .Input(activity => activity.Name).From(_ => "other")
                     .Output(activity => activity.Name).To(ctx => ctx.WorkflowData.Last))))
             .Build();
+
         var inSequence = Workflow.Create<Approvals>("FanOutPerRound")
             .Step<Noop>()
             .ForEach(_ => new[] { "x", "y" },
@@ -380,6 +426,7 @@ public sealed class ParallelForEachTests
         Assert.Equal([2, 2], nestedData.Results.Select(result => result.Value));
         Assert.Equal(["ann", "bob"], branchData.Signatures);
         Assert.Equal("other", branchData.Last);
+
         // Each round starts from the data the previous round's join left.
         Assert.Equal(["xann", "xbob", "yann", "ybob"], sequenceData.Signatures);
     }
@@ -388,6 +435,7 @@ public sealed class ParallelForEachTests
     public async Task OneAtATimeStillGivesEveryItemItsOwnCopy()
     {
         using var services = Services();
+
         var definition = Workflow.Create<Approvals>("OneAtATime")
             .Step<Noop>()
             .ForEach(ctx => ctx.WorkflowData.Approvers,
@@ -413,6 +461,7 @@ public sealed class ParallelForEachTests
     {
         using var services = Services();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<Approvals>("ConflictingVotes")
             .Step<Noop>()
             .Try(attempt => attempt.ForEach(ctx => ctx.WorkflowData.Approvers,
@@ -431,10 +480,12 @@ public sealed class ParallelForEachTests
                 .Input(activity => activity.Name).From(_ => "conflict")
                 .Output(activity => activity.Name).To(ctx => ctx.WorkflowData.Last)))
             .Build();
+
         var started = await Engine(services).RunAsync(definition,
             new Approvals { Approvers = ["ann", "bob", "cid"], Votes = { ["final"] = new Vote() } });
 
         await Engine(services).ReplyAsync(outbox.TokenOf("ann"), new Answer { Approved = true });
+
         // The second item's vote conflicts with the first's, so the join cannot hold and decides now.
         var finished = await Engine(services).ReplyAsync(outbox.TokenOf("bob"), new Answer { Approved = true });
 
@@ -442,8 +493,10 @@ public sealed class ParallelForEachTests
         var data = Data(finished);
         Assert.Equal(("conflict", ""), (data.Last, data.Votes["final"].By));
         Assert.Empty(data.Answers);
+
         EventAssert.Rejected(await Engine(services).ReplyAsync(outbox.TokenOf("cid"), new Answer { Approved = true }),
             EventRejection.WaitCancelled);
+
         Assert.Equal(started.InstanceId, finished.InstanceId);
     }
 
@@ -455,6 +508,7 @@ public sealed class ParallelForEachTests
             .ForEach(ctx => ctx.WorkflowData.Approvers, (body, _) => body.Step<Noop>(),
                 setup => setup.WaitAny())
             .Build());
+
         var write = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Approvals>("EveryItemWrites")
             .Step<Noop>()
             .ForEach(ctx => ctx.WorkflowData.Approvers,
@@ -463,6 +517,7 @@ public sealed class ParallelForEachTests
                     .Output(activity => activity.Name).To(ctx => ctx.WorkflowData.Last)),
                 setup => setup.Parallel())
             .Build());
+
         Assert.Contains("no combiner", write.Message);
     }
 
@@ -477,7 +532,10 @@ public sealed class ParallelForEachTests
 
         var structureHashs = new[]
         {
-            Define(_ => { }), Define(setup => setup.Parallel()), Define(setup => setup.Parallel(2))
+            Define(_ =>
+            {
+            }),
+            Define(setup => setup.Parallel()), Define(setup => setup.Parallel(2))
         }.Select(definition => new WorkflowScopeCatalog(definition).StructureHash);
 
         Assert.Equal(3, structureHashs.Distinct().Count());
@@ -487,11 +545,14 @@ public sealed class ParallelForEachTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+
         if (store != null)
             services.AddSingleton(store);
+
         services.AddSingleton(outbox ?? new Outbox());
         services.AddTransient<Ask>();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -521,22 +582,16 @@ public sealed class ParallelForEachTests
     // A host that dies in a commit fails the call that drove it.
     private static async Task IgnoreFailureAsync(Task call)
     {
-        try
-        {
-            await call;
-        }
-        catch (Exception)
-        {
-            // The run's next host takes over from the last commit.
-        }
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await call);
+        Assert.Equal(WorkflowErrorKind.Infrastructure, error.Kind);
+        Assert.IsType<IOException>(error.InnerException);
     }
 
     public sealed class Approvals
     {
         public List<string> Approvers { get; set; } = [];
 
-        [Combine<Append<string>>]
-        public List<string> Signatures { get; set; } = [];
+        [Combine<Append<string>>] public List<string> Signatures { get; set; } = [];
 
         public string Last { get; set; } = "";
         public int Total { get; set; }
@@ -561,7 +616,11 @@ public sealed class ParallelForEachTests
 
         public IReadOnlyList<string> Names
         {
-            get { lock (_sent) return _sent.Select(item => item.Name).ToArray(); }
+            get
+            {
+                lock (_sent)
+                    return _sent.Select(item => item.Name).ToArray();
+            }
         }
 
         public string TokenOf(string name)
@@ -584,6 +643,7 @@ public sealed class ParallelForEachTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             outbox.Add(Name, context.Reply!.Token);
+
             return Task.CompletedTask;
         }
     }
@@ -596,6 +656,7 @@ public sealed class ParallelForEachTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Signatures = [.. Signatures, Name];
+
             return Task.CompletedTask;
         }
     }
@@ -628,6 +689,7 @@ public sealed class ParallelForEachTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Value++;
+
             return Task.CompletedTask;
         }
     }

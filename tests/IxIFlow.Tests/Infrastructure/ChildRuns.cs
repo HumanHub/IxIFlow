@@ -3,7 +3,7 @@ using IxIFlow.Core;
 namespace IxIFlow.Tests.Infrastructure;
 
 /// <summary>
-/// Children run as instances of their own (D-17): a parent's call returns at its first idle point, while
+/// Children run as instances of their own: a parent's call returns at its first idle point, while
 /// its child runs in a slot of its own, and the parent finishes once the child's completion wakes it.
 /// </summary>
 public static class ChildRuns
@@ -24,17 +24,21 @@ public static class ChildRuns
 
     /// <summary>
     /// The instance of the workflow named <paramref name="name"/>, once it waits for <paramref name="key"/>:
-    /// an event addressed by key needs its wait to be open (D-33).
+    /// an event addressed by key needs its wait to be open.
     /// </summary>
     public static async Task<string> WaitingInstanceAsync(this IWorkflowStateRepository store, string name, string key)
     {
         using var patience = new CancellationTokenSource(Patience);
+
         while (true)
         {
-            foreach (var instance in await Task.WhenAll((await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: name, Limit: int.MaxValue))).Items.Select(async row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
+            foreach (var instance in await Task.WhenAll(
+                         (await store.QueryInstancesAsync(new InstanceQuery(WorkflowName: name, Limit: int.MaxValue))).Items.Select(async
+                             row => (await store.GetWorkflowInstanceAsync(row.InstanceId))!)))
                 if ((await ((IWorkflowInbox)store).GetOpenWaitsAsync(
                         new WaitQuery(InstanceId: instance.InstanceId, Key: key))).Count > 0)
                     return instance.InstanceId;
+
             await Task.Delay(10, patience.Token);
         }
     }

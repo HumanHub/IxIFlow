@@ -8,7 +8,8 @@ namespace IxIFlow.Tests.Conformance;
 public sealed class DebugCommandWakeRound2Scenarios
 {
     public static IEnumerable<object[]> Cases => from profile in StoreProfiles.ProfileNames
-        from scenario in DebugCommandWakeRound2Scenario.Cases select new object[] { profile, scenario };
+        from scenario in DebugCommandWakeRound2Scenario.Cases
+        select new object[] { profile, scenario };
 
     [Theory]
     [MemberData(nameof(Cases))]
@@ -17,6 +18,7 @@ public sealed class DebugCommandWakeRound2Scenarios
         await using var store = await StoreProfiles.CreateAsync(profile);
         var requester = store.NewRepository();
         var other = profile == StoreProfiles.LocalSqlite ? requester : store.NewRepository();
+
         await DebugCommandWakeRound2Scenario.VerifyAsync(requester, other, scenario,
             store.ConfigureHost, store.StartHostLinksAsync, store.StopHostLinksAsync);
     }

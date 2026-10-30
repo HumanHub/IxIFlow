@@ -14,7 +14,10 @@ namespace IxIFlow.Core;
 public class TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> : IActivityContext
 {
     internal Runtime.ScopeValues Scopes { get; set; } = Runtime.ScopeValues.None;
-    public TValue Scope<TValue>() where TValue : class => ScopeOrDefault<TValue>() ?? throw new InvalidOperationException($"No enclosing scope provides {typeof(TValue)}");
+
+    public TValue Scope<TValue>() where TValue : class => ScopeOrDefault<TValue>() ??
+        throw new InvalidOperationException($"No enclosing scope provides {typeof(TValue)}");
+
     public TValue? ScopeOrDefault<TValue>() where TValue : class => Scopes.Find<TValue>();
     public IServiceProvider Services { get; }
     public string WorkflowInstanceId { get; }
@@ -29,7 +32,7 @@ public class TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> : I
     public int WorkflowVersion { get; }
     public DateTime ActivityStartedAt { get; }
     public ILogger Logger { get; }
-    
+
     // Typed data access
     public TWorkflowData WorkflowData { get; }
     public TPreviousStepData? PreviousStepData { get; }
@@ -39,6 +42,7 @@ public class TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> : I
     // Explicit interface implementation for untyped access
     object IActivityContext.WorkflowData => WorkflowData ??
         throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, "WorkflowData cannot be null");
+
     object? IActivityContext.PreviousStepData => PreviousStepData;
 
     public TypedActivityExecutionContext(
@@ -72,15 +76,16 @@ public class TypedActivityExecutionContext<TWorkflowData, TPreviousStepData> : I
         WorkflowData = workflowData;
         PreviousStepData = previousStepData;
         Metadata = metadata ?? new Dictionary<string, object>();
-        Logger = logger ?? services.GetService<ILogger<TypedActivityExecutionContext<TWorkflowData, TPreviousStepData>>>() 
-                 ?? throw new ArgumentNullException(nameof(logger));
+
+        Logger = logger ?? services.GetService<ILogger<TypedActivityExecutionContext<TWorkflowData, TPreviousStepData>>>()
+            ?? throw new ArgumentNullException(nameof(logger));
     }
 }
 
 /// <summary>
 /// Enhanced activity execution request with typed data support
 /// </summary>
-public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
+internal class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
 {
     public int StepNumber { get; set; }
     public Type ActivityType { get; set; } = null!;
@@ -95,12 +100,14 @@ public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
 
     /// <summary>The items of the <c>ForEach</c> bodies the activity runs in.</summary>
     internal ItemValues Items { get; set; } = ItemValues.None;
+
     internal Runtime.ScopeValues Scopes { get; set; } = Runtime.ScopeValues.None;
     public object? CompensationPreviousStepData { get; set; }
     public object? CompensationPreviousChainData { get; set; }
 
     /// <summary>For a request's compensation, the answer the request received, and whether one came.</summary>
     public object? CompensationReply { get; set; }
+
     public bool CompensationAnswered { get; set; }
     public IDictionary<string, object>? StepMetadata { get; set; } = null; // Step-level metadata from ExecutionState
 }
@@ -108,7 +115,7 @@ public class TypedActivityExecutionRequest<TWorkflowData, TPreviousStepData>
 /// <summary>
 /// An activity whose inputs and execution context have been prepared before invocation.
 /// </summary>
-public sealed class PreparedActivity
+internal sealed class PreparedActivity
 {
     private readonly Func<Task> _applyOutputs;
     private readonly Action<object?> _setRecoveryState;
@@ -146,7 +153,7 @@ public sealed class PreparedActivity
 /// Enhanced activity executor that centralizes activity execution logic
 /// and supports typed workflow and previous step data
 /// </summary>
-public interface IActivityExecutor
+internal interface IActivityExecutor
 {
     /// <summary>
     /// Creates an activity and applies its inputs without invoking user code.
@@ -163,7 +170,7 @@ public interface IActivityExecutor
 /// <summary>
 /// Implementation of enhanced activity executor
 /// </summary>
-public class ActivityExecutor : IActivityExecutor
+internal class ActivityExecutor : IActivityExecutor
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<ActivityExecutor> _logger;
@@ -190,6 +197,7 @@ public class ActivityExecutor : IActivityExecutor
     {
         ArgumentNullException.ThrowIfNull(request);
         var activity = Runtime.ActivityActivation.Create(request.ActivityType, _serviceProvider, _activities);
+
         var context = new TypedActivityExecutionContext<TWorkflowData, TPreviousStepData>(
             _serviceProvider,
             request.ExecutionContext.WorkflowInstance.InstanceId,
@@ -207,10 +215,13 @@ public class ActivityExecutor : IActivityExecutor
             attemptId) { Scopes = request.Scopes };
 
         var inputs = new Runtime.ActivityInputSnapshot();
+
         if (applyInputMappings || codeInputs is { Count: > 0 })
             await ApplyTypedInputMappingsAsync(activity, inputs,
-                applyInputMappings ? request.InputMappings : request.InputMappings
-                    .Where(mapping => codeInputs!.Contains(mapping.TargetProperty)).ToList(),
+                applyInputMappings
+                    ? request.InputMappings
+                    : request.InputMappings
+                        .Where(mapping => codeInputs!.Contains(mapping.TargetProperty)).ToList(),
                 request.WorkflowData,
                 request.PreviousStepData, request.CatchFault,
                 request.Step.Runtime?.Context, request.CompensationPreviousStepData,
@@ -221,11 +232,13 @@ public class ActivityExecutor : IActivityExecutor
         {
             var properties = activity.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance);
             var marked = properties.Any(Runtime.ActivityContract.IsMarked);
+
             foreach (var property in properties.Where(property => Runtime.ActivityContract.IsInput(property, marked) &&
                          property.IsDefined(typeof(DefaultValueAttribute)) && !inputs.Properties.ContainsKey(property.Name)))
             {
                 var (saved, copy) = Runtime.ActivityInputValue.Of(property,
                     Runtime.ActivityContract.Default(property, activity.GetType()), _serviceProvider);
+
                 inputs.Properties[property.Name] = saved;
                 Runtime.ActivityPropertyAccess.SetValue(property, activity, copy);
             }
@@ -255,9 +268,11 @@ public class ActivityExecutor : IActivityExecutor
         object? compensationReply = null,
         bool compensationAnswered = false)
     {
-        _logger.LogTrace("Applying typed input mappings - Activity: {ActivityType}, Mappings: {Count}, TWorkflowData: {WorkflowDataType}, TPreviousStepData: {PreviousStepDataType}, CatchFault: {CatchFault}",
-            activity.GetType().Name, inputMappings.Count, typeof(TWorkflowData).Name, typeof(TPreviousStepData).Name, catchFault?.GetType().Name ?? "null");
-        
+        _logger.LogTrace(
+            "Applying typed input mappings - Activity: {ActivityType}, Mappings: {Count}, TWorkflowData: {WorkflowDataType}, TPreviousStepData: {PreviousStepDataType}, CatchFault: {CatchFault}",
+            activity.GetType().Name, inputMappings.Count, typeof(TWorkflowData).Name, typeof(TPreviousStepData).Name,
+            catchFault?.GetType().Name ?? "null");
+
         _logger.LogDebug("Applying {Count} typed input mappings to activity {ActivityType}",
             inputMappings.Count, activity.GetType().Name);
 
@@ -274,8 +289,9 @@ public class ActivityExecutor : IActivityExecutor
                         ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                             $"Compensation input '{mapping.TargetProperty}' has no previous compensation result"),
                     _ => (mapping.ContextFactory ?? defaultContext ?? throw new WorkflowEngineException(
-                        WorkflowErrorKind.InvalidDefinition, "The activity has no captured input context"))(new Runtime.MappingContextValues(workflowData,
-                        previousStepData, catchFault, compensationReply, compensationAnswered))
+                        WorkflowErrorKind.InvalidDefinition, "The activity has no captured input context"))(
+                        new Runtime.MappingContextValues(workflowData,
+                            previousStepData, catchFault, compensationReply, compensationAnswered))
                 };
 
                 if (mapping.CompensationSource is CompensationInputSource.PreviousStep or CompensationInputSource.PreviousCompensation &&
@@ -288,16 +304,27 @@ public class ActivityExecutor : IActivityExecutor
 
                 // Execute the compiled source function
                 object? sourceValue;
-                try { sourceValue = mapping.SourceFunction(evaluationContext); }
-                catch (Exception error) { WorkflowEngineException.FromWorkflowCode(error); throw; }
+
+                try
+                {
+                    sourceValue = mapping.SourceFunction(evaluationContext);
+                }
+                catch (Exception error)
+                {
+                    WorkflowEngineException.FromWorkflowCode(error);
+
+                    throw;
+                }
 
                 // Set target property on activity
                 var targetProperty = activity.GetType().GetProperty(mapping.TargetProperty);
+
                 if (targetProperty != null && targetProperty.CanWrite)
                 {
-                    // The activity gets a copy of what its attempt saves, set once (A-09).
+                    // The activity gets a copy of what its attempt saves, set once.
                     var (saved, convertedValue) = Runtime.ActivityInputValue.Of(targetProperty,
                         ConvertValue(sourceValue, activity.GetType(), targetProperty), _serviceProvider);
+
                     inputs.Properties[targetProperty.Name] = saved;
                     Runtime.ActivityPropertyAccess.SetValue(targetProperty, activity, convertedValue);
 
@@ -311,8 +338,11 @@ public class ActivityExecutor : IActivityExecutor
             }
             catch (Exception ex)
             {
-                _serviceProvider.GetRequiredService<InspectionRedactionPolicy>().Log(_logger, _serviceProvider.GetService<ILogger<SensitiveDiagnostics>>(), LogLevel.Error, ex, "Failed to apply typed input mapping for property {Property}",
+                _serviceProvider.GetRequiredService<InspectionRedactionPolicy>().Log(_logger,
+                    _serviceProvider.GetService<ILogger<SensitiveDiagnostics>>(), LogLevel.Error, ex,
+                    "Failed to apply typed input mapping for property {Property}",
                     mapping.TargetProperty);
+
                 throw;
             }
         }
@@ -335,19 +365,29 @@ public class ActivityExecutor : IActivityExecutor
             {
                 // Get value from activity property
                 var sourceProperty = activity.GetType().GetProperty(mapping.TargetProperty);
+
                 if (sourceProperty != null && sourceProperty.CanRead)
                 {
                     var sourceValue = Runtime.ActivityPropertyAccess.GetValue(sourceProperty, activity);
 
                     var evaluationContext = mapping.ContextFactory!(
                         new Runtime.MappingContextValues(workflowData, previousStepData, catchFault));
+
                     (items ?? ItemValues.None).On(evaluationContext);
 
                     // Use the compiled target assignment function
                     if (mapping.TargetAssignmentFunction != null)
                     {
-                        try { mapping.TargetAssignmentFunction(evaluationContext, sourceValue); }
-                        catch (Exception error) { WorkflowEngineException.FromWorkflowCode(error); throw; }
+                        try
+                        {
+                            mapping.TargetAssignmentFunction(evaluationContext, sourceValue);
+                        }
+                        catch (Exception error)
+                        {
+                            WorkflowEngineException.FromWorkflowCode(error);
+
+                            throw;
+                        }
 
                         _logger.LogTrace("Applied typed output mapping: {Property}", mapping.TargetProperty);
                     }
@@ -365,18 +405,24 @@ public class ActivityExecutor : IActivityExecutor
             }
             catch (Exception ex)
             {
-                _serviceProvider.GetRequiredService<InspectionRedactionPolicy>().Log(_logger, _serviceProvider.GetService<ILogger<SensitiveDiagnostics>>(), LogLevel.Error, ex, "Failed to apply typed output mapping for property {Property}",
+                _serviceProvider.GetRequiredService<InspectionRedactionPolicy>().Log(_logger,
+                    _serviceProvider.GetService<ILogger<SensitiveDiagnostics>>(), LogLevel.Error, ex,
+                    "Failed to apply typed output mapping for property {Property}",
                     mapping.TargetProperty);
+
                 throw;
             }
         }
     }
 
-    // A value the input cannot take is an invalid definition, never passed on unconverted (F-23).
+    // A value the input cannot take is an invalid definition, never passed on unconverted.
     private static object? ConvertValue(object? value, Type activityType, PropertyInfo target)
     {
-        if (value == null || target.PropertyType.IsInstanceOfType(value)) return value;
+        if (value == null || target.PropertyType.IsInstanceOfType(value))
+            return value;
+
         var underlying = Nullable.GetUnderlyingType(target.PropertyType) ?? target.PropertyType;
+
         try
         {
             // A whole number takes an enum property as reflection assigns it.

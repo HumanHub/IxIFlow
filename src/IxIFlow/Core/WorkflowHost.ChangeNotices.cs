@@ -8,8 +8,15 @@ public sealed partial class WorkflowHost
     {
         InstanceIds.Validate(instanceId);
         ArgumentNullException.ThrowIfNull(changed);
-        void OnChanged(string id) { if (id == instanceId) changed(); }
+
+        void OnChanged(string id)
+        {
+            if (id == instanceId)
+                changed();
+        }
+
         Changed += OnChanged;
+
         return new ChangeSubscription(() => Changed -= OnChanged);
     }
 
@@ -17,7 +24,13 @@ public sealed partial class WorkflowHost
     {
         // Subscribers only wake readers. A failed observer must never affect a committed workflow.
         foreach (var handler in Changed?.GetInvocationList() ?? [])
-            try { ((Action<string>)handler)(instanceId); } catch { }
+            try
+            {
+                ((Action<string>)handler)(instanceId);
+            }
+            catch
+            {
+            }
     }
 
     private sealed class ChangeSubscription(Action remove) : IDisposable

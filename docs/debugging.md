@@ -82,6 +82,7 @@ var verified = await operations.SetBreakpointsAsync(instanceId,
     new Breakpoint("third-item", "root/2/foreach/0", HitCondition: "== 3"),
     new Breakpoint("source", Source: new BreakpointSource("order.yaml", 20))
 ], actor: "operator@example.com");
+
 var current = await operations.GetBreakpointsAsync(instanceId);
 ```
 
@@ -156,6 +157,8 @@ Breakpoint[] examples =
 ```
 
 Everything outside the allowlist is refused, including helper methods, application constructors, mutation, statement lambdas, I/O, reflection, `dynamic`, wall-clock APIs such as `DateTime.Now`, culture-dependent formatting, string interpolation, and implicit culture-sensitive string comparisons or casing. A refusal raises `BreakpointConditionException` with diagnostics containing a code, message, zero-based text span, and one-based line and column. The entire replacement is refused before saving a command, preserving the installed set.
+
+Conditions have a budget of 10,000 sequence visits and 100 ms of evaluation work. `Range` and `Repeat` accept at most 10,000 items. The executor waits at most one second for a predicate, including application property getters. Exceeding a budget pauses with `ConditionEvaluationFailed`; sequence evaluation stops at the next budget check.
 
 If an owning host encounters a stored condition it cannot handle, it pauses at that breakpoint. The persisted stop and `BreakpointHit` trace contain `ConditionCompilerUnavailable`, `ConditionCompilationFailed` (with diagnostics), or `ConditionEvaluationFailed` (with the exception type). Exception messages and application values are omitted. A failure takes precedence over an ordinary match at the same step. A mixed fleet therefore stops safely when a debugging host lacks the compiler. Correct or remove the condition, then continue; the stopped occurrence is skipped once as with any other breakpoint.
 

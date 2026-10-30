@@ -33,8 +33,10 @@ public class SagaResumeRegressionTests
         var suspended = await engine.RunAsync(definition, new SagaRegressionData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, suspended.Status);
         Assert.True(((SagaRegressionData)suspended.WorkflowData!).BeforeCompleted);
+
         var stored = await scope.ServiceProvider.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(suspended.InstanceId);
+
         Assert.NotNull(stored);
         Assert.True(JsonSerializer.Deserialize<SagaRegressionData>(stored.WorkflowDataJson.InlineText)!.BeforeCompleted);
         var snapshot = (await engine.GetSnapshotAsync(suspended.InstanceId))!;
@@ -43,6 +45,7 @@ public class SagaResumeRegressionTests
 
         var resumed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
+
         Assert.Equal(WorkflowExecutionStatus.Success, resumed.Status);
         var data = Assert.IsType<SagaRegressionData>(resumed.WorkflowData);
         Assert.True(data.BeforeCompleted);
@@ -74,6 +77,7 @@ public class SagaResumeRegressionTests
 
         var resumed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
+
         var data = Assert.IsType<SagaRegressionData>(resumed.WorkflowData);
         Assert.True(data.BeforeCompleted);
         Assert.True(data.BeforeCompensated);
@@ -104,14 +108,18 @@ public class SagaResumeRegressionTests
         Assert.Equal(WorkflowExecutionStatus.Suspended, first.Status);
 
         using var secondScope = provider.CreateScope();
+
         var second = await secondScope.ServiceProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(first.InstanceId, new RegressionApprovalEvent { Approved = true });
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, second.Status);
         Assert.True(Assert.IsType<SagaRegressionData>(second.WorkflowData).AfterCompleted);
 
         using var finalScope = provider.CreateScope();
+
         var final = await finalScope.ServiceProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(first.InstanceId, new RegressionApprovalEvent { Approved = true });
+
         var data = Assert.IsType<SagaRegressionData>(final.WorkflowData);
         Assert.True(data.BeforeCompensated);
     }
@@ -136,6 +144,7 @@ public class SagaResumeRegressionTests
 
         var resumed = await engine.ResumeAsync(suspended.InstanceId,
             new RegressionApprovalEvent { Approved = true });
+
         Assert.Equal(WorkflowExecutionStatus.Faulted, resumed.Status);
         Assert.Contains("retry exhausted", resumed.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
@@ -145,6 +154,7 @@ public class SagaResumeRegressionTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 }
@@ -166,9 +176,11 @@ public sealed class SagaSetupActivity : IAsyncActivity
 public sealed class SagaBeforeActivity : IAsyncActivity
 {
     public bool Completed { get; set; }
+
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Completed = true;
+
         return Task.CompletedTask;
     }
 }
@@ -176,9 +188,11 @@ public sealed class SagaBeforeActivity : IAsyncActivity
 public sealed class SagaUndoActivity : IAsyncActivity
 {
     public bool Compensated { get; set; }
+
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Compensated = true;
+
         return Task.CompletedTask;
     }
 }
@@ -186,9 +200,11 @@ public sealed class SagaUndoActivity : IAsyncActivity
 public sealed class SagaAfterActivity : IAsyncActivity
 {
     public bool Completed { get; set; }
+
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Completed = true;
+
         return Task.CompletedTask;
     }
 }
@@ -196,9 +212,11 @@ public sealed class SagaAfterActivity : IAsyncActivity
 public sealed class SagaFollowingActivity : IAsyncActivity
 {
     public bool Completed { get; set; }
+
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Completed = true;
+
         return Task.CompletedTask;
     }
 }
@@ -206,6 +224,7 @@ public sealed class SagaFollowingActivity : IAsyncActivity
 public sealed class SagaFailActivity : IAsyncActivity
 {
     public bool ShouldFail { get; set; }
+
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
         ShouldFail ? throw new InvalidOperationException("Failure after resume") : Task.CompletedTask;
 }

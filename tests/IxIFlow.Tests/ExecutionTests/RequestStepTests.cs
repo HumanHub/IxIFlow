@@ -9,7 +9,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
 /// A request activity sends a token, and only an answer carrying it can satisfy the request's
-/// <c>WaitFor</c> (D-16, D-33). The answer's wait opens before the activity runs, an early answer is
+/// <c>WaitFor</c>. The answer's wait opens before the activity runs, an early answer is
 /// kept for the <c>WaitFor</c>, and a request and its wait are paired when the workflow is built.
 /// </summary>
 [Trait("Feature", "waits")]
@@ -22,6 +22,7 @@ public sealed class RequestStepTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<OrderData>("OneApprover")
             .Step<StartActivity>()
             .Request<RequestApproval>("approval", step => step
@@ -40,6 +41,7 @@ public sealed class RequestStepTests
         EventAssert.Consumed(answered);
         Assert.Equal(WorkflowExecutionStatus.Success, answered.Status);
         Assert.True(Data(answered).Approved);
+
         // A second click is refused as already answered, even after the instance has finished.
         EventAssert.Rejected(await engine.ReplyAsync(token, new ApprovalDecision { Approved = true }),
             EventRejection.WaitAnswered);
@@ -53,6 +55,7 @@ public sealed class RequestStepTests
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
         var gate = services.GetRequiredService<StepGate>();
+
         var definition = Workflow.Create<OrderData>("PaymentThenCheck")
             .Step<StartActivity>()
             .Request<RequestApproval>("payment", step => step
@@ -61,14 +64,17 @@ public sealed class RequestStepTests
             .WaitFor<ApprovalDecision>("payment", configure: wait => wait
                 .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved))
             .Build();
+
         var started = await engine.StartAsync(definition, new OrderData { Amount = 5 });
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // The answer comes while the next step runs; it is stored at once and kept for the WaitFor.
         var answer = engine.ReplyAsync(Assert.Single(outbox.Sent).Token, new ApprovalDecision { Approved = true });
-        while (await services.GetRequiredService<IWorkflowStateRepository>()
-                   .GetPendingEventsAsync(started, 0, 10) is { Events.Count: 0 })
-            await Task.Delay(10);
+
+        await IxIFlow.Tests.Infrastructure.TestEventually.UntilAsync(started, "a pending reply event",
+            () => services.GetRequiredService<IWorkflowStateRepository>().GetPendingEventsAsync(started, 0, 10),
+            page => page.Events.Count > 0);
+
         gate.Release.TrySetResult();
 
         var answered = await answer.WaitAsync(TimeSpan.FromSeconds(10));
@@ -84,12 +90,14 @@ public sealed class RequestStepTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<OrderData>("PendingThenPaid")
             .Step<StartActivity>()
             .Request<RequestApproval>("payment")
             .WaitFor<ApprovalDecision>("payment", (decision, _) => decision.Status != "pending", wait => wait
                 .Output(decision => decision.Approved).To(ctx => ctx.WorkflowData.Approved))
             .Build();
+
         await engine.RunAsync(definition, new OrderData());
         var token = Assert.Single(outbox.Sent).Token;
 
@@ -109,6 +117,7 @@ public sealed class RequestStepTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<OrderData>("ApproveThisAmount")
             .Step<StartActivity>()
             .Request<RequestApproval>("approval", step => step
@@ -116,6 +125,7 @@ public sealed class RequestStepTests
                 subject: ctx => $"order-1:{ctx.WorkflowData.Amount}")
             .WaitFor<ApprovalDecision>("approval")
             .Build();
+
         var started = await engine.RunAsync(definition, new OrderData { Amount = 1000 });
         var token = Assert.Single(outbox.Sent).Token;
         Assert.True(ReplyToken.TryRead(token, out _, out var waitId, out var subject));
@@ -123,6 +133,7 @@ public sealed class RequestStepTests
 
         // An answer that claims to confirm another amount does not satisfy the wait.
         var other = ReplyToken.Create(started.InstanceId, waitId, ReplyToken.Digest("order-1:10"));
+
         EventAssert.Rejected(await engine.ReplyAsync(other, new ApprovalDecision { Approved = true }),
             EventRejection.SubjectMismatch);
 
@@ -136,6 +147,7 @@ public sealed class RequestStepTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<OrderData>("ApprovalPerLine")
             .Step<StartActivity>()
             .WhileDo(ctx => ctx.WorkflowData.Lines < 2, body => body
@@ -145,6 +157,7 @@ public sealed class RequestStepTests
                     .Input(activity => activity.Lines).From(ctx => ctx.WorkflowData.Lines)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Lines)))
             .Build();
+
         await engine.RunAsync(definition, new OrderData());
         var first = Assert.Single(outbox.Sent).Token;
 
@@ -167,11 +180,13 @@ public sealed class RequestStepTests
     {
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<OrderData>("KeyedAnswer")
             .Step<StartActivity>()
             .Request<RequestApproval>("approval")
             .WaitFor<ApprovalDecision>("approval")
             .Build();
+
         var started = await engine.RunAsync(definition, new OrderData());
 
         var keyed = await engine.ResumeAsync(started.InstanceId, "approval", new ApprovalDecision { Approved = true });
@@ -188,6 +203,7 @@ public sealed class RequestStepTests
         using var services = Services(time);
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<OrderData>("ShortRequest")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -198,18 +214,22 @@ public sealed class RequestStepTests
                         .OnTimeout(path => path.Step<StartActivity>())))
                 .Do(branch => branch.WaitFor<ApprovalDecision>("final")))
             .Build();
+
         var started = await engine.RunAsync(definition, new OrderData());
         var token = Assert.Single(outbox.Sent).Token;
         Assert.True(ReplyToken.TryRead(token, out _, out var waitId, out _));
         var repository = services.GetRequiredService<IWorkflowStateRepository>();
+
         // The deadline passes while the instance is idle; the host's timer runs the timeout.
         time.Advance(TimeSpan.FromMinutes(2));
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
         while ((await repository.GetWaitAsync(started.InstanceId, waitId))!.IsOpen)
         {
             Assert.True(DateTime.UtcNow < deadline, "The request's wait never timed out");
             await Task.Delay(20);
         }
+
         // The timeout's own pass may still be running; the reply is sent once the instance is idle again.
         await engine.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Idle).WaitAsync(TimeSpan.FromSeconds(10));
 
@@ -226,20 +246,24 @@ public sealed class RequestStepTests
         // No WaitFor for the request.
         EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<OrderData>("NoWait")
             .Step<StartActivity>().Request<RequestApproval>("approval").Build());
+
         // A WaitFor for another answer type.
         EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<OrderData>("WrongType")
             .Step<StartActivity>().Request<RequestApproval>("approval").WaitFor<OtherAnswer>("approval").Build());
+
         // A WaitFor outside the loop that sends the request would take another iteration's answer.
         EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<OrderData>("OutsideLoop")
             .Step<StartActivity>()
             .WhileDo(ctx => ctx.WorkflowData.Lines < 2, body => body.Request<RequestApproval>("line"))
             .WaitFor<ApprovalDecision>("line")
             .Build());
+
         // Two requests with one name in one body.
         EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<OrderData>("Twice")
             .Step<StartActivity>()
             .Request<RequestApproval>("approval").Request<RequestApproval>("approval")
             .WaitFor<ApprovalDecision>("approval").Build());
+
         // An activity that declares no answer cannot run as a request.
         EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<OrderData>("NotARequest")
             .Step<StartActivity>().Request<StartActivity>("approval"));
@@ -252,6 +276,7 @@ public sealed class RequestStepTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<OrderData>("CompensatedRequest")
             .Step<StartActivity>()
             .Saga(saga => saga
@@ -282,6 +307,7 @@ public sealed class RequestStepTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<OrderData>("RetriedRequest")
             .Step<StartActivity>()
             .Saga(saga => saga
@@ -299,8 +325,10 @@ public sealed class RequestStepTests
         Assert.Equal(2, outbox.Sent.Count);
         var (first, second) = (outbox.Sent[0].Token, outbox.Sent[1].Token);
         Assert.NotEqual(first, second);
+
         EventAssert.Rejected(await engine.ReplyAsync(first, new ApprovalDecision { Approved = true }),
             EventRejection.WaitCancelled);
+
         var answered = await engine.ReplyAsync(second, new ApprovalDecision { Approved = true });
         EventAssert.Consumed(answered);
         Assert.Equal(WorkflowExecutionStatus.Success, answered.Status);
@@ -314,6 +342,7 @@ public sealed class RequestStepTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<OrderData>("AnsweredThenRetried")
             .Step<StartActivity>()
             .Saga(saga => saga
@@ -324,6 +353,7 @@ public sealed class RequestStepTests
                 .Step<FailOnceActivity>())
             .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(1))
             .Build();
+
         await engine.RunAsync(definition, new OrderData { Amount = 10 });
         var first = Assert.Single(outbox.Sent).Token;
 
@@ -333,8 +363,10 @@ public sealed class RequestStepTests
         EventAssert.Consumed(retried);
         Assert.Equal(WorkflowExecutionStatus.Suspended, retried.Status);
         Assert.Equal(2, outbox.Sent.Count);
+
         EventAssert.Rejected(await engine.ReplyAsync(first, new ApprovalDecision { Approved = true }),
             EventRejection.WaitAnswered);
+
         var finished = await engine.ReplyAsync(outbox.Sent[1].Token, new ApprovalDecision { Approved = true });
         EventAssert.Consumed(finished);
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
@@ -347,6 +379,7 @@ public sealed class RequestStepTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<OrderData>("TerminatedRequest")
             .Step<StartActivity>()
             .Saga(saga => saga
@@ -355,13 +388,15 @@ public sealed class RequestStepTests
                     .Case(true, branch => branch.Step<StartActivity>())
                     .Default(branch => branch.Step<StartActivity>()))
                 .WaitFor<ApprovalDecision>("approval"))
-            // Keeping the request would be refused at build: its answer would be lost with the saga (D-36).
+
+            // Keeping the request would be refused at build: its answer would be lost with the saga.
             .OnError<InvalidOperationException>(error => error.Compensate().ThenTerminate())
             .Build();
 
         var started = await engine.RunAsync(definition, new OrderData());
 
         Assert.Equal(WorkflowExecutionStatus.Terminated, started.Status);
+
         EventAssert.Rejected(await engine.ReplyAsync(Assert.Single(outbox.Sent).Token,
             new ApprovalDecision { Approved = true }), EventRejection.WaitCancelled);
     }
@@ -373,6 +408,7 @@ public sealed class RequestStepTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<OrderData>("DivergingRetries")
             .Step<StartActivity>()
             .Saga(saga => saga
@@ -385,14 +421,17 @@ public sealed class RequestStepTests
                 .Step<FailTwiceActivity>())
             .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(2))
             .Build();
+
         var started = await engine.RunAsync(definition, new OrderData());
 
         // The first attempt is approved and takes the approved note, then fails.
         await engine.ReplyAsync(outbox.Sent[0].Token, new ApprovalDecision { Approved = true });
         EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "approved-note", new OtherAnswer()));
+
         // The second is rejected and takes the rejected note, then fails.
         await engine.ReplyAsync(outbox.Sent[1].Token, new ApprovalDecision { Approved = false });
         EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "rejected-note", new OtherAnswer()));
+
         // The third is rejected again: the rejected note is replayed and the saga completes.
         var finished = await engine.ReplyAsync(outbox.Sent[2].Token, new ApprovalDecision { Approved = false });
 
@@ -407,6 +446,7 @@ public sealed class RequestStepTests
         var store = new FaultInjectingRepository();
         var outbox = new Outbox();
         var instanceId = Guid.NewGuid().ToString("N");
+
         var definition = Workflow.Create<OrderData>("ResolutionThenCancel")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -417,12 +457,15 @@ public sealed class RequestStepTests
                     .WaitFor<ApprovalDecision>("approval"))
                 .Do(branch => branch.WaitFor<OtherAnswer>("other")))
             .Build();
+
         // The host dies as it saves the step after the request, which then awaits an operator while the
         // other branch waits.
         store.FailCommit = instance => instance.ExecutionStateJson.Contains("\"Path\":[\"Lines\"],\"Value\":\"7\"");
+
         using (var first = HostOn(store, outbox))
             await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new OrderData(), new WorkflowOptions { InstanceId = instanceId }));
+
         store.FailCommit = _ => false;
         using var second = HostOn(store, outbox);
         var engine = second.GetRequiredService<IWorkflowClient>();
@@ -443,6 +486,7 @@ public sealed class RequestStepTests
         var outbox = new Outbox();
         var gate = new StepGate();
         var instanceId = Guid.NewGuid().ToString("N");
+
         var definition = Workflow.Create<OrderData>("ResolutionThenCancelWhileRunning")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -453,10 +497,13 @@ public sealed class RequestStepTests
                     .WaitFor<ApprovalDecision>("approval"))
                 .Do(branch => branch.WaitFor<OtherAnswer>("go").Step<GatedActivity>()))
             .Build();
+
         store.FailCommit = instance => instance.ExecutionStateJson.Contains("\"Path\":[\"Lines\"],\"Value\":\"7\"");
+
         using (var first = HostOn(store, outbox, gate))
             await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new OrderData(), new WorkflowOptions { InstanceId = instanceId }));
+
         store.FailCommit = _ => false;
         using var second = HostOn(store, outbox, gate);
         var engine = second.GetRequiredService<IWorkflowClient>();
@@ -483,6 +530,7 @@ public sealed class RequestStepTests
         services.AddTransient<RequestApproval>();
         services.AddTransient<GatedActivity>();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -493,6 +541,7 @@ public sealed class RequestStepTests
         using var services = Services();
         var engine = services.GetRequiredService<IWorkflowClient>();
         var outbox = services.GetRequiredService<Outbox>();
+
         var definition = Workflow.Create<OrderData>("DivergingRetriesTwoWaits")
             .Step<StartActivity>()
             .Saga(saga => saga
@@ -507,14 +556,17 @@ public sealed class RequestStepTests
                 .Step<FailTwiceActivity>())
             .OnError<InvalidOperationException>(error => error.Compensate().ThenRetry(2))
             .Build();
+
         var started = await engine.RunAsync(definition, new OrderData());
 
         await engine.ReplyAsync(outbox.Sent[0].Token, new ApprovalDecision { Approved = true });
         EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "approved-note", new OtherAnswer()));
+
         // The second attempt takes the other path and accepts two waits there, then fails.
         await engine.ReplyAsync(outbox.Sent[1].Token, new ApprovalDecision { Approved = false });
         EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "rejected-note", new OtherAnswer()));
         EventAssert.Consumed(await engine.ResumeAsync(started.InstanceId, "rejected-sign", new OtherAnswer()));
+
         // The third replays both and completes.
         var finished = await engine.ReplyAsync(outbox.Sent[2].Token, new ApprovalDecision { Approved = false });
 
@@ -539,8 +591,10 @@ public sealed class RequestStepTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+
         if (time != null)
             services.AddSingleton(time);
+
         services.AddSingleton<Outbox>();
         services.AddSingleton<StepGate>();
         services.AddTransient<RequestApproval>();
@@ -549,6 +603,7 @@ public sealed class RequestStepTests
         services.AddTransient<FailOnceActivity>();
         services.AddTransient<FailTwiceActivity>();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -578,7 +633,11 @@ public sealed class RequestStepTests
 
         public IReadOnlyList<(string Token, decimal Amount)> Sent
         {
-            get { lock (_sent) return _sent.ToArray(); }
+            get
+            {
+                lock (_sent)
+                    return _sent.ToArray();
+            }
         }
 
         public void Send(string token, decimal amount)
@@ -595,6 +654,7 @@ public sealed class RequestStepTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             outbox.Send(context.Reply!.Token, Amount);
+
             return Task.CompletedTask;
         }
     }
@@ -606,6 +666,7 @@ public sealed class RequestStepTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Withdrawn = true;
+
             return Task.CompletedTask;
         }
     }
@@ -646,6 +707,7 @@ public sealed class RequestStepTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Lines = 7;
+
             return Task.CompletedTask;
         }
     }
@@ -664,6 +726,7 @@ public sealed class RequestStepTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Result = Lines + 1;
+
             return Task.CompletedTask;
         }
     }

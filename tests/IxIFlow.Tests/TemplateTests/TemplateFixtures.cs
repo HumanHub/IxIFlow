@@ -18,14 +18,19 @@ public static class TemplateFixtures
         var services = new ServiceCollection();
         services.AddLogging();
         var builder = services.AddIxIFlow();
+
         if (store != null)
             services.Replace(ServiceDescriptor.Singleton(store));
+
         var templates = builder.AddIxIFlowTemplates();
+
         if (engine != null)
             services.AddSingleton(engine);
         else
             templates.AddLiquid();
+
         services.AddSingleton(sender ?? new RecordingSender());
+
         return services.BuildServiceProvider();
     }
 
@@ -94,8 +99,10 @@ public static class TemplateFixtures
         {
             Calls.Enqueue(message);
             _delivered.TryAdd(message.MessageId, message);
+
             if (FailAfterDelivery-- > 0)
                 throw new InvalidOperationException("The provider's acknowledgment was lost");
+
             return Task.CompletedTask;
         }
     }
@@ -118,6 +125,7 @@ public static class TemplateFixtures
             CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref _renders);
+
             return _inner.RenderAsync(template, model, modelType, culture, cancellationToken);
         }
     }

@@ -26,12 +26,16 @@ internal static class ImpureMembers
     public static string? Named(ISymbol member)
     {
         var type = member.ContainingType;
+
         if (type == null)
             return null;
+
         if (member is IMethodSymbol { MethodKind: MethodKind.Constructor } constructor)
             return OpensAPath(constructor) ? $"new {type.Name}(path)"
                 : Impure(type, ".ctor") ? $"new {type.Name}(...)" : null;
+
         var name = member is IMethodSymbol { AssociatedSymbol: IPropertySymbol property } ? property.Name : member.Name;
+
         return Impure(type, name) ? $"{type.Name}.{name}" : null;
     }
 
@@ -42,13 +46,14 @@ internal static class ImpureMembers
     private static bool Impure(INamedTypeSymbol type, string member)
     {
         var full = Full(type);
+
         return (full is "System.DateTime" or "System.DateTimeOffset") && ClockMembers.Contains(member) ||
-               full == "System.Guid" && member == "NewGuid" ||
-               full == "System.Threading.Tasks.Task" && member == "Delay" ||
-               full == "System.Threading.Thread" && member == "Sleep" ||
-               full == "System.TimeProvider" && member == "System" ||
-               type.ContainingNamespace?.ToDisplayString() == "System.Net.Sockets" ||
-               InHierarchy(type);
+            full == "System.Guid" && member == "NewGuid" ||
+            full == "System.Threading.Tasks.Task" && member == "Delay" ||
+            full == "System.Threading.Thread" && member == "Sleep" ||
+            full == "System.TimeProvider" && member == "System" ||
+            type.ContainingNamespace?.ToDisplayString() == "System.Net.Sockets" ||
+            InHierarchy(type);
     }
 
     // The type, its bases, or an interface it implements, so a call through IDbCommand or a derived client counts.
@@ -57,6 +62,7 @@ internal static class ImpureMembers
         for (var each = type; each != null; each = each.BaseType)
             if (ImpureTypes.Contains(Full(each)))
                 return true;
+
         return type.AllInterfaces.Any(each => ImpureTypes.Contains(Full(each)));
     }
 

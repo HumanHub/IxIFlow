@@ -24,6 +24,7 @@ public static class StateMachines
                 .State("escalated", s => s.Final())
                 .State("cancelled", s => s.Final()))
             .Build();
+
     // end-snippet: approval-state-machine
 
     public sealed class Approval
@@ -33,27 +34,56 @@ public static class StateMachines
         public bool DecisionRecorded { get; set; }
         public bool Notified { get; set; }
     }
-    public sealed class Decision { public bool Approved { get; set; } }
+
+    public sealed class Decision
+    {
+        public bool Approved { get; set; }
+    }
+
     public sealed class CancelRequested;
-    public sealed class Mailbox { public string ReplyToken { get; set; } = ""; }
+
+    public sealed class Mailbox
+    {
+        public string ReplyToken { get; set; } = "";
+    }
+
     public sealed class SendApprovalMail(Mailbox mailbox) : IRequestActivity<Decision>
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { mailbox.ReplyToken = context.Reply!.Token; return Task.CompletedTask; }
+        {
+            mailbox.ReplyToken = context.Reply!.Token;
+
+            return Task.CompletedTask;
+        }
     }
+
     public sealed class LogExit : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { ((Approval)context.WorkflowData).ExitRecorded = true; return Task.CompletedTask; }
+        {
+            ((Approval)context.WorkflowData).ExitRecorded = true;
+
+            return Task.CompletedTask;
+        }
     }
+
     public sealed class RecordDecision : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { ((Approval)context.WorkflowData).DecisionRecorded = true; return Task.CompletedTask; }
+        {
+            ((Approval)context.WorkflowData).DecisionRecorded = true;
+
+            return Task.CompletedTask;
+        }
     }
+
     public sealed class Notify : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { ((Approval)context.WorkflowData).Notified = true; return Task.CompletedTask; }
+        {
+            ((Approval)context.WorkflowData).Notified = true;
+
+            return Task.CompletedTask;
+        }
     }
 }

@@ -37,25 +37,36 @@ public static class StoreTestSupport
     {
         var owner = Owners.GetOrCreateValue(store).GetOrAdd(instanceId, _ => new Owner());
         await owner.Gate.WaitAsync();
+
         try
         {
             var duration = TimeSpan.FromMinutes(5);
-            if (owner.Grant != null && (await store.RenewExecutionLeasesAsync([new(instanceId, owner.Token, duration)]))[0].Status == ExecutionLeaseRenewalStatus.Renewed)
+
+            if (owner.Grant != null && (await store.RenewExecutionLeasesAsync([new(instanceId, owner.Token, duration)]))[0].Status ==
+                ExecutionLeaseRenewalStatus.Renewed)
                 return owner.Grant;
+
             if (query == null)
             {
                 var demands = await store.GetWorkflowDemandsAsync(instanceId);
+
                 // A host that meets the instance's demands; a pinned host's identity must be stated explicitly,
                 // so a pin can still refuse a fixture claim.
                 var capabilities = demands.Where(demand => demand.Key != "host")
                     .ToDictionary(demand => demand.Key, demand => demand.Value ?? "", StringComparer.Ordinal);
+
                 query = new ClaimQuery(Guid.Empty, capabilities);
             }
+
             owner.Grant = await store.TryAcquireExecutionLeaseAsync(instanceId, owner.Token, duration,
                 query, kind);
+
             return owner.Grant ?? throw new InvalidOperationException($"The test could not claim '{instanceId}'");
         }
-        finally { owner.Gate.Release(); }
+        finally
+        {
+            owner.Gate.Release();
+        }
     }
 
     /// <summary>The automatic capabilities and configured tags of the host represented by a fixture.</summary>
@@ -63,6 +74,7 @@ public static class StoreTestSupport
     {
         var settings = (HostSettings)host.GetService(typeof(HostSettings))!;
         var registry = (IWorkflowCatalog)host.GetService(typeof(IWorkflowCatalog))!;
+
         return new ClaimQuery(settings.Id, await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings), limit);
     }
 
@@ -70,6 +82,7 @@ public static class StoreTestSupport
     public static async Task<ClaimQuery> ClaimAsync(IWorkflowCatalog registry, int limit = 100)
     {
         var settings = HostSettings.Default;
+
         return new ClaimQuery(settings.Id, await WorkflowHeartbeatService.CapabilitiesAsync(registry, settings), limit);
     }
 

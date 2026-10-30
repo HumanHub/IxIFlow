@@ -11,14 +11,20 @@ public sealed record ActivityPackageIdentity
 
     public ActivityPackageIdentity(string key, int version)
     {
-        if (!IsValidKey(key)) throw new ArgumentException("Invalid activity key", nameof(key));
-        if (version is < 1 or > 65534) throw new ArgumentOutOfRangeException(nameof(version));
+        if (!IsValidKey(key))
+            throw new ArgumentException("Invalid activity key", nameof(key));
+
+        if (version is < 1 or > 65534)
+            throw new ArgumentOutOfRangeException(nameof(version));
+
         PackageId = key;
         ActivityVersion = version.ToString(CultureInfo.InvariantCulture);
         PackageVersion = ActivityVersion + ".0.0";
         AssemblyVersion = PackageVersion + ".0";
+
         var segments = key.Split('.').Select(segment => string.Concat(segment.Split('-')
             .Select(part => char.ToUpperInvariant(part[0]) + part.Substring(1)))).ToArray();
+
         ClassName = segments[segments.Length - 1];
         Namespace = "IxIFlow.Activities" + (segments.Length == 1 ? "" : "." + string.Join(".", segments.Take(segments.Length - 1)));
     }

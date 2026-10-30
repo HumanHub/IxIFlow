@@ -11,7 +11,7 @@ namespace IxIFlow.Tests.AuthoringTests;
 /// <summary>
 /// Conditions and mappings are evaluated again after a recovery, so an expression that reads the clock or the
 /// environment, makes values that differ per run, waits, or does I/O fails the build, naming the step and the member
-/// (D-07, D-42).
+/// .
 /// </summary>
 [Trait("Feature", "authoring")]
 [Trait("Spec", "A-05")]
@@ -35,6 +35,7 @@ public sealed class ExpressionPurityTests
         },
         { "IDbCommand.ExecuteScalar", () => Mapping(_ => Command.ExecuteScalar()!.ToString()!) },
         { "new StreamReader(path)", () => Mapping(_ => new StreamReader("settings.json").ReadToEnd()) },
+
         // Wait predicates and loop conditions are delegates; their code is read from its IL.
         {
             "DateTime.UtcNow", () => Workflow.Create<Data>("ImpureWaitPredicate")
@@ -84,6 +85,7 @@ public sealed class ExpressionPurityTests
     {
         Mapping(ctx => Path.Combine(ctx.WorkflowData.Folder, "x") + DateTime.MinValue.Year + ctx.WorkflowData.When.Hour);
         Mapping(ctx => new StreamReader(new MemoryStream(ctx.WorkflowData.Bytes)).ReadToEnd());
+
         Workflow.Create<Data>("PureWaitPredicate")
             .Step<Takes>()
             .WaitFor<Go>("go", (go, ctx) => go.Hour > ctx.WorkflowData.When.Hour && ctx.UtcNow.Hour > 0)
@@ -102,6 +104,7 @@ public sealed class ExpressionPurityTests
         services.AddSingleton<TimeProvider>(time);
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
+
         var definition = Workflow.Create<Data>("ReadsTheRunsClock")
             .Step<Takes>()
             .If(ctx => ctx.UtcNow.Hour < 12,

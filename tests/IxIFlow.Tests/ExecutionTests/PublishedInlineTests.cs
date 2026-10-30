@@ -27,8 +27,16 @@ public sealed class PublishedInlineTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var cache = Path.Combine(Path.GetTempPath(), "IxIFlow.InlineTests", Guid.NewGuid().ToString("N"));
-        try { await ColdLoad(store, cache); }
-        finally { if (Directory.Exists(cache)) Directory.Delete(cache, true); }
+
+        try
+        {
+            await ColdLoad(store, cache);
+        }
+        finally
+        {
+            if (Directory.Exists(cache))
+                Directory.Delete(cache, true);
+        }
     }
 
     [Fact]
@@ -44,7 +52,10 @@ public sealed class PublishedInlineTests
         var z = await Read(second, c);
         Assert.Equal(x.Manifest.EntryType, y.Manifest.EntryType);
         Assert.NotEqual(x.Manifest.EntryType, z.Manifest.EntryType);
-        Assert.Equal("IxIFlow.Workflow.Names.v1", ResolvedWorkflowPackages.AssemblyIdentity(x.Entries[WorkflowBundleArchive.AssemblyPath]).Name);
+
+        Assert.Equal("IxIFlow.Workflow.Names.v1",
+            ResolvedWorkflowPackages.AssemblyIdentity(x.Entries[WorkflowBundleArchive.AssemblyPath]).Name);
+
         Assert.Equal(WorkflowBundleIdentity.ClassName("Names", 1), x.Manifest.EntryType.Split('.').Last());
         Assert.NotEqual(WorkflowBundleIdentity.AssemblyName("A/B", 1), WorkflowBundleIdentity.AssemblyName("A%2FB", 1));
     }
@@ -79,25 +90,43 @@ public sealed class PublishedInlineTests
         var store = new InMemoryWorkflowStateRepository();
         var original = await Publish(store, "Leaf", Empty("Leaf"));
         var bundle = await Read(store, original);
+
         var manifest = mutation switch
         {
             "engine" => bundle.Manifest with { EngineVersion = "99.0.0.0" },
             "framework" => bundle.Manifest with { TargetFramework = "net99.0" },
             "checkpoint" => bundle.Manifest with { CheckpointContractVersion = 14 },
-            "shared" => bundle.Manifest with { SharedAssemblies = new Dictionary<string, string> { ["System.Runtime, Version=99.0.0.0"] = "99.0.0.0" } },
+            "shared" => bundle.Manifest with
+            {
+                SharedAssemblies = new Dictionary<string, string> { ["System.Runtime, Version=99.0.0.0"] = "99.0.0.0" }
+            },
             _ => bundle.Manifest
         };
+
         var entries = bundle.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray());
-        if (mutation == "source") entries[WorkflowBundleArchive.YamlPath] = Encoding.UTF8.GetBytes(Empty("Leaf") + "# noncanonical\n");
-        if (mutation == "assembly") entries[WorkflowBundleArchive.AssemblyPath] = File.ReadAllBytes(typeof(FirstData).Assembly.Location);
-        if (mutation == "closure") entries.Remove("private/System.Payments.dll");
+
+        if (mutation == "source")
+            entries[WorkflowBundleArchive.YamlPath] = Encoding.UTF8.GetBytes(Empty("Leaf") + "# noncanonical\n");
+
+        if (mutation == "assembly")
+            entries[WorkflowBundleArchive.AssemblyPath] = File.ReadAllBytes(typeof(FirstData).Assembly.Location);
+
+        if (mutation == "closure")
+            entries.Remove("private/System.Payments.dll");
+
         var bytes = WorkflowBundleArchive.Create(manifest, entries);
         var digest = ArtifactDigest.Of(bytes);
         var modified = await WorkflowBundleArchive.ReadAsync(new MemoryStream(bytes), digest);
+
         // An independent catalog permits a valid immutable row with the altered artifact.
         var target = new InMemoryWorkflowStateRepository();
         await target.PutAsync(ArtifactKind.Bundle, new MemoryStream(bytes));
-        await target.RegisterWorkflowVersionAsync(original with { ArtifactDigest = digest, PublishedDraft = null, ManifestJson = JsonSerializer.Serialize(modified.Manifest) });
+
+        await target.RegisterWorkflowVersionAsync(original with
+        {
+            ArtifactDigest = digest, PublishedDraft = null, ManifestJson = JsonSerializer.Serialize(modified.Manifest)
+        });
+
         var draft = await target.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller("Caller", "Leaf")), null);
         var report = await new WorkflowPublisher(target, target, Options()).PublishAsync(draft.Id);
         Assert.Equal(mutation == "source" ? "PUB013" : "PUB009", Assert.Single(report.Diagnostics).Code);
@@ -123,6 +152,7 @@ public sealed class PublishedInlineTests
         var caller = await Publish(store, "Caller", Caller("Caller", "Leaf"));
         var bundle = await Read(store, caller);
         var pin = Assert.Single(bundle.Manifest.InlineWorkflows);
+
         var changed = mutation switch
         {
             "site" => pin with { Sites = ["root/99"] },
@@ -133,12 +163,23 @@ public sealed class PublishedInlineTests
             "assembly" => pin with { AssemblyName = "Forged.Assembly" },
             _ => pin
         };
-        var manifest = bundle.Manifest with { InlineWorkflows = mutation == "missing" ? [] : mutation == "duplicate" ? [pin, pin] : [changed] };
+
+        var manifest = bundle.Manifest with
+        {
+            InlineWorkflows = mutation == "missing" ? [] : mutation == "duplicate" ? [pin, pin] : [changed]
+        };
+
         var entries = bundle.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray());
         var prefix = WorkflowBundleIdentity.InlineSourceDirectory("Leaf", 1);
-        if (mutation is "yaml" or "cs") entries.Remove(prefix + (mutation == "yaml" ? WorkflowBundleArchive.YamlPath : WorkflowBundleArchive.SourcePath));
-        if (mutation == "dll") entries.Remove("private/" + pin.AssemblyName + ".dll");
+
+        if (mutation is "yaml" or "cs")
+            entries.Remove(prefix + (mutation == "yaml" ? WorkflowBundleArchive.YamlPath : WorkflowBundleArchive.SourcePath));
+
+        if (mutation == "dll")
+            entries.Remove("private/" + pin.AssemblyName + ".dll");
+
         var cache = Path.Combine(Path.GetTempPath(), "IxIFlow.InlineTests", Guid.NewGuid().ToString("N"));
+
         try
         {
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () =>
@@ -148,9 +189,14 @@ public sealed class PublishedInlineTests
                 using var loader = new WorkflowBundleLoader(store, new(cache));
                 using var lease = await loader.AcquireAsync(digest, default);
             });
+
             Assert.Equal(WorkflowErrorKind.ArtifactMismatch, error.Kind);
         }
-        finally { if (Directory.Exists(cache)) Directory.Delete(cache, true); }
+        finally
+        {
+            if (Directory.Exists(cache))
+                Directory.Delete(cache, true);
+        }
     }
 
     [Fact]
@@ -159,14 +205,20 @@ public sealed class PublishedInlineTests
         var store = new InMemoryWorkflowStateRepository();
         var code = Workflow.Create<FirstData>("Code").Input(data => data.Value).Output(data => data.Value).Build();
         var contract = WorkflowDefinitionValidator.GetContract(code);
+
         await store.RegisterWorkflowVersionAsync(new("Code", 1, WorkflowDefinitionValidator.Inspect(code), contract.ToJson(), contract.Hash,
             WorkflowDescriptor.Of(code), Invocations: []));
+
         var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", Caller("Caller", "Code")), null);
         var refused = await new WorkflowPublisher(store, store, Options()).PublishAsync(draft.Id);
         Assert.Equal("PUB012", Assert.Single(refused.Diagnostics).Code);
         Assert.Contains("useType", refused.Diagnostics[0].Message);
         await Publish(store, "Demanded", Empty("Demanded") + "demands: [{key: region, value: east}]\n");
-        var conflict = await store.SaveDefinitionAsync(new("Conflict", 1, "workflow", Caller("Conflict", "Demanded") + "demands: [{key: region, value: west}]\n"), null);
+
+        var conflict =
+            await store.SaveDefinitionAsync(
+                new("Conflict", 1, "workflow", Caller("Conflict", "Demanded") + "demands: [{key: region, value: west}]\n"), null);
+
         var failed = await new WorkflowPublisher(store, store, Options()).PublishAsync(conflict.Id);
         Assert.Equal("PUB011", Assert.Single(failed.Diagnostics).Code);
     }
@@ -193,9 +245,11 @@ public sealed class PublishedInlineTests
         var leaf = await Publish(source, "Leaf", Empty("Leaf"));
         var bundle = await Read(source, leaf);
         var selected = typeof(FirstData).Assembly.GetName();
+
         var altered = WorkflowCompilation.Compile("[assembly: System.Reflection.AssemblyVersion(\"" +
             (mutation == "identity" ? "99.0.0.0" : selected.Version!.ToString()) + "\")] public class Different { }",
             WorkflowCompilation.CreateReferences(new()), "workflow.yaml", default, selected.Name);
+
         Assert.True(altered.Success);
         var entries = bundle.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray());
         entries["private/" + selected.Name + ".dll"] = altered.Assembly;
@@ -204,7 +258,12 @@ public sealed class PublishedInlineTests
         var verified = await WorkflowBundleArchive.ReadAsync(new MemoryStream(archive), digest);
         var store = new InMemoryWorkflowStateRepository();
         await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(archive));
-        await store.RegisterWorkflowVersionAsync(leaf with { ArtifactDigest = digest, PublishedDraft = null, ManifestJson = JsonSerializer.Serialize(verified.Manifest) });
+
+        await store.RegisterWorkflowVersionAsync(leaf with
+        {
+            ArtifactDigest = digest, PublishedDraft = null, ManifestJson = JsonSerializer.Serialize(verified.Manifest)
+        });
+
         var yaml = "# authored offset\n\n" + Caller("Caller", "Leaf");
         var report = await new WorkflowPublisher(store, store, Options()).ValidateAsync(new("Caller", 1, "workflow", yaml));
         var error = Assert.Single(report.Diagnostics);
@@ -220,8 +279,10 @@ public sealed class PublishedInlineTests
         var definition = InlineConstruction.Typed<PublishedInlineTypedCallee, FirstData>();
         using var catalog = new WorkflowCatalog(store);
         await catalog.RegisterWorkflowAsync(definition);
+
         var yaml = Caller("Typed", "unused").Replace("kind: use", "kind: useType").Replace("workflow: {name: unused}",
             "workflowType: " + typeof(PublishedInlineTypedCallee).FullName);
+
         var caller = await Publish(store, "Typed", yaml);
         var bundle = await Read(store, caller);
         var pin = Assert.Single(bundle.Manifest.InlineWorkflows);
@@ -230,22 +291,33 @@ public sealed class PublishedInlineTests
         Assert.Equal(typeof(PublishedInlineTypedCallee).Assembly.GetName().Name, pin.AssemblyName);
         Assert.Contains("private/" + pin.AssemblyName + ".dll", bundle.Entries.Keys);
         var cache = Path.Combine(Path.GetTempPath(), "IxIFlow.InlineTyped", Guid.NewGuid().ToString("N"));
+
         try
         {
             await using var host = PublishedBundleScenario.Host(store, cache);
             var client = host.GetRequiredService<IWorkflowClient>();
-            var result = await client.AwaitAsync(await client.StartAsync("Typed", 1, new FirstData { Value = "typed cold" }), WorkflowAwaitCondition.Finished);
+
+            var result = await client.AwaitAsync(await client.StartAsync("Typed", 1, new FirstData { Value = "typed cold" }),
+                WorkflowAwaitCondition.Finished);
+
             Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
             Assert.Equal("typed cold", result.WorkflowData!.GetType().GetProperty("Value")!.GetValue(result.WorkflowData));
         }
-        finally { if (Directory.Exists(cache)) Directory.Delete(cache, true); }
+        finally
+        {
+            if (Directory.Exists(cache))
+                Directory.Delete(cache, true);
+        }
     }
 
     [Fact]
     public async Task RecursiveTypedInlineIsACuratedPub013()
     {
         var store = new InMemoryWorkflowStateRepository();
-        var yaml = "workflow: {name: RecursiveCaller, dataType: Data}\ndefinitions:\n  - kind: useType\n    workflowType: " + typeof(PublishedInlineRecursiveCallee).FullName;
+
+        var yaml = "workflow: {name: RecursiveCaller, dataType: Data}\ndefinitions:\n  - kind: useType\n    workflowType: " +
+            typeof(PublishedInlineRecursiveCallee).FullName;
+
         var report = await new WorkflowPublisher(store, store, Options()).ValidateAsync(new("RecursiveCaller", 1, "workflow", yaml));
         var error = Assert.Single(report.Diagnostics);
         Assert.Equal("PUB013", error.Code);
@@ -258,44 +330,59 @@ public sealed class PublishedInlineTests
         var root = Path.Combine(Path.GetTempPath(), "IxIFlow.InlineShared", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var assemblyName = "Inline.Shared." + Guid.NewGuid().ToString("N");
+
         var emitted = WorkflowCompilation.Compile("""
-            using IxIFlow.Builders.Interfaces;
-            using IxIFlow.Core;
-            public sealed class InlineProfileData { public string Value { get; set; } = ""; }
-            [Workflow("InlineProfileCallee")]
-            public sealed class InlineProfileWorkflow : IWorkflow<InlineProfileData>
-            { public void Build(IWorkflowBuilder<InlineProfileData> builder) { } }
-            """, WorkflowCompilation.CreateReferences(new()), "workflow.yaml", default, assemblyName);
+                                                  using IxIFlow.Builders.Interfaces;
+                                                  using IxIFlow.Core;
+                                                  public sealed class InlineProfileData { public string Value { get; set; } = ""; }
+                                                  [Workflow("InlineProfileCallee")]
+                                                  public sealed class InlineProfileWorkflow : IWorkflow<InlineProfileData>
+                                                  { public void Build(IWorkflowBuilder<InlineProfileData> builder) { } }
+                                                  """, WorkflowCompilation.CreateReferences(new()), "workflow.yaml", default, assemblyName);
+
         Assert.True(emitted.Success);
         var file = Path.Combine(root, assemblyName + ".dll");
         await File.WriteAllBytesAsync(file, emitted.Assembly);
         var assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(file);
         var store = new InMemoryWorkflowStateRepository();
         using var catalog = new WorkflowCatalog(store);
-        await catalog.RegisterWorkflowAsync(new() { Name = "InlineProfileCallee", Version = 1, WorkflowDataType = assembly.GetType("InlineProfileData")! });
+
+        await catalog.RegisterWorkflowAsync(new()
+            { Name = "InlineProfileCallee", Version = 1, WorkflowDataType = assembly.GetType("InlineProfileData")! });
+
         var options = new WorkflowPublisherOptions { SharedContractAssemblies = [assembly] };
+
         var caller = await Publish(store, "SharedCaller", """
-            workflow: {name: SharedCaller, dataType: InlineProfileData}
-            definitions: [{kind: useType, workflowType: InlineProfileWorkflow}]
-            """, options: options);
+                                                          workflow: {name: SharedCaller, dataType: InlineProfileData}
+                                                          definitions: [{kind: useType, workflowType: InlineProfileWorkflow}]
+                                                          """, options: options);
+
         var bundle = await Read(store, caller);
         Assert.Contains(assembly.FullName!, bundle.Manifest.SharedAssemblies.Keys);
         Assert.DoesNotContain("private/" + assemblyName + ".dll", bundle.Entries.Keys);
+
         try
         {
             using var loader = new WorkflowBundleLoader(store, new(Path.Combine(root, "shared"))
                 { SharedProfile = WorkflowSharedAssemblies.CreateProfile([assembly]) });
+
             using var lease = await loader.AcquireAsync(caller.ArtifactDigest!.Value, default);
             Assert.Single(WorkflowDefinitionValidator.GetInlineWorkflows(lease.Definition));
             using var missing = new WorkflowBundleLoader(store, new(Path.Combine(root, "missing")));
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => { using var ignored = await missing.AcquireAsync(caller.ArtifactDigest.Value, default); });
+
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () =>
+            {
+                using var ignored = await missing.AcquireAsync(caller.ArtifactDigest.Value, default);
+            });
+
             Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, error.Kind);
         }
         finally
         {
             // The default context retains its declared contract assembly for the test process.
             foreach (var directory in new[] { "shared", "missing" })
-                if (Directory.Exists(Path.Combine(root, directory))) Directory.Delete(Path.Combine(root, directory), true);
+                if (Directory.Exists(Path.Combine(root, directory)))
+                    Directory.Delete(Path.Combine(root, directory), true);
         }
     }
 
@@ -307,22 +394,36 @@ public sealed class PublishedInlineTests
         var store = new InMemoryWorkflowStateRepository();
         var row = await Publish(store, "Leaf", Empty("Leaf"));
         var bundle = await Read(store, row);
-        var bytes = WorkflowBundleArchive.Create(bundle.Manifest, bundle.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()));
+
+        var bytes = WorkflowBundleArchive.Create(bundle.Manifest,
+            bundle.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()));
+
         using var changed = new MemoryStream();
         changed.Write(bytes);
+
         using (var zip = new ZipArchive(changed, ZipArchiveMode.Update, true))
         {
             var entry = zip.GetEntry(WorkflowBundleArchive.ManifestPath)!;
             JsonObject json;
-            using (var reader = new StreamReader(entry.Open())) json = JsonNode.Parse(await reader.ReadToEndAsync())!.AsObject();
-            if (oldFormat) json["FormatVersion"] = 4;
-            else json.Remove("InlineWorkflows");
+
+            using (var reader = new StreamReader(entry.Open()))
+                json = JsonNode.Parse(await reader.ReadToEndAsync())!.AsObject();
+
+            if (oldFormat)
+                json["FormatVersion"] = 4;
+            else
+                json.Remove("InlineWorkflows");
+
             entry.Delete();
             using var output = new StreamWriter(zip.CreateEntry(WorkflowBundleArchive.ManifestPath).Open());
             await output.WriteAsync(json.ToJsonString());
         }
+
         var archive = changed.ToArray();
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => WorkflowBundleArchive.ReadAsync(new MemoryStream(archive), ArtifactDigest.Of(archive)));
+
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+            WorkflowBundleArchive.ReadAsync(new MemoryStream(archive), ArtifactDigest.Of(archive)));
+
         Assert.Equal(WorkflowErrorKind.ArtifactMismatch, error.Kind);
     }
 
@@ -333,17 +434,27 @@ public sealed class PublishedInlineTests
         var leaf = await Publish(source, "Leaf", Empty("Leaf"));
         var middle = await Publish(source, "Middle", Caller("Middle", "Leaf"));
         var original = await Read(source, middle);
+
         var archive = WorkflowBundleArchive.Create(original.Manifest with
         {
             InlineWorkflows = [Assert.Single(original.Manifest.InlineWorkflows) with { StructureHash = "forged nested pin" }]
         }, original.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()));
+
         var digest = ArtifactDigest.Of(archive);
         var verified = await WorkflowBundleArchive.ReadAsync(new MemoryStream(archive), digest);
         var store = new InMemoryWorkflowStateRepository();
-        await using (var bytes = await source.OpenAsync(leaf.ArtifactDigest!.Value)) await store.PutAsync(ArtifactKind.Bundle, bytes!);
+
+        await using (var bytes = await source.OpenAsync(leaf.ArtifactDigest!.Value))
+            await store.PutAsync(ArtifactKind.Bundle, bytes!);
+
         await store.RegisterWorkflowVersionAsync(leaf);
         await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(archive));
-        await store.RegisterWorkflowVersionAsync(middle with { ArtifactDigest = digest, PublishedDraft = null, ManifestJson = JsonSerializer.Serialize(verified.Manifest) });
+
+        await store.RegisterWorkflowVersionAsync(middle with
+        {
+            ArtifactDigest = digest, PublishedDraft = null, ManifestJson = JsonSerializer.Serialize(verified.Manifest)
+        });
+
         var yaml = Caller("Caller", "Middle") + "  - kind: use\n    id: direct\n    workflow: {name: Leaf, version: 1}\n";
         var report = await new WorkflowPublisher(store, store, Options()).ValidateAsync(new("Caller", 1, "workflow", yaml));
         Assert.Equal("PUB013", Assert.Single(report.Diagnostics).Code);
@@ -356,18 +467,30 @@ public sealed class PublishedInlineTests
         var leaf = await Publish(source, "Leaf", Empty("Leaf"));
         var middle = await Publish(source, "Middle", Caller("Middle", "Leaf"));
         var bundle = await Read(source, middle);
+
         var archive = WorkflowBundleArchive.Create(bundle.Manifest with
         {
             InlineWorkflows = [Assert.Single(bundle.Manifest.InlineWorkflows) with { Sites = ["root/99"] }]
         }, bundle.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()));
+
         var digest = ArtifactDigest.Of(archive);
         var verified = await WorkflowBundleArchive.ReadAsync(new MemoryStream(archive), digest);
         var store = new InMemoryWorkflowStateRepository();
-        await using (var bytes = await source.OpenAsync(leaf.ArtifactDigest!.Value)) await store.PutAsync(ArtifactKind.Bundle, bytes!);
+
+        await using (var bytes = await source.OpenAsync(leaf.ArtifactDigest!.Value))
+            await store.PutAsync(ArtifactKind.Bundle, bytes!);
+
         await store.RegisterWorkflowVersionAsync(leaf);
         await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(archive));
-        await store.RegisterWorkflowVersionAsync(middle with { ArtifactDigest = digest, PublishedDraft = null, ManifestJson = JsonSerializer.Serialize(verified.Manifest) });
-        var report = await new WorkflowPublisher(store, store, Options()).ValidateAsync(new("Caller", 1, "workflow", Caller("Caller", "Middle")));
+
+        await store.RegisterWorkflowVersionAsync(middle with
+        {
+            ArtifactDigest = digest, PublishedDraft = null, ManifestJson = JsonSerializer.Serialize(verified.Manifest)
+        });
+
+        var report = await new WorkflowPublisher(store, store, Options()).ValidateAsync(new("Caller", 1, "workflow",
+            Caller("Caller", "Middle")));
+
         Assert.Equal("PUB013", Assert.Single(report.Diagnostics).Code);
     }
 }

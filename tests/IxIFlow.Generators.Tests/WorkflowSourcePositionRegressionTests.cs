@@ -21,11 +21,13 @@ public sealed class WorkflowSourcePositionRegressionTests
                 : "  - kind: activity\n    activity: ") +
             "IxIFlow.Generators.Tests.WorkflowSourcePositionRegressionTests.StringActivity\n" +
             (block ? "    defaults:\n      Value: true\n      Other: false\n" : "    defaults: {Value: true, Other: false}\n");
+
         var document = WorkflowYamlSerializer.Read(yaml);
         DocumentNode activity = template ? document.Activities["echo"] : document.Definitions[0];
         var result = WorkflowCompilation.Compile(WorkflowSourceTranslator.Translate(document, "positions.yaml"));
         var errors = result.Diagnostics.Where(item => item.Code == "CS0029").ToArray();
         Assert.Equal(2, errors.Length);
+
         foreach (var (property, token) in new[] { ("Value", "true"), ("Other", "false") })
         {
             var lines = yaml.Split('\n');
@@ -43,9 +45,11 @@ public sealed class WorkflowSourcePositionRegressionTests
     public void TargetErrorsPointAtThePropertyToken(string target, int indentation)
     {
         var indent = new string(' ', indentation);
+
         var yaml = $"workflow:\n{indent}name: Positions\n{indent}dataType: IxIFlow.Generators.Tests.FlowData\ndefinitions:\n" +
             $"{indent}- kind: activity\n{indent}  activity: IxIFlow.Generators.Tests.WorkflowSourcePositionRegressionTests.StringActivity\n" +
             $"{indent}  input:\n{indent}    - target: {target}\n{indent}      from: {{kind: constant, value: text}}\n";
+
         var result = WorkflowCompilation.Compile(WorkflowSourceTranslator.Translate(yaml, "positions.yaml"));
         var error = Assert.Single(result.Diagnostics, item => item.Code == "CS1061");
         Assert.Equal("positions.yaml", error.Path);
@@ -59,6 +63,7 @@ public sealed class WorkflowSourcePositionRegressionTests
         var yaml = "workflow:\n  name: Positions\n  dataType: IxIFlow.Generators.Tests.FlowData\ndefinitions:\n" +
             "  - kind: activity\n    activity: IxIFlow.Generators.Tests.WorkflowSourcePositionRegressionTests.StringActivity\n" +
             "    output:\n      - source: Output\n        to: {path: workflow.Note}\n";
+
         var result = WorkflowCompilation.Compile(WorkflowSourceTranslator.Translate(yaml, "positions.yaml"));
         var error = Assert.Single(result.Diagnostics, item => item.Code == "CS1061");
         Assert.Equal("positions.yaml", error.Path);

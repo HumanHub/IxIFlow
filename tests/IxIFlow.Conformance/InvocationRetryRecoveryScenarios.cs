@@ -29,11 +29,12 @@ public sealed class InvocationRetryRecoveryScenarios
         Assert.Equal(WorkflowStatus.Failed, failed.Status);
         await second.Client.RecoverAsync(id);
         await Success(second.Client, id);
-        var record = Record((await second.Store.GetWorkflowInstanceAsync(id))!);
-        Assert.Equal(before.Id, record.Id);
-        Assert.Equal(before.Attempts[0].Id, record.Attempts[0].Id);
-        Assert.Equal(2, record.Attempts.Count);
-        Assert.Equal(1, record.ScheduledRetries);
+        await InvocationTraceAssertions.PrunedAsync(second.Store, id);
+        var attempts = await InvocationTraceAssertions.AttemptsAsync(second.Store, id, parent);
+        Assert.Equal(before.Id, Assert.Single(attempts.Select(attempt => attempt.InvocationId).Distinct()));
+        Assert.Equal(before.Attempts[0].Id, attempts[0].PolicyAttemptId);
+        Assert.Equal(2, attempts.Length);
+        Assert.Single(await InvocationTraceAssertions.RetriesAsync(second.Store, id));
         Assert.Equal(2, fixture.Ledger.Calls);
         Assert.Single((await second.Client.GetTraceAsync(id)).Select(e => e.Payload).OfType<RetryTrace>());
     }
@@ -59,7 +60,8 @@ public sealed class InvocationRetryRecoveryScenarios
         await second.Client.RecoverAsync(id);
         await Success(second.Client, id);
         Assert.Equal(2, (await second.Store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: id))).Items.Count);
-        Assert.Equal(1, Record((await second.Store.GetWorkflowInstanceAsync(id))!).ScheduledRetries);
+        await InvocationTraceAssertions.PrunedAsync(second.Store, id);
+        Assert.Single(await InvocationTraceAssertions.RetriesAsync(second.Store, id));
         await second.Store.DeleteWorkflowInstanceAsync(attempt.ChildInstanceId!);
         var repeated = await second.Store.CommitWorkflowInstanceAsync(fault.Captured);
         Assert.Equal(WorkflowCommitStatus.AlreadyApplied, repeated.Status);
@@ -122,20 +124,30 @@ public sealed class InvocationRetryRecoveryScenarios
     {
         await using var fixture = await InvocationRetryProfile.Create(profile);
         var fault = new InvocationRetryFault();
-        var first = await fixture.Open(services => services.AddSingleton(new ExecutionLimits { MaxCheckpointBytes = 18_000, VerifyCheckpointParts = true }), fault);
+
+        var first = await fixture.Open(
+            services => services.AddSingleton(new ExecutionLimits { MaxCheckpointBytes = 18_000, VerifyCheckpointParts = true }), fault);
+
         var child = Workflow.Create<Data>("ResolutionRetryChild").Build();
         await fixture.Catalog.RegisterWorkflowAsync(child);
+
         var parent = new WorkflowBuilder<Data, object>([], "SavedResolutionInvocation")
             .Invoke<Data>(child.Name, 1, setup => setup.Input(data => data.Value).From(_ => new string('x', 100_000))
                 .OnError(error => error.ThenRetry(new RetryPolicy(1)))).Build();
+
         var stopped = await first.Client.RunAsync(parent, new Data());
         var target = Assert.Single(await first.Client.GetPendingActivitiesAsync(stopped.InstanceId));
         fault.Before = InvocationRetryFault.Schedule;
         fault.Remaining = 3;
+
         await Assert.ThrowsAsync<WorkflowEngineException>(() => first.Client.ResolveAsync(stopped.InstanceId, target.InvocationId,
             ActivityResolution.Failed("observed", expectedPolicyAttemptId: target.PolicyAttemptId)));
+
         await first.DisposeAsync();
-        var second = await fixture.Open(services => services.AddSingleton(new ExecutionLimits { MaxCheckpointBytes = 18_000, VerifyCheckpointParts = true }));
+
+        var second = await fixture.Open(services =>
+            services.AddSingleton(new ExecutionLimits { MaxCheckpointBytes = 18_000, VerifyCheckpointParts = true }));
+
         var saved = Record((await second.Store.GetWorkflowInstanceAsync(stopped.InstanceId))!);
         Assert.Equal(target.PolicyAttemptId, Assert.Single(saved.Attempts).Decision!.PolicyAttemptId);
         Assert.Equal(0, saved.ScheduledRetries);
@@ -143,12 +155,18 @@ public sealed class InvocationRetryRecoveryScenarios
         var next = Assert.Single(await second.Client.GetPendingActivitiesAsync(stopped.InstanceId));
         Assert.NotEqual(target.PolicyAttemptId, next.PolicyAttemptId);
         Assert.Equal(1, Record((await second.Store.GetWorkflowInstanceAsync(stopped.InstanceId))!).ScheduledRetries);
-        foreach (var decision in new[] { ActivityResolution.Failed("stale", expectedPolicyAttemptId: target.PolicyAttemptId),
-                     ActivityResolution.CompletedInvocation(new Data(), expectedPolicyAttemptId: target.PolicyAttemptId) })
+
+        foreach (var decision in new[]
+                 {
+                     ActivityResolution.Failed("stale", expectedPolicyAttemptId: target.PolicyAttemptId),
+                     ActivityResolution.CompletedInvocation(new Data(), expectedPolicyAttemptId: target.PolicyAttemptId)
+                 })
             Assert.Equal(WorkflowErrorKind.InvalidState, (await Assert.ThrowsAsync<WorkflowEngineException>(() =>
                 second.Client.ResolveAsync(stopped.InstanceId, target.InvocationId, decision))).Kind);
+
         Assert.Single((await second.Client.GetTraceAsync(stopped.InstanceId)).Select(e => e.Payload).OfType<ActivityResolutionTrace>());
         Assert.Empty((await second.Store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: stopped.InstanceId))).Items);
+
         await second.Client.ResolveAsync(stopped.InstanceId, next.InvocationId,
             ActivityResolution.CompletedInvocation(new Data(), expectedPolicyAttemptId: next.PolicyAttemptId));
     }
@@ -160,9 +178,16 @@ public sealed class InvocationRetryRecoveryScenarios
         var body = System.Text.Encoding.UTF8.GetBytes("\"new-invocation-body\"");
         var reference = PayloadReference.Of(body);
         var missing = PayloadReference.Of("missing-dependency"u8.ToArray());
-        var fault = new InvocationRetryFault { Remaining = 3,
-            RejectPayload = commit => commit.WithPayloadBodies([new(reference, body, []),
-                new(PayloadReference.Of("dependent-body"u8.ToArray()), "dependent-body"u8.ToArray(), [missing])]) };
+
+        var fault = new InvocationRetryFault
+        {
+            Remaining = 3,
+            RejectPayload = commit => commit.WithPayloadBodies([
+                new(reference, body, []),
+                new(PayloadReference.Of("dependent-body"u8.ToArray()), "dependent-body"u8.ToArray(), [missing])
+            ])
+        };
+
         var first = await fixture.Open(fault: fault);
         var parent = await Definitions(fixture, new RetryPolicy(1));
         var id = await first.Client.StartAsync(parent, new Data());
@@ -179,39 +204,62 @@ public sealed class InvocationRetryRecoveryScenarios
         Assert.DoesNotContain(await second.Client.GetTraceAsync(id), entry => entry.Payload is InvocationTrace { AttemptNumber: 2 });
         await second.Client.RecoverAsync(id);
         await Success(second.Client, id);
-        var final = Record((await second.Store.GetWorkflowInstanceAsync(id))!);
-        Assert.Equal(proposed.ChildInstanceId, final.Attempts[1].ChildInstanceId);
-        Assert.Equal(2, final.Attempts.Count);
-        Assert.Equal(1, final.ScheduledRetries);
+        await InvocationTraceAssertions.PrunedAsync(second.Store, id);
+        var final = await InvocationTraceAssertions.AttemptsAsync(second.Store, id, parent);
+        Assert.Equal(proposed.ChildInstanceId, final[1].ChildInstanceId);
+        Assert.Equal(2, final.Length);
+        Assert.Single(await InvocationTraceAssertions.RetriesAsync(second.Store, id));
         var child = (await second.Store.GetWorkflowInstanceAsync(proposed.ChildInstanceId))!;
         Assert.NotEqual(proposed.ParentWaitId, child.ParentWaitId);
         Assert.NotNull(await second.Store.GetWaitAsync(id, child.ParentWaitId!));
     }
 
-    internal static InvocationRecordState Record(WorkflowInstance saved) => Assert.Single(ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords.Values);
-    private static InvocationRecordState? RecordOrNull(WorkflowInstance saved) => ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords.Values.SingleOrDefault();
-    internal static async Task Success(IWorkflowClient client, string id, TimeSpan delay = default) => Assert.Equal(WorkflowExecutionStatus.Success,
+    internal static InvocationRecordState Record(WorkflowInstance saved) =>
+        Assert.Single(ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords.Values);
+
+    private static InvocationRecordState? RecordOrNull(WorkflowInstance saved) =>
+        ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords.Values.SingleOrDefault();
+
+    internal static async Task Success(IWorkflowClient client, string id, TimeSpan delay = default) => Assert.Equal(
+        WorkflowExecutionStatus.Success,
         (await InvocationRetryProfile.Finished(client, id, delay)).Status);
 
-    private static async Task<WorkflowDefinition> Definitions(InvocationRetryProfile fixture, RetryPolicy policy, bool waitOnSuccess = false)
+    private static async Task<WorkflowDefinition> Definitions(InvocationRetryProfile fixture, RetryPolicy policy,
+        bool waitOnSuccess = false)
     {
         var childBuilder = Workflow.Create<Data>("RecoveredRetryChild").Step<FailOnce>();
         var child = waitOnSuccess ? childBuilder.WaitFor<Signal>("finish").Build() : childBuilder.Build();
         await fixture.Catalog.RegisterWorkflowAsync(child);
+
         var parent = new WorkflowBuilder<Data, object>([], "RecoveredRetryInvocation")
             .Invoke<Data>(child.Name, 1, setup => setup.OnError(error => error.ThenRetry(policy))).Build();
+
         await fixture.Catalog.RegisterWorkflowAsync(parent);
+
         return parent;
     }
 
-    public sealed class Data { public string Value { get; set; } = ""; public int Cleanup { get; set; } }
+    public sealed class Data
+    {
+        public string Value { get; set; } = "";
+        public int Cleanup { get; set; }
+    }
+
     public sealed class Signal;
-    public sealed class Ledger { public int Calls; public int Failures = 1; }
+
+    public sealed class Ledger
+    {
+        public int Calls;
+        public int Failures = 1;
+    }
+
     public sealed class FailOnce(Ledger ledger) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
-            if (Interlocked.Increment(ref ledger.Calls) <= ledger.Failures) throw new InvalidOperationException("first child failed");
+            if (Interlocked.Increment(ref ledger.Calls) <= ledger.Failures)
+                throw new InvalidOperationException("first child failed");
+
             return Task.CompletedTask;
         }
     }

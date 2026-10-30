@@ -16,8 +16,13 @@ public sealed class WorkflowReceiptConversionTests
         var draft = await store.SaveDefinitionAsync(new("Receipt", 1, "workflow", "source"), null, "author");
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream([1]));
         var contract = WorkflowContract.OfType(typeof(object));
+
         var row = await store.PublishDefinitionAsync(draft.Id, new(draft.Name, draft.Version, "hash", contract.ToJson(), contract.Hash,
-            Descriptor: new WorkflowDescriptor(draft.Name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), [], ArtifactDigest: digest, PublishedDraft: draft.Id, ManifestJson: "{}"), store, "publisher");
+            Descriptor: new WorkflowDescriptor(draft.Name, "", [], null, null,
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), [], ArtifactDigest: digest, PublishedDraft: draft.Id,
+            ManifestJson: "{}"), store, "publisher");
+
         var result = new WorkflowPublishResult(WorkflowDraftKinds.Workflow, row, null, null, []);
         Assert.True(result.Success);
         Assert.Equal(draft.Id, result.Receipt!.Draft);

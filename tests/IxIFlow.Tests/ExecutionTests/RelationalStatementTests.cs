@@ -9,7 +9,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public class RelationalStatementTests
 {
     [Theory]
-    [InlineData(typeof(SqlWorkflowStateRepository), null)]
+    [InlineData(typeof(SqlServerWorkflowStateRepository), null)]
     [InlineData(typeof(PostgreSqlWorkflowStateRepository), "")]
     [InlineData(typeof(SqliteWorkflowStateRepository), " ")]
     public void MissingStatementNamesProviderAndStatement(Type publicStore, string? sql)
@@ -17,6 +17,7 @@ public class RelationalStatementTests
         // Inspect the internal contract without granting the test assembly friend access.
         var provider = publicStore.Assembly.GetTypes().Single(type =>
             type.BaseType?.Name == "RelationalWorkflowStateRepository");
+
         var protocol = provider.BaseType!;
         var statement = Enum.Parse(protocol.GetNestedType("Statement", BindingFlags.NonPublic)!, "InsertCommit");
         var require = protocol.GetMethod("RequireSql", BindingFlags.Instance | BindingFlags.NonPublic)!;

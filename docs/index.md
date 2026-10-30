@@ -5,7 +5,7 @@ description: Author, run and operate durable .NET 10 workflows.
 
 IxIFlow is a durable workflow engine for .NET 10 and C#. Author a typed definition with the fluent API or YAML, run it through `IWorkflowClient`, and choose a store for checkpoints, inboxes, waits, traces and completion deliveries.
 
-These guides describe the engine as it is today. Features still planned for 1.0 are identified explicitly in the [roadmap](roadmap.md).
+These guides describe IxIFlow 1.0. The [roadmap](roadmap.md) describes features outside this release.
 
 ## Guides
 
@@ -37,9 +37,10 @@ These guides describe the engine as it is today. Features still planned for 1.0 
 | [Inspection and replay](inspection-and-replay.md) | Saved revisions, thread frames, paged traces and read-only replay |
 | [Tracing and observability](observability.md) | Committed history, snapshots, OpenTelemetry and logging |
 | [Marking and redaction](redaction.md) | Classified members, inspection erasure and optional HMAC pseudonyms |
+| [Diagnostics](diagnostics.md) | Analyzer and YAML diagnostic IDs and their meaning |
 | [Architecture](architecture.md) | Runtime boundaries and packages |
 | [Engine capabilities](engine-capabilities.md) | A compact guide to available behavior |
-| [Roadmap](roadmap.md) | Remaining 1.0 work and later features |
+| [Roadmap](roadmap.md) | Features after 1.0 |
 
 ## Examples
 

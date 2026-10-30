@@ -35,7 +35,6 @@ public interface ICatchActivitySetupInputBuilder<TWorkflowData, TActivity, TProp
     where TActivity : class, IAsyncActivity
     where TPreviousStepData : class
 {
-
     /// <summary>
     /// Specifies the source of the input value with access to exception context
     /// </summary>

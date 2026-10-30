@@ -13,16 +13,21 @@ public sealed class CancellationSampleTests
     [Theory, InlineData(false), InlineData(true)]
     public async Task FluentAndYamlApprovalMatchForCancellationAndCompletion(bool cancel)
     {
-        var fluent = CancellationApproval.Definition(); var yaml = GeneratedDefinition();
+        var fluent = CancellationApproval.Definition();
+        var yaml = GeneratedDefinition();
         Assert.Equal(WorkflowDefinitionValidator.Inspect(fluent), WorkflowDefinitionValidator.Inspect(yaml));
+
         foreach (var definition in new[] { fluent, yaml })
         {
             await using var services = new ServiceCollection().AddIxIFlow().Services.BuildServiceProvider();
             var client = services.GetRequiredService<IWorkflowClient>();
             var idle = await client.RunAsync(definition, new CancellationApprovalData());
             Assert.Equal(WorkflowExecutionStatus.Suspended, idle.Status);
-            var done = cancel ? await client.CancelAsync(idle.InstanceId, new() { ReasonCode = "withdraw" }) :
-                await client.ResumeAsync(idle.InstanceId, "approval", new CancellationApprovalSignal());
+
+            var done = cancel
+                ? await client.CancelAsync(idle.InstanceId, new() { ReasonCode = "withdraw" })
+                : await client.ResumeAsync(idle.InstanceId, "approval", new CancellationApprovalSignal());
+
             Assert.Equal(cancel ? WorkflowExecutionStatus.Cancelled : WorkflowExecutionStatus.Success, done.Status);
             Assert.Equal(cancel ? "withdrawn" : "approved", Assert.IsType<CancellationApprovalData>(done.WorkflowData).State);
         }

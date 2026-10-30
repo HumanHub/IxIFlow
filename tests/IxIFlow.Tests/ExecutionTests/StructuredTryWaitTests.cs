@@ -52,6 +52,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<TryData>("WaitInTry")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval")
@@ -85,6 +86,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<TryData>("FailureAfterWait")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>())
@@ -132,6 +134,7 @@ public class StructuredTryWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         string instanceId;
+
         using (var firstProvider = CreateServices(repository))
         {
             var engine = firstProvider.GetRequiredService<IWorkflowClient>();
@@ -141,8 +144,10 @@ public class StructuredTryWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
+
         await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(CatchWaitWorkflow());
+
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "review", new Approval());
 
@@ -156,6 +161,7 @@ public class StructuredTryWaitTests
     public async Task ParallelFailureIsCaughtByTheEnclosingTry()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("ParallelFailureInTry")
             .Step<StartActivity>()
             .Try(body => body.Parallel(parallel => parallel
@@ -184,6 +190,7 @@ public class StructuredTryWaitTests
     public async Task WaitAny_RunsLosingBranchFinallyBeforeContinuing()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("WaitAnyCleanup")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -207,7 +214,8 @@ public class StructuredTryWaitTests
             .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        // The loser's Finally ran before the next step; its write was discarded with the loser (D-14).
+
+        // The loser's Finally ran before the next step; its write was discarded with the loser.
         Assert.Equal(["Body:1", "Finally:1", "After:1"], services.GetRequiredService<StepLog>().Entries);
         Assert.Equal(0, Data(result).Finally);
     }
@@ -216,6 +224,7 @@ public class StructuredTryWaitTests
     public async Task WaitAny_RunsNestedFinallyBlocksBeforeContinuing()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("NestedWaitAnyCleanup")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -253,6 +262,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<TryData>("WaitAnyCleanupWait")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -288,6 +298,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<TryData>("ExistingFinallyWait")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -322,6 +333,7 @@ public class StructuredTryWaitTests
     public async Task WaitAny_FinishesParallelWorkInsideLosingBranchFinally()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("ParallelCleanup")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -355,6 +367,7 @@ public class StructuredTryWaitTests
             .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+
         // The cleanup's own parallel merges into the loser's copy, so the step after it counts 2.
         var log = services.GetRequiredService<StepLog>().Entries;
         Assert.Equal("Body:1", log[0]);
@@ -367,6 +380,7 @@ public class StructuredTryWaitTests
     public async Task WaitAny_FinishesNestedTryAndFollowingStepsInsideLosingBranchFinally()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("NestedTryCleanup")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -404,6 +418,7 @@ public class StructuredTryWaitTests
     public async Task WaitAny_FailingLosingBranchFinallyDoesNotRetryItsActivity()
     {
         using var services = CreateServicesWithCleanupProbe();
+
         var definition = Workflow.Create<TryData>("FailingCleanup")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -417,10 +432,13 @@ public class StructuredTryWaitTests
             .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
+
         var saved = await services.GetRequiredService<IWorkflowStateRepository>()
             .GetWorkflowInstanceAsync(result.InstanceId);
+
         Assert.True(result.ErrorMessage?.Contains("cleanup failed") == true,
             $"{result.ErrorMessage}\n{saved?.LastErrorStackTrace}");
+
         Assert.Equal(1, services.GetRequiredService<CleanupAttemptProbe>().Attempts);
     }
 
@@ -429,6 +447,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<TryData>("OpaqueCatch")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval").Step<ThrowOpaqueActivity>())
@@ -453,6 +472,7 @@ public class StructuredTryWaitTests
     public async Task OpaqueExceptionSurvivesWaitInFinallyAndStillFaultsWorkflow()
     {
         var repository = new InMemoryWorkflowStateRepository();
+
         var definition = Workflow.Create<TryData>("OpaqueFinallyWait")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowOpaqueActivity>())
@@ -463,17 +483,21 @@ public class StructuredTryWaitTests
             .Build();
 
         string instanceId;
+
         using (var firstProvider = CreateServices(repository))
         {
             var started = await firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new TryData());
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
 
         using var secondProvider = CreateServices(repository);
+
         await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(definition);
+
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "cleanup", new Approval());
 
@@ -486,6 +510,7 @@ public class StructuredTryWaitTests
     public async Task OpaqueExceptionCanParkInsideCatchWhenNoPropertiesAreSelected()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("OpaqueCatchWait")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowOpaqueActivity>())
@@ -497,6 +522,7 @@ public class StructuredTryWaitTests
             .Build();
 
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var started = await engine
             .RunAsync(definition, new TryData());
 
@@ -510,6 +536,7 @@ public class StructuredTryWaitTests
     public async Task OpaqueInnerExceptionCanParkInsideCatchWhenNotSelected()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("OpaqueInnerCatchWait")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowOuterOpaqueActivity>())
@@ -521,6 +548,7 @@ public class StructuredTryWaitTests
             .Build();
 
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var started = await engine
             .RunAsync(definition, new TryData());
 
@@ -534,6 +562,7 @@ public class StructuredTryWaitTests
     public async Task OpaqueParallelFailureKeepsItsMessageAfterSiblingCleanup()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("OpaqueParallelFailure")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -551,7 +580,8 @@ public class StructuredTryWaitTests
 
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal("opaque 17", result.ErrorMessage);
-        // The sibling's Finally ran; a failed join merges nothing (D-14).
+
+        // The sibling's Finally ran; a failed join merges nothing.
         Assert.Equal(["Finally:1"], services.GetRequiredService<StepLog>().Entries);
         Assert.Equal(0, Data(result).Finally);
     }
@@ -565,6 +595,7 @@ public class StructuredTryWaitTests
         collection.AddTransient<WaitForCancellationActivity>();
         collection.AddIxIFlow();
         using var services = collection.BuildServiceProvider();
+
         var definition = Workflow.Create<TryData>("CallerCancellationCleanup")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("begin")
@@ -573,14 +604,17 @@ public class StructuredTryWaitTests
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
+
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
         var running = engine.ResumeAsync(started.InstanceId, "begin", new Approval());
         await services.GetRequiredService<CancellationProbe>().Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
         await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
+
         var result = await running.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.Equal(WorkflowExecutionStatus.Cancelled, result.Status);
@@ -592,6 +626,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<TryData>("RemoteCancellationCleanup")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval"))
@@ -602,6 +637,7 @@ public class StructuredTryWaitTests
                 .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.After)
                 .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.After))
             .Build();
+
         var started = await engine.RunAsync(definition, new TryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
 
@@ -618,6 +654,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<TryData>("RemoteCancellationWaitCleanup")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval"))
@@ -626,10 +663,12 @@ public class StructuredTryWaitTests
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
+
         var started = await engine.RunAsync(definition, new TryData());
 
         var cleaning = await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "withdrawn" });
+
         Assert.Equal(WorkflowExecutionStatus.Suspended, cleaning.Status);
         var completed = await engine.ResumeAsync(started.InstanceId, "cleanup", new Approval());
 
@@ -646,6 +685,7 @@ public class StructuredTryWaitTests
         collection.AddTransient<WaitForCancellationActivity>();
         collection.AddIxIFlow();
         using var services = collection.BuildServiceProvider();
+
         var definition = Workflow.Create<TryData>("CallerCancellationWaitCleanup")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("begin")
@@ -655,10 +695,12 @@ public class StructuredTryWaitTests
                     .Input(activity => activity.Count).From(ctx => ctx.WorkflowData.Finally)
                     .Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
+
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(definition, new TryData());
         var resuming = engine.ResumeAsync(started.InstanceId, "begin", new Approval());
         await services.GetRequiredService<CancellationProbe>().Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
         await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
 
@@ -678,19 +720,23 @@ public class StructuredTryWaitTests
         collection.AddTransient<ManualCleanupActivity>();
         collection.AddIxIFlow();
         using var services = collection.BuildServiceProvider();
+
         var definition = Workflow.Create<TryData>("CallerCancellationDuringFinally")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("begin"))
             .Finally(body => body.Step<ManualCleanupActivity>(setup => setup
                 .Output(activity => activity.Completed).To(ctx => ctx.WorkflowData.Finally)))
             .Build();
+
         var engine = services.GetRequiredService<IWorkflowClient>();
         var started = await engine.RunAsync(definition, new TryData());
         var resuming = engine.ResumeAsync(started.InstanceId, "begin", new Approval());
         var probe = services.GetRequiredService<ManualCleanupProbe>();
         await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
         await engine.CancelAsync(started.InstanceId,
             new CancellationReason { ReasonCode = "operator" });
+
         probe.Release.SetResult();
 
         var result = await resuming.WaitAsync(TimeSpan.FromSeconds(5));
@@ -702,6 +748,7 @@ public class StructuredTryWaitTests
     public async Task UncaughtParallelFailureRunsSiblingFinallyBeforeFaulting()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("UncaughtParallelFailure")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -735,6 +782,7 @@ public class StructuredTryWaitTests
         services.AddTransient<LoggedCountActivity>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
+
         var definition = Workflow.Create<TryData>("NestedFinallyJoin")
             .Step<StartActivity>()
             .Parallel(outer => outer
@@ -771,6 +819,7 @@ public class StructuredTryWaitTests
         services.AddTransient<ThrowLosingCleanupActivity>();
         services.AddIxIFlow();
         using var provider = services.BuildServiceProvider();
+
         var definition = Workflow.Create<TryData>("NestedJoinFailure")
             .Step<StartActivity>()
             .Parallel(outer => outer
@@ -793,6 +842,7 @@ public class StructuredTryWaitTests
     public async Task CancellationCleanupRunsItsOwnCatchAndFinally()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("HandledCleanupFailure")
             .Step<StartActivity>()
             .Parallel(parallel => parallel.WaitAny()
@@ -827,6 +877,7 @@ public class StructuredTryWaitTests
     public async Task FailureInParallelCleanupBypassesOuterForwardCatch()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("ParallelCleanupFailure")
             .Step<StartActivity>()
             .Try(body => body.Parallel(parallel => parallel.WaitAny()
@@ -862,6 +913,7 @@ public class StructuredTryWaitTests
         services.AddIxIFlow();
         services.AddSingleton<IWorkflowStateRepository>(new BoundedCheckpointStore());
         using var provider = services.BuildServiceProvider();
+
         var definition = Workflow.Create<TryData>("ParallelInsideFinallyFailure")
             .Step<StartActivity>()
             .Try(body => body.Step<StartActivity>())
@@ -884,6 +936,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<TryData>("UncaughtParallelCleanupWait")
             .Step<StartActivity>()
             .Parallel(parallel => parallel
@@ -912,6 +965,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<TryData>("ParallelInsideCatch")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>())
@@ -920,7 +974,9 @@ public class StructuredTryWaitTests
                 .Parallel(parallel => parallel.Do(branch => branch.Step<ReadErrorActivity>(setup => setup
                     .Output(activity => activity.Message).To(ctx => ctx.WorkflowData.Error)))))
             .Build();
+
         var catchActivity = definition.Steps[1].CatchBlocks[0].SequenceSteps[1].ParallelBranches[0][0];
+
         catchActivity.InputMappings.Add(new PropertyMapping
         {
             TargetProperty = nameof(ReadErrorActivity.Message),
@@ -943,6 +999,7 @@ public class StructuredTryWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         string instanceId;
+
         using (var firstProvider = CreateServices(repository))
         {
             var engine = firstProvider.GetRequiredService<IWorkflowClient>();
@@ -952,8 +1009,10 @@ public class StructuredTryWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
+
         await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(CustomErrorWorkflow());
+
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "review", new Approval());
 
@@ -967,6 +1026,7 @@ public class StructuredTryWaitTests
     {
         Assert.Null(typeof(FaultContext<TryData, EmptyFault, StartActivity>)
             .GetProperty("Exception"));
+
         Assert.Null(typeof(EmptyFault).GetProperty("Message"));
     }
 
@@ -978,6 +1038,7 @@ public class StructuredTryWaitTests
             .Try(body => body.Step<ThrowCustomActivity>())
             .Catch<ApprovalException, MissingPropertyFault>(body => body.Step<StartActivity>())
             .Build());
+
         Assert.Contains("no matching public property", missing.Message);
 
         var mismatched = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<TryData>("WrongFaultFieldType")
@@ -985,6 +1046,7 @@ public class StructuredTryWaitTests
             .Try(body => body.Step<ThrowCustomActivity>())
             .Catch<ApprovalException, WrongCodeFault>(body => body.Step<StartActivity>())
             .Build());
+
         Assert.Contains("has type", mismatched.Message);
 
         var callback = EngineAssert.Fails(WorkflowErrorKind.InvalidDefinition, () => Workflow.Create<TryData>("DelegateFault")
@@ -992,6 +1054,7 @@ public class StructuredTryWaitTests
             .Try(body => body.Step<ThrowCallbackActivity>())
             .Catch<CallbackException, DelegateFault>(body => body.Step<StartActivity>())
             .Build());
+
         Assert.Contains("cannot be checkpointed", callback.Message);
     }
 
@@ -999,6 +1062,7 @@ public class StructuredTryWaitTests
     public async Task UnselectedDelegateOnExceptionDoesNotEnterCheckpoint()
     {
         var repository = new InMemoryWorkflowStateRepository();
+
         var definition = Workflow.Create<TryData>("CallbackExceptionCatch")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowCallbackActivity>())
@@ -1010,20 +1074,25 @@ public class StructuredTryWaitTests
             .Build();
 
         string instanceId;
+
         using (var firstProvider = CreateServices(repository))
         {
             var started = await firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new TryData());
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             Assert.Equal("callback failure", Data(started).Error);
             instanceId = started.InstanceId;
         }
 
         using var secondProvider = CreateServices(repository);
+
         await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(definition);
+
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "review", new Approval());
+
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal("callback failure", Data(completed).Error);
     }
@@ -1072,18 +1141,22 @@ public class StructuredTryWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         string instanceId;
+
         using (var firstProvider = CreateServices(repository))
         {
             var started = await firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(MarkedObjectWorkflow(), new TryData());
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             Assert.Equal(0, Data(started).After);
             instanceId = started.InstanceId;
         }
 
         using var secondProvider = CreateServices(repository);
+
         await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(MarkedObjectWorkflow());
+
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "review", new Approval());
 
@@ -1110,6 +1183,7 @@ public class StructuredTryWaitTests
     public async Task NullExceptionDetailUsesConditionalFallbackAcrossWait()
     {
         var repository = new InMemoryWorkflowStateRepository();
+
         var definition = Workflow.Create<TryData>("NullableFaultDetail")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowNullableDetailsActivity>())
@@ -1122,18 +1196,22 @@ public class StructuredTryWaitTests
             .Build();
 
         string instanceId;
+
         using (var firstProvider = CreateServices(repository))
         {
             var started = await firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new TryData());
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             Assert.Equal("fallback", Data(started).Error);
             instanceId = started.InstanceId;
         }
 
         using var secondProvider = CreateServices(repository);
+
         await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(definition);
+
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "review", new Approval());
 
@@ -1155,7 +1233,8 @@ public class StructuredTryWaitTests
     public void ExceptionCheckpointVerifiesCustomPropertiesAndInnerExceptions()
     {
         var saved = SerializedException.Capture(new InvalidOperationException(
-            "outer", new ApprovalException("custom failure", 42)), new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true);
+                "outer", new ApprovalException("custom failure", 42)), new WorkflowScopeCatalog(new WorkflowDefinition()),
+            new ExecutionCheckpoint(), null, newOccurrence: true);
 
         Assert.True(saved.IsRestorable, saved.RestorationFailureReason);
         var restored = Assert.IsType<InvalidOperationException>(saved.Restore());
@@ -1166,7 +1245,8 @@ public class StructuredTryWaitTests
     [Fact]
     public void ExceptionCheckpointRejectsCustomPropertyOmittedByConstructor()
     {
-        var saved = SerializedException.Capture(new MutableApprovalException("custom failure") { Code = 42 }, new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true);
+        var saved = SerializedException.Capture(new MutableApprovalException("custom failure") { Code = 42 },
+            new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true);
 
         Assert.False(saved.IsRestorable);
         Assert.Contains("Code", saved.RestorationFailureReason);
@@ -1178,7 +1258,8 @@ public class StructuredTryWaitTests
         var error = new InvalidOperationException("business failure");
         error.Data["decision"] = "declined";
 
-        var saved = SerializedException.Capture(error, new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true);
+        var saved = SerializedException.Capture(error, new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null,
+            newOccurrence: true);
 
         Assert.False(saved.IsRestorable);
         Assert.Contains("Data", saved.RestorationFailureReason);
@@ -1188,6 +1269,7 @@ public class StructuredTryWaitTests
     public async Task UnrestorableCustomPropertyIsStillAvailableToLiveCatch()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("MutableCatchNoWait")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowMutableApprovalActivity>())
@@ -1207,6 +1289,7 @@ public class StructuredTryWaitTests
     public async Task UnselectedCustomPropertyDoesNotBlockCatchWait()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("MutableCatchWait")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowMutableApprovalActivity>())
@@ -1221,8 +1304,10 @@ public class StructuredTryWaitTests
             .RunAsync(definition, new TryData());
 
         Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
+
         var completed = await services.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(result.InstanceId, "review", new Approval());
+
         Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
         Assert.Equal(1, Data(completed).Finally);
     }
@@ -1231,6 +1316,7 @@ public class StructuredTryWaitTests
     public async Task FailureInCatchRunsFinallyAndFaults()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("FailureInCatch")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>())
@@ -1257,6 +1343,7 @@ public class StructuredTryWaitTests
     public async Task FailureInCatchDoesNotEnterAnotherCatchOnTheSameTry()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("CatchFailureDoesNotMatchSibling")
             .Step<StartActivity>()
             .Try(body => body.Step<ThrowActivity>())
@@ -1280,6 +1367,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<TryData>("WaitInFinally")
             .Step<StartActivity>()
             .Try(body => body.Step<CountActivity>(setup => setup
@@ -1309,6 +1397,7 @@ public class StructuredTryWaitTests
     public async Task UnhandledFailureRunsFinallyAndFaults()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("UnhandledFailure")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval").Step<ThrowActivity>())
@@ -1384,8 +1473,10 @@ public class StructuredTryWaitTests
         services.AddSingleton<StepLog>();
         services.AddTransient<LoggedCountActivity>();
         services.AddIxIFlow();
+
         if (repository != null)
             services.AddSingleton(repository);
+
         return services.BuildServiceProvider();
     }
 
@@ -1396,6 +1487,7 @@ public class StructuredTryWaitTests
         services.AddSingleton<CleanupAttemptProbe>();
         services.AddTransient<ThrowOnceCleanupActivity>();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
@@ -1405,6 +1497,7 @@ public class StructuredTryWaitTests
     public async Task OutputMappingFailureRunsCatchAndFinally()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<OutputMappingData>("OutputMappingFailure")
             .Step<StartActivity>()
             .Try(body => body.Step<CountActivity>(setup => setup
@@ -1429,6 +1522,7 @@ public class StructuredTryWaitTests
     public async Task FaultProjectionFailureRunsFinallyAndReachesOuterCatch()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<TryData>("FaultProjectionFailure")
             .Step<StartActivity>()
             .Try(outer => outer
@@ -1456,6 +1550,7 @@ public class StructuredTryWaitTests
     {
         using var services = CreateServices();
         var engine = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<OutputMappingData>("WaitOutputMappingFailure")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval", null, setup => setup
@@ -1482,6 +1577,7 @@ public class StructuredTryWaitTests
     public async Task AcceptedWaitOutputFailureRecoversThroughCatchAfterRestart()
     {
         var repository = new InMemoryWorkflowStateRepository();
+
         var definition = Workflow.Create<OutputMappingData>("RecoveredWaitOutputFailure")
             .Step<StartActivity>()
             .Try(body => body.WaitFor<Approval>("approval", null, setup => setup
@@ -1494,33 +1590,44 @@ public class StructuredTryWaitTests
             .Build();
 
         string instanceId;
+
         using (var firstProvider = CreateServices(repository))
         {
             var started = await firstProvider.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new OutputMappingData());
+
             Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
             instanceId = started.InstanceId;
         }
 
         using var secondProvider = CreateServices(repository);
         await secondProvider.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
-        await repository.AppendEventAsync(new WorkflowEvent(instanceId, "accepted", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)),
+
+        await repository.AppendEventAsync(new WorkflowEvent(instanceId, "accepted",
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Approval)),
             System.Text.Json.JsonSerializer.Serialize(new Approval { Value = 1 }), "approval"));
+
         var saved = (await repository.GetWorkflowInstanceAsync(instanceId))!;
         var checkpoint = ExecutionCheckpoint.Read(saved.ExecutionStateJson);
         var wait = Assert.Single(checkpoint.Waits);
         var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
+
         continuation.AcceptedWait = new AcceptedWaitState
         {
             StepId = wait.StepId,
             Event = SerializedValue.From(new Approval { Value = 1 })!
         };
+
         checkpoint.Waits.Clear();
         continuation.Status = ContinuationStatus.Active;
         saved.Status = WorkflowStatus.Running;
         saved.ExecutionStateJson = System.Text.Json.JsonSerializer.Serialize(checkpoint);
-        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId, await StoreTestSupport.ClaimAsync(secondProvider))).Epoch, saved.Revision, Guid.NewGuid().ToString("N"),
+
+        await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved,
+            (await StoreTestSupport.LeaseAsync(repository, saved.InstanceId, await StoreTestSupport.ClaimAsync(secondProvider))).Epoch,
+            saved.Revision, Guid.NewGuid().ToString("N"),
             settlements: [new EventSettlement("accepted", EventOutcome.Consumed, wait.Id)], inboxReadThrough: 1));
+
         await StoreTestSupport.ReleaseAsync(repository, saved.InstanceId);
 
         var result = await secondProvider.GetRequiredService<IWorkflowClient>()
@@ -1551,7 +1658,12 @@ public class StructuredTryWaitTests
     public sealed class OutputMappingData
     {
         [System.Text.Json.Serialization.JsonIgnore]
-        public int RejectedOutput { get => 0; set => throw new InvalidOperationException("output mapping failed"); }
+        public int RejectedOutput
+        {
+            get => 0;
+            set => throw new InvalidOperationException("output mapping failed");
+        }
+
         public int FinallyCount { get; set; }
         public string? CaughtError { get; set; }
     }
@@ -1589,88 +1701,231 @@ public class StructuredTryWaitTests
 
     public sealed class BoundedCheckpointStore : IWorkflowStateRepository
     {
-        public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query) => _inner.ListWorkflowsAsync(query);
-        public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query) => _inner.ListWorkflowVersionsAsync(name, query);
-        public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope) => _inner.GetWorkflowVersionDetailAsync(name, version, scope);
-        public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query) => _inner.ListTemplatesAsync(query);
-        public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query) => _inner.ListTemplateVersionsAsync(key, query);
-        public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope) => _inner.GetTemplateDetailAsync(key, version, scope);
-        public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope) => _inner.ListStepDescriptorsAsync(scope);
-        public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query) => _inner.ListActivitiesAsync(query);
-    public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query) => _inner.ListActivityVersionsAsync(key, query);
-    public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider, CatalogScope scope) => _inner.GetActivityAsync(key, version, provider, scope);
-    public Task<CatalogPage<CatalogPackage>> ListPackagesAsync(CatalogPackageQuery query) => _inner.ListPackagesAsync(query);
-    public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query) => _inner.ListPackageVersionsAsync(id, query);
-    public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope) => _inner.GetPackageDetailAsync(id, version, scope);
-    public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query) => _inner.GetPackageActivitiesAsync(id, version, query);
-    public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity, int limit) => _inner.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit);
-    public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => _inner.RegisterTemplateVersionAsync(version, artifacts, actor);
-    public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version) => _inner.GetTemplateVersionAsync(key, version);
-    public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null) => _inner.GetTemplateVersionsAsync(key);
-    public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId, IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null) => _inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor);
-    public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope) => _inner.GetPackageHoldersAsync(id, version, scope);
-    public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _inner.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor);
-    public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected, string? actor = null) => _inner.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor);
-    public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _inner.RegisterPackageAsync(package, activities, artifacts, actor);
-    public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest, PackageActivities activities, IArtifactStore artifacts, string? actor = null) => _inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor);
-    public IArtifactStore? CatalogArtifacts { get => _inner.CatalogArtifacts; set => _inner.CatalogArtifacts = value; }
-    public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity, int limit) => _inner.GetPackageExtractionPageAsync(extraction, afterIdentity, limit);
-        public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null) => _inner.GetInstalledPackagesAsync(id);
-        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null) => _inner.GetPackagesAsync(id);
-        public Task<WorkflowPackage?> GetPackageAsync(string id, string version) => _inner.GetPackageAsync(id, version);
-        public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit) => _inner.GetPackagePageAsync(id, afterVersion, limit);
+        public Task<CatalogPage<CatalogWorkflow>> ListWorkflowsAsync(CatalogWorkflowQuery query,
+            CancellationToken cancellationToken = default) => _inner.ListWorkflowsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogWorkflowVersion>> ListWorkflowVersionsAsync(string name, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.ListWorkflowVersionsAsync(name, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogWorkflowVersionDetail?> GetWorkflowVersionDetailAsync(string name, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowVersionDetailAsync(name, version, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogTemplate>> ListTemplatesAsync(CatalogTemplateQuery query,
+            CancellationToken cancellationToken = default) => _inner.ListTemplatesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogTemplate>> ListTemplateVersionsAsync(string key, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.ListTemplateVersionsAsync(key, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogTemplateDetail?> GetTemplateDetailAsync(string key, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetTemplateDetailAsync(key, version, scope, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<CatalogStepDescriptor>> ListStepDescriptorsAsync(CatalogScope scope,
+            CancellationToken cancellationToken = default) => _inner.ListStepDescriptorsAsync(scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> ListActivitiesAsync(CatalogActivityQuery query,
+            CancellationToken cancellationToken = default) => _inner.ListActivitiesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> ListActivityVersionsAsync(string key, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.ListActivityVersionsAsync(key, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogActivityDetail?> GetActivityAsync(string key, string version, ActivityProviderSelector provider,
+            CatalogScope scope, CancellationToken cancellationToken = default) =>
+            _inner.GetActivityAsync(key, version, provider, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogPackage>>
+            ListPackagesAsync(CatalogPackageQuery query, CancellationToken cancellationToken = default) =>
+            _inner.ListPackagesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogPackage>> ListPackageVersionsAsync(string id, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.ListPackageVersionsAsync(id, query, cancellationToken: cancellationToken);
+
+        public Task<CatalogPackageDetail?> GetPackageDetailAsync(string id, string version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetPackageDetailAsync(id, version, scope, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<CatalogActivity>> GetPackageActivitiesAsync(string id, string version, CatalogVersionQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetPackageActivitiesAsync(id, version, query, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPendingPackageDependentsAsync(string missingPackageId, string? afterIdentity,
+            int limit, CancellationToken cancellationToken = default) =>
+            _inner.GetPendingPackageDependentsAsync(missingPackageId, afterIdentity, limit, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry> RegisterTemplateVersionAsync(IxIFlow.Templates.TemplateVersion version,
+            IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.RegisterTemplateVersionAsync(version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry?> GetTemplateVersionAsync(string key, int version,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetTemplateVersionAsync(key, version, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<IxIFlow.Templates.TemplateVersionEntry>> GetTemplateVersionsAsync(string? key = null,
+            CancellationToken cancellationToken = default) => _inner.GetTemplateVersionsAsync(key, cancellationToken: cancellationToken);
+
+        public Task<IxIFlow.Templates.TemplateVersionEntry> PublishTemplateDefinitionAsync(WorkflowDraftId draftId,
+            IxIFlow.Templates.TemplateVersion version, IArtifactStore artifacts, string? actor = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.PublishTemplateDefinitionAsync(draftId, version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageHolders> GetPackageHoldersAsync(string id, string version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetPackageHoldersAsync(id, version, scope, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> PublishPackageDefinitionAsync(WorkflowDraftId draftId, WorkflowPackage package,
+            PackageActivities activities, IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.PublishPackageDefinitionAsync(draftId, package, activities, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPackage> SetPackageWithdrawnAsync(string id, string version, bool withdrawn, CatalogMutationToken expected,
+            string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.SetPackageWithdrawnAsync(id, version, withdrawn, expected, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> RegisterPackageAsync(WorkflowPackage package, PackageActivities activities,
+            IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.RegisterPackageAsync(package, activities, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<PackageRegistration> CompletePackageExtractionAsync(string id, string version, ArtifactDigest expectedDigest,
+            PackageActivities activities, IArtifactStore artifacts, string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.CompletePackageExtractionAsync(id, version, expectedDigest, activities, artifacts, actor,
+                cancellationToken: cancellationToken);
+
+        public IArtifactStore? CatalogArtifacts
+        {
+            get => _inner.CatalogArtifacts;
+            set => _inner.CatalogArtifacts = value;
+        }
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackageExtractionPageAsync(PackageExtraction extraction, string? afterIdentity,
+            int limit, CancellationToken cancellationToken = default) =>
+            _inner.GetPackageExtractionPageAsync(extraction, afterIdentity, limit, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null,
+            CancellationToken cancellationToken = default) => _inner.GetInstalledPackagesAsync(id, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagesAsync(string? id = null, CancellationToken cancellationToken = default) =>
+            _inner.GetPackagesAsync(id, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPackage?> GetPackageAsync(string id, string version, CancellationToken cancellationToken = default) =>
+            _inner.GetPackageAsync(id, version, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowPackage>> GetPackagePageAsync(string id, string? afterVersion, int limit,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetPackagePageAsync(id, afterVersion, limit, cancellationToken: cancellationToken);
+
         public IPayloadStore PayloadStore => _inner.PayloadStore;
-        public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected) => _inner.DeleteDefinitionAsync(expected);
-        public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query) => _inner.GetDefinitionsAsync(query);
-        public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope) => _inner.GetRetirementBlockersAsync(name, version, scope);
-        public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter) => _inner.BeginPublicationAsync(draftId, hostId, actor, staleAfter);
-        public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId) => _inner.HeartbeatPublicationAsync(id, hostId);
-        public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome) => _inner.CompletePublicationAsync(id, hostId, outcome);
-        public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope) => _inner.GetPublicationAsync(id, scope);
-        public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query) => _inner.GetPublicationsAsync(query);
-        public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) => _inner.PurgePublicationsAsync(retention, batchSize, cancellationToken);
-        public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version) =>
-            _inner.GetDefinitionAsync(kind, name, version);
-        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null) =>
-            _inner.SaveDefinitionAsync(definition, expected, actor);
-        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null) =>
-            _inner.RegisterWorkflowVersionAsync(version, artifacts);
-        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version) =>
-            _inner.GetWorkflowVersionAsync(name, version);
-        public Task<long> GetCatalogRevisionAsync() => _inner.GetCatalogRevisionAsync();
-        public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision) => _inner.GetWorkflowVersionChangesAsync(afterRevision);
-        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null) =>
-            _inner.GetWorkflowVersionsAsync(name);
-        public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state, CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null) =>
-            _inner.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts, actor);
-        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts, string? actor = null) =>
-            _inner.PublishDefinitionAsync(draftId, version, artifacts, actor);
-        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+
+        public Task<bool> DeleteDefinitionAsync(WorkflowDraftId expected, CancellationToken cancellationToken = default) =>
+            _inner.DeleteDefinitionAsync(expected, cancellationToken: cancellationToken);
+
+        public Task<CatalogPage<WorkflowDraftSummary>> GetDefinitionsAsync(WorkflowDraftQuery query,
+            CancellationToken cancellationToken = default) => _inner.GetDefinitionsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<RetirementBlockers> GetRetirementBlockersAsync(string name, int version, CatalogScope scope,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetRetirementBlockersAsync(name, version, scope, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication> BeginPublicationAsync(WorkflowDraftId draftId, Guid hostId, string? actor, TimeSpan staleAfter,
+            CancellationToken cancellationToken = default) =>
+            _inner.BeginPublicationAsync(draftId, hostId, actor, staleAfter, cancellationToken: cancellationToken);
+
+        public Task<bool> HeartbeatPublicationAsync(Guid id, Guid hostId, CancellationToken cancellationToken = default) =>
+            _inner.HeartbeatPublicationAsync(id, hostId, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication> CompletePublicationAsync(Guid id, Guid hostId, WorkflowPublicationOutcome outcome,
+            CancellationToken cancellationToken = default) =>
+            _inner.CompletePublicationAsync(id, hostId, outcome, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication?> GetPublicationAsync(Guid id, CatalogScope scope, CancellationToken cancellationToken = default) =>
+            _inner.GetPublicationAsync(id, scope, cancellationToken: cancellationToken);
+
+        public Task<WorkflowPublication?> GetLatestPublicationAsync(string kind, string name, int version, Guid generation,
+            CatalogScope scope, CancellationToken cancellationToken = default) =>
+            _inner.GetLatestPublicationAsync(kind, name, version, generation, scope, cancellationToken);
+
+        public Task<CatalogPage<WorkflowPublication>> GetPublicationsAsync(WorkflowPublicationQuery query,
+            CancellationToken cancellationToken = default) => _inner.GetPublicationsAsync(query, cancellationToken: cancellationToken);
+
+        public Task<int> PurgePublicationsAsync(TimeSpan retention, int batchSize, CancellationToken cancellationToken = default) =>
+            _inner.PurgePublicationsAsync(retention, batchSize, cancellationToken);
+
+        public Task<WorkflowDraft?> GetDefinitionAsync(string kind, string name, int version,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetDefinitionAsync(kind, name, version, cancellationToken: cancellationToken);
+
+        public Task<WorkflowDraft> SaveDefinitionAsync(WorkflowDraft definition, WorkflowDraftId? expected, string? actor = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.SaveDefinitionAsync(definition, expected, actor, cancellationToken: cancellationToken);
+
+        public Task RegisterWorkflowVersionAsync(WorkflowVersion version, IArtifactStore? artifacts = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.RegisterWorkflowVersionAsync(version, artifacts, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion?> GetWorkflowVersionAsync(string name, int version, CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowVersionAsync(name, version, cancellationToken: cancellationToken);
+
+        public Task<long> GetCatalogRevisionAsync(CancellationToken cancellationToken = default) =>
+            _inner.GetCatalogRevisionAsync(cancellationToken: cancellationToken);
+
+        public Task<WorkflowCatalogChanges> GetWorkflowVersionChangesAsync(long afterRevision,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowVersionChangesAsync(afterRevision, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<WorkflowVersion>> GetWorkflowVersionsAsync(string? name = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowVersionsAsync(name, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion> SetWorkflowVersionStateAsync(string name, int version, WorkflowVersionState state,
+            CatalogMutationToken expected, IArtifactStore? artifacts = null, string? actor = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.SetWorkflowVersionStateAsync(name, version, state, expected, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<WorkflowVersion> PublishDefinitionAsync(WorkflowDraftId draftId, WorkflowVersion version, IArtifactStore artifacts,
+            string? actor = null, CancellationToken cancellationToken = default) =>
+            _inner.PublishDefinitionAsync(draftId, version, artifacts, actor, cancellationToken: cancellationToken);
+
+        public Task<int> PurgeArtifactsAsync(IArtifactStore artifacts, TimeSpan retention, int batchSize,
+            CancellationToken cancellationToken = default) =>
             _inner.PurgeArtifactsAsync(artifacts, retention, batchSize, cancellationToken);
+
         public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
             _inner.PutAsync(kind, content, cancellationToken);
+
         public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
             _inner.OpenAsync(digest, cancellationToken);
+
         public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
             _inner.ExistsAsync(digest, cancellationToken);
-        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) =>
+
+        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize,
+            CancellationToken cancellationToken = default) =>
             _inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
+
         public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
             _inner.DeleteAsync(digest, cancellationToken);
 
         public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default) =>
             _inner.RegisterMemberAsync(member, cancellationToken);
+
         public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
             CancellationToken cancellationToken = default) =>
             _inner.HeartbeatAsync(memberId, capabilities, cancellationToken);
+
         public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default) =>
             _inner.UnregisterMemberAsync(memberId, cancellationToken);
-        public Task<IReadOnlyList<WorkflowDemand>> GetWorkflowDemandsAsync(string instanceId) =>
-            _inner.GetWorkflowDemandsAsync(instanceId);
+
+        public Task<IReadOnlyList<WorkflowDemand>>
+            GetWorkflowDemandsAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowDemandsAsync(instanceId, cancellationToken: cancellationToken);
 
         public Task<UnschedulablePage> GetUnschedulableAsync(int limit = 100, UnschedulableCursor? cursor = null,
             CancellationToken cancellationToken = default) =>
             _inner.GetUnschedulableAsync(limit, cursor, cancellationToken);
+
         public Task<bool> CanScheduleAsync(IReadOnlyList<WorkflowDemand> demands, CancellationToken cancellationToken = default) =>
             _inner.CanScheduleAsync(demands, cancellationToken);
 
@@ -1680,95 +1935,152 @@ public class StructuredTryWaitTests
         public Task<RetentionResult> PurgeAsync(TimeSpan finishedRetention, TimeSpan tombstoneRetention, int batchSize,
             CancellationToken cancellationToken = default) =>
             _inner.PurgeAsync(finishedRetention, tombstoneRetention, batchSize, cancellationToken);
-        public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId) =>
-            _inner.GetTombstoneAsync(instanceId);
+
+        public Task<WorkflowTombstone?> GetTombstoneAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            _inner.GetTombstoneAsync(instanceId, cancellationToken: cancellationToken);
+
         public Task<WorkflowCommitResult> AdmitWorkflowInstanceAsync(CheckpointCommit commit, WorkflowAdmission admission) =>
             _inner.AdmitWorkflowInstanceAsync(commit, admission);
+
         public Task<WorkflowOwnership?> GetWorkflowOwnershipAsync(string instanceId) =>
             _inner.GetWorkflowOwnershipAsync(instanceId);
+
         public Task<WorkflowAdmissionRecord?> GetWorkflowAdmissionAsync(string sender, string trigger, string key) =>
             _inner.GetWorkflowAdmissionAsync(sender, trigger, key);
 
-        public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false) =>
-            _inner.RegisterPublisherAsync(name, eventTypes, replayRetained);
-        public Task UnregisterPublisherAsync(string name, string actor = "host") => _inner.UnregisterPublisherAsync(name, actor);
-        public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query) => _inner.ListDeliveriesAsync(query);
-        public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => _inner.RetryDeliveryAsync(eventId, publisherName, actor);
-        public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() => _inner.ListPublishersAsync();
-        public Task<bool> EnablePublisherAsync(string publisherName, string actor) => _inner.EnablePublisherAsync(publisherName, actor);
-        public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration, int limit) =>
-            _inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
-        public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration) =>
-            _inner.RenewDeliveryLeaseAsync(eventId, publisherName, token, leaseDuration);
-        public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result) =>
-            _inner.SettleDeliveryAsync(eventId, publisherName, token, result);
-        public Task<OutboxDelivery?> GetDeliveryAsync(string eventId, string publisherName) =>
-            _inner.GetDeliveryAsync(eventId, publisherName);
-        public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName) =>
-            _inner.GetPublisherAsync(publisherName);
+        public Task RegisterPublisherAsync(string name, IReadOnlyCollection<string> eventTypes, bool replayRetained = false,
+            CancellationToken cancellationToken = default) =>
+            _inner.RegisterPublisherAsync(name, eventTypes, replayRetained, cancellationToken: cancellationToken);
 
-        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent) =>
-            _inner.AppendEventAsync(workflowEvent);
-        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit) =>
-            _inner.GetPendingEventsAsync(instanceId, afterSequence, limit);
-        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId) =>
-            _inner.GetEventAsync(instanceId, eventId);
-        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId) =>
-            _inner.GetWaitAsync(instanceId, waitId);
+        public Task UnregisterPublisherAsync(string name, string actor = "host", CancellationToken cancellationToken = default) =>
+            _inner.UnregisterPublisherAsync(name, actor, cancellationToken: cancellationToken);
+
+        public Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query, CancellationToken cancellationToken = default) =>
+            _inner.ListDeliveriesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor,
+            CancellationToken cancellationToken = default) =>
+            _inner.RetryDeliveryAsync(eventId, publisherName, actor, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync(CancellationToken cancellationToken = default) =>
+            _inner.ListPublishersAsync(cancellationToken: cancellationToken);
+
+        public Task<bool> EnablePublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default) =>
+            _inner.EnablePublisherAsync(publisherName, actor, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<OutboxDelivery>> ClaimDeliveriesAsync(string publisherName, string token, TimeSpan leaseDuration,
+            int limit, CancellationToken cancellationToken = default) =>
+            _inner.ClaimDeliveriesAsync(publisherName, token, leaseDuration, limit);
+
+        public Task<bool> RenewDeliveryLeaseAsync(string eventId, string publisherName, string token, TimeSpan leaseDuration,
+            CancellationToken cancellationToken = default) =>
+            _inner.RenewDeliveryLeaseAsync(eventId, publisherName, token, leaseDuration);
+
+        public Task<bool> SettleDeliveryAsync(string eventId, string publisherName, string token, OutboxPublishResult result,
+            CancellationToken cancellationToken = default) =>
+            _inner.SettleDeliveryAsync(eventId, publisherName, token, result);
+
+        public Task<OutboxDelivery?>
+            GetDeliveryAsync(string eventId, string publisherName, CancellationToken cancellationToken = default) =>
+            _inner.GetDeliveryAsync(eventId, publisherName, cancellationToken: cancellationToken);
+
+        public Task<OutboxPublisherState?> GetPublisherAsync(string publisherName, CancellationToken cancellationToken = default) =>
+            _inner.GetPublisherAsync(publisherName, cancellationToken: cancellationToken);
+
+        public Task<EventAppendResult> AppendEventAsync(WorkflowEvent workflowEvent, CancellationToken cancellationToken = default) =>
+            _inner.AppendEventAsync(workflowEvent, cancellationToken: cancellationToken);
+
+        public Task<InboxPage> GetPendingEventsAsync(string instanceId, long afterSequence, int limit,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetPendingEventsAsync(instanceId, afterSequence, limit, cancellationToken: cancellationToken);
+
+        public Task<StoredWorkflowEvent?> GetEventAsync(string instanceId, string eventId, CancellationToken cancellationToken = default) =>
+            _inner.GetEventAsync(instanceId, eventId, cancellationToken: cancellationToken);
+
+        public Task<StoredWait?> GetWaitAsync(string instanceId, string waitId, CancellationToken cancellationToken = default) =>
+            _inner.GetWaitAsync(instanceId, waitId, cancellationToken: cancellationToken);
+
         public Task<IReadOnlyDictionary<string, long>> GetInboxSequencesAsync(
-            IReadOnlyCollection<string> instanceIds) =>
-            _inner.GetInboxSequencesAsync(instanceIds);
-        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query) =>
-            _inner.GetOpenWaitsAsync(query);
+            IReadOnlyCollection<string> instanceIds, CancellationToken cancellationToken = default) =>
+            _inner.GetInboxSequencesAsync(instanceIds, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<StoredWait>> GetOpenWaitsAsync(WaitQuery query, CancellationToken cancellationToken = default) =>
+            _inner.GetOpenWaitsAsync(query, cancellationToken: cancellationToken);
 
         private readonly InMemoryWorkflowStateRepository _inner = new();
-        public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
-            _inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation);
-        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
-            _inner.GetCancellationRequestAsync(instanceId);
-        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query) =>
-            _inner.GetRunnableInstancesAsync(query);
-        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration, ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable) =>
+
+        public Task<CancellationRequestResult> RequestCancellationAsync(string instanceId, CancellationReason reason,
+            Guid? expectedIncarnation = null, CancellationToken cancellationToken = default) =>
+            _inner.RequestCancellationAsync(instanceId, reason, expectedIncarnation, cancellationToken: cancellationToken);
+
+        public Task<CancellationReason?> GetCancellationRequestAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            _inner.GetCancellationRequestAsync(instanceId, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<RunnableInstance>> GetRunnableInstancesAsync(ClaimQuery query,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetRunnableInstancesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<ExecutionLeaseGrant?> TryAcquireExecutionLeaseAsync(string instanceId, string token, TimeSpan duration,
+            ClaimQuery query, ExecutionClaimKind kind = ExecutionClaimKind.Runnable, CancellationToken cancellationToken = default) =>
             _inner.TryAcquireExecutionLeaseAsync(instanceId, token, duration, query, kind);
-        public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases) =>
-            _inner.RenewExecutionLeasesAsync(leases);
-        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token) =>
+
+        public Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases,
+            CancellationToken cancellationToken = default) =>
+            _inner.RenewExecutionLeasesAsync(leases, cancellationToken: cancellationToken);
+
+        public Task<ExecutionLeaseReleaseResult> ReleaseExecutionLeaseAsync(string instanceId, string token,
+            CancellationToken cancellationToken = default) =>
             _inner.ReleaseExecutionLeaseAsync(instanceId, token);
+
         private int _commits;
 
-        public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
             var instance = commit.ReadTrunk();
+
             if (Interlocked.Increment(ref _commits) > 80)
                 throw new InvalidOperationException("Parallel cleanup exceeded the checkpoint budget");
-            return _inner.CommitWorkflowInstanceAsync(commit);
+
+            return _inner.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
         }
 
-        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId) =>
-            _inner.GetWorkflowInstanceSummaryAsync(instanceId);
+        public Task<WorkflowInstance?> GetWorkflowInstanceSummaryAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowInstanceSummaryAsync(instanceId, cancellationToken: cancellationToken);
+
         public Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds) =>
             _inner.GetControlRequestsAsync(instanceIds);
+
         public Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command) =>
             _inner.RequestDebugCommandAsync(instanceId, command);
+
         public Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds) =>
             _inner.GetDebugStatesAsync(instanceIds);
 
-        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId) =>
-            _inner.GetWorkflowInstanceAsync(instanceId);
-        public Task<InstancePage> QueryInstancesAsync(InstanceQuery query) =>
-            _inner.QueryInstancesAsync(query);
+        public Task<WorkflowInstance?> GetWorkflowInstanceAsync(string instanceId, CancellationToken cancellationToken = default) =>
+            _inner.GetWorkflowInstanceAsync(instanceId, cancellationToken: cancellationToken);
 
-        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason, Guid? expectedIncarnation = null) =>
-            _inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation);
+        public Task<InstancePage> QueryInstancesAsync(InstanceQuery query, CancellationToken cancellationToken = default) =>
+            _inner.QueryInstancesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, CancellationReason reason,
+            Guid? expectedIncarnation = null, CancellationToken cancellationToken = default) =>
+            _inner.RequestTerminationAsync(instanceId, reason, expectedIncarnation, cancellationToken: cancellationToken);
+
         public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsAsync(string instanceId) =>
             _inner.GetDiagnosticsAsync(instanceId);
-        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation) =>
-            _inner.GetDiagnosticsForIncarnationAsync(instanceId, incarnation);
+
+        public Task<IReadOnlyList<WorkflowDiagnostic>> GetDiagnosticsForIncarnationAsync(string instanceId, Guid incarnation,
+            CancellationToken cancellationToken = default) =>
+            _inner.GetDiagnosticsForIncarnationAsync(instanceId, incarnation, cancellationToken: cancellationToken);
+
         public Task<IReadOnlyList<StoredTraceEntry>> GetTraceAsync(string instanceId, long afterSequence = 0,
-            int limit = 1000) =>
-            _inner.GetTraceAsync(instanceId, afterSequence, limit);
-        public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null) =>
-            _inner.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention);
+            int limit = 1000, CancellationToken cancellationToken = default) =>
+            _inner.GetTraceAsync(instanceId, afterSequence, limit, cancellationToken: cancellationToken);
+
+        public Task DeleteWorkflowInstanceAsync(string instanceId, TimeSpan? tombstoneRetention = null,
+            CancellationToken cancellationToken = default) =>
+            _inner.DeleteWorkflowInstanceAsync(instanceId, tombstoneRetention, cancellationToken: cancellationToken);
     }
 
     public sealed class CountFinallyWinnerActivity(FinallyJoinProbe probe) : IAsyncActivity
@@ -1776,6 +2088,7 @@ public class StructuredTryWaitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref probe.WinnerRuns);
+
             return Task.CompletedTask;
         }
     }
@@ -1793,7 +2106,11 @@ public class StructuredTryWaitTests
 
         public IReadOnlyList<string> Entries
         {
-            get { lock (_entries) return _entries.ToArray(); }
+            get
+            {
+                lock (_entries)
+                    return _entries.ToArray();
+            }
         }
 
         public void Add(string entry)
@@ -1814,6 +2131,7 @@ public class StructuredTryWaitTests
         {
             Result = Count + 1;
             log.Add($"{Name}:{Result}");
+
             return Task.CompletedTask;
         }
     }
@@ -1826,6 +2144,7 @@ public class StructuredTryWaitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Result = Count + 1;
+
             return Task.CompletedTask;
         }
     }
@@ -1856,7 +2175,9 @@ public class StructuredTryWaitTests
 
     public sealed class CallbackException() : Exception("callback failure")
     {
-        public Action Callback { get; } = () => { };
+        public Action Callback { get; } = () =>
+        {
+        };
     }
 
     public sealed class ThrowCallbackActivity : IAsyncActivity
@@ -1942,6 +2263,7 @@ public class StructuredTryWaitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Code = ((ApiErrorDetails)Details!).Code;
+
             return Task.CompletedTask;
         }
     }
@@ -1969,6 +2291,7 @@ public class StructuredTryWaitTests
     {
         public TaskCompletionSource CleanupEntered { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource Release { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
@@ -1977,8 +2300,10 @@ public class StructuredTryWaitTests
     {
         public TaskCompletionSource InnerStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public TaskCompletionSource OuterStarted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public bool OuterCancelled { get; set; }
     }
 
@@ -2005,6 +2330,7 @@ public class StructuredTryWaitTests
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.OuterStarted.TrySetResult();
+
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
@@ -2012,6 +2338,7 @@ public class StructuredTryWaitTests
             catch (OperationCanceledException)
             {
                 probe.OuterCancelled = true;
+
                 throw;
             }
         }
@@ -2029,6 +2356,7 @@ public class StructuredTryWaitTests
         {
             await probe.CleanupEntered.Task.WaitAsync(cancellationToken);
             probe.Release.TrySetResult();
+
             throw new InvalidOperationException("outer failure");
         }
     }
@@ -2047,8 +2375,10 @@ public class StructuredTryWaitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Attempts++;
+
             if (probe.Attempts == 1)
                 throw new InvalidOperationException("cleanup failed");
+
             return Task.CompletedTask;
         }
     }

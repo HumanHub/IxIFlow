@@ -16,6 +16,7 @@ public sealed class NestedJoinRecoveryScenarios
 {
     private const string InnerStep = "root/1/branch/0/0";
     private const string OuterStep = "root/1";
+
     public static IEnumerable<object[]> Cases => StoreProfiles.ProfileNames.SelectMany(profile =>
         new[] { "before", "after", "lost-ack" }.Select(point => new object[] { profile, point }));
 
@@ -25,14 +26,15 @@ public sealed class NestedJoinRecoveryScenarios
         await using var profile = await StoreProfiles.CreateAsync(profileName);
         var registry = new WorkflowCatalog();
         var effects = new Effects();
+
         var definition = Workflow.Create<Data>("NestedJoinCrash")
             .Step<Noop>()
             .Parallel(outer => outer
                 .Do(branch => branch.Parallel(inner => inner
-                    .Do(body => body.Step<Add>(s => s.Input(a => a.Amount).From(_ => 2)
-                        .Input(a => a.Name).From(_ => "inner-a")))
-                    .Do(body => body.Step<Add>(s => s.Input(a => a.Amount).From(_ => 3)
-                        .Input(a => a.Name).From(_ => "inner-b"))))
+                        .Do(body => body.Step<Add>(s => s.Input(a => a.Amount).From(_ => 2)
+                            .Input(a => a.Name).From(_ => "inner-a")))
+                        .Do(body => body.Step<Add>(s => s.Input(a => a.Amount).From(_ => 3)
+                            .Input(a => a.Name).From(_ => "inner-b"))))
                     .WithId("inner")
                     .Step<Mark>(s => s.Input(a => a.Name).From(_ => "after-inner")))
                 .Do(branch => branch.Step<Add>(s => s.Input(a => a.Amount).From(_ => 7)
@@ -40,6 +42,7 @@ public sealed class NestedJoinRecoveryScenarios
             .WithId("outer")
             .Step<Mark>(s => s.Input(a => a.Name).From(_ => "after-outer"))
             .Build();
+
         await registry.RegisterWorkflowAsync(definition);
         var firstStore = profile.NewRepository();
         var wrapped = DispatchProxy.Create<IWorkflowStateRepository, JoinFault>();
@@ -47,19 +50,28 @@ public sealed class NestedJoinRecoveryScenarios
         fault.Store = firstStore;
         fault.Point = point;
         var id = Guid.NewGuid().ToString("N");
+
         await using (var first = Services(profile, wrapped, registry, effects))
         {
             WorkflowExecutionResult? interruptedResult = null;
+
             var error = await Record.ExceptionAsync(async () => interruptedResult = await first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new Data { Total = 10 }, new WorkflowOptions { InstanceId = id }));
-            if (point == "after") Assert.Equal(WorkflowExecutionStatus.Running, interruptedResult?.Status);
-            else Assert.True(error != null, "No interruption; joins observed: " + string.Join(",", fault.Seen));
+
+            if (point == "after")
+                Assert.Equal(WorkflowExecutionStatus.Running, interruptedResult?.Status);
+            else
+                Assert.True(error != null, "No interruption; joins observed: " + string.Join(",", fault.Seen));
+
             Assert.True(fault.Interrupted, "The test must hit the inner-join commit, not an earlier activity");
             Assert.Equal(point == "before" ? 0 : 1, fault.Applied);
             Assert.DoesNotContain("after-inner", effects.Counts.Keys);
             Assert.DoesNotContain("after-outer", effects.Counts.Keys);
         }
-        if (firstStore is IAsyncDisposable disposable) await disposable.DisposeAsync();
+
+        if (firstStore is IAsyncDisposable disposable)
+            await disposable.DisposeAsync();
+
         var secondStore = profile.NewRepository();
         await using var second = Services(profile, secondStore, registry, effects);
         var finished = await second.GetRequiredService<IWorkflowClient>().RecoverAsync(id).WaitAsync(TimeSpan.FromSeconds(20));
@@ -75,7 +87,8 @@ public sealed class NestedJoinRecoveryScenarios
         Assert.Single(joins, join => join.StepId == OuterStep && join.Path == JoinPath.Merged);
     }
 
-    private static ServiceProvider Services(ProfileStore profile, IWorkflowStateRepository store, IWorkflowCatalog registry, Effects effects)
+    private static ServiceProvider Services(ProfileStore profile, IWorkflowStateRepository store, IWorkflowCatalog registry,
+        Effects effects)
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -87,12 +100,19 @@ public sealed class NestedJoinRecoveryScenarios
         services.AddTransient<Mark>();
         profile.ConfigureHost(services);
         var provider = services.BuildServiceProvider();
+
         try
         {
             profile.StartHostLinksAsync(provider).GetAwaiter().GetResult();
+
             return provider;
         }
-        catch { provider.DisposeAsync().AsTask().GetAwaiter().GetResult(); throw; }
+        catch
+        {
+            provider.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+            throw;
+        }
     }
 
     public class JoinFault : DispatchProxy
@@ -102,49 +122,96 @@ public sealed class NestedJoinRecoveryScenarios
         internal bool Interrupted;
         internal int Applied;
         internal List<string> Seen = [];
+
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
             if (targetMethod!.Name == nameof(IWorkflowStateRepository.CommitWorkflowInstanceAsync))
                 return Commit((CheckpointCommit)args![0]!);
-            try { return targetMethod.Invoke(Store, args); }
-            catch (TargetInvocationException error) { ExceptionDispatchInfo.Capture(error.InnerException!).Throw(); throw; }
+
+            try
+            {
+                return targetMethod.Invoke(Store, args);
+            }
+            catch (TargetInvocationException error)
+            {
+                ExceptionDispatchInfo.Capture(error.InnerException!).Throw();
+
+                throw;
+            }
         }
+
         private async Task<WorkflowCommitResult> Commit(CheckpointCommit commit)
         {
-            if (Interrupted) throw new IOException("Host stopped at the inner join");
+            if (Interrupted)
+                throw new IOException("Host stopped at the inner join");
+
             var joins = commit.ReadTraceEntries().Select(e => e.Payload).OfType<JoinTrace>().ToArray();
             Seen.AddRange(joins.Select(j => j.StepId));
             var innerMerge = joins.Any(j => j.StepId == InnerStep && j.Path == JoinPath.Merged);
-            if (!innerMerge) return await Store.CommitWorkflowInstanceAsync(commit);
+
+            if (!innerMerge)
+                return await Store.CommitWorkflowInstanceAsync(commit);
+
             Interrupted = true;
-            if (Point == "before") throw new IOException("Interrupted before inner join persistence");
+
+            if (Point == "before")
+                throw new IOException("Interrupted before inner join persistence");
+
             var result = await Store.CommitWorkflowInstanceAsync(commit);
             Assert.Equal(WorkflowCommitStatus.Applied, result.Status);
             Applied++;
-            if (Point == "lost-ack") throw new IOException("Inner join applied; acknowledgement lost");
+
+            if (Point == "lost-ack")
+                throw new IOException("Inner join applied; acknowledgement lost");
+
             return new WorkflowCommitResult(WorkflowCommitStatus.StaleEpoch, result.Revision);
         }
     }
-    public sealed class Data { [Combine<Sum<int>>] public int Total { get; set; } }
-    public sealed class Effects { public ConcurrentDictionary<string, int> Counts { get; } = new(); }
+
+    public sealed class Data
+    {
+        [Combine<Sum<int>>] public int Total { get; set; }
+    }
+
+    public sealed class Effects
+    {
+        public ConcurrentDictionary<string, int> Counts { get; } = new();
+    }
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     public sealed class Add(Effects effects) : IAsyncActivity
     {
         public int Amount { get; set; }
         public string Name { get; set; } = "";
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { effects.Counts.AddOrUpdate(Name, 1, (_, count) => count + 1); ((Data)context.WorkflowData).Total += Amount; return Task.CompletedTask; }
+        {
+            effects.Counts.AddOrUpdate(Name, 1, (_, count) => count + 1);
+            ((Data)context.WorkflowData).Total += Amount;
+
+            return Task.CompletedTask;
+        }
     }
+
     public sealed class Mark(Effects effects) : IAsyncActivity, IRecoverableActivity<bool>
     {
         public string Name { get; set; } = "";
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { effects.Counts.AddOrUpdate(Name, 1, (_, count) => count + 1); return Task.CompletedTask; }
+        {
+            effects.Counts.AddOrUpdate(Name, 1, (_, count) => count + 1);
+
+            return Task.CompletedTask;
+        }
+
         public bool CaptureRecoveryState(IActivityContext context) => true;
-        public Task<ActivityRecoveryResult<bool>> RecoverAsync(bool state, IActivityContext context, CancellationToken cancellationToken = default) =>
+
+        public Task<ActivityRecoveryResult<bool>> RecoverAsync(bool state, IActivityContext context,
+            CancellationToken cancellationToken = default) =>
             Task.FromResult<ActivityRecoveryResult<bool>>(new ActivityRecoveryResult<bool>.Execute());
     }
 }

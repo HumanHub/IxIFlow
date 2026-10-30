@@ -12,6 +12,7 @@ public static class ServiceCollectionExtensions
     public static IIxIFlowBuilder AddDebugging(this IIxIFlowBuilder builder, Action<DebuggingOptions> configure)
     {
         builder.Services.AddDebugging(configure);
+
         return builder;
     }
 
@@ -21,14 +22,18 @@ public static class ServiceCollectionExtensions
         configure(options);
         var endpoint = options.Snapshot();
         services.AddBreakpointConditions();
+
         services.AddSingleton<IHostedService>(provider => new DebugAdapterService(provider.GetRequiredService<IWorkflowOperations>(),
             endpoint, provider.GetRequiredService<ILogger<DebugAdapterService>>()));
+
         return services;
     }
+
     /// <summary>Registers the optional condition compiler. Enable host debugging separately with AddIxIFlow.</summary>
     public static IServiceCollection AddBreakpointConditions(this IServiceCollection services)
     {
         services.TryAddSingleton<IBreakpointConditionCompiler, BreakpointConditionCompiler>();
+
         return services;
     }
 }

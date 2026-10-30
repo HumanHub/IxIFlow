@@ -10,7 +10,7 @@ using System.Text.Json.Nodes;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// The execution snapshot is a view (A-08): it is not stored with the instance, and the client computes it from
+/// The execution snapshot is a view: it is not stored with the instance, and the client computes it from
 /// the saved checkpoint and the registered definition when asked.
 /// </summary>
 [Trait("Feature", "durability")]
@@ -52,19 +52,24 @@ public sealed class SnapshotViewTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         string instanceId;
+
         using (var first = Services(repository, TimeProvider.System))
             instanceId = (await first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(Waiting("SnapshotDefinition"), new ViewData())).InstanceId;
 
         // A host that has not registered the definition, then a mismatched stored checkpoint.
         using var unregistered = Services(repository, TimeProvider.System);
+
         var missing = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => unregistered.GetRequiredService<IWorkflowClient>().GetSnapshotAsync(instanceId));
+
         Assert.Contains("is unavailable", missing.Message);
 
         using var changed = Services(repository, TimeProvider.System);
+
         var definition = Workflow.Create<ViewData>("SnapshotDefinition").Step<ViewActivity>().Step<ViewActivity>()
             .WaitFor<ViewEvent>("go").Build();
+
         var catalog = changed.GetRequiredService<IWorkflowCatalog>();
         var registration = await Assert.ThrowsAsync<WorkflowEngineException>(() => catalog.RegisterWorkflowAsync(definition));
         Assert.Equal(WorkflowErrorKind.InvalidState, registration.Kind);
@@ -74,11 +79,16 @@ public sealed class SnapshotViewTests
         var checkpoint = JsonNode.Parse(instance.ExecutionStateJson)!;
         checkpoint["StructureHash"] = new WorkflowScopeCatalog(definition).StructureHash;
         instance.ExecutionStateJson = checkpoint.ToJsonString();
-        await repository.AppendEventAsync(new(instanceId, "snapshot-edit", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(ViewEvent)), "{}", Key: "go"));
+
+        await repository.AppendEventAsync(new(instanceId, "snapshot-edit",
+            IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(ViewEvent)), "{}", Key: "go"));
+
         await repository.SeedAsync(instance);
         var checkpointJson = (await repository.GetWorkflowInstanceAsync(instanceId))!.ExecutionStateJson;
+
         var differs = await EngineAssert.FailsAsync(WorkflowErrorKind.ArtifactUnavailable,
             () => changed.GetRequiredService<IWorkflowClient>().GetSnapshotAsync(instanceId));
+
         Assert.Contains("differs from the saved version", differs.Message);
         Assert.Equal(checkpointJson, (await repository.GetWorkflowInstanceAsync(instanceId))!.ExecutionStateJson);
     }
@@ -93,6 +103,7 @@ public sealed class SnapshotViewTests
         services.AddSingleton(time);
         services.AddIxIFlow();
         services.AddSingleton(repository);
+
         return services.BuildServiceProvider();
     }
 

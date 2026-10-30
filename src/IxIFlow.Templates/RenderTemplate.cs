@@ -34,8 +34,10 @@ public sealed class RenderTemplate<TModel> : IRecoverableActivity<TemplateRender
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(context);
+
         if (Template is null)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "RenderTemplate needs a template to render");
+
         Rendered = await context.Services.GetRequiredService<TemplateRenderer>()
             .RenderAsync(Template, Model, Culture, cancellationToken);
     }

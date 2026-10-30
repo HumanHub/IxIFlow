@@ -79,8 +79,10 @@ public class SequenceTests
         Assert.Equal("Step0-Initial", finalData.Step1Result);
         Assert.Equal("Step1-First-After-Step0-Initial", finalData.Step2Result);
         Assert.Equal("Step2-Second-After-Step1-First-After-Step0-Initial", finalData.Step3Result);
+
         Assert.Equal($"Final-{finalData.Step1Result}-{finalData.Step2Result}-{finalData.Step3Result}",
             finalData.FinalResult);
+
         Assert.Equal(4, finalData.ExecutionLog.Count); // 3 steps + finalize
     }
 
@@ -274,6 +276,7 @@ public class SequenceTests
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             ExecutedAt = DateTime.UtcNow;
+
             StepResult = string.IsNullOrEmpty(PreviousResult)
                 ? $"Step{StepNumber}-{StepName}"
                 : $"Step{StepNumber}-{StepName}-After-{PreviousResult}";

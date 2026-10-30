@@ -21,8 +21,13 @@ public interface IRunnableWakeSource
 /// <param name="LastHostId">The last host to own the instance.</param>
 /// <param name="Claimable">The write left the instance due with no live owner.</param>
 /// <param name="Idle">The write left the instance idle or terminal.</param>
-public sealed record RunnableNotice(string InstanceId, string DemandSetId, WorkflowDemand? Pin,
-    Guid? LastHostId, bool Claimable, bool Idle);
+public sealed record RunnableNotice(
+    string InstanceId,
+    string DemandSetId,
+    WorkflowDemand? Pin,
+    Guid? LastHostId,
+    bool Claimable,
+    bool Idle);
 
 /// <summary>
 /// Receives disposable hints after store transactions commit. Delivery is bounded and best effort;

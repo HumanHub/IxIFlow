@@ -23,6 +23,7 @@ public static class ActivityTriggers
                 .State("approved", s => s.Final())
                 .State("manual", s => s.Final()))
             .Build();
+
     // end-snippet: activity-trigger-state-machine
 
     public sealed class Review
@@ -30,12 +31,22 @@ public static class ActivityTriggers
         public string OrderId { get; set; } = "order-1";
         public bool Approved { get; set; }
     }
-    public sealed class Decision { public bool Approved { get; set; } }
+
+    public sealed class Decision
+    {
+        public bool Approved { get; set; }
+    }
+
     public sealed class CheckRisk : IAsyncActivity
     {
         public string OrderId { get; set; } = "";
         public bool Approved { get; set; }
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Approved = OrderId.Length > 0; return Task.CompletedTask; }
+        {
+            Approved = OrderId.Length > 0;
+
+            return Task.CompletedTask;
+        }
     }
 }

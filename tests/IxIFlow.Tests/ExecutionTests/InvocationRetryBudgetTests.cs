@@ -26,54 +26,88 @@ public sealed class InvocationRetryBudgetTests
         collection.AddIxIFlow(options => options.HostName = "invocation-budget");
         collection.AddTransient<WorkActivity>();
         using var services = collection.BuildServiceProvider();
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(
             Workflow.Create<BudgetData>("BudgetChild").Step<WorkActivity>().Build());
+
         var definition = Workflow.Create<BudgetData>("BudgetParent")
             .Step<WorkActivity>().Invoke<BudgetData>("BudgetChild", 1).Step<WorkActivity>().Build();
+
         var result = await services.GetRequiredService<IWorkflowClient>().RunToEndAsync(definition, new BudgetData());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var commits = store.Commits.ToArray();
         Assert.Equal(12, commits.Length);
+
         Assert.True(commits.Max(commit => commit.StateBytes()) < 2800,
             $"Largest commit: {commits.Max(commit => commit.StateBytes())} bytes");
+
         var saved = (await store.GetWorkflowInstanceAsync(result.InstanceId))!;
-        var record = Assert.Single(ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords.Values);
-        var attempt = Assert.Single(record.Attempts);
-        Assert.Equal("Returned", record.Disposition);
+        Assert.Empty(ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords);
+        Assert.DoesNotContain(saved.SavedParts!.Keys, key => key.StartsWith("v/", StringComparison.Ordinal));
+        var attempt = Assert.Single(await InvocationTraceAssertions.AttemptsAsync(store, result.InstanceId, definition));
+        Assert.Equal("Returned", attempt.Disposition);
         Assert.NotNull(attempt.ChildInstanceId);
-        Assert.NotNull(attempt.StartedAtUtc);
-        Assert.NotNull(attempt.EndedAtUtc);
         Assert.Equal(WorkflowStatus.Completed, attempt.ChildStatus);
+        var trace = await services.GetRequiredService<IWorkflowClient>().GetTraceAsync(result.InstanceId);
+        Assert.Contains(trace, entry => entry.EntryType == TraceEntryType.ActivityStarted && entry.Payload is InvocationTrace);
+        Assert.Contains(trace, entry => entry.EntryType == TraceEntryType.ActivityCompleted && entry.Payload is InvocationTrace);
     }
 
     [Fact]
     public void ChildInvocationRestoresItsSavedResolutionAndAttemptHistory()
     {
         var now = new DateTime(2026, 10, 22, 5, 0, 0, DateTimeKind.Utc);
+
         var definition = new WorkflowBuilder<BudgetData, object>([], "RestoreInvocation")
             .Invoke<BudgetData>("BudgetChild", 1).Build();
+
         var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition, new BudgetData(), new(), now);
         var continuation = Assert.Single(checkpoint.Continuations);
         var logicalId = InvocationRecords.LogicalId(instance, continuation, "root/0");
-        var decision = new ActivityResolutionState { Kind = ActivityResolutionKind.Completed,
+
+        var decision = new ActivityResolutionState
+        {
+            Kind = ActivityResolutionKind.Completed,
             PolicyAttemptId = InvocationRecords.Identity("policy-attempt", logicalId, "2"),
             Note = "observed", DecidedBy = "operator",
-            InvocationResult = SerializedValue.From(new BudgetData { Count = 7 }) };
-        var record = new InvocationRecordState { Id = logicalId, StepId = "root/0",
+            InvocationResult = SerializedValue.From(new BudgetData { Count = 7 })
+        };
+
+        var record = new InvocationRecordState
+        {
+            Id = logicalId, StepId = "root/0",
             ContinuationId = continuation.Id, FrameActivationId = continuation.Stack[0].ActivationId,
             WorkflowName = "BudgetChild", WorkflowVersion = 1, StartedAtUtc = now,
             DataType = WorkflowTypeIdentity.SavedName(typeof(BudgetData)),
             ScheduledRetries = 1, SelectedPolicyIndex = 0,
-            Attempts = [new() { Number = 1, PreparedAtUtc = now, EndedAtUtc = now, Host = "first",
-                    Phase = "Ended", Failure = SerializedException.Capture(new InvalidOperationException("input failed"), new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true),
+            Attempts =
+            [
+                new()
+                {
+                    Number = 1, PreparedAtUtc = now, EndedAtUtc = now, Host = "first",
+                    Phase = "Ended",
+                    Failure = SerializedException.Capture(new InvalidOperationException("input failed"),
+                        new WorkflowScopeCatalog(new WorkflowDefinition()), new ExecutionCheckpoint(), null, newOccurrence: true),
                     Diagnostic = new("InputFailure", "diagnostic"), Disposition = "Retry",
-                    SelectedPolicyIndex = 0, Action = StepErrorAction.Retry, RetryAfterUtc = now.AddSeconds(1) },
-                new() { Number = 2, PreparedAtUtc = now.AddSeconds(1), Host = "second",
-                    Phase = "NeedsResolution", Decision = decision }] };
+                    SelectedPolicyIndex = 0, Action = StepErrorAction.Retry, RetryAfterUtc = now.AddSeconds(1)
+                },
+                new()
+                {
+                    Number = 2, PreparedAtUtc = now.AddSeconds(1), Host = "second",
+                    Phase = "NeedsResolution", Decision = decision
+                }
+            ]
+        };
+
         checkpoint.InvocationRecords.Add(logicalId, record);
         continuation.InvocationRecordId = logicalId;
-        continuation.PendingActivity = new() { Id = logicalId, StepId = record.StepId,
-            PolicyAttemptId = decision.PolicyAttemptId, ChildDataType = record.DataType, Resolution = decision };
+
+        continuation.PendingActivity = new()
+        {
+            Id = logicalId, StepId = record.StepId,
+            PolicyAttemptId = decision.PolicyAttemptId, ChildDataType = record.DataType, Resolution = decision
+        };
+
         InvocationRecords.PrepareCommit(checkpoint, instance, now.AddSeconds(2));
         var stored = StoredCheckpoint.Split(checkpoint, StoredJson.Inline("{}"));
         var reopened = ExecutionCheckpoint.Read(StoredCheckpoint.AssembleState(stored.Trunk, stored.Parts));
@@ -109,10 +143,15 @@ public sealed class InvocationRetryBudgetTests
     private sealed class RecordingStore(TimeProvider clock) : FaultInjectingRepository(clock)
     {
         public ConcurrentQueue<CheckpointCommit> Commits { get; } = new();
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
-            var result = await base.CommitWorkflowInstanceAsync(commit);
-            if (result.Status == WorkflowCommitStatus.Applied) Commits.Enqueue(commit);
+            var result = await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
+
+            if (result.Status == WorkflowCommitStatus.Applied)
+                Commits.Enqueue(commit);
+
             return result;
         }
     }

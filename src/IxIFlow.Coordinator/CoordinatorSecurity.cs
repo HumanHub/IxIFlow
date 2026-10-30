@@ -22,30 +22,52 @@ internal static class CoordinatorSecurity
         CoordinatorCertificateTrust trust, bool server, Uri? endpoint = null, IList<string>? names = null)
     {
         if (certificate == null || DateTime.UtcNow < certificate.NotBefore.ToUniversalTime() ||
-            DateTime.UtcNow > certificate.NotAfter.ToUniversalTime()) return false;
-        if (certificate.Extensions.OfType<X509BasicConstraintsExtension>().Any(extension => extension.CertificateAuthority)) return false;
+            DateTime.UtcNow > certificate.NotAfter.ToUniversalTime())
+            return false;
+
+        if (certificate.Extensions.OfType<X509BasicConstraintsExtension>().Any(extension => extension.CertificateAuthority))
+            return false;
+
         var purpose = server ? "1.3.6.1.5.5.7.3.1" : "1.3.6.1.5.5.7.3.2";
+
         if (certificate.Extensions.OfType<X509EnhancedKeyUsageExtension>().Any(extension =>
-            !extension.EnhancedKeyUsages.Cast<Oid>().Any(usage => usage.Value == purpose))) return false;
-        if (server && (endpoint == null || !certificate.MatchesHostname(endpoint.IdnHost, allowWildcards: false, allowCommonName: false))) return false;
+                !extension.EnhancedKeyUsages.Cast<Oid>().Any(usage => usage.Value == purpose)))
+            return false;
+
+        if (server && (endpoint == null || !certificate.MatchesHostname(endpoint.IdnHost, allowWildcards: false, allowCommonName: false)))
+            return false;
 
         // A pin identifies the leaf itself, including a self-signed leaf. No public-root fallback.
         var hash = certificate.GetCertHashString(HashAlgorithmName.SHA256);
-        if (trust.Thumbprints.Any(pin => hash.Equals(pin, StringComparison.OrdinalIgnoreCase))) return true;
-        if (trust.CertificateAuthorities.Count == 0) return false;
+
+        if (trust.RevokedThumbprints.Any(pin => hash.Equals(pin, StringComparison.OrdinalIgnoreCase)))
+            return false;
+
+        if (trust.Thumbprints.Any(pin => hash.Equals(pin, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        if (trust.CertificateAuthorities.Count == 0)
+            return false;
+
         // Names are configured by the operator, never copied from a discovered row.
         if (server && (names == null || !names.Any(name => certificate.MatchesHostname(name,
-            allowWildcards: false, allowCommonName: false)))) return false;
+                allowWildcards: false, allowCommonName: false))))
+            return false;
+
         using var chain = new X509Chain();
         chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
         chain.ChainPolicy.CustomTrustStore.AddRange(trust.CertificateAuthorities);
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
         chain.ChainPolicy.DisableCertificateDownloads = true;
         chain.ChainPolicy.ApplicationPolicy.Add(new Oid(purpose));
+
         if (suppliedChain != null)
             foreach (var element in suppliedChain.ChainElements)
                 chain.ChainPolicy.ExtraStore.Add(element.Certificate);
-        return chain.Build(certificate);
+
+        return chain.Build(certificate) && !chain.ChainElements.Cast<X509ChainElement>().Any(element =>
+            trust.RevokedThumbprints.Contains(element.Certificate.GetCertHashString(HashAlgorithmName.SHA256),
+                StringComparer.OrdinalIgnoreCase));
     }
 
     internal static SslClientAuthenticationOptions ClientTls(CoordinatorClientOptions options, Uri endpoint,
@@ -60,14 +82,18 @@ internal static class CoordinatorSecurity
             DisableCertificateDownloads = true
         },
         ClientCertificates = options.AuthenticationMode == CoordinatorAuthenticationMode.MutualTls && options.ClientCertificate != null
-            ? new X509CertificateCollection { options.ClientCertificate } : null,
+            ? new X509CertificateCollection { options.ClientCertificate }
+            : null,
         LocalCertificateSelectionCallback = options.AuthenticationMode == CoordinatorAuthenticationMode.MutualTls
-            ? (_, _, _, _, _) => options.ClientCertificate : null,
+            ? (_, _, _, _, _) => options.ClientCertificate
+            : null,
         RemoteCertificateValidationCallback = (_, certificate, chain, _) =>
         {
             var accepted = certificate is X509Certificate2 peer && ValidateCertificate(peer, chain,
                 options.ServerCertificateTrust, server: true, endpoint, options.ServerCertificateNames);
+
             validated(accepted);
+
             return accepted;
         }
     };
@@ -84,15 +110,18 @@ internal sealed class CoordinatorAuthenticationInterceptor(CoordinatorOptions op
     {
         var http = context.GetHttpContext();
         string? failure = null;
+
         if (!http.Request.IsHttps)
         {
             if (!options.AllowInsecure || options.AuthenticationMode == CoordinatorAuthenticationMode.MutualTls ||
-                http.Connection.RemoteIpAddress is not { } remote || !IPAddress.IsLoopback(remote)) failure = "transport";
+                http.Connection.RemoteIpAddress is not { } remote || !IPAddress.IsLoopback(remote))
+                failure = "transport";
         }
         else if (options.AuthenticationMode == CoordinatorAuthenticationMode.MutualTls)
         {
             // Kestrel requires and validates the whole client chain during the TLS handshake.
-            if (http.Connection.ClientCertificate == null) failure = "client-identity";
+            if (http.Connection.ClientCertificate == null)
+                failure = "client-identity";
         }
         else
         {
@@ -100,17 +129,23 @@ internal sealed class CoordinatorAuthenticationInterceptor(CoordinatorOptions op
             var value = headers.Length == 1 && !headers[0].IsBinary ? headers[0].Value : "";
             var candidate = value.StartsWith("Bearer ", StringComparison.Ordinal) ? value[7..] : "";
             var digest = SHA256.HashData(Encoding.UTF8.GetBytes(candidate));
+
             // Fixed-size digests, no early exit, and both rotation slots checked every time.
             var first = CryptographicOperations.FixedTimeEquals(digest, _keys.Length > 0 ? _keys[0] : new byte[32]);
             var second = CryptographicOperations.FixedTimeEquals(digest, _keys.Length > 1 ? _keys[1] : new byte[32]);
-            if (!(first | second) || _keys.Length == 0 || !CoordinatorSecurity.ValidKey(candidate)) failure = "shared-key";
+
+            if (!(first | second) || _keys.Length == 0 || !CoordinatorSecurity.ValidKey(candidate))
+                failure = "shared-key";
         }
+
         if (failure != null)
         {
             logger.LogWarning("Coordinator link to {Endpoint} refused: {ReasonCategory}",
                 CoordinatorSecurity.EndpointName(options.AdvertisedEndpoint ?? options.ListenEndpoint), failure);
+
             throw new RpcException(new(StatusCode.Unauthenticated, "Coordinator authentication failed"));
         }
+
         await continuation(requestStream, responseStream, context);
     }
 }

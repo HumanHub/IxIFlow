@@ -13,14 +13,27 @@ public static class Hosting
         var services = new ServiceCollection();
         services.AddLogging();
         var flow = services.AddIxIFlow(options => options.Slots = 8);
+
         switch (store)
         {
-            case "memory": break;
-            case "sqlite": flow.UseSqlite(connectionString!); break;
-            case "sqlserver": flow.UseSqlServer(connectionString!); break;
-            case "postgresql": flow.UsePostgreSql(connectionString!); break;
-            default: throw new ArgumentException("Unknown store", nameof(store));
+            case "memory":
+                break;
+            case "sqlite":
+                flow.UseSqlite(connectionString!);
+
+                break;
+            case "sqlserver":
+                flow.UseSqlServer(connectionString!);
+
+                break;
+            case "postgresql":
+                flow.UsePostgreSql(connectionString!);
+
+                break;
+            default:
+                throw new ArgumentException("Unknown store", nameof(store));
         }
+
         return services;
     }
 
@@ -29,6 +42,7 @@ public static class Hosting
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddIxIFlow(options => options.Slots = 8);
+
         return builder.Build();
     }
 
@@ -36,6 +50,7 @@ public static class Hosting
     {
         using var host = CreateHost();
         await host.StartAsync();
+
         try
         {
             return await host.Services.GetRequiredService<IWorkflowClient>()

@@ -28,8 +28,8 @@ public interface ISagaContinuationBuilder<TWorkflowData, TPreviousStepData> wher
     /// retry after all (no attempts left, an undo failed, the handler's steps failed, or the instance is
     /// cancelled) it undoes the kept steps too, then ends.
     /// </summary>
-    /// <param name="maxAttempts">Maximum number of retry attempts</param>
-    void ThenRetry(int maxAttempts);
+    /// <param name="maxRetries">Additional retries after the original attempt; zero disables retries.</param>
+    void ThenRetry(int maxRetries);
 
     /// <inheritdoc cref="ThenRetry(int)"/>
     /// <param name="retryPolicy">The retry policy configuration</param>

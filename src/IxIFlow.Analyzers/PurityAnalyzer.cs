@@ -35,16 +35,22 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
     {
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.Analyze | GeneratedCodeAnalysisFlags.ReportDiagnostics);
         context.EnableConcurrentExecution();
+
         context.RegisterCompilationStartAction(start =>
         {
             if (EngineSymbols.For(start.Compilation) is not { } engine)
                 return;
+
             var code = new WorkflowCode(engine.Compilation);
+
             var demands = new WorkflowCode(engine.Compilation, target =>
                 target is IPropertySymbol { Name: "UtcNow" } property && engine.IsContext(property.ContainingType)
-                    ? "WorkflowContext.UtcNow" : null);
+                    ? "WorkflowContext.UtcNow"
+                    : null);
+
             start.RegisterOperationAction(operation =>
                 CheckExpressions(operation, engine, code, demands), OperationKind.Invocation);
+
             if (engine.Combiner != null)
                 start.RegisterSymbolAction(symbol => CheckCombiner(symbol, engine, code), SymbolKind.NamedType);
         });
@@ -53,26 +59,37 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
     private static void CheckExpressions(OperationAnalysisContext context, EngineSymbols engine, WorkflowCode code, WorkflowCode demands)
     {
         var invocation = (IInvocationOperation)context.Operation;
+
         if (!engine.IsBuilderMethod(invocation.TargetMethod) || NameOnly.Contains(invocation.TargetMethod.Name))
             return;
+
         var destinationMethod = Destinations.Contains(invocation.TargetMethod.Name);
+
         foreach (var argument in invocation.Arguments)
         {
             if (argument.Parameter == null || argument.ArgumentKind == ArgumentKind.DefaultValue ||
                 !(engine.TakesCode(argument.Parameter.Type) || invocation.TargetMethod.Name == "Case" && argument.Parameter.Ordinal == 0))
                 continue;
+
             var destination = destinationMethod || invocation.TargetMethod.Name == "Assign" && argument.Parameter.Ordinal == 0;
             var value = EngineSymbols.Unwrapped(argument.Value);
-            for (var depth = 0; depth < 8 && value is ILocalReferenceOperation local &&
-                                EngineSymbols.Initializer(local, context.CancellationToken) is { } stored; depth++)
+
+            for (var depth = 0;
+                 depth < 8 && value is ILocalReferenceOperation local &&
+                 EngineSymbols.Initializer(local, context.CancellationToken) is { } stored;
+                 depth++)
                 value = EngineSymbols.Unwrapped(stored);
+
             // A destination is set, so only its lambda tells what runs; one kept elsewhere is left to the build.
             if (destination && value is not IAnonymousFunctionOperation)
                 continue;
+
             var demand = invocation.TargetMethod.Name == "DemandFrom";
+
             foreach (var (use, member) in (demand ? demands : code).Uses(value, destination, context.CancellationToken))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureExpression, use.Syntax.GetLocation(),
                     demand ? null : ClockFix(engine, use, member), member));
+
             foreach (var (use, member) in code.MutationUses(value, context.CancellationToken, destination))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureExpression, use.Syntax.GetLocation(), member));
         }
@@ -83,18 +100,23 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
     private static void CheckCombiner(SymbolAnalysisContext context, EngineSymbols engine, WorkflowCode code)
     {
         var type = (INamedTypeSymbol)context.Symbol;
+
         var combiners = type.AllInterfaces
             .Where(each => SymbolEqualityComparer.Default.Equals(each.OriginalDefinition, engine.Combiner))
             .ToList();
+
         if (combiners.Count == 0 || type.IsAbstract || type.Locations.FirstOrDefault(each => each.IsInSource) is not { } at)
             return;
+
         var cancellation = context.CancellationToken;
         var reported = new HashSet<(Location, string)>();
+
         void Report(Location location, string member)
         {
             if (reported.Add((location, member)))
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ImpureCombiner, location, type.Name, member));
         }
+
         void Uses(IOperation body)
         {
             // The combiner's own fields are reported at their initializers.
@@ -110,20 +132,25 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
             .OfType<IMethodSymbol>()
             .Concat(type.InstanceConstructors)
             .Concat(type.StaticConstructors);
+
         foreach (var method in runs)
         {
             if (!SymbolEqualityComparer.Default.Equals(method.ContainingType.OriginalDefinition, type.OriginalDefinition))
             {
                 if (code.Leads(method, cancellation) is { } inherited)
                     Report(at, inherited);
+
                 continue;
             }
+
             foreach (var body in code.Bodies(method, withInitializers: false, cancellation))
                 Uses(body);
+
             if (WorkflowCode.ImplicitBase(method, cancellation) is { } constructor &&
                 code.Leads(constructor, cancellation) is { } inBase)
                 Report(at, inBase);
         }
+
         foreach (var initializer in code.Initializers(type, isStatic: false, cancellation)
                      .Concat(code.Initializers(type, isStatic: true, cancellation)))
             Uses(initializer);
@@ -137,30 +164,38 @@ public sealed class PurityAnalyzer : DiagnosticAnalyzer
         if (member is not ("DateTime.UtcNow" or "DateTimeOffset.UtcNow") || use is not IPropertyReferenceOperation ||
             use.SemanticModel == null)
             return null;
+
         for (var each = use.Parent; each != null; each = each.Parent)
         {
             if (each is ILocalFunctionOperation function)
             {
                 if (function.Symbol.IsStatic)
                     return null;
+
                 continue;
             }
+
             if (each is not IAnonymousFunctionOperation lambda)
                 continue;
+
             var context = lambda.Symbol.Parameters.FirstOrDefault(parameter =>
                 engine.IsContext(parameter.Type) && !parameter.IsDiscard &&
                 SyntaxFacts.GetKeywordKind(parameter.Name) == SyntaxKind.None);
+
             if (context != null)
             {
                 var bound = use.SemanticModel.LookupSymbols(use.Syntax.SpanStart, name: context.Name);
+
                 return bound.Length == 1 && SymbolEqualityComparer.Default.Equals(bound[0], context)
                     ? ImmutableDictionary<string, string?>.Empty.Add(Descriptors.ClockReplacement,
                         member == "DateTime.UtcNow" ? $"{context.Name}.UtcNow.UtcDateTime" : $"{context.Name}.UtcNow")
                     : null;
             }
+
             if (lambda.Symbol.IsStatic)
                 return null;
         }
+
         return null;
     }
 }

@@ -471,6 +471,7 @@ public class ExceptionHandlingTests
                         .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
                         .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)))
                 .Catch<BusinessValidationException, MessageFault>(catchBuilder => catchBuilder
+
                     // This will throw a PaymentProcessingException when Amount >= 150
                     .Step<ProcessPaymentWithExceptionActivity>(setup => setup
                         .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
@@ -685,7 +686,8 @@ public class ExceptionHandlingTests
 
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
-            if (ShouldThrow) throw new CriticalSystemException("Exception thrown in finally block");
+            if (ShouldThrow)
+                throw new CriticalSystemException("Exception thrown in finally block");
 
             CleanupResult = true;
             await Task.CompletedTask;

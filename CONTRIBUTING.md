@@ -1,249 +1,117 @@
 # Contributing to IxIFlow
 
-Thanks for your interest in contributing to IxIFlow! We welcome contributions from developers of all skill levels.
+Use [GitHub issues](https://github.com/HumanHub/IxIFlow/issues) for bug reports and feature discussions. Include a minimal reproduction, expected and observed behavior, SDK/OS versions and relevant sanitized diagnostics. Discuss larger API or behavior changes before implementing them. Keep pull requests focused and update documentation and relevant tests with the change.
 
-## Getting Started
+## Checkout and build
 
-### Prerequisites
+Install the .NET 10 SDK and Git. An editor with .NET 10 support is sufficient; the compiler tools also target `netstandard2.0`. Node.js 18 or later is required only for the VS Code extension tests. Package restore needs access to NuGet.org.
 
-- .NET 10 SDK (the current LTS release; every project targets net10.0)
-- Visual Studio 2022, VS Code, or JetBrains Rider
-- Git
-
-### Setting Up Your Development Environment
-
-1. **Fork the repository** on GitHub
-2. **Clone your fork** locally:
-   ```bash
-   git clone https://github.com/yourusername/IxIFlow.git
-   cd IxIFlow
-   ```
-3. **Restore packages**:
-   ```bash
-   dotnet restore
-   ```
-4. **Build the solution**:
-   ```bash
-   dotnet build
-   ```
-5. **Run the tests** to make sure everything works:
-   ```bash
-   dotnet test
-   ```
-
-## Development Workflow
-
-### Running Tests
-
-We have comprehensivish test coverage. Run tests frequently while developing:
-
-```bash
-# Run all tests
-dotnet test
-
-# Run tests with detailed output
-dotnet test --verbosity normal
-
-# Run specific test class
-dotnet test --filter "FluentApiTests"
-
-# Run tests and generate coverage report
-dotnet test --collect:"XPlat Code Coverage"
+```sh
+git clone https://github.com/HumanHub/IxIFlow
+cd IxIFlow
+dotnet restore IxIFlow.sln
+dotnet build IxIFlow.sln -c Release
+dotnet tool restore
 ```
 
-### Code Style
+Create a branch from `main`; contributors submitting from forks can set their fork as a remote. Build and run the relevant test suites before opening a pull request.
 
-We follow standard C# conventions with a few specifics:
+## Repository structure
 
-- **File Namespaces**: Use file-scoped namespaces where possible
-- **Primary Constructors**: Use primary constructors for simple cases
-- **Naming**: 
-  - Use PascalCase for public members
-  - Use camelCase for private fields
-  - Use descriptive names (avoid abbreviations)
-- **Comments**: 
-  - Keep comments professional and relevant
-  - Use XML documentation for public APIs
-  - No emojis or unprofessional language in code comments
+| Location | Contents |
+| --- | --- |
+| `src/IxIFlow` | Fluent builders, validation, client, in-process host/executor, memory store and telemetry |
+| `src/IxIFlow.Abstractions` | Activity, recovery and scope contracts, attributes and combiners |
+| `src/IxIFlow.Authoring` | YAML/document APIs, package resolution, catalogs and publishing |
+| `src/IxIFlow.Generators` | YAML document model, translation and source generator |
+| `src/IxIFlow.Analyzers`, `src/IxIFlow.Analyzers.CodeFixes` | Compiler diagnostics and fixes |
+| `src/IxIFlow.Relational` | Shared implementation for relational providers |
+| `src/IxIFlow.Sqlite`, `src/IxIFlow.SqlServer`, `src/IxIFlow.PostgreSql` | Provider repositories and registration |
+| `src/IxIFlow.Coordinator` | Host discovery, stateless matching and authenticated links |
+| `src/IxIFlow.AspNetCore` | Authorized triggers, operations and publishing HTTP mappings |
+| `src/IxIFlow.Webhooks` | Signed outbox delivery over HTTP |
+| `src/IxIFlow.Templates`, `src/IxIFlow.Templates.Liquid` | Template contracts/activities and Liquid rendering |
+| `src/IxIFlow.Debugging` | Conditional breakpoints and Debug Adapter Protocol endpoint |
+| `src/Shared` | Source shared by engine and compiler projects |
+| `tests/IxIFlow.Tests` | Engine, API, provider, authoring and repository guards |
+| `tests/IxIFlow.Conformance` | Store/host profile scenarios |
+| `tests/IxIFlow.ExecutionContract.Tests` | Host/executor message contract tests |
+| `tests/IxIFlow.Samples.Tests`, `tests/IxIFlow.Generators.Tests`, `tests/IxIFlow.Analyzers.Tests` | Samples/docs, generator and analyzer suites |
+| `tests/IxIFlow.TestSupport`, `tests/IxIFlow.BundleFixtures` | Shared fixtures, test compilation and bundle inputs |
+| `samples/IxIFlow.Samples` | Runnable console and C#/YAML examples |
+| `samples/IxIFlow.Recipes` | Wait, reply, payment and list recipes |
+| `samples/IxIFlow.DemoActivities` | Sample activity library/package |
+| `extensions/ixiflow-debug` | VS Code debugger extension and Node tests |
+| `docs` | Public guides and diagnostic reference |
 
-### Project Structure
+## Tests and prerequisites
 
+A complete solution test run includes database integration and child-process tests. Run it only in an environment with the prerequisites below:
+
+```sh
+dotnet test IxIFlow.sln -c Release
 ```
-IxIFlow/
-├── src/
-│   ├── IxIFlow.Abstractions/   # Activity contract and attributes
-│   ├── IxIFlow/                # Fluent API, engine, DI extensions
-│   ├── IxIFlow.Authoring/      # YAML documents and activity catalog
-│   ├── IxIFlow.Distributed/    # Hosts, coordinator, queue service
-│   ├── IxIFlow.SqlServer/      # SQL Server store, registry, message bus
-│   └── IxIFlow.PostgreSql/     # PostgreSQL store and LISTEN/NOTIFY wake-ups
-├── tests/
-│   ├── IxIFlow.Tests/          # Unit, execution and syntax tests
-│   ├── IxIFlow.Conformance/    # Scenarios run in every store profile
-│   └── IxIFlow.TestSupport/    # Shared test infrastructure (SQL Server and PostgreSQL via Testcontainers)
-└── samples/
-    └── IxIFlow.DemoActivities/ # Sample activity package
+
+`IxIFlow.Tests` provider/integration cases and SQL Server/PostgreSQL profiles in `IxIFlow.Conformance` need those database servers. The shared Testcontainers fixtures start Docker containers on first use unless you provide an external server through `IXIFLOW_TEST_SQL_CONNECTION_STRING` and `IXIFLOW_TEST_POSTGRESQL_CONNECTION_STRING`, respectively. The supplied server credentials must allow creation and deletion of isolated test databases. Use dedicated test servers. Docker is unnecessary when both external servers are provided.
+
+Conformance accepts comma-separated `IXIFLOW_PROFILES`: `local-memory`, `local-sqlite`, `distributed-sqlserver`, `distributed-postgresql`, and each distributed profile with `/coordinators-1` or `/coordinators-2`. Unset selects all profiles. `unprofiled` additionally selects facts and plain-provider rows, which can themselves need database servers. Profile selection does not filter the separate `IxIFlow.Tests` assembly; several server facts are selected by class/method rather than a database category. For runs without servers, select local classes explicitly and exclude all server cases rather than relying only on category filters.
+
+The following classes start `dotnet` pack/restore/build or consumer processes. They require an environment that permits child processes, package feeds and SDK access, and are unsuitable for restricted runners. Exclude them when those prerequisites are unavailable:
+
+- `NuGetFeedRestoreProcessTests` (Conformance).
+- `ActivityPublishingConsumerProcessTests`, `WorkflowPublishingConfiguredReferenceTests`, `WorkflowPublishingMetadataReferenceTests`, `WorkflowPublishingReferenceRegressionTests`, `WorkflowPublishingTypeSyntaxTests` (engine tests).
+- `PackageConsumerTests`, `ActivitySchemaPackageTests`, `WorkflowSchemaPackageTests` (generator tests).
+
+For a local documentation/compiler check in PowerShell:
+
+```powershell
+$env:IXIFLOW_PROFILES = 'local-memory,local-sqlite,unprofiled'
+dotnet test tests/IxIFlow.Samples.Tests -c Release
+dotnet test tests/IxIFlow.Analyzers.Tests -c Release
+dotnet test tests/IxIFlow.Generators.Tests -c Release --filter 'FullyQualifiedName!~PackageConsumerTests&FullyQualifiedName!~ActivitySchemaPackageTests&FullyQualifiedName!~WorkflowSchemaPackageTests'
+dotnet test tests/IxIFlow.Tests -c Release --filter 'FullyQualifiedName~SpecTraceabilityTests|FullyQualifiedName~ExecutorBoundaryGuardTests|FullyQualifiedName~FeatureBaselineGuardTests|FullyQualifiedName~PackageMetadataGuardTests'
+dotnet test tests/IxIFlow.ExecutionContract.Tests -c Release
 ```
 
-## Contributing Code
+The optional specification traceability guard skips when its separately supplied input is absent; public builds and other suites need no such input. Documentation tests check links and compile-backed snippets. When formatting moves a snippet, update the guide from its source region. Native fixtures have platform restrictions documented in [their README](tests/IxIFlow.TestSupport/NativeFixtures/README.md).
 
-### Types of Contributions We Welcome
+Run the extension tests from `extensions/ixiflow-debug` with `npm test`. Its [README](extensions/ixiflow-debug/README.md) explains Extension Development Host setup.
 
-- **Bug fixes**: Fix issues in existing functionality
-- **New features**: Add new workflow capabilities
-- **Performance improvements**: Make workflows run faster or use less memory
-- **Documentation**: Improve README, code comments, or examples
-- **Tests**: Add test coverage for existing features
+## Formatting and review
 
-### Before You Start
+Follow [.editorconfig](.editorconfig). Use four-space C# indentation, one statement per line, expanded blocks and accessors with bodies, compact auto-properties, a 140-column line limit and one blank line between logical paragraphs. Keep public XML documentation accurate and comments self-contained. Use file-scoped namespaces and descriptive names consistent with the surrounding code.
 
-1. **Check existing issues** to see if someone is already working on it
-2. **Create an issue** to discuss larger changes before implementing
-3. **Keep changes focused**: One feature or fix per pull request
+Restore the pinned tools, then format with the repository command:
 
-### Making Changes
+```sh
+dotnet tool restore
+dotnet regitlint -s IxIFlow.sln --format-only
+```
 
-1. **Create a feature branch** from main:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
+An optional pre-commit hook can check staged changes with:
 
-2. **Make your changes** following our coding standards
+```sh
+dotnet regitlint -f staged --fail-on-diff
+```
 
-3. **Add tests** for any new functionality:
-   - Unit tests for individual components
-   - Integration tests for complete workflows
-   - Syntax tests for new API features
+Review the diff, build in Release and run relevant tests after formatting. Describe the concrete problem, resulting behavior and validation in the pull request. Report unavailable test prerequisites and unresolved failures explicitly.
 
-4. **Update documentation** if needed:
-   - Update README.md for new features
-   - Add XML documentation for public APIs
-   - Update code examples
+## License and DCO sign-off
 
-5. **Test your changes**:
-   ```bash
-   dotnet test
-   dotnet build --configuration Release
-   ```
-
-### Submitting Your Pull Request
-
-1. **Push your branch** to your fork:
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-2. **Create a pull request** on GitHub with:
-   - Clear title describing what you changed
-   - Description explaining why the change is needed
-   - Reference to any related issues
-   - Screenshots if the change affects examples or documentation
-
-3. **Sign off every commit** (see [License and Sign-off](#license-and-sign-off))
-
-4. **Respond to feedback** from maintainers promptly
-
-### License and Sign-off
-
-IxIFlow is licensed under the [Apache License 2.0](LICENSE). By contributing, you agree that your contribution is licensed under the same terms (section 5 of the license).
-
-Every commit must be signed off under the [Developer Certificate of Origin](https://developercertificate.org/) (DCO 1.1). The sign-off certifies that you wrote the change, or otherwise have the right to submit it under the project's license. Add it with `git commit -s`, which appends a line with your real name and email:
+Contributions are licensed under the [Apache License 2.0](LICENSE). Sign off every commit under the [Developer Certificate of Origin 1.1](https://developercertificate.org/), certifying that you have the right to submit it under this license. `git commit -s` adds:
 
 ```text
 Signed-off-by: Your Name <your.email@example.com>
 ```
 
-To sign off commits you already made on your branch, use `git rebase --signoff main` and force-push the branch. Pull requests with unsigned commits can't be merged.
+Use your name and email. Add missing sign-offs on your own branch before requesting merge, and coordinate any rewritten shared history with collaborators.
 
-## Examples and Testing
+## Security reports
 
-### Writing Good Tests
+Do not report security vulnerabilities in public issues. Use GitHub's private vulnerability reporting on this repository (Security > Report a vulnerability); see [SECURITY.md](SECURITY.md). Keep exploit details and sensitive data out of public issues, pull requests and discussions.
 
-When adding new features, include comprehensive tests:
+## Release process
 
-```csharp
-[Fact]
-public async Task YourNewFeature_ValidInput_ShouldWork()
-{
-    // Arrange - Set up test data and mocks
-    var workflowData = new TestWorkflowData { /* test data */ };
-    
-    // Act - Execute the feature
-    var result = await ExecuteWorkflow(workflowData);
-    
-    // Assert - Verify the results
-    Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-    Assert.Equal(expectedValue, result.ActualValue);
-}
-```
+There is no CI configuration in this repository, and package publication is manual. Maintainers choose the semantic version, update package metadata and release notes, and validate a clean release checkout with the full build and applicable local, database, coordinator and process-consumer suites. Record any platform restrictions.
 
-### Writing Good Examples
-
-When adding new features, include clear examples in the README:
-
-```csharp
-// Show the simplest possible usage
-.Step<YourNewActivity>(setup => setup
-    .Input(step => step.InputProperty).From(data => data.WorkflowData.Source)
-    .Output(step => step.OutputProperty).To(data => data.WorkflowData.Target))
-```
-
-## Reporting Issues
-
-### Bug Reports
-
-Include these details when reporting bugs:
-
-- **What happened**: Clear description of the issue
-- **What you expected**: What should have happened instead
-- **Steps to reproduce**: Minimal code example that shows the problem
-- **Environment**: .NET version, operating system, etc.
-- **Logs/Errors**: Any error messages or stack traces
-
-### Feature Requests
-
-For new feature ideas:
-
-- **Use case**: Why do you need this feature?
-- **Current workaround**: How do you handle this now?
-- **Proposed solution**: What would the API look like?
-- **Examples**: Show how you'd use the new feature
-
-## Community Guidelines
-
-### Be Respectful
-
-- Use welcoming and inclusive language
-- Respect different viewpoints and experiences
-- Accept constructive criticism gracefully
-- Focus on what's best for the community
-
-### Be Helpful
-
-- Help other contributors when you can
-- Share knowledge and experience
-- Provide clear, actionable feedback
-- Be patient with new contributors
-
-## Release Process
-
-Maintainers handle releases, but here's how it works:
-
-1. **Version bumping**: We follow semantic versioning (semver)
-2. **Release notes**: Document all changes in releases
-3. **NuGet publishing**: Packages are published automatically via CI/CD
-
-## Questions?
-
-- **GitHub Issues**: For bugs and feature requests
-- **Discussions**: For questions about usage or architecture
-- **Email**: For security issues or private matters
-
-## Recognition
-
-Contributors are recognized in:
-- Release notes for their contributions
-- GitHub contributor lists
-- Special thanks for significant contributions
-
-Thank you for contributing to IxIFlow!
+Pack the packable source projects and the DemoActivities sample with `dotnet pack -c Release`. Inspect package dependencies, READMEs, licenses/NOTICE, XML documentation, symbols and SourceLink, and verify restore/build from the resulting package feed. The engine embeds its compiler tooling; Generators also ships as a library package, while the analyzer/code-fix projects and runnable samples are non-packable. Build release symbols from the committed release revision. Maintainers publish the reviewed NuGet packages and symbols using their own credentials, create the release tag and publish release notes. No repository automation performs these steps.

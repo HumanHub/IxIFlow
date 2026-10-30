@@ -3,105 +3,154 @@ namespace IxIFlow.Core;
 internal sealed partial class HostedWorkflowOperations
 {
     public IDisposable WatchChanges(string instanceId, Action changed) => host.WatchChanges(instanceId, changed);
+
     public Task<IReadOnlyList<StepTableEntry>> GetStepTableAsync(string instanceId, CancellationToken cancellationToken = default) =>
-        host.ReadAsync(client => client.GetStepTableAsync(instanceId, cancellationToken));
+        host.ReadAsync(client => client.GetStepTableAsync(instanceId, cancellationToken), cancellationToken: cancellationToken);
+
     public Task<IReadOnlyList<SwitchTableEntry>> GetSwitchTableAsync(string instanceId, CancellationToken cancellationToken = default) =>
-        host.ReadAsync(client => client.GetSwitchTableAsync(instanceId, cancellationToken));
+        host.ReadAsync(client => client.GetSwitchTableAsync(instanceId, cancellationToken), cancellationToken: cancellationToken);
+
     public Task<IReadOnlyList<GraphTableEntry>> GetGraphTableAsync(string instanceId, CancellationToken cancellationToken = default) =>
-        host.ReadAsync(client => client.GetGraphTableAsync(instanceId, cancellationToken));
+        host.ReadAsync(client => client.GetGraphTableAsync(instanceId, cancellationToken), cancellationToken: cancellationToken);
+
     public Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries = 10000, CancellationToken cancellationToken = default) =>
-        host.ReadAsync(client => client.OpenReplayAsync(instanceId, maxEntries, cancellationToken));
+        host.ReadAsync(client => client.OpenReplayAsync(instanceId, maxEntries, cancellationToken), cancellationToken: cancellationToken);
+
     public Task<string?> GetSourceAsync(string instanceId, string path, CancellationToken cancellationToken = default) =>
-        host.ReadAsync(client => client.GetSourceAsync(instanceId, path, cancellationToken));
+        host.ReadAsync(client => client.GetSourceAsync(instanceId, path, cancellationToken), cancellationToken: cancellationToken);
+
     public async Task<string> LaunchAsync(string instanceId, string workflow, int version, System.Text.Json.JsonElement input,
         bool stopOnEntry, string actor, CancellationToken cancellationToken = default)
     {
         InstanceIds.Validate(instanceId);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
-        if (!(hostSettings ?? Runtime.HostSettings.Default).Debugging) throw new InvalidOperationException("Debugging is disabled");
+
+        if (!(hostSettings ?? Runtime.HostSettings.Default).Debugging)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Debugging is disabled");
+
         return await client.StartAsync(workflow, version, (object)input.Clone(), new WorkflowOptions
-        { InstanceId = instanceId, DebugStopOnEntryActor = stopOnEntry ? actor : null }, cancellationToken);
-    }
-    public Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default) =>
-        host.ReadAsync(client => client.InspectAsync(instanceId, cancellationToken));
-    public async Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
-    {
-        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
-        return await WithDebugRecoveryAsync(accepted => host.ReadAsync(client =>
-            client.RequestDebugAsync(instanceId, DebugCommandKind.Pause, actor, cancellationToken, incarnation, accepted)));
+            { InstanceId = instanceId, DebugStopOnEntryActor = stopOnEntry ? actor : null }, cancellationToken);
     }
 
-    public async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
+    public Task<InstanceInspection?> InspectAsync(string instanceId, CancellationToken cancellationToken = default) =>
+        host.ReadAsync(client => client.InspectAsync(instanceId, cancellationToken), cancellationToken: cancellationToken);
+
+    public async Task<WorkflowExecutionResult> PauseAsync(string instanceId, string actor, Guid? expectedIncarnation = null,
+        CancellationToken cancellationToken = default)
     {
-        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation, cancellationToken: cancellationToken);
+
+        return await WithDebugRecoveryAsync(accepted => host.ReadAsync(client =>
+                client.RequestDebugAsync(instanceId, DebugCommandKind.Pause, actor, cancellationToken, incarnation, accepted),
+            cancellationToken: cancellationToken));
+    }
+
+    public async Task<WorkflowExecutionResult> ContinueAsync(string instanceId, string actor, Guid? expectedIncarnation = null,
+        CancellationToken cancellationToken = default)
+    {
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation, cancellationToken: cancellationToken);
+
         return await WithDebugRecoveryAsync(async accepted =>
         {
             DebugCommandReceipt? receipt = null;
+
             await host.ReadAsync(client => client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor,
-                cancellationToken, incarnation, value => { receipt = value; accepted(value); }));
+                cancellationToken, incarnation, value =>
+                {
+                    receipt = value;
+                    accepted(value);
+                }), cancellationToken: cancellationToken);
+
             return await host.RunAsync(instanceId, (slot, _, token) => slot.RecoverDebugCommandAsync(receipt!, token), cancellationToken);
         });
     }
 
-    public async Task RequestContinueAsync(string instanceId, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
+    public async Task RequestContinueAsync(string instanceId, string actor, Guid? expectedIncarnation = null,
+        CancellationToken cancellationToken = default)
     {
-        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation, cancellationToken: cancellationToken);
+
         await WithDebugRecoveryAsync(accepted => host.ReadAsync(client =>
-            client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor, cancellationToken, incarnation, accepted)));
+                client.RequestDebugAsync(instanceId, DebugCommandKind.Continue, actor, cancellationToken, incarnation, accepted),
+            cancellationToken: cancellationToken));
     }
 
     public async Task<WorkflowExecutionResult> StepAsync(string instanceId, string continuationId, DebugStepKind kind,
-        string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
+        string actor, Guid? expectedIncarnation = null, CancellationToken cancellationToken = default)
     {
-        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation, cancellationToken: cancellationToken);
         ArgumentException.ThrowIfNullOrWhiteSpace(continuationId);
-        if (!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
+
+        if (!Enum.IsDefined(kind))
+            throw new ArgumentOutOfRangeException(nameof(kind));
+
         return await WithDebugRecoveryAsync(async accepted =>
         {
             DebugCommandReceipt? receipt = null;
+
             await host.ReadAsync(client => client.RequestStepAsync(instanceId, continuationId, kind, actor,
-                cancellationToken, incarnation, value => { receipt = value; accepted(value); }));
+                cancellationToken, incarnation, value =>
+                {
+                    receipt = value;
+                    accepted(value);
+                }), cancellationToken: cancellationToken);
+
             return await host.RunAsync(instanceId, (slot, _, token) => slot.RecoverDebugCommandAsync(receipt!, token), cancellationToken);
         });
     }
 
     public async Task<DataEditResult> EditDataAsync(string instanceId, string editId, long expectedRevision,
-        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
+        DataEditTarget target, IReadOnlyList<DataPatch> patches, string actor, Guid? expectedIncarnation = null,
+        CancellationToken cancellationToken = default)
     {
-        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation, cancellationToken: cancellationToken);
+
         return await WithDebugReceiptAsync(accepted => host.ReadAsync(client =>
-            client.EditDataAsync(instanceId, editId, expectedRevision, target, patches, actor, cancellationToken, incarnation, accepted)));
+                client.EditDataAsync(instanceId, editId, expectedRevision, target, patches, actor, cancellationToken, incarnation,
+                    accepted),
+            cancellationToken: cancellationToken));
     }
 
     public async Task<IReadOnlyList<Breakpoint>> SetBreakpointsAsync(string instanceId, IReadOnlyList<Breakpoint> breakpoints,
-        string actor, CancellationToken cancellationToken = default, Guid? expectedIncarnation = null)
+        string actor, Guid? expectedIncarnation = null, CancellationToken cancellationToken = default)
     {
-        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation);
+        var incarnation = await IncarnationAsync(instanceId, expectedIncarnation, cancellationToken: cancellationToken);
+
         return await WithDebugReceiptAsync(accepted => host.ReadAsync(client =>
-            client.SetBreakpointsAsync(instanceId, breakpoints, actor, cancellationToken, incarnation, accepted)));
+                client.SetBreakpointsAsync(instanceId, breakpoints, actor, cancellationToken, incarnation, accepted),
+            cancellationToken: cancellationToken));
     }
 
     private Task<WorkflowExecutionResult> WithDebugRecoveryAsync(
         Func<Action<DebugCommandReceipt>, Task<WorkflowExecutionResult>> operation)
     {
         DebugCommandReceipt? receipt = null;
+
         return WithDebugReceiptAsync(accepted => host.WithDebugCommandResultAsync(() => receipt,
-            () => operation(value => { receipt = value; accepted(value); })));
+            () => operation(value =>
+            {
+                receipt = value;
+                accepted(value);
+            })));
     }
 
     private async Task<T> WithDebugReceiptAsync<T>(Func<Action<DebugCommandReceipt>, Task<T>> operation)
     {
         DebugCommandReceipt? receipt = null;
-        try { return await operation(accepted => receipt = accepted); }
+
+        try
+        {
+            return await operation(accepted => receipt = accepted);
+        }
         finally
         {
             // Acceptance is recorded before result hydration, gate entry, bundle acquisition,
             // or any other cancellable/fallible post-acceptance work.
-            if (receipt != null) await host.WakeDebugCommandIfNeededAsync(receipt);
+            if (receipt != null)
+                await host.WakeDebugCommandIfNeededAsync(receipt);
         }
     }
 
     public Task<IReadOnlyList<Breakpoint>> GetBreakpointsAsync(string instanceId, CancellationToken cancellationToken = default) =>
-        host.ReadAsync(client => client.GetBreakpointsAsync(instanceId, cancellationToken));
-
+        host.ReadAsync(client => client.GetBreakpointsAsync(instanceId, cancellationToken), cancellationToken: cancellationToken);
 }

@@ -15,6 +15,7 @@ public sealed partial class StateMachineTests
         var repository = new ReplySuggestionStore();
         await using var services = Services(repository);
         var client = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<ReplySuggestionData>("StateReplySuggestion" + recover)
             .StateMachine(m => m.Start("a").State("a", s => s
                 .Entry(e => e.Request<OutputAsk>("answer", a => a.Output(x => x.Token).To(c => c.WorkflowData.Token)))
@@ -24,6 +25,7 @@ public sealed partial class StateMachineTests
                     .Output(x => x.Number).To(c => c.WorkflowData.Divisor)
                     .When(c => c.WorkflowData.Divisor > 0, "end")
                     .When(c => c.PreviousStep.Number < 0, "end")))).Build();
+
         var idle = await client.RunAsync(definition, new ReplySuggestionData { Divisor = 1 });
         Assert.Equal(WorkflowExecutionStatus.Suspended, idle.Status);
         var token = Assert.IsType<ReplySuggestionData>(idle.WorkflowData).Token;
@@ -37,9 +39,12 @@ public sealed partial class StateMachineTests
 
         repository.FailRearm = recover;
         WorkflowExecutionResult rearmed;
+
         if (recover)
         {
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.ResumeAsync(idle.InstanceId, "change", new Signal()));
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+                client.ResumeAsync(idle.InstanceId, "change", new Signal()));
+
             Assert.Equal(WorkflowErrorKind.Infrastructure, error.Kind);
             Assert.IsType<IOException>(error.InnerException);
             Assert.True(repository.RearmInterrupted);
@@ -50,7 +55,9 @@ public sealed partial class StateMachineTests
             repository.FailRearm = false;
             rearmed = await client.RecoverAsync(idle.InstanceId);
         }
-        else rearmed = await client.ResumeAsync(idle.InstanceId, "change", new Signal());
+        else
+            rearmed = await client.ResumeAsync(idle.InstanceId, "change", new Signal());
+
         Assert.True(rearmed.Status == WorkflowExecutionStatus.Suspended, rearmed.ErrorMessage);
         Assert.Equal(0, Assert.IsType<ReplySuggestionData>(rearmed.WorkflowData).Divisor);
         Assert.Equal(token, Assert.IsType<ReplySuggestionData>(rearmed.WorkflowData).Token);
@@ -79,21 +86,25 @@ public sealed partial class StateMachineTests
         public int Answer { get; set; }
     }
 
-    private sealed class ReplySuggestionStore : InMemoryWorkflowStateRepository
+    private sealed class ReplySuggestionStore : TestWorkflowStateRepository
     {
         public bool FailRearm { get; set; }
         public bool RearmInterrupted { get; private set; }
 
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
             var instance = commit.ReadInstance(commit.ReplacesParts ? null : await GetWorkflowInstanceAsync(commit.InstanceId));
+
             if (FailRearm && ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations[0].Status == ContinuationStatus.Waiting &&
                 JsonSerializer.Deserialize<ReplySuggestionData>(instance.WorkflowDataJson.InlineText)!.Divisor == 0)
             {
                 RearmInterrupted = true;
+
                 throw new IOException("Interrupted reply-suggestion rearm commit");
             }
-            return await base.CommitWorkflowInstanceAsync(commit);
+
+            return await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
         }
     }
 }

@@ -25,16 +25,22 @@ public static class CheckpointParts
         ArgumentNullException.ThrowIfNull(payload);
         ArgumentNullException.ThrowIfNull(parts);
         var stored = new Dictionary<string, StoredJson>(StringComparer.Ordinal);
+
         foreach (var part in parts)
             stored.Add(part.Key, part.Json);
+
         var instance = Read(payload);
+
         if (stored.TryGetValue(DataKey, out var data))
             instance.WorkflowDataJson = data;
+
         // A repository never reads payload bodies. Referenced structural parts are assembled by the executor.
         if (!stored.Any(part => part.Key != DataKey && part.Value.Reference != null))
             instance.ExecutionStateJson = StoredCheckpoint.AssembleState(instance.ExecutionStateJson, stored);
+
         instance.Revision = revision;
         instance.Saved(stored.AsReadOnly(), revision);
+
         return instance;
     }
 
@@ -47,9 +53,12 @@ public static class CheckpointParts
     {
         ArgumentNullException.ThrowIfNull(payload);
         var instance = Read(payload);
+
         if (data != null)
             instance.WorkflowDataJson = data;
+
         instance.Revision = revision;
+
         return instance;
     }
 

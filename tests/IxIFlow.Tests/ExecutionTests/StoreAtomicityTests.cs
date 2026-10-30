@@ -23,7 +23,7 @@ public sealed class StoreAtomicityTests : IClassFixture<SqliteTestDatabase<Store
 
     [SqlServerFact, Trait("Spec", "D-04"), Trait("Category", "SqlIntegration")]
     public Task SqlServerMixedSettlementsRollBack() => InboxAtomicityContract.MixedSettlementsRollBack(
-        new SqlWorkflowStateRepository(SqlTestDatabase<StoreAtomicityTests>.ConnectionString));
+        new SqlServerWorkflowStateRepository(SqlTestDatabase<StoreAtomicityTests>.ConnectionString));
 
     [PostgreSqlFact, Trait("Spec", "D-04"), Trait("Category", "PostgreSqlIntegration")]
     public Task PostgreSqlMixedSettlementsRollBack() => InboxAtomicityContract.MixedSettlementsRollBack(
@@ -33,8 +33,14 @@ public sealed class StoreAtomicityTests : IClassFixture<SqliteTestDatabase<Store
     public Task MemoryExpiredUnreclaimedOutboxOwner()
     {
         var time = new FakeTimeProvider();
+
         return OutboxStoreContract.ExpiredUnreclaimedOwnerCannotChangeDelivery(new InMemoryWorkflowStateRepository(time),
-            _ => { time.Advance(TimeSpan.FromSeconds(30)); return Task.CompletedTask; });
+            _ =>
+            {
+                time.Advance(TimeSpan.FromSeconds(30));
+
+                return Task.CompletedTask;
+            });
     }
 
     [Fact, Trait("Spec", "D-11"), Trait("Category", "SqliteIntegration")]
@@ -42,15 +48,22 @@ public sealed class StoreAtomicityTests : IClassFixture<SqliteTestDatabase<Store
     {
         var time = new FakeTimeProvider();
         await using var store = new SqliteWorkflowStateRepository(SqliteTestDatabase<StoreAtomicityTests>.ConnectionString, time);
+
         await OutboxStoreContract.ExpiredUnreclaimedOwnerCannotChangeDelivery(store,
-            _ => { time.Advance(TimeSpan.FromSeconds(30)); return Task.CompletedTask; });
+            _ =>
+            {
+                time.Advance(TimeSpan.FromSeconds(30));
+
+                return Task.CompletedTask;
+            });
     }
 
     [SqlServerFact, Trait("Spec", "D-11"), Trait("Category", "SqlIntegration")]
     public Task SqlServerExpiredUnreclaimedOutboxOwner()
     {
         var cs = SqlTestDatabase<StoreAtomicityTests>.ConnectionString;
-        return OutboxStoreContract.ExpiredUnreclaimedOwnerCannotChangeDelivery(new SqlWorkflowStateRepository(cs),
+
+        return OutboxStoreContract.ExpiredUnreclaimedOwnerCannotChangeDelivery(new SqlServerWorkflowStateRepository(cs),
             d => Expire(new SqlConnection(cs), d));
     }
 
@@ -58,6 +71,7 @@ public sealed class StoreAtomicityTests : IClassFixture<SqliteTestDatabase<Store
     public Task PostgreSqlExpiredUnreclaimedOutboxOwner()
     {
         var cs = PostgreSqlTestDatabase<StoreAtomicityTests>.ConnectionString;
+
         return OutboxStoreContract.ExpiredUnreclaimedOwnerCannotChangeDelivery(new PostgreSqlWorkflowStateRepository(cs),
             d => Expire(new NpgsqlConnection(cs), d));
     }
@@ -66,8 +80,8 @@ public sealed class StoreAtomicityTests : IClassFixture<SqliteTestDatabase<Store
     {
         await using (connection)
             await connection.ExecuteAsync(connection is SqlConnection
-                ? "UPDATE dbo.IxIFlowOutboxDeliveries SET LeaseUntilUtc=DATEADD(SECOND,-1,SYSUTCDATETIME()) WHERE EventId=@Id AND PublisherName=@PublisherName"
-                : "UPDATE ixiflow_outbox_deliveries SET lease_until_utc=clock_timestamp()-INTERVAL '1 second' WHERE event_id=@Id AND publisher_name=@PublisherName",
+                    ? "UPDATE dbo.IxIFlowOutboxDeliveries SET LeaseUntilUtc=DATEADD(SECOND,-1,SYSUTCDATETIME()) WHERE EventId=@Id AND PublisherName=@PublisherName"
+                    : "UPDATE ixiflow_outbox_deliveries SET lease_until_utc=clock_timestamp()-INTERVAL '1 second' WHERE event_id=@Id AND publisher_name=@PublisherName",
                 new { delivery.Event.Id, delivery.PublisherName });
     }
 }

@@ -24,15 +24,15 @@ namespace IxIFlow.Tests.ExecutionTests;
 public sealed class WorkflowPublishingTests
 {
     private const string Yaml = """
-        workflow:
-          name: Bundled
-          version: 1
-          dataType: Data
-        definitions:
-          - kind: activity
-            id: echo
-            activity: Echo
-        """;
+                                workflow:
+                                  name: Bundled
+                                  version: 1
+                                  dataType: Data
+                                definitions:
+                                  - kind: activity
+                                    id: echo
+                                    activity: Echo
+                                """;
 
     private static WorkflowPublisherOptions Options() => new()
     {
@@ -46,7 +46,7 @@ public sealed class WorkflowPublishingTests
 
     [SqlServerFact, Trait("Category", "SqlIntegration")]
     public Task PublishRoundTripsArchiveAndCatalogAndRetryOnSqlServer() =>
-        RoundTrip(new SqlWorkflowStateRepository(SqlTestDatabase<RoundTripScope>.ConnectionString));
+        RoundTrip(new SqlServerWorkflowStateRepository(SqlTestDatabase<RoundTripScope>.ConnectionString));
 
     [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
     public Task PublishRoundTripsArchiveAndCatalogAndRetryOnPostgreSql() =>
@@ -79,14 +79,17 @@ public sealed class WorkflowPublishingTests
         Assert.Contains(typeof(WorkflowDefinition).Assembly.FullName!, bundle.Manifest.SharedAssemblies.Keys);
         Assert.DoesNotContain(typeof(Data).Assembly.FullName!, bundle.Manifest.SharedAssemblies.Keys);
         Assert.Contains("private/" + typeof(Data).Assembly.GetName().Name + ".dll", bundle.Entries.Keys);
+
         var expectedEntries = new HashSet<string>(StringComparer.Ordinal)
         {
             WorkflowBundleArchive.AssemblyPath, WorkflowBundleArchive.PdbPath,
             WorkflowBundleArchive.YamlPath, WorkflowBundleArchive.SourcePath
         };
+
         var pending = new Queue<Assembly>();
         expectedEntries.Add("private/" + typeof(Data).Assembly.GetName().Name + ".dll");
         pending.Enqueue(typeof(Data).Assembly);
+
         while (pending.TryDequeue(out var assembly))
         {
             foreach (var reference in assembly.GetReferencedAssemblies())
@@ -95,18 +98,26 @@ public sealed class WorkflowPublishingTests
                     pending.Enqueue(Assembly.Load(reference));
             }
         }
+
         Assert.Equal(expectedEntries.Order(StringComparer.Ordinal), bundle.Entries.Keys.Order(StringComparer.Ordinal));
+
         foreach (var entry in bundle.Entries)
             Assert.Equal(bundle.Manifest.Entries[entry.Key], ArtifactDigest.Of(entry.Value.Span));
-        Assert.Equal(WorkflowYamlSerializer.Write(WorkflowYamlSerializer.Read(Yaml)), Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.YamlPath].Span));
+
+        Assert.Equal(WorkflowYamlSerializer.Write(WorkflowYamlSerializer.Read(Yaml)),
+            Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.YamlPath].Span));
+
         Assert.Contains("#line", Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.SourcePath].Span));
         Assert.Equal(JsonSerializer.Serialize(bundle.Manifest), version.ManifestJson);
+
         // A fresh publisher/catalog sees the durable receipt after the draft has gone.
         var retry = await new WorkflowPublisher(new WorkflowCatalog(store), store, Options()).PublishAsync(draft.Id);
         Assert.True(retry.Success);
         Assert.Equal(version.ArtifactDigest, retry.Workflow!.ArtifactDigest);
         Assert.Single(await store.GetWorkflowVersionsAsync());
-        await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SaveDefinitionAsync(draft with { Generation = Guid.Empty, Revision = 0 }, null));
+
+        await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+            store.SaveDefinitionAsync(draft with { Generation = Guid.Empty, Revision = 0 }, null));
     }
 
     private sealed class RoundTripScope;
@@ -127,12 +138,19 @@ public sealed class WorkflowPublishingTests
             "compile" => Yaml + "\n    input:\n      - target: DoesNotExist\n        from: {kind: constant, value: bad}\n",
             "test" => Yaml,
             "identity" => Yaml.Replace("name: Bundled", "name: Different"),
-            "imports" => "workflow:\n  name: Bundled\n  version: 1\n  dataType: Data\nimports:\n  catalogs: [package@1.0]\ndefinitions: []\n",
+            "imports" =>
+                "workflow:\n  name: Bundled\n  version: 1\n  dataType: Data\nimports:\n  catalogs: [package@1.0]\ndefinitions: []\n",
             _ => throw new ArgumentException(failure)
         };
+
         var options = Options();
-        if (failure == "translate") options.SourceOptions.ClassName = "bad-class";
-        if (failure == "test") YamlTestContracts.AddType(options.SourceOptions, "Echo", typeof(ActivityContractTests.RequiredText));
+
+        if (failure == "translate")
+            options.SourceOptions.ClassName = "bad-class";
+
+        if (failure == "test")
+            YamlTestContracts.AddType(options.SourceOptions, "Echo", typeof(ActivityContractTests.RequiredText));
+
         var store = new InMemoryWorkflowStateRepository();
         var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", yaml), null);
         var upload = new ObservedArtifacts(store);
@@ -142,6 +160,7 @@ public sealed class WorkflowPublishingTests
         Assert.Equal(stage, error.Stage);
         Assert.Equal("workflow.yaml", error.Path);
         var mapped = WorkflowYamlSerializer.Read(WorkflowYamlSerializer.Write(WorkflowYamlSerializer.Read(yaml)));
+
         var expectedLine = failure switch
         {
             "validate" => DocumentModel.GetLocation(WorkflowYamlSerializer.Read(yaml), "workflow.dataType").Line,
@@ -151,6 +170,7 @@ public sealed class WorkflowPublishingTests
             "identity" => WorkflowYamlSerializer.Read(yaml).Workflow.Location.Line,
             _ => line
         };
+
         Assert.Equal(expectedLine, error.Line);
         Assert.True(error.Column > 0);
         Assert.Equal(draft, await store.GetDefinitionAsync("workflow", draft.Name, draft.Version));
@@ -165,7 +185,7 @@ public sealed class WorkflowPublishingTests
 
     [SqlServerFact, Trait("Category", "SqlIntegration")]
     public Task ConcurrentEditAfterUploadRefusesTheStaleRevisionOnSqlServer() =>
-        StaleRevision(new SqlWorkflowStateRepository(SqlTestDatabase<StaleRevisionScope>.ConnectionString));
+        StaleRevision(new SqlServerWorkflowStateRepository(SqlTestDatabase<StaleRevisionScope>.ConnectionString));
 
     [PostgreSqlFact, Trait("Category", "PostgreSqlIntegration")]
     public Task ConcurrentEditAfterUploadRefusesTheStaleRevisionOnPostgreSql() =>
@@ -174,12 +194,14 @@ public sealed class WorkflowPublishingTests
     private static async Task StaleRevision(IWorkflowStateRepository store)
     {
         var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), null);
+
         var upload = new ObservedArtifacts(store, async () =>
         {
             Assert.Null(await store.GetWorkflowVersionAsync(draft.Name, draft.Version));
             Assert.NotNull(await store.GetDefinitionAsync("workflow", draft.Name, draft.Version));
             await store.SaveDefinitionAsync(draft with { Source = Yaml + "\n# edited" }, draft.Id);
         });
+
         var result = await new WorkflowPublisher(store, upload, Options()).PublishAsync(draft.Id);
         Assert.False(result.Success);
         var conflict = Assert.Single(result.Diagnostics);
@@ -198,12 +220,15 @@ public sealed class WorkflowPublishingTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), null);
+
         var results = await Task.WhenAll(Enumerable.Range(0, 2).Select(index =>
         {
             var options = Options();
             options.SourceOptions.Namespace = "Publisher" + index;
+
             return new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         }));
+
         Assert.All(results, result => Assert.True(result.Success, string.Join("; ", result.Diagnostics)));
         Assert.Equal(results[0].Workflow!.ArtifactDigest, results[1].Workflow!.ArtifactDigest);
         Assert.Single(await store.GetWorkflowVersionsAsync());
@@ -215,6 +240,7 @@ public sealed class WorkflowPublishingTests
     {
         var yaml = Yaml.Replace("dataType: Data", "dataType: " + typeof(Data).FullName!.Replace('+', '.'))
             .Replace("activity: Echo", "activity: " + typeof(YamlMappingActivity).FullName);
+
         var store = new InMemoryWorkflowStateRepository();
         var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", yaml), null);
         var result = await new WorkflowPublisher(store, store).PublishAsync(draft.Id);
@@ -228,11 +254,13 @@ public sealed class WorkflowPublishingTests
         var draft = await store.SaveDefinitionAsync(new("Bundled", 1, "workflow", Yaml), null);
         var upload = new ObservedArtifacts(store);
         var timeout = TimeSpan.FromSeconds(1);
+
         var options = new WorkflowPublisherOptions
         {
             BuildTimeout = timeout,
             SourceOptions = YamlTestContracts.Create(("Data", typeof(Data)), ("Echo", typeof(HangingBuildActivity)))
         };
+
         var logger = new BuildLogger();
         var timer = Stopwatch.StartNew();
         var publication = new WorkflowPublisher(store, upload, options, logger).PublishAsync(draft.Id);
@@ -247,7 +275,10 @@ public sealed class WorkflowPublishingTests
         Assert.Equal(WorkflowPublishDiagnosticClass.Unavailable, error.Class);
         Assert.Equal("Build() exceeded the configured timeout", error.Message);
         Assert.Equal("workflow.yaml", error.Path);
-        Assert.Equal(WorkflowYamlSerializer.Read(WorkflowYamlSerializer.Write(WorkflowYamlSerializer.Read(Yaml))).Workflow.Location.Line, error.Line);
+
+        Assert.Equal(WorkflowYamlSerializer.Read(WorkflowYamlSerializer.Write(WorkflowYamlSerializer.Read(Yaml))).Workflow.Location.Line,
+            error.Line);
+
         Assert.True(timer.Elapsed >= timeout);
         Assert.True(timer.Elapsed < TimeSpan.FromSeconds(15));
         Assert.True(thread.IsAlive);
@@ -279,19 +310,26 @@ public sealed class WorkflowPublishingTests
         // The publishing scratch context owns its own copy of this fixture assembly.
         // Communicate through AppDomain data, whose tuple types all belong to the shared runtime.
         private static string ProbeKey => typeof(HangingDefaultAttribute).FullName!;
+
         public static TaskCompletionSource<(Thread Thread, AssemblyLoadContext Context)> Entered
         {
             get
             {
                 lock (AppDomain.CurrentDomain)
                 {
-                    if (AppDomain.CurrentDomain.GetData(ProbeKey) is TaskCompletionSource<(Thread, AssemblyLoadContext)> probe) return probe;
-                    var created = new TaskCompletionSource<(Thread, AssemblyLoadContext)>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    if (AppDomain.CurrentDomain.GetData(ProbeKey) is TaskCompletionSource<(Thread, AssemblyLoadContext)> probe)
+                        return probe;
+
+                    var created =
+                        new TaskCompletionSource<(Thread, AssemblyLoadContext)>(TaskCreationOptions.RunContinuationsAsynchronously);
+
                     AppDomain.CurrentDomain.SetData(ProbeKey, created);
+
                     return created;
                 }
             }
         }
+
         public static bool Unloading
         {
             get => AppDomain.CurrentDomain.GetData(ProbeKey + ".Unloading") is true;
@@ -302,6 +340,7 @@ public sealed class WorkflowPublishingTests
         {
             var assembly = new StackTrace().GetFrames().Select(frame => frame.GetMethod()?.DeclaringType?.Assembly)
                 .First(assembly => assembly?.IsCollectible == true)!;
+
             var context = AssemblyLoadContext.GetLoadContext(assembly)!;
             context.Unloading += _ => Unloading = true;
             Entered.TrySetResult((Thread.CurrentThread, context));
@@ -314,6 +353,7 @@ public sealed class WorkflowPublishingTests
         public List<(LogLevel Level, string Message)> Messages { get; } = [];
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter) => Messages.Add((logLevel, formatter(state, exception)));
     }
@@ -329,10 +369,17 @@ public sealed class WorkflowPublishingTests
         Assert.True(second.Success);
         Assert.Equal(first.Assembly, second.Assembly);
         Assert.Equal(first.Pdb, second.Pdb);
-        var manifest = new WorkflowBundleManifest(6, "Test", 1, "hash", "data", "entry", "1.0", 4, "", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash,
+
+        var manifest = new WorkflowBundleManifest(6, "Test", 1, "hash", "data", "entry", "1.0", 4, "",
+            WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash,
             WorkflowCompilation.Settings, new Dictionary<string, string>(), new Dictionary<string, ArtifactDigest>());
-        var entries = new Dictionary<string, byte[]> { ["workflow.dll"] = first.Assembly, ["workflow.pdb"] = first.Pdb,
-            ["workflow.yaml"] = Encoding.UTF8.GetBytes(Yaml), ["workflow.g.cs"] = Encoding.UTF8.GetBytes(source) };
+
+        var entries = new Dictionary<string, byte[]>
+        {
+            ["workflow.dll"] = first.Assembly, ["workflow.pdb"] = first.Pdb,
+            ["workflow.yaml"] = Encoding.UTF8.GetBytes(Yaml), ["workflow.g.cs"] = Encoding.UTF8.GetBytes(source)
+        };
+
         Assert.Equal(WorkflowBundleArchive.Create(manifest, entries), WorkflowBundleArchive.Create(manifest, entries));
     }
 
@@ -352,12 +399,16 @@ public sealed class WorkflowPublishingTests
         {
             ["workflow.dll"] = [1], ["workflow.pdb"] = [2], ["workflow.yaml"] = [3], ["workflow.g.cs"] = [4]
         };
-        var manifest = new WorkflowBundleManifest(6, "Test", 1, "hash", "data", "entry", "1.0", 4, "", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash,
+
+        var manifest = new WorkflowBundleManifest(6, "Test", 1, "hash", "data", "entry", "1.0", 4, "",
+            WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash,
             WorkflowCompilation.Settings, new Dictionary<string, string>(), new Dictionary<string, ArtifactDigest>());
+
         var bytes = WorkflowBundleArchive.Create(manifest, entries);
         var expected = ArtifactDigest.Of(bytes);
         using var mutated = new MemoryStream();
         mutated.Write(bytes);
+
         using (var zip = new ZipArchive(mutated, ZipArchiveMode.Update, leaveOpen: true))
         {
             if (corruption is "entry" or "archive")
@@ -365,50 +416,83 @@ public sealed class WorkflowPublishingTests
                 using var content = zip.GetEntry("workflow.yaml")!.Open();
                 content.WriteByte(9);
             }
-            else if (corruption == "missing") zip.GetEntry("workflow.pdb")!.Delete();
-            else zip.CreateEntry(corruption switch
-            {
-                "duplicate" => "workflow.dll", "case-duplicate" => "WORKFLOW.DLL", "escape" => "../escape.dll",
-                "absolute" => "/escape.dll", "backslash" => "..\\escape.dll", _ => "extra.dll"
-            });
+            else if (corruption == "missing")
+                zip.GetEntry("workflow.pdb")!.Delete();
+            else
+                zip.CreateEntry(corruption switch
+                {
+                    "duplicate" => "workflow.dll", "case-duplicate" => "WORKFLOW.DLL", "escape" => "../escape.dll",
+                    "absolute" => "/escape.dll", "backslash" => "..\\escape.dll", _ => "extra.dll"
+                });
         }
+
         bytes = mutated.ToArray();
-        if (corruption != "archive") expected = ArtifactDigest.Of(bytes); // Reach per-entry/path verification after valid archive hashing.
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => WorkflowBundleArchive.ReadAsync(new MemoryStream(bytes), expected));
+
+        if (corruption != "archive")
+            expected = ArtifactDigest.Of(bytes); // Reach per-entry/path verification after valid archive hashing.
+
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+            WorkflowBundleArchive.ReadAsync(new MemoryStream(bytes), expected));
+
         Assert.Equal(WorkflowErrorKind.ArtifactMismatch, error.Kind);
         Assert.True(error.IsInterruption);
     }
 
     private static async Task WithStore(bool sqlite, Func<IWorkflowStateRepository, Task> test)
     {
-        if (!sqlite) { await test(new InMemoryWorkflowStateRepository()); return; }
+        if (!sqlite)
+        {
+            await test(new InMemoryWorkflowStateRepository());
+
+            return;
+        }
+
         var directory = Path.Combine(Path.GetTempPath(), "IxIFlow.PublishTests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
+
         try
         {
             await using var store = new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(directory, "catalog.db"));
             await test(store);
         }
-        finally { await SqliteTestFiles.DeleteAsync(directory); }
+        finally
+        {
+            await SqliteTestFiles.DeleteAsync(directory);
+        }
     }
 
-    public sealed class Data { public string Value { get; set; } = ""; }
+    public sealed class Data
+    {
+        public string Value { get; set; } = "";
+    }
 
     private sealed class ObservedArtifacts(IArtifactStore store, Func<Task>? afterUpload = null) : IArtifactStore
     {
         public int Uploads { get; private set; }
         public ArtifactDigest? Digest { get; private set; }
+
         public async ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default)
         {
             Uploads++;
             Digest = await store.PutAsync(kind, content, cancellationToken);
-            if (afterUpload != null) await afterUpload();
+
+            if (afterUpload != null)
+                await afterUpload();
+
             return Digest.Value;
         }
-        public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => store.OpenAsync(digest, cancellationToken);
-        public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => store.ExistsAsync(digest, cancellationToken);
-        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) =>
+
+        public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            store.OpenAsync(digest, cancellationToken);
+
+        public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            store.ExistsAsync(digest, cancellationToken);
+
+        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize,
+            CancellationToken cancellationToken = default) =>
             store.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
-        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => store.DeleteAsync(digest, cancellationToken);
+
+        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            store.DeleteAsync(digest, cancellationToken);
     }
 }

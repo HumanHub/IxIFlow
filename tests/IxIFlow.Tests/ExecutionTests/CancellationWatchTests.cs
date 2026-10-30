@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// The host's one cancellation watch (B-10): each lease has its own outage clock, a delivered
+/// The host's one cancellation watch: each lease has its own outage clock, a delivered
 /// request ends that lease's watch, a hung read counts as an outage, one failed read does not hide
 /// the others, and an applied commit reports the instance's pending request.
 /// </summary>
@@ -70,6 +70,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         var running = new Subscription();
         using var cancelledWatch = cancelled.Watch(watch, "cancelled");
         using var runningWatch = running.Watch(watch, "running");
+
         // The request reached this lease another way, such as a commit reply.
         cancelled.Cancellation.SetResult(new CancellationReason { ReasonCode = "stop" });
         await store.WaitForReadsAsync(1);
@@ -98,8 +99,10 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
             time.Advance(TimeSpan.FromSeconds(1));
             Assert.True(time.GetUtcNow() - time.Start < TimeSpan.FromMinutes(1), "The hung read never ended");
         }
+
         Assert.IsType<TimeoutException>(subscription.LossError);
         Assert.Equal(1, store.Reads);
+
         // Out longer than any lease can wait, the stalled read is given up and a fresh one is tried;
         // each is waited for in turn rather than queued behind the other.
         for (var step = 0; step < 15; step++)
@@ -107,6 +110,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
             await Task.Delay(20);
             time.Advance(TimeSpan.FromSeconds(1));
         }
+
         Assert.InRange(store.Reads, 2, 3);
     }
 
@@ -161,6 +165,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         await using var store = new SqliteWorkflowStateRepository(connectionString);
         var readable = Guid.NewGuid().ToString("N");
         var broken = Guid.NewGuid().ToString("N");
+
         try
         {
             foreach (var id in new[] { readable, broken })
@@ -170,8 +175,10 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
                     InstanceId = id, Status = WorkflowStatus.Running,
                     ExecutionStateJson = StoreTestSupport.CheckpointJson
                 });
+
                 Assert.True((await store.RequestCancellationAsync(id, new CancellationReason { ReasonCode = id })).Accepted);
             }
+
             await using (var connection = new Microsoft.Data.Sqlite.SqliteConnection(connectionString))
             {
                 await connection.OpenAsync();
@@ -180,6 +187,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
                 command.Parameters.AddWithValue("@Id", broken);
                 Assert.Equal(1, await command.ExecuteNonQueryAsync());
             }
+
             var requests = (await store.GetControlRequestsAsync([readable, broken, "quiet", readable])).Cancellations;
             Assert.Equal(readable, Assert.Single(requests).Value.ReasonCode);
             await Assert.ThrowsAsync<AggregateException>(() => store.GetControlRequestsAsync([broken, broken]));
@@ -201,13 +209,15 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
     [Trait("Category", "SqlIntegration")]
     [Trait("Spec", "B-10")]
     public Task SqlStoreReportsAPendingRequestWithACommit() =>
-        VerifyCommitReportsPendingCancellation(new SqlWorkflowStateRepository(SqlTestDatabase<CancellationWatchTests>.ConnectionString));
+        VerifyCommitReportsPendingCancellation(
+            new SqlServerWorkflowStateRepository(SqlTestDatabase<CancellationWatchTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
     [Trait("Spec", "B-10")]
     public Task PostgreSqlStoreReportsAPendingRequestWithACommit() =>
-        VerifyCommitReportsPendingCancellation(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CancellationWatchTests>.ConnectionString));
+        VerifyCommitReportsPendingCancellation(
+            new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<CancellationWatchTests>.ConnectionString));
 
     [Fact]
     [Trait("Category", "SqliteIntegration")]
@@ -222,19 +232,26 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
     private static async Task VerifyCommitReportsPendingCancellation(IWorkflowStateRepository repository)
     {
         var instance = new WorkflowInstance
-        { ExecutionStateJson = StoreTestSupport.CheckpointJson,
+        {
+            ExecutionStateJson = StoreTestSupport.CheckpointJson,
             InstanceId = Guid.NewGuid().ToString("N"), WorkflowName = "CommitCancellation",
             Status = WorkflowStatus.Running, WorkflowDataJson = StoredJson.Inline("{}")
         };
+
         try
         {
-            var first = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0));
+            var first = await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance,
+                (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, 0));
+
             Assert.Equal(WorkflowCommitStatus.Applied, first.Status);
             Assert.Null(first.PendingCancellation);
 
             Assert.True((await repository.RequestCancellationAsync(instance.InstanceId,
                 new CancellationReason { ReasonCode = "pending" })).Accepted);
-            var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch, first.Revision);
+
+            var commit = CheckpointCommit.Create(instance, (await StoreTestSupport.LeaseAsync(repository, instance.InstanceId)).Epoch,
+                first.Revision);
+
             var applied = await repository.CommitWorkflowInstanceAsync(commit);
             var repeated = await repository.CommitWorkflowInstanceAsync(commit);
 
@@ -253,12 +270,14 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
     private static async Task TickAsync(FakeTimeProvider time, ScriptedStore store, TimeSpan duration)
     {
         var end = time.GetUtcNow() + duration;
+
         while (time.GetUtcNow() < end)
         {
             var reads = store.Reads;
             await Task.Delay(20);
             time.Advance(Interval);
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+
             while (store.Reads == reads && DateTime.UtcNow < deadline)
                 await Task.Delay(5);
         }
@@ -293,6 +312,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         public async Task WaitForReadsAsync(int count)
         {
             var deadline = DateTime.UtcNow + Patience;
+
             while (Reads < count)
             {
                 Assert.True(DateTime.UtcNow < deadline, "The watch did not read");
@@ -305,11 +325,14 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         {
             LastBatch = instanceIds.ToArray();
             Interlocked.Increment(ref _reads);
+
             if (Hang)
                 return new TaskCompletionSource<WorkflowControlRequests>().Task;
+
             if (Fail)
                 return Task.FromException<WorkflowControlRequests>(
                     new IOException("Cancellation requests are unavailable"));
+
             return Task.FromResult(new WorkflowControlRequests(Requests
                 .Where(request => instanceIds.Contains(request.Key))
                 .ToDictionary(request => request.Key, request => request.Value), new Dictionary<string, WorkflowDebugState>()));
@@ -317,15 +340,18 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
     }
 
     /// <summary>Injects failures in individual reads of the explicit memory batch operation.</summary>
-    private sealed class SingleReadStore : InMemoryWorkflowStateRepository
+    private sealed class SingleReadStore : TestWorkflowStateRepository
     {
         public Dictionary<string, CancellationReason> Requests { get; } = new(StringComparer.Ordinal);
         public HashSet<string> Failing { get; } = new(StringComparer.Ordinal);
-        public override Task<CancellationReason?> GetCancellationRequestAsync(string instanceId) =>
+
+        public override Task<CancellationReason?> GetCancellationRequestAsync(string instanceId,
+            CancellationToken cancellationToken = default) =>
             Failing.Contains(instanceId)
                 ? Task.FromException<CancellationReason?>(new IOException($"Cannot read {instanceId}"))
                 : Task.FromResult(Requests.GetValueOrDefault(instanceId));
     }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -336,11 +362,20 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         var time = new FakeTimeProvider();
         var store = new PausedWatchStore(readArrivals);
         var watch = new CancellationWatch(store, time);
+
         using var subscription = watch.Watch("held", new(TaskCreationOptions.RunContinuationsAsynchronously),
-            _ => { }, Tolerance, Interval, arrivals: readArrivals ? _ => { } : null);
+            _ =>
+            {
+            }, Tolerance, Interval, arrivals: readArrivals
+                ? _ =>
+                {
+                }
+                : null);
+
         await store.Started.Task.WaitAsync(Patience);
 
         var disposing = watch.DisposeAsync().AsTask();
+
         try
         {
             await Task.Delay(20);
@@ -350,6 +385,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         {
             store.Release();
         }
+
         await disposing.WaitAsync(Patience);
         Assert.True(disposing.IsCompletedSuccessfully);
     }
@@ -364,8 +400,16 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         var store = new PausedWatchStore(readArrivals);
         var logger = new WatchLogger();
         var watch = new CancellationWatch(store, time, logger);
+
         using var subscription = watch.Watch("hung", new(TaskCreationOptions.RunContinuationsAsynchronously),
-            _ => { }, Tolerance, Interval, arrivals: readArrivals ? _ => { } : null);
+            _ =>
+            {
+            }, Tolerance, Interval, arrivals: readArrivals
+                ? _ =>
+                {
+                }
+                : null);
+
         await store.Started.Task.WaitAsync(Patience);
 
         await time.ReadStarted.Task.WaitAsync(Patience);
@@ -401,6 +445,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             var timer = base.CreateTimer(callback, state, dueTime, period);
+
             if (dueTime == TimeSpan.FromSeconds(10))
             {
                 if (Disposing)
@@ -408,6 +453,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
                 else
                     ReadStarted.TrySetResult();
             }
+
             return timer;
         }
     }
@@ -417,6 +463,7 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
         public List<string> Warnings { get; } = [];
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
@@ -428,8 +475,10 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
     private sealed class PausedWatchStore(bool readArrivals) : FaultInjectingRepository, IWorkflowInbox
     {
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private readonly TaskCompletionSource<WorkflowControlRequests> _controls =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         private readonly TaskCompletionSource<IReadOnlyDictionary<string, long>> _arrivals =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -439,14 +488,17 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
             if (readArrivals)
                 return Task.FromResult(new WorkflowControlRequests(
                     new Dictionary<string, CancellationReason>(), new Dictionary<string, WorkflowDebugState>()));
+
             Started.TrySetResult();
+
             return _controls.Task;
         }
 
         Task<IReadOnlyDictionary<string, long>> IWorkflowInbox.GetInboxSequencesAsync(
-            IReadOnlyCollection<string> instanceIds)
+            IReadOnlyCollection<string> instanceIds, CancellationToken cancellationToken)
         {
             Started.TrySetResult();
+
             return _arrivals.Task;
         }
 
@@ -456,5 +508,4 @@ public sealed class CancellationWatchTests : IClassFixture<SqliteTestDatabase<Ca
             _arrivals.TrySetResult(new Dictionary<string, long>());
         }
     }
-
 }

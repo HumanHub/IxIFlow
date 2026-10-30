@@ -7,7 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// Engine failures name the instance, and the step and attempt when they apply (spec A-10).
+/// Engine failures name the instance, and the step and attempt when they apply.
 /// </summary>
 [Trait("Feature", "recovery")]
 [Trait("Spec", "A-10")]
@@ -19,6 +19,7 @@ public sealed class EngineErrorContextTests
         var commits = 0;
         var repository = new FaultInjectingRepository { FailCommit = _ => ++commits >= 2 };
         using var services = Services(repository);
+
         var definition = Workflow.Create<ContextData>("ContextStoreFailure")
             .Step<NoopActivity>()
             .Build();
@@ -26,7 +27,10 @@ public sealed class EngineErrorContextTests
         var error = await EngineAssert.StoreFailureAsync(() => services.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new ContextData()));
 
-        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "ContextStoreFailure", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+        var saved = Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "ContextStoreFailure", Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
         Assert.Equal(saved.InstanceId, error.InstanceId);
         Assert.Equal("root/0", error.StepId);
         Assert.NotNull(error.AttemptId);
@@ -56,6 +60,7 @@ public sealed class EngineErrorContextTests
         services.AddSingleton(repository);
         services.AddIxIFlow();
         services.AddTransient<NoopActivity>();
+
         return services.BuildServiceProvider();
     }
 

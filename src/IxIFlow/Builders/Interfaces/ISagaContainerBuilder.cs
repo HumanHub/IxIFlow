@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+
 namespace IxIFlow.Builders.Interfaces;
 
 /// <summary>
@@ -12,6 +13,9 @@ public interface ISagaContainerBuilder<TWorkflowData, TPreviousStepData> : IWork
     /// </summary>
     /// <typeparam name="TException">Type of exception to handle</typeparam>
     /// <param name="configure">Configuration for the error handler</param>
+    /// <param name="id">Optional stable identifier for the constructed step.</param>
+    /// <param name="sourceLine">Source line captured for the workflow step.</param>
+    /// <param name="sourcePath">Source file path captured for the workflow step.</param>
     ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError<TException>(
         Action<ISagaErrorBuilder<TWorkflowData, Core.EmptyFault, TPreviousStepData>> configure,
         string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0) where TException : Exception;
@@ -24,6 +28,9 @@ public interface ISagaContainerBuilder<TWorkflowData, TPreviousStepData> : IWork
     /// Configures general error handling for the saga container
     /// </summary>
     /// <param name="configure">Configuration for the error handler</param>
+    /// <param name="id">Optional stable identifier for the constructed step.</param>
+    /// <param name="sourceLine">Source line captured for the workflow step.</param>
+    /// <param name="sourcePath">Source file path captured for the workflow step.</param>
     ISagaContainerBuilder<TWorkflowData, TPreviousStepData> OnError(
         Action<ISagaErrorBuilder<TWorkflowData, Core.EmptyFault, TPreviousStepData>> configure,
         string? id = null, [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);

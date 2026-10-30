@@ -28,6 +28,7 @@ internal sealed class IxIFlowBuilder(IServiceCollection services, string? chosen
     {
         if (_store != null)
             throw new InvalidOperationException($"IxIFlow already uses {_store} as its store; choose one store");
+
         _store = store;
     }
 }

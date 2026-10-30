@@ -20,6 +20,7 @@ internal sealed class LiquidValues(IReadOnlyList<Type> reachable)
     public static readonly AsyncLocal<CultureInfo?> Culture = new();
 
     private sealed record Allowed(bool Value);
+
     private readonly ConditionalWeakTable<Type, Allowed> _allowed = new();
 
     public object? Convert(object value) => value switch
@@ -28,10 +29,13 @@ internal sealed class LiquidValues(IReadOnlyList<Type> reachable)
         // local time, so the same step would render another time there.
         DateTime { Kind: DateTimeKind.Local } => throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
             "A DateTime of kind Local depends on the host's time zone; give the model UTC times or DateTimeOffsets"),
+
         // Fluid shifts a DateTime that is not UTC by the host's offset; its clock time is what the model says.
         DateTime dateTime => new DateTimeValue(new DateTimeOffset(dateTime.Ticks, TimeSpan.Zero)),
+
         // Fluid would write a DateOnly as text that the date filters read back by culture.
         DateOnly date => new DateTimeValue(new DateTimeOffset(date.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)),
+
         // Fluid writes a TimeSpan as a date in 1970.
         TimeSpan timeSpan => new StringValue(timeSpan.ToString("c", CultureInfo.InvariantCulture)),
         TimeOnly time => new StringValue(time.ToString("HH:mm:ss.FFFFFFF", CultureInfo.InvariantCulture)),
@@ -41,6 +45,7 @@ internal sealed class LiquidValues(IReadOnlyList<Type> reachable)
             IConvertible convertible => new StringValue(convertible.ToString(CurrentCulture)),
             _ => null
         },
+
         // A collection or dictionary of values that could be anything is unreadable, as a member declared so is.
         _ when !LiquidModel.HoldsReadable(value.GetType()) => NilValue.Instance,
         _ when !LiquidModel.IsObject(value.GetType()) => null,

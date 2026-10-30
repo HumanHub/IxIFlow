@@ -33,7 +33,9 @@ public class WorkflowBuilderIdentityTests
         Assert.Equal(3, definition.Version);
     }
 
-    public sealed class WorkflowData { }
+    public sealed class WorkflowData
+    {
+    }
 
     public sealed class StartActivity : IAsyncActivity
     {

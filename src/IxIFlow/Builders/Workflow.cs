@@ -50,6 +50,7 @@ public static class WorkflowBuilderExtensions
         await using var defaultProvider = serviceProvider == null ? CreateDefaultServiceProvider() : null;
         using var scope = (serviceProvider ?? defaultProvider!).CreateScope();
         var engine = scope.ServiceProvider.GetRequiredService<IWorkflowClient>();
+
         return await engine.RunAsync(definition, workflowData, cancellationToken: cancellationToken);
     }
 
@@ -59,8 +60,9 @@ public static class WorkflowBuilderExtensions
     private static ServiceProvider CreateDefaultServiceProvider()
     {
         var services = new ServiceCollection();
-        services.AddLogging(builder => builder.AddConsole());
+        services.AddLogging();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 }

@@ -24,11 +24,14 @@ public sealed class RedactionTests : IClassFixture<SqliteTestDatabase<RedactionT
     public async Task ClassifiedValuesNeverAppearInAnyInspectionCopyOrEngineLog(bool sqlite)
     {
         await using var relational = sqlite
-            ? new SqliteWorkflowStateRepository(SqliteTestDatabase<RedactionTests>.ConnectionString) : null;
+            ? new SqliteWorkflowStateRepository(SqliteTestDatabase<RedactionTests>.ConnectionString)
+            : null;
+
         IWorkflowStateRepository store = relational ?? (IWorkflowStateRepository)new InMemoryWorkflowStateRepository();
         var logs = new Capture();
         using var services = Services(store, logs);
         var client = services.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<Data>("Redaction" + sqlite)
             .Step<Noop>()
             .Saga(saga => saga.Step<LeavesNote>(step => step
@@ -50,29 +53,38 @@ public sealed class RedactionTests : IClassFixture<SqliteTestDatabase<RedactionT
         Assert.False(JsonSerializer.SerializeToElement(snapshot).TryGetProperty("Values", out _));
         var wait = Assert.Single(await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId)));
         Assert.Equal("", JsonDocument.Parse(wait.DefaultPayloadJson!).RootElement.GetProperty("Secret").GetString());
+
         // Inspection must not change the saved default, data or notes used by subsequent execution.
-        Assert.Contains(Secret, Assert.Single(await store.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId))).DefaultPayloadJson!.InlineText);
+        Assert.Contains(Secret,
+            Assert.Single(await store.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId))).DefaultPayloadJson!.InlineText);
+
         var finished = await client.ReplyAsync(wait.Token, new Notice { Secret = Secret });
         Assert.Equal(WorkflowExecutionStatus.Success, finished.Status);
         Assert.Equal(Secret, Assert.IsType<Data>(finished.WorkflowData).Secret);
+
         Assert.Equal(Secret, Assert.IsType<Data>((await client.AwaitAsync(started.InstanceId,
             WorkflowAwaitCondition.Finished)).WorkflowData).Secret);
 
         var trace = await client.GetTraceAsync(started.InstanceId);
         var stored = await store.GetTraceAsync(started.InstanceId);
         var serializationStore = new InMemoryWorkflowStateRepository();
+
         var commit = CheckpointCommit.Create(new WorkflowInstance
-            { InstanceId = started.InstanceId, ExecutionStateJson = StoreTestSupport.CheckpointJson },
+                { InstanceId = started.InstanceId, ExecutionStateJson = StoreTestSupport.CheckpointJson },
             (await StoreTestSupport.LeaseAsync(serializationStore, started.InstanceId)).Epoch, 0,
             traceEntries: trace);
+
         Assert.Contains(trace, entry => entry.Metadata.ContainsKey("Note"));
+
         var copies = trace.Concat(stored.Select(entry => entry.Entry))
             .Concat(commit.ReadTraceEntries()).Concat(started.TraceEntries).Concat(finished.TraceEntries);
+
         var jsonCopies = copies.Select(entry => JsonSerializer.Serialize(entry))
             .Concat(commit.TraceEntries).Concat(stored.Select(entry => JsonSerializer.Serialize(entry)))
             .Append(JsonSerializer.Serialize(snapshot))
             .Append(JsonSerializer.Serialize(await client.GetSnapshotAsync(started.InstanceId)))
             .Append(JsonSerializer.Serialize(wait)).Concat(logs.Entries).ToArray();
+
         Assert.NotEmpty(logs.Entries);
         Assert.All(jsonCopies, json => Assert.DoesNotContain(Secret, json));
         Assert.Contains(RedactingJson.ClassifiedPaths(typeof(Note)), path => path.Path == "Secret");
@@ -106,7 +118,10 @@ public sealed class RedactionTests : IClassFixture<SqliteTestDatabase<RedactionT
         Assert.Equal(redactor.Redact(JsonSerializer.Serialize(new Note())), json.GetProperty("Whole").GetString());
         Assert.All(json.GetProperty("List").EnumerateArray(), item => Assert.Equal(redactor.Redact(Secret), item.GetString()));
         Assert.All(json.GetProperty("Numbers").EnumerateArray(), item => Assert.Equal(redactor.Redact("1234567"), item.GetString()));
-        Assert.All(json.GetProperty("Objects").EnumerateArray(), item => Assert.Equal(redactor.Redact(JsonSerializer.Serialize(new Note())), item.GetString()));
+
+        Assert.All(json.GetProperty("Objects").EnumerateArray(),
+            item => Assert.Equal(redactor.Redact(JsonSerializer.Serialize(new Note())), item.GetString()));
+
         Assert.Equal(redactor.Redact(Secret), json.GetProperty("Nested").GetProperty("Secret").GetString());
         Assert.Equal(projection.Serialize(new Shapes()), projection.Serialize(new Shapes()));
         Assert.NotEqual(projection.Serialize(new Shapes()), new RedactingJson(second).Serialize(new Shapes()));
@@ -119,11 +134,11 @@ public sealed class RedactionTests : IClassFixture<SqliteTestDatabase<RedactionT
     [InlineData("redactor-throws")]
     public void MissingOrFailingRedactorsErase(string failure)
     {
-        using var services = Services(configure: services => services.AddScoped<IRedactorProvider>(
-            _ => new BrokenProvider(failure)));
+        using var services = Services(configure: services => services.AddScoped<IRedactorProvider>(_ => new BrokenProvider(failure)));
         var json = new RedactingJson(services).Serialize(new Shapes());
         Assert.DoesNotContain(Secret, json);
         Assert.Equal("", JsonSerializer.Deserialize<JsonElement>(json).GetProperty("Number").GetString());
+
         Assert.All(JsonSerializer.Deserialize<JsonElement>(json).GetProperty("List").EnumerateArray(),
             item => Assert.Equal("", item.GetString()));
     }
@@ -156,11 +171,14 @@ public sealed class RedactionTests : IClassFixture<SqliteTestDatabase<RedactionT
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(logs ?? new Capture()));
         services.AddIxIFlow();
+
         if (store != null)
             services.AddSingleton(store);
+
         services.AddTransient<Noop>();
         services.AddTransient<LeavesNote>();
         configure?.Invoke(services);
+
         return services.BuildServiceProvider();
     }
 
@@ -175,13 +193,22 @@ public sealed class RedactionTests : IClassFixture<SqliteTestDatabase<RedactionT
 #pragma warning restore EXTEXP0002
     }
 
-    public sealed class Data { [Sensitive] public string Secret { get; set; } = RedactionTests.Secret; }
-    public sealed class Notice { [Sensitive] public string Secret { get; set; } = RedactionTests.Secret; }
+    public sealed class Data
+    {
+        [Sensitive] public string Secret { get; set; } = RedactionTests.Secret;
+    }
+
+    public sealed class Notice
+    {
+        [Sensitive] public string Secret { get; set; } = RedactionTests.Secret;
+    }
+
     public sealed class Note
     {
         [Sensitive] public string Secret { get; set; } = RedactionTests.Secret;
         public string Public { get; set; } = "visible";
     }
+
     public sealed class Shapes
     {
         [Sensitive] public int Number { get; set; } = 1234567;
@@ -193,41 +220,63 @@ public sealed class RedactionTests : IClassFixture<SqliteTestDatabase<RedactionT
         public List<Note> NestedList { get; set; } = [new()];
         [Personal] public string Taxonomy { get; set; } = Secret;
     }
+
     public sealed class PersonalAttribute() : DataClassificationAttribute(new DataClassification("App", "Personal"));
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     public sealed class LeavesNote : IAsyncActivity
     {
         [Sensitive] public string Value { get; set; } = "";
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             if (context.Attempt.Number == 1)
             {
                 context.Attempt.Note = new Note { Secret = Value };
+
                 throw new InvalidOperationException("safe retry reason");
             }
+
             Assert.Equal(Secret, Assert.IsType<Note>(Assert.Single(context.Attempt.Previous).Note).Secret);
+
             return Task.CompletedTask;
         }
     }
 
     [JsonConverter(typeof(OpaqueConverter))]
-    public sealed class Opaque { [Sensitive] public string Secret { get; set; } = RedactionTests.Secret; }
+    public sealed class Opaque
+    {
+        [Sensitive] public string Secret { get; set; } = RedactionTests.Secret;
+    }
+
     public sealed class OpaqueConverter : JsonConverter<Opaque>
     {
         public override Opaque Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => new();
-        public override void Write(Utf8JsonWriter writer, Opaque value, JsonSerializerOptions options) => writer.WriteStringValue(value.Secret);
+
+        public override void Write(Utf8JsonWriter writer, Opaque value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value.Secret);
     }
+
     public sealed class OpaqueMembers
     {
         public Opaque Unmarked { get; set; } = new();
         [Sensitive] public Opaque Marked { get; set; } = new();
-        [JsonConverter(typeof(OpaqueConverter))] public Opaque Converted { get; set; } = new();
+
+        [JsonConverter(typeof(OpaqueConverter))]
+        public Opaque Converted { get; set; } = new();
+
         public JsonElement Json { get; set; } = JsonSerializer.SerializeToElement(Secret);
     }
-    public sealed class BadGetter { public string Value => throw new InvalidOperationException(Secret); }
+
+    public sealed class BadGetter
+    {
+        public string Value => throw new InvalidOperationException(Secret);
+    }
+
     private sealed class BrokenProvider(string failure) : IRedactorProvider
     {
         public Redactor GetRedactor(DataClassificationSet classifications) => failure switch
@@ -237,26 +286,35 @@ public sealed class RedactionTests : IClassFixture<SqliteTestDatabase<RedactionT
             _ => new BrokenRedactor()
         };
     }
+
     private sealed class BrokenRedactor : Redactor
     {
         public override int GetRedactedLength(ReadOnlySpan<char> input) => throw new InvalidOperationException(Secret);
         public override int Redact(ReadOnlySpan<char> source, Span<char> destination) => throw new InvalidOperationException(Secret);
     }
+
     private sealed class Capture : ILoggerProvider
     {
         public ConcurrentQueue<string> Entries { get; } = new();
         public ILogger CreateLogger(string categoryName) => new Logger(this);
-        public void Dispose() { }
+
+        public void Dispose()
+        {
+        }
+
         private sealed class Logger(Capture capture) : ILogger
         {
             public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
             public bool IsEnabled(LogLevel logLevel) => true;
+
             public void Log<TState>(LogLevel level, EventId id, TState state, Exception? exception,
                 Func<TState, Exception?, string> formatter)
             {
                 capture.Entries.Enqueue(formatter(state, exception));
+
                 if (exception != null)
                     capture.Entries.Enqueue(exception.ToString());
+
                 if (state is IEnumerable<KeyValuePair<string, object?>> properties)
                     foreach (var property in properties)
                         capture.Entries.Enqueue($"{property.Key}={property.Value}");

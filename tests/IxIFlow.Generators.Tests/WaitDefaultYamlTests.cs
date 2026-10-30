@@ -15,22 +15,22 @@ namespace IxIFlow.Generators.Tests;
 public sealed class WaitDefaultYamlTests
 {
     private const string Yaml = """
-        workflow:
-          name: WaitDefault
-          dataType: IxIFlow.Generators.Tests.FlowData
-        definitions:
-          - kind: suspend
-            id: approval
-            reason: approve
-            event: IxIFlow.Generators.Tests.WaitDefaultAnswer
-            defaultPayload:
-              Value: 7
-              Detail: {Note: suggested}
-              Choices: [1, 2]
-            output:
-              - source: Value
-                to: {path: workflow.Result}
-        """;
+                                workflow:
+                                  name: WaitDefault
+                                  dataType: IxIFlow.Generators.Tests.FlowData
+                                definitions:
+                                  - kind: suspend
+                                    id: approval
+                                    reason: approve
+                                    event: IxIFlow.Generators.Tests.WaitDefaultAnswer
+                                    defaultPayload:
+                                      Value: 7
+                                      Detail: {Note: suggested}
+                                      Choices: [1, 2]
+                                    output:
+                                      - source: Value
+                                        to: {path: workflow.Result}
+                                """;
 
     [Theory]
     [InlineData("suspend", false)]
@@ -40,7 +40,10 @@ public sealed class WaitDefaultYamlTests
     public async Task YamlDefaultIsListedAndValidatesAgainstTheEventSchema(string kind, bool jsonRoundTrip)
     {
         var document = WorkflowYamlSerializer.Read(WaitYaml(kind));
-        if (jsonRoundTrip) document = WorkflowJsonSerializer.Read(WorkflowJsonSerializer.Write(document));
+
+        if (jsonRoundTrip)
+            document = WorkflowJsonSerializer.Read(WorkflowJsonSerializer.Write(document));
+
         var definition = GeneratorRegressionTests.Build(WorkflowYamlSerializer.Write(document));
         using var services = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
         var client = services.GetRequiredService<IWorkflowClient>();
@@ -69,18 +72,24 @@ public sealed class WaitDefaultYamlTests
         var yaml = WaitYaml(kind);
         var generated = GeneratorRegressionTests.Build(yaml);
         var builder = new WorkflowBuilder<FlowData, object>([], "WaitDefault");
+
         Action<ISuspendSetupBuilder<FlowData, WaitDefaultAnswer, object>> configure = wait => wait
             .DefaultPayload(new WaitDefaultAnswer { Value = 7, Detail = new() { Note = "suggested" }, Choices = [1, 2] })
             .Output(answer => answer.Value).To(ctx => ctx.WorkflowData.Result);
+
         var fluent = (kind == "suspend"
-            ? builder.Suspend<WaitDefaultAnswer>("approve", configure: configure)
-            : builder.WaitFor<WaitDefaultAnswer>("approve", configure: configure))
+                ? builder.Suspend<WaitDefaultAnswer>("approve", configure: configure)
+                : builder.WaitFor<WaitDefaultAnswer>("approve", configure: configure))
             .WithId("approval").Build();
+
         Assert.Equal(JsonSerializer.Serialize(Assert.Single(fluent.Steps).DefaultPayload),
             JsonSerializer.Serialize(Assert.Single(generated.Steps).DefaultPayload));
+
         var original = new WorkflowScopeCatalog(generated).StructureHash;
         Assert.Equal(original, new WorkflowScopeCatalog(fluent).StructureHash);
-        Assert.Equal(original, new WorkflowScopeCatalog(GeneratorRegressionTests.Build(yaml.Replace("Value: 7", "Value: 9"))).StructureHash);
+
+        Assert.Equal(original,
+            new WorkflowScopeCatalog(GeneratorRegressionTests.Build(yaml.Replace("Value: 7", "Value: 9"))).StructureHash);
     }
 
     [Theory]
@@ -89,8 +98,10 @@ public sealed class WaitDefaultYamlTests
     public void WrongYamlDefaultPropertyTypeHasAPositionedCompilerDiagnostic(string kind)
     {
         var source = WorkflowSourceTranslator.Translate(WaitYaml(kind).Replace("Value: 7", "Value: wrong"), "default.yaml");
+
         var error = Assert.Single(GeneratorRegressionTests.Compilation(source).GetDiagnostics(),
             diagnostic => diagnostic.Id == "CS0029");
+
         Assert.Equal(DiagnosticSeverity.Error, error.Severity);
         Assert.Contains("string", error.GetMessage());
         Assert.Contains("int", error.GetMessage());

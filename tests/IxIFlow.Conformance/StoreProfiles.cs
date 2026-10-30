@@ -9,7 +9,7 @@ using Npgsql;
 namespace IxIFlow.Tests.Conformance;
 
 /// <summary>
-/// The test profiles from spec J-02. Each conformance scenario runs in every profile it applies to.
+/// The store and host test profiles. Each conformance scenario runs in every profile it applies to.
 /// IXIFLOW_PROFILES selects comma-separated canonical names; unset/blank selects everything.
 /// Include "unprofiled" once to run facts and plain-provider rows (sqlserver/postgresql/sqlite).
 /// </summary>
@@ -32,12 +32,18 @@ public static class StoreProfiles
     private static HashSet<string>? ReadSelection()
     {
         var value = Environment.GetEnvironmentVariable("IXIFLOW_PROFILES");
-        if (string.IsNullOrWhiteSpace(value)) return null;
+
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
         var selected = value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
             .ToHashSet(StringComparer.Ordinal);
+
         var unknown = selected.Except(Catalog.Append(Unprofiled), StringComparer.Ordinal).ToArray();
+
         if (selected.Count == 0 || unknown.Length != 0)
             throw new ArgumentException($"Invalid IXIFLOW_PROFILES: {value}. Expected: {string.Join(",", Catalog.Append(Unprofiled))}");
+
         return selected;
     }
 
@@ -53,7 +59,7 @@ public static class StoreProfiles
         new[] { DistributedSqlServer, DistributedPostgreSql }.SelectMany(provider =>
             Enumerable.Range(0, 3).Select(count => count == 0 ? provider : $"{provider}/coordinators-{count}"));
 
-    /// <summary>Profiles that allow several hosts on one store (C-18 excludes SQLite).</summary>
+    /// <summary>Profiles that allow several hosts on one store (SQLite permits one host).</summary>
     public static TheoryData<string> MultipleHosts => new(Filter(new[] { LocalMemory }.Concat(DistributedCatalog)));
 
     /// <summary>Profiles with several hosts sharing a durable store.</summary>
@@ -72,6 +78,7 @@ public static class StoreProfiles
     internal static async Task<ProfileStore> CreateAsync(string profile, TimeProvider? time = null, bool emptySchema = false)
     {
         var count = CoordinatorCount(profile);
+
         var store = profile.Split('/')[0] switch
         {
             LocalMemory => ProfileStore.Memory(time),
@@ -80,12 +87,19 @@ public static class StoreProfiles
             DistributedPostgreSql => await ProfileStore.PostgreSqlAsync(emptySchema),
             _ => throw new ArgumentOutOfRangeException(nameof(profile))
         };
+
         try
         {
             await store.StartCoordinatorsAsync(count);
+
             return store;
         }
-        catch { await store.DisposeAsync(); throw; }
+        catch
+        {
+            await store.DisposeAsync();
+
+            throw;
+        }
     }
 }
 
@@ -112,14 +126,17 @@ internal sealed partial class ProfileStore : IAsyncDisposable
     public IWorkflowStateRepository NewRepository(TimeProvider? time = null)
     {
         var repository = _newRepository(time);
+
         if (repository is IAsyncDisposable disposable)
             _repositories.Add(disposable);
+
         return repository;
     }
 
     public static ProfileStore Memory(TimeProvider? time = null)
     {
         var repository = new InMemoryWorkflowStateRepository(time ?? TimeProvider.System);
+
         return new ProfileStore(StoreProfiles.LocalMemory, _ => repository, () => Task.CompletedTask);
     }
 
@@ -127,10 +144,12 @@ internal sealed partial class ProfileStore : IAsyncDisposable
     {
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.Conformance", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
+
         var connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = Path.Combine(folder, "workflows.db"), DefaultTimeout = 1
         }.ConnectionString;
+
         return new ProfileStore(StoreProfiles.LocalSqlite,
             clock => new SqliteWorkflowStateRepository(connectionString, clock ?? time),
             () => SqliteTestFiles.DeleteAsync(folder), () => new SqliteConnection(connectionString));
@@ -139,14 +158,16 @@ internal sealed partial class ProfileStore : IAsyncDisposable
     public static async Task<ProfileStore> SqlServerAsync(bool emptySchema = false)
     {
         var connectionString = await SqlServerTestServer.CreateDatabaseAsync("IxIFlowConformance", emptySchema);
+
         return new ProfileStore(StoreProfiles.DistributedSqlServer,
-            _ => new SqlWorkflowStateRepository(connectionString),
+            _ => new SqlServerWorkflowStateRepository(connectionString),
             () => SqlServerTestServer.DropDatabaseAsync(connectionString), () => new SqlConnection(connectionString));
     }
 
     public static async Task<ProfileStore> PostgreSqlAsync(bool emptySchema = false)
     {
         var connectionString = await PostgreSqlTestServer.CreateDatabaseAsync("ixiflow_conformance", emptySchema);
+
         return new ProfileStore(StoreProfiles.DistributedPostgreSql,
             _ => new PostgreSqlWorkflowStateRepository(connectionString),
             () => PostgreSqlTestServer.DropDatabaseAsync(connectionString), () => new NpgsqlConnection(connectionString));
@@ -157,15 +178,17 @@ internal sealed partial class ProfileStore : IAsyncDisposable
     internal async Task ExpireExecutionLeaseAsync(string instanceId)
     {
         await using var connection = _newConnection!();
+
         Assert.Equal(1, await connection.ExecuteAsync(Profile == StoreProfiles.DistributedSqlServer
-            ? "UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc=DATEADD(SECOND,-1,SYSUTCDATETIME()) WHERE InstanceId=@Id"
-            : "UPDATE ixiflow_workflow_leases SET expires_at_utc=clock_timestamp()-INTERVAL '1 second' WHERE instance_id=@Id",
+                ? "UPDATE dbo.IxIFlowWorkflowLeases SET ExpiresAtUtc=DATEADD(SECOND,-1,SYSUTCDATETIME()) WHERE InstanceId=@Id"
+                : "UPDATE ixiflow_workflow_leases SET expires_at_utc=clock_timestamp()-INTERVAL '1 second' WHERE instance_id=@Id",
             new { Id = instanceId }));
     }
 
     internal async Task AgeRetentionAsync()
     {
         await using var connection = _newConnection!();
+
         await connection.ExecuteAsync(Profile == StoreProfiles.DistributedSqlServer
             ? "UPDATE dbo.IxIFlowWorkflowInstances SET EndedAtUtc=DATEADD(DAY,-2,SYSUTCDATETIME()) WHERE EndedAtUtc IS NOT NULL; UPDATE dbo.IxIFlowWorkflowTombstones SET ExpiresAtUtc=DATEADD(DAY,-1,SYSUTCDATETIME())"
             : "UPDATE ixiflow_workflow_instances SET ended_at_utc=clock_timestamp()-INTERVAL '2 days' WHERE ended_at_utc IS NOT NULL; UPDATE ixiflow_workflow_tombstones SET expires_at_utc=clock_timestamp()-INTERVAL '1 day'");
@@ -174,8 +197,10 @@ internal sealed partial class ProfileStore : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await StopCoordinatorsAsync();
+
         foreach (var repository in _repositories)
             await repository.DisposeAsync();
+
         await _dispose();
     }
 }

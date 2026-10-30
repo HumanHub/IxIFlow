@@ -12,7 +12,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 /// <summary>
 /// Control flow between effect boundaries is not committed: after an interruption it is re-derived
 /// from the last checkpoint, and no activity runs twice. Whatever the outside world can depend on
-/// is committed first (spec A-04).
+/// is committed first.
 /// </summary>
 [Trait("Feature", "recovery")]
 [Trait("Spec", "A-04")]
@@ -26,7 +26,9 @@ public sealed class EffectBoundaryTests
         {
             FailCommit = instance => instance.ExecutionStateJson.Contains("/then\"")
         };
+
         using var services = Services(repository);
+
         var definition = Workflow.Create<BoundaryData>("ReDerivedControlFlow")
             .Step<RecordActivity>(setup => setup.Input(activity => activity.Name).From(_ => "first"))
             .If(ctx => ctx.WorkflowData.Branch == "then",
@@ -39,15 +41,20 @@ public sealed class EffectBoundaryTests
             .RunAsync(definition, new BoundaryData { Branch = "then" }));
 
         // The If was never committed: the last checkpoint ends after the first activity.
-        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "ReDerivedControlFlow", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+        var saved = Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "ReDerivedControlFlow", Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
         var root = ExecutionCheckpoint.Read(saved.ExecutionStateJson).Continuations[0];
         Assert.Null(root.PendingActivity);
         Assert.Equal(["root"], root.Stack.Select(frame => frame.ScopeId));
         Assert.Equal(1, root.Stack[0].NextStepIndex);
 
         repository.FailCommit = _ => false;
+
         using var scanner = new WorkflowRecoveryService(services.GetRequiredService<IServiceScopeFactory>(),
             repository, NullLogger<WorkflowRecoveryService>.Instance);
+
         await scanner.RecoverOnceAsync(CancellationToken.None);
 
         Assert.Equal(WorkflowStatus.Completed, (await repository.GetWorkflowInstanceAsync(saved.InstanceId))!.Status);
@@ -59,6 +66,7 @@ public sealed class EffectBoundaryTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
+
         var definition = Workflow.Create<BoundaryData>("CommittedSiblingCancellation")
             .Step<RecordActivity>(setup => setup.Input(activity => activity.Name).From(_ => "first"))
             .Parallel(parallel => parallel.WaitAny()
@@ -69,6 +77,7 @@ public sealed class EffectBoundaryTests
         var result = await Engine(services).RunAsync(definition, new BoundaryData());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
+
         Assert.True(Probe(services).CancellationWasSavedBeforeSignal,
             "The losing branch's cancellation reached its activity before it was committed");
     }
@@ -78,24 +87,31 @@ public sealed class EffectBoundaryTests
     {
         var repository = new FaultInjectingRepository();
         using var services = Services(repository);
+
         var definition = Workflow.Create<BoundaryData>("CommittedSagaRetry")
             .Step<RecordActivity>(setup => setup.Input(activity => activity.Name).From(_ => "first"))
             .Saga(saga => saga.Step<FailActivity>())
             .OnError<InvalidOperationException>(error => error.CompensateNone().ThenRetry(
                 new RetryPolicy(TimeSpan.FromHours(1), TimeSpan.FromHours(1), 3, 1)))
             .Build();
+
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
         repository.FailCommit = instance =>
         {
             if (instance.ExecutionStateJson.Contains("\"RetryAfterUtc\":\""))
                 stop.Cancel();
+
             return false;
         };
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Engine(services)
             .RunAsync(definition, new BoundaryData(), cancellationToken: stop.Token));
 
-        var saved = Assert.Single(await Task.WhenAll((await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "CommittedSagaRetry", Limit: int.MaxValue))).Items.Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+        var saved = Assert.Single(await Task.WhenAll(
+            (await repository.QueryInstancesAsync(new InstanceQuery(WorkflowName: "CommittedSagaRetry", Limit: int.MaxValue))).Items
+            .Select(async row => (await repository.GetWorkflowInstanceAsync(row.InstanceId))!)));
+
         Assert.Contains(ExecutionCheckpoint.Read(saved.ExecutionStateJson).Continuations,
             continuation => continuation.RetryAfterUtc != null);
     }
@@ -105,6 +121,7 @@ public sealed class EffectBoundaryTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         using var services = Services(repository);
+
         var definition = Workflow.Create<BoundaryData>("CommittedWaitBeforeBlocking")
             .Step<RecordActivity>(setup => setup.Input(activity => activity.Name).From(_ => "first"))
             .Parallel(parallel => parallel
@@ -114,6 +131,7 @@ public sealed class EffectBoundaryTests
 
         var started = await Engine(services).RunAsync(definition, new BoundaryData());
         Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
         Assert.True(Probe(services).WaitWasSavedWhileRunning,
             "The wait was not saved while the sibling activity ran");
 
@@ -132,6 +150,7 @@ public sealed class EffectBoundaryTests
         services.AddTransient<BlockingActivity>();
         services.AddTransient<WaitWatchingActivity>();
         services.AddTransient<FailActivity>();
+
         return services.BuildServiceProvider();
     }
 
@@ -167,6 +186,7 @@ public sealed class EffectBoundaryTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Record(Name);
+
             return Task.CompletedTask;
         }
     }
@@ -183,8 +203,10 @@ public sealed class EffectBoundaryTests
             catch (OperationCanceledException)
             {
                 var saved = await SavedCheckpointAsync(repository, context.WorkflowInstanceId);
+
                 probe.CancellationWasSavedBeforeSignal = saved.Continuations.Any(continuation =>
                     continuation.Status == ContinuationStatus.Cancelling);
+
                 throw;
             }
         }
@@ -196,13 +218,16 @@ public sealed class EffectBoundaryTests
         public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             var deadline = DateTime.UtcNow.AddSeconds(5);
+
             while (DateTime.UtcNow < deadline)
             {
                 if ((await SavedCheckpointAsync(repository, context.WorkflowInstanceId)).Waits.Count > 0)
                 {
                     probe.WaitWasSavedWhileRunning = true;
+
                     return;
                 }
+
                 await Task.Delay(20, cancellationToken);
             }
         }

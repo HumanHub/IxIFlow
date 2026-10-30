@@ -22,14 +22,17 @@ public sealed class CoordinatorMergeContractTests : IClassFixture<SqliteTestData
         IWorkflowStateRepository store = sqlite
             ? new SqliteWorkflowStateRepository(SqliteTestDatabase<CoordinatorMergeContractTests>.ConnectionString)
             : new InMemoryWorkflowStateRepository();
+
         try
         {
             var definition = Workflow.Create<Data>("PlacedTermination").Demand("gpu", "cuda").Step<Noop>().Build();
             await using var matching = Services(store, "cuda");
             await matching.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
             await using var wrong = Services(store, missingDefinition ? "cuda" : "cpu");
+
             if (!missingDefinition)
                 await wrong.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+
             var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, new Data(), new(), DateTime.UtcNow);
             ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), scopes, DateTime.UtcNow);
             await store.SeedAsync(instance);
@@ -42,18 +45,26 @@ public sealed class CoordinatorMergeContractTests : IClassFixture<SqliteTestData
             Assert.Equal(DemandSet.Create(demands).Id, accepted.Notice.DemandSetId);
 
             Assert.Empty(await store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(wrong)));
+
             Assert.Contains(await store.GetRunnableInstancesAsync(await StoreTestSupport.ClaimAsync(matching)),
                 candidate => candidate.InstanceId == instance.InstanceId);
 
             Assert.False(await wrong.GetRequiredService<WorkflowHost.InstanceOperations>()
                 .FinishTerminationAsync(instance.InstanceId, Guid.NewGuid()));
+
             Assert.True(await wrong.GetRequiredService<WorkflowHost.InstanceOperations>().FinishTerminationAsync(instance.InstanceId));
             var terminated = (await store.GetWorkflowInstanceAsync(instance.InstanceId))!;
             Assert.Equal(WorkflowStatus.Terminated, terminated.Status);
             Assert.Equal(instance.Revision + 1, terminated.Revision);
-            Assert.Single(await store.GetTraceAsync(instance.InstanceId), entry => entry.Entry.EntryType == TraceEntryType.WorkflowTerminated);
+
+            Assert.Single(await store.GetTraceAsync(instance.InstanceId),
+                entry => entry.Entry.EntryType == TraceEntryType.WorkflowTerminated);
         }
-        finally { if (store is IAsyncDisposable disposable) await disposable.DisposeAsync(); }
+        finally
+        {
+            if (store is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
+        }
     }
 
     private static ServiceProvider Services(IWorkflowStateRepository store, string gpu)
@@ -61,10 +72,12 @@ public sealed class CoordinatorMergeContractTests : IClassFixture<SqliteTestData
         var services = new ServiceCollection().AddLogging();
         services.AddSingleton(store);
         services.AddIxIFlow(options => options.Capabilities["gpu"] = gpu);
+
         return services.BuildServiceProvider();
     }
 
     public sealed class Data;
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;

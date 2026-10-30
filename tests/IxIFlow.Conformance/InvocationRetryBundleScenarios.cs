@@ -21,57 +21,69 @@ public sealed class InvocationRetryBundleScenarios
     public async Task ColdPublishedRetryKeepsPinsAndReadsEditedCallerInputs(string profile, bool invalidInput)
     {
         TimeProvider clock = profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite
-            ? new FakeTimeProvider(DateTimeOffset.UtcNow) : TimeProvider.System;
+            ? new FakeTimeProvider(DateTimeOffset.UtcNow)
+            : TimeProvider.System;
+
         await using var database = await StoreProfiles.CreateAsync(profile, clock);
         var root = Path.Combine(Path.GetTempPath(), "IxIFlow.InvocationRetryBundle", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
+
         try
         {
             var firstStore = database.NewRepository(clock);
-            var child = await Publish(firstStore, "ColdRetryChild", invalidInput ? """
-                workflow: {name: ColdRetryChild, dataType: ChildData}
-                definitions:
-                  - kind: activity
-                    activity: Echo
-                    input: [{target: Value, from: {path: workflow.Value}}]
-                    output: [{source: Value, to: {path: workflow.Result}}]
-                """ : """
-                workflow: {name: ColdRetryChild, dataType: ChildData}
-                definitions:
-                  - kind: if
-                    condition: {path: workflow.Value == "fail"}
-                    then: [{kind: activity, activity: Fail}]
-                    else:
-                      - kind: activity
-                        activity: Echo
-                        input: [{target: Value, from: {path: workflow.Value}}]
-                        output: [{source: Value, to: {path: workflow.Result}}]
-                """, invalidInput);
+
+            var child = await Publish(firstStore, "ColdRetryChild", invalidInput
+                ? """
+                  workflow: {name: ColdRetryChild, dataType: ChildData}
+                  definitions:
+                    - kind: activity
+                      activity: Echo
+                      input: [{target: Value, from: {path: workflow.Value}}]
+                      output: [{source: Value, to: {path: workflow.Result}}]
+                  """
+                : """
+                  workflow: {name: ColdRetryChild, dataType: ChildData}
+                  definitions:
+                    - kind: if
+                      condition: {path: workflow.Value == "fail"}
+                      then: [{kind: activity, activity: Fail}]
+                      else:
+                        - kind: activity
+                          activity: Echo
+                          input: [{target: Value, from: {path: workflow.Value}}]
+                          output: [{source: Value, to: {path: workflow.Result}}]
+                  """, invalidInput);
+
             var parent = await Publish(firstStore, "ColdRetryParent", """
-                workflow: {name: ColdRetryParent, dataType: Data}
-                definitions:
-                  - kind: invokeWorkflow
-                    id: invoke
-                    workflow: {name: ColdRetryChild, version: 1}
-                    input: [{target: Value, from: {path: workflow.Value}}]
-                    output: [{source: Result, to: {path: workflow.Result}}]
-                    onError:
-                      - exception: ERROR
-                        then: retry
-                        retry: {maximumAttempts: 1, initialInterval: '00:00:04', maximumInterval: '00:00:04', backoffCoefficient: 1}
-                """.Replace("ERROR", invalidInput ? "IxIFlow.Core.WorkflowEngineException" : typeof(ChildFailure).FullName!), invalidInput);
+                                                                      workflow: {name: ColdRetryParent, dataType: Data}
+                                                                      definitions:
+                                                                        - kind: invokeWorkflow
+                                                                          id: invoke
+                                                                          workflow: {name: ColdRetryChild, version: 1}
+                                                                          input: [{target: Value, from: {path: workflow.Value}}]
+                                                                          output: [{source: Result, to: {path: workflow.Result}}]
+                                                                          onError:
+                                                                            - exception: ERROR
+                                                                              then: retry
+                                                                              retry: {maximumAttempts: 1, initialInterval: '00:00:04', maximumInterval: '00:00:04', backoffCoefficient: 1}
+                                                                      """.Replace("ERROR",
+                invalidInput ? "IxIFlow.Core.WorkflowEngineException" : typeof(ChildFailure).FullName!), invalidInput);
+
             string id;
             string logicalId;
             DateTime deadline;
             DateTime wakeAt;
             var parking = new InvocationRetryPark();
+
             await using (var host = Host(firstStore, Path.Combine(root, "first"), clock, database, parking))
             {
                 try
                 {
                     await database.StartHostLinksAsync(host);
+
                     id = await host.GetRequiredService<IWorkflowClient>().StartAsync(parent.Name, 1,
                         new FirstData { Value = invalidInput ? "" : "fail" });
+
                     var saved = await parking.Wait(id);
                     var record = Assert.Single(ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords.Values);
                     logicalId = record.Id;
@@ -88,7 +100,10 @@ public sealed class InvocationRetryBundleScenarios
                     await stopped;
                 }
             }
-            if (firstStore is IAsyncDisposable firstDisposable) await firstDisposable.DisposeAsync();
+
+            if (firstStore is IAsyncDisposable firstDisposable)
+                await firstDisposable.DisposeAsync();
+
             var secondStore = database.NewRepository(clock);
             await using var second = Host(secondStore, Path.Combine(root, "cold"), clock, database);
             await database.StartHostLinksAsync(second);
@@ -98,24 +113,43 @@ public sealed class InvocationRetryBundleScenarios
             await InvocationRetryProfile.Until(secondStore, id, saved => saved.Status == WorkflowStatus.Paused);
             var inspection = (await operations.InspectAsync(id))!;
             Assert.Equal(deadline, Assert.Single(inspection.Invocations).RetryAfterUtc);
+
             await operations.EditDataAsync(id, "input-retry", inspection.Revision, new(inspection.DebugState.PauseGeneration),
                 [new DataPatch(["Value"], JsonSerializer.SerializeToElement("corrected"))], "edit-input");
+
             await operations.ContinueAsync(id, "edit-input");
             await InvocationRetryProfile.Due(clock, secondStore, id, wakeAt);
             await client.RecoverAsync(id);
             var completed = await InvocationRetryProfile.Finished(client, id, TimeSpan.FromSeconds(4));
             Assert.Equal(WorkflowExecutionStatus.Success, completed.Status);
             Assert.Equal("corrected", completed.WorkflowData!.GetType().GetProperty("Result")!.GetValue(completed.WorkflowData));
-            var final = Assert.Single(ExecutionCheckpoint.Read((await secondStore.GetWorkflowInstanceAsync(id))!.ExecutionStateJson).InvocationRecords.Values);
-            Assert.Equal(logicalId, final.Id);
-            Assert.Equal(child.ArtifactDigest, final.BundleDigest);
-            Assert.Equal(2, final.Attempts.Count);
-            Assert.Equal(invalidInput ? 1 : 2, (await secondStore.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: id))).Items.Count);
-            if (!invalidInput) Assert.NotEqual(final.Attempts[0].ChildInstanceId, final.Attempts[1].ChildInstanceId);
+            await InvocationTraceAssertions.PrunedAsync(secondStore, id);
+
+            // Published definitions are acquired through the pinned bundle.
+            using var parentLease = await second.GetRequiredService<IWorkflowCatalog>().AcquireWorkflowDefinitionAsync(
+                "ColdRetryParent", 1, parent.ArtifactDigest);
+
+            var final = await InvocationTraceAssertions.AttemptsAsync(secondStore, id, parentLease.Definition);
+            Assert.Equal(logicalId, Assert.Single(final.Select(attempt => attempt.InvocationId).Distinct()));
+            var completedChild = (await secondStore.GetWorkflowInstanceAsync(final[^1].ChildInstanceId!))!;
+            Assert.Equal(child.ArtifactDigest, completedChild.BundleDigest);
+            Assert.Equal(2, final.Length);
+
+            Assert.Equal(invalidInput ? 1 : 2,
+                (await secondStore.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: id))).Items.Count);
+
+            if (!invalidInput)
+                Assert.NotEqual(final[0].ChildInstanceId, final[1].ChildInstanceId);
+
             await second.GetRequiredService<WorkflowHost>().StopAsync(CancellationToken.None);
-            if (secondStore is IAsyncDisposable secondDisposable) await secondDisposable.DisposeAsync();
+
+            if (secondStore is IAsyncDisposable secondDisposable)
+                await secondDisposable.DisposeAsync();
         }
-        finally { Directory.Delete(root, true); }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
     }
 
     private static ServiceProvider Host(IWorkflowStateRepository store, string cache, TimeProvider clock, ProfileStore database,
@@ -123,8 +157,16 @@ public sealed class InvocationRetryBundleScenarios
         PublishedBundleScenario.Host(store, cache, configure: services =>
         {
             services.AddSingleton(clock);
-            if (parking != null) services.AddSingleton(InvocationRetryProfile.WithFault(store, new() { Parking = parking }));
-            services.AddIxIFlow(options => { options.Debugging = true; options.VerifyCheckpointParts = true; });
+
+            if (parking != null)
+                services.AddSingleton(InvocationRetryProfile.WithFault(store, new() { Parking = parking }));
+
+            services.AddIxIFlow(options =>
+            {
+                options.Debugging = true;
+                options.VerifyCheckpointParts = true;
+            });
+
             database.ConfigureHost(services);
         });
 
@@ -139,7 +181,7 @@ public sealed class InvocationRetryBundleScenarios
         var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", yaml), null);
         var published = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
+
         return published.Workflow!;
     }
-
 }

@@ -26,14 +26,18 @@ public sealed class RecoveryTests
         var client = SampleTests.Client(services);
         var instanceId = Guid.NewGuid().ToString("N");
         WorkflowExecutionResult result;
+
         if (interrupted)
         {
             // The provider accepted the effect, but the engine could not commit its end.
             store.FailCommit = _ => reservations.Calls != 0;
+
             await Assert.ThrowsAnyAsync<Exception>(() => client.RunAsync(Recovery.Definition(), new ReservationData(),
                 new WorkflowOptions { InstanceId = instanceId }));
+
             store.FailCommit = _ => false;
             result = await client.RecoverAsync(instanceId);
+
             if (needsOperator)
             {
                 Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
@@ -42,9 +46,11 @@ public sealed class RecoveryTests
         }
         else
             result = await client.RunAsync(Recovery.Definition(), new ReservationData());
+
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         Assert.Equal("reservation-1", Assert.IsType<ReservationData>(result.WorkflowData).Reference);
         Assert.Equal(1, reservations.Calls);
+
         if (interrupted)
             Assert.Equal(reservations.InvocationId, reservations.LookedUp);
     }
@@ -60,12 +66,14 @@ public sealed class RecoveryTests
         {
             Calls++;
             InvocationId = invocationId;
+
             return Task.FromResult("reservation-1");
         }
 
         public Task<string?> FindAsync(string invocationId, CancellationToken cancellationToken)
         {
             LookedUp = invocationId;
+
             return Task.FromResult(Found ? "reservation-1" : null);
         }
     }

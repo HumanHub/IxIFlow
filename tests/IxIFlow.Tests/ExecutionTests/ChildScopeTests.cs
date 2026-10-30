@@ -17,20 +17,29 @@ public sealed class ChildScopeTests
         var scopes = step.ChildScopes().ToArray();
 
         Assert.Equal(bodies.Count, scopes.Length);
+
         foreach (var body in bodies)
             Assert.Single(scopes, scope => ReferenceEquals(scope.Steps, body));
+
         Assert.Equal(["inline", "sequence", "cancelled", "then", "else", "loop", "foreach", "finally", "timeout", "catch", "scope"],
             scopes.Take(11).Select(scope => scope.Kind));
+
         Assert.All(scopes.Take(11), scope => Assert.Null(scope.Key));
-        Assert.Equal([("branch", "0"), ("branch", "1"),
+
+        Assert.Equal([
+                ("branch", "0"), ("branch", "1"),
                 ("node", ""), ("node", "/to/0"), ("node", "/to/1"),
                 ("node", ""), ("node", "/to/0"), ("node", "/to/1"),
-                ("state", ""), ("state", "/exit"), ("state", "/on/0"), ("state", "/on/0/case/0"), ("state", "/on/0/case/1"), ("state", "/on/0/run"),
+                ("state", ""), ("state", "/exit"), ("state", "/on/0"), ("state", "/on/0/case/0"), ("state", "/on/0/case/1"),
+                ("state", "/on/0/run"),
                 ("state", "/on/1"), ("state", "/on/1/case/0"), ("state", "/on/1/case/1"), ("state", "/on/1/run"), ("state", "/listen"),
-                ("state", ""), ("state", "/exit"), ("state", "/on/0"), ("state", "/on/0/case/0"), ("state", "/on/0/case/1"), ("state", "/on/0/run"),
+                ("state", ""), ("state", "/exit"), ("state", "/on/0"), ("state", "/on/0/case/0"), ("state", "/on/0/case/1"),
+                ("state", "/on/0/run"),
                 ("state", "/on/1"), ("state", "/on/1/case/0"), ("state", "/on/1/case/1"), ("state", "/on/1/run"), ("state", "/listen"),
-                ("case", "0"), ("case", "1")],
+                ("case", "0"), ("case", "1")
+            ],
             scopes.Skip(11).Select(scope => (scope.Kind, scope.Key)));
+
         Assert.All(new WorkflowStep().ChildScopes(), scope => Assert.Empty(scope.Steps));
     }
 
@@ -47,11 +56,13 @@ public sealed class ChildScopeTests
         var value = nullableMetadata ? null : new List<string> { "outcome" };
         var sagaStep = new SagaStepInfo { StepId = shared[0].Id, ActivityType = typeof(object), Order = 3 };
         var sagaSteps = new List<SagaStepInfo> { sagaStep };
+
         step.OutcomeBranches =
         [
             new() { Value = value, IsDefault = false, Steps = shared, SagaSteps = sagaSteps },
             new() { Value = value, IsDefault = true, Steps = shared, SagaSteps = sagaSteps }
         ];
+
         var metadata = new List<string> { "shared metadata" };
         step.StepMetadata["shared"] = metadata;
         step.SourceLocation = nullableMetadata ? null : "clone.yaml:3";
@@ -69,24 +80,28 @@ public sealed class ChildScopeTests
 
         Assert.NotSame(step, clone);
         Assert.Equal(original.Length, copied.Length);
+
         for (var index = 0; index < original.Length; index++)
         {
             Assert.Equal(original[index].Kind, copied[index].Kind);
             Assert.Equal(original[index].Key, copied[index].Key);
             Assert.NotSame(original[index].Steps, copied[index].Steps);
             Assert.Equal(original[index].Steps.Select(child => child.Id), copied[index].Steps.Select(child => child.Id));
+
             foreach (var (source, target) in original[index].Steps.Zip(copied[index].Steps))
                 Assert.NotSame(source, target);
         }
 
         // Main clones each occurrence independently, even when the source body is shared.
         for (var index = 0; index < copied.Length; index++)
-            for (var other = index + 1; other < copied.Length; other++)
-            {
-                Assert.NotSame(copied[index].Steps, copied[other].Steps);
-                foreach (var child in copied[index].Steps)
-                    Assert.DoesNotContain(copied[other].Steps, candidate => ReferenceEquals(child, candidate));
-            }
+        for (var other = index + 1; other < copied.Length; other++)
+        {
+            Assert.NotSame(copied[index].Steps, copied[other].Steps);
+
+            foreach (var child in copied[index].Steps)
+                Assert.DoesNotContain(copied[other].Steps, candidate => ReferenceEquals(child, candidate));
+        }
+
         foreach (var scope in copied.Where(scope => scope.Steps.Count > 0 && scope.Steps[0].Id == shared[0].Id))
         {
             Assert.NotSame(shared[0].ThenSteps, scope.Steps[0].ThenSteps);
@@ -95,6 +110,7 @@ public sealed class ChildScopeTests
 
         Assert.NotSame(step.ParallelBranches, clone.ParallelBranches);
         Assert.NotSame(step.OutcomeBranches, clone.OutcomeBranches);
+
         for (var index = 0; index < step.OutcomeBranches.Count; index++)
         {
             var source = step.OutcomeBranches[index];
@@ -105,6 +121,7 @@ public sealed class ChildScopeTests
             Assert.NotSame(source.SagaSteps, target.SagaSteps);
             Assert.Same(sagaStep, Assert.Single(target.SagaSteps));
         }
+
         Assert.NotSame(clone.OutcomeBranches[0].SagaSteps, clone.OutcomeBranches[1].SagaSteps);
         Assert.NotSame(step.StepMetadata, clone.StepMetadata);
         Assert.Same(metadata, clone.StepMetadata["shared"]);
@@ -161,15 +178,20 @@ public sealed class ChildScopeTests
     public void FlattenPreservesItsDiagnosticOrder()
     {
         var step = PopulatedStep([]);
-        foreach (var scope in step.ChildScopes())
-            foreach (var child in scope.Steps)
-                child.Id = scope.Kind + scope.Key;
 
-        Assert.Equal([step.Id, "sequence", "cancelled", "then", "else", "loop", "finally", "catch", "scope",
+        foreach (var scope in step.ChildScopes())
+        foreach (var child in scope.Steps)
+            child.Id = scope.Kind + scope.Key;
+
+        Assert.Equal([
+                step.Id, "sequence", "cancelled", "then", "else", "loop", "finally", "catch", "scope",
                 "node", "node/to/0", "node", "node/to/0",
-                "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/0/run", "state/on/1", "state/on/1/case/0", "state/on/1/run", "state/listen",
-                "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/0/run", "state/on/1", "state/on/1/case/0", "state/on/1/run", "state/listen",
-                "timeout", "foreach", "branch0", "case0", "case1"],
+                "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/0/run", "state/on/1", "state/on/1/case/0",
+                "state/on/1/run", "state/listen",
+                "state", "state/exit", "state/on/0", "state/on/0/case/0", "state/on/0/run", "state/on/1", "state/on/1/case/0",
+                "state/on/1/run", "state/listen",
+                "timeout", "foreach", "branch0", "case0", "case1"
+            ],
             ParallelRules.Flatten([step]).Select(child => child.Id));
     }
 
@@ -177,12 +199,13 @@ public sealed class ChildScopeTests
     public void RequestDiagnosticsStillVisitTimeoutsBeforeCatchesAndItemBodies()
     {
         var step = PopulatedStep([]);
+
         foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "timeout" or "catch" or "foreach"))
-            foreach (var child in scope.Steps)
-            {
-                child.RequestName = scope.Kind;
-                child.ReplyType = typeof(object);
-            }
+        foreach (var child in scope.Steps)
+        {
+            child.RequestName = scope.Kind;
+            child.ReplyType = typeof(object);
+        }
 
         var error = Assert.Throws<WorkflowEngineException>(() => RequestPairing.Pair([step]));
         Assert.Contains("Request 'timeout' needs exactly one WaitFor", error.Message);
@@ -192,6 +215,7 @@ public sealed class ChildScopeTests
     {
         var step = new WorkflowStep();
         Populate(step);
+
         return step;
 
         void Populate(object owner)
@@ -202,8 +226,11 @@ public sealed class ChildScopeTests
 
         object Make(Type type)
         {
-            if (type == typeof(WorkflowStep)) return new WorkflowStep();
+            if (type == typeof(WorkflowStep))
+                return new WorkflowStep();
+
             var value = Activator.CreateInstance(type)!;
+
             if (value is List<WorkflowStep> body)
             {
                 bodies.Add(body);
@@ -215,10 +242,15 @@ public sealed class ChildScopeTests
                 list.Add(Make(element));
                 var empty = Activator.CreateInstance(element)!;
                 list.Add(empty);
-                if (empty is List<WorkflowStep> emptyBody) bodies.Add(emptyBody);
-                else Populate(empty);
+
+                if (empty is List<WorkflowStep> emptyBody)
+                    bodies.Add(emptyBody);
+                else
+                    Populate(empty);
             }
-            else Populate(value);
+            else
+                Populate(value);
+
             return value;
         }
     }
@@ -227,5 +259,5 @@ public sealed class ChildScopeTests
         (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(List<>)
             ? ContainsSteps(type.GetGenericArguments()[0])
             : type.IsClass && type.Assembly == typeof(WorkflowStep).Assembly &&
-                type.GetProperties().Any(property => ContainsSteps(property.PropertyType)));
+            type.GetProperties().Any(property => ContainsSteps(property.PropertyType)));
 }

@@ -18,6 +18,7 @@ internal static class RunClock
     {
         var previous = CurrentClock.Value;
         CurrentClock.Value = clock;
+
         return new Restore(previous);
     }
 

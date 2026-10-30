@@ -31,6 +31,7 @@ public sealed class PriceLine : IAsyncActivity
     {
         LineTotal = Quantity * UnitPrice;
         Total = TotalSoFar + LineTotal;
+
         return Task.CompletedTask;
     }
 }
@@ -80,6 +81,7 @@ public sealed class WriteInvoiceLine : IAsyncActivity
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         InvoiceLines = [.. InvoiceLines, $"{Customer} #{Position + 1}: {Sku}"];
+
         return Task.CompletedTask;
     }
 }

@@ -6,6 +6,7 @@ namespace IxIFlow.BundleFixtures;
 public sealed class BundleException : Exception;
 
 public sealed class ChildFailure(string message) : Exception(message);
+
 public sealed record MessageFault(string Message);
 
 public sealed class Fail : IAsyncActivity
@@ -16,8 +17,7 @@ public sealed class Fail : IAsyncActivity
 
 public sealed class Echo : IAsyncActivity
 {
-    [ActivityInput, ActivityOutput]
-    public string Value { get; set; } = "parent previous";
+    [ActivityInput, ActivityOutput] public string Value { get; set; } = "parent previous";
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
 }
 

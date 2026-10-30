@@ -11,17 +11,22 @@ public static class OperationsExamples
         var page = await operations.SearchAsync(new InstanceQuery(
             Statuses: [WorkflowStatus.Suspended, WorkflowStatus.NeedsResolution],
             WorkflowName: "Order", WorkflowVersion: 2, Limit: 100));
+
         var waits = await operations.GetWaitsAsync(page.Items.Select(row => row.InstanceId).ToArray());
+
         var next = await operations.SearchAsync(new InstanceQuery(
             Statuses: [WorkflowStatus.Suspended, WorkflowStatus.NeedsResolution],
             WorkflowName: "Order", WorkflowVersion: 2, Limit: 100, After: page.NextCursor));
+
         // end-snippet: search
     }
+
     public static async Task TerminateAsync(IWorkflowOperations operations, string instanceId)
     {
         // snippet: terminate
         var stopped = await operations.TerminateAsync(instanceId, "operator-stop",
             "Stopped after investigation", actor: "alice");
+
         // end-snippet: terminate
     }
 }

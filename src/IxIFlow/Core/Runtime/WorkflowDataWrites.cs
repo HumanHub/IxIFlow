@@ -9,9 +9,15 @@ internal static class WorkflowDataWrites
     {
         foreach (var mapping in step.OutputMappings.Concat(
                      step.StepMetadata.GetValueOrDefault("CompensationActivities") is List<CompensationActivityInfo> compensations
-                         ? compensations.SelectMany(item => item.OutputMappings) : []))
-            if (mapping.Direction == PropertyMappingDirection.Output) yield return mapping.TargetPath;
-        if (step.Assignment != null) yield return step.Assignment.TargetPath;
-        if (step.ForEachIntoPath != null) yield return step.ForEachIntoPath;
+                         ? compensations.SelectMany(item => item.OutputMappings)
+                         : []))
+            if (mapping.Direction == PropertyMappingDirection.Output)
+                yield return mapping.TargetPath;
+
+        if (step.Assignment != null)
+            yield return step.Assignment.TargetPath;
+
+        if (step.ForEachIntoPath != null)
+            yield return step.ForEachIntoPath;
     }
 }

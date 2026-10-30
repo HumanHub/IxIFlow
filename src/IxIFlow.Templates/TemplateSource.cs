@@ -30,6 +30,7 @@ public sealed class TemplateSource
     {
         ArgumentNullException.ThrowIfNull(version);
         ArgumentNullException.ThrowIfNull(variant);
+
         return new(version.Key, version.Version, variant.Culture, version.Format, variant.Content, variant.Digest);
     }
 

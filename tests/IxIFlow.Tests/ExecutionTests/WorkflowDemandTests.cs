@@ -24,13 +24,18 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
     {
         var store = new InMemoryWorkflowStateRepository();
         var services = Services(store, capabilities: new() { ["gpu"] = "cuda", ["region"] = "eu" });
+
         if (explicitDataType)
             services.RegisterWorkflow<Declared, Data>(r => r.Demand("region", inherit: true).Demand("gpu"));
-        else services.RegisterWorkflow<Declared>(r => r.Demand("region", inherit: true).Demand("gpu"));
+        else
+            services.RegisterWorkflow<Declared>(r => r.Demand("region", inherit: true).Demand("gpu"));
+
         await using var provider = services.BuildServiceProvider();
         var definition = Assert.Single(provider.GetServices<WorkflowDefinition>());
+
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition,
             new Data { Region = "eu" }, new WorkflowOptions { Demands = [new("gpu", "cuda"), new("region", "eu")] });
+
         var demands = await store.GetWorkflowDemandsAsync(result.InstanceId);
         Assert.Equal(new[] { "gpu", "region", "workflow:Declared@1" }, demands.Select(d => d.Key));
         Assert.Equal(new WorkflowDemand("region", "eu", Inherit: true), demands[1]);
@@ -49,8 +54,10 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
         var client = provider.GetRequiredService<IWorkflowClient>();
         var result = await client.RunAsync(standalone, new Data { Region = "eu" });
         Assert.Contains(new WorkflowDemand("zone", "eu", Inherit: true), await store.GetWorkflowDemandsAsync(result.InstanceId));
+
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.RunAsync(standalone, new Data(),
             new() { Demands = [new("zone", "us")] }));
+
         Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
     }
 
@@ -58,9 +65,11 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
     public void PlacementDoesNotChangeStructureIdentity()
     {
         var plain = Definition();
+
         var placed = Workflow.Create<Data>("DemandFlow").Demand("gpu").Step<Noop>().WithId("first")
             .DemandFrom("region", ctx => ctx.WorkflowData.Region, inherit: true)
             .WaitFor<Go>("go").WithId("wait").Build();
+
         Assert.Equal(new WorkflowScopeCatalog(plain).StructureHash, new WorkflowScopeCatalog(placed).StructureHash);
         Assert.Equal(2, placed.Demands.Count);
     }
@@ -71,8 +80,12 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
     public void ImpureDemandFromFailsAtBuild(bool workflowClock)
     {
         var builder = Workflow.Create<Data>("ImpureDemand");
-        if (workflowClock) builder.DemandFrom("time", ctx => ctx.UtcNow.ToString());
-        else builder.DemandFrom("host", ctx => Environment.MachineName);
+
+        if (workflowClock)
+            builder.DemandFrom("time", ctx => ctx.UtcNow.ToString());
+        else
+            builder.DemandFrom("host", ctx => Environment.MachineName);
+
         var error = Assert.Throws<WorkflowEngineException>(() => builder.Step<Noop>().Build());
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
     }
@@ -83,8 +96,10 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
         var store = new InMemoryWorkflowStateRepository();
         await using var provider = Services(store).BuildServiceProvider();
         var definition = Workflow.Create<Data>("Contradiction").Demand("region", "eu").Step<Noop>().Build();
+
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => provider.GetRequiredService<IWorkflowClient>()
             .RunAsync(definition, new Data(), new WorkflowOptions { InstanceId = "contradiction", Demands = [new("region", "us")] }));
+
         Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
         Assert.Null(await store.GetWorkflowInstanceAsync("contradiction"));
         Assert.Empty(await store.GetWorkflowDemandsAsync("contradiction"));
@@ -98,13 +113,17 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
         var store = new InMemoryWorkflowStateRepository();
         var first = Definition("eu");
         string id;
+
         await using (var provider = Services(store, capabilities: new() { ["region"] = "eu" }).BuildServiceProvider())
             id = (await provider.GetRequiredService<IWorkflowClient>().RunAsync(first, new Data { Region = "eu" })).InstanceId;
+
         var before = await store.GetWorkflowDemandsAsync(id);
+
         // A repeated start must not evaluate its dynamic declaration against the replacement data.
         var changed = Workflow.Create<Data>("DemandFlow").Demand("region", "us")
             .DemandFrom("explode", ctx => ctx.WorkflowData.StartOnly)
             .Step<Noop>().WithId("first").WaitFor<Go>("go").WithId("wait").Build();
+
         var services = Services(store, capabilities: new() { ["region"] = "eu" });
         services.AddSingleton(changed);
         await using var second = services.BuildServiceProvider();
@@ -122,17 +141,23 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
     public async Task ChildrenAndGrandchildrenInheritOnlyExplicitResidency(bool conflict)
     {
         var store = new InMemoryWorkflowStateRepository();
+
         var child = Workflow.Create<Data>("Child").Demand("region", conflict ? "us" : "eu")
             .Demand("child-only").Step<Noop>().Invoke<Data>("Grandchild", 1).Build();
+
         var grandchild = Workflow.Create<Data>("Grandchild").Step<Noop>().WaitFor<Go>("go").Build();
+
         var parent = Workflow.Create<Data>("Parent").Demand("region", inherit: true).Demand("region", "eu")
             .Demand("parent-only").Step<Noop>().Invoke<Data>("Child", 1).WithId("invoke").Build();
+
         var services = Services(store, capabilities: new()
             { ["region"] = "eu", ["parent-only"] = "present", ["child-only"] = "present" });
+
         services.AddSingleton(child);
         services.AddSingleton(grandchild);
         await using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(parent, new Data());
+
         if (conflict)
         {
             Assert.Equal(WorkflowExecutionStatus.NeedsResolution, result.Status);
@@ -140,15 +165,23 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
             var pending = Assert.Single(ExecutionCheckpoint.Read(saved!.ExecutionStateJson).Continuations).PendingActivity!;
             Assert.Contains("Conflicting demands", pending.ResolutionReason);
             Assert.Empty((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: 1000))).Items);
+
             return;
         }
-        var savedChild = Assert.Single((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: 1000))).Items);
+
+        var savedChild =
+            Assert.Single((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: 1000))).Items);
+
         var childDemands = await store.GetWorkflowDemandsAsync(savedChild.InstanceId);
         Assert.Contains(new WorkflowDemand("region", "eu", Inherit: true), childDemands);
         Assert.DoesNotContain(childDemands, d => d.Key == "parent-only");
+
         // Explicit recovery makes this deterministic without starting a background recovery service.
         await provider.GetRequiredService<IWorkflowClient>().RecoverAsync(savedChild.InstanceId);
-        var savedGrandchild = Assert.Single((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: savedChild.InstanceId, Limit: 1000))).Items);
+
+        var savedGrandchild =
+            Assert.Single((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: savedChild.InstanceId, Limit: 1000))).Items);
+
         var grandchildDemands = await store.GetWorkflowDemandsAsync(savedGrandchild.InstanceId);
         Assert.Contains(new WorkflowDemand("region", "eu", Inherit: true), grandchildDemands);
         Assert.DoesNotContain(grandchildDemands, d => d.Key == "child-only" || d.Key == "parent-only");
@@ -159,16 +192,22 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
     {
         var store = new InMemoryWorkflowStateRepository();
         var child = Workflow.Create<Data>("ParallelChild").Step<Noop>().WaitFor<Go>("go").Build();
+
         var parent = Workflow.Create<Data>("ParallelParent").DemandFrom("region", ctx => ctx.WorkflowData.Region, inherit: true)
             .Demand("parent-only").Step<Noop>()
             .ForEach(ctx => new[] { 1, 2, 3 }, (body, item) => body.Invoke<Data>("ParallelChild", 1),
                 setup => setup.Parallel()).Build();
+
         var services = Services(store, capabilities: new() { ["region"] = "eu", ["parent-only"] = "present" });
         services.AddSingleton(child);
         await using var provider = services.BuildServiceProvider();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(parent, new Data { Region = "eu" });
-        var children = ((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: 1000))).Items).ToArray();
+
+        var children = ((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: result.InstanceId, Limit: 1000))).Items)
+            .ToArray();
+
         Assert.Equal(3, children.Length);
+
         foreach (var saved in children)
         {
             var demands = await store.GetWorkflowDemandsAsync(saved.InstanceId);
@@ -190,33 +229,49 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
         var definition = Workflow.Create<Data>("Placement").Demand("gpu").Demand("region", "eu").Step<Noop>().Build();
         var demands = WorkflowDemands.Resolve(definition, new Data(), new(), new WorkflowScopeCatalog(definition).StructureHash);
         var capabilities = demands.ToDictionary(d => d.Key, d => d.Value ?? "present");
-        if (scenario == "split") capabilities.Remove("region");
-        if (scenario != "missing") await store.RegisterMemberAsync(new(Guid.NewGuid(),
-            scenario == "coordinator" ? MemberKind.Coordinator : MemberKind.Host, "test", null, 1, "1",
-            TimeSpan.FromSeconds(5), capabilities));
-        if (scenario == "split") await store.RegisterMemberAsync(new(Guid.NewGuid(), MemberKind.Host, "other", null, 1,
-            "1", TimeSpan.FromSeconds(5), new Dictionary<string, string> { ["region"] = "eu" }));
-        if (scenario == "stale") time.Advance(TimeSpan.FromSeconds(15));
+
+        if (scenario == "split")
+            capabilities.Remove("region");
+
+        if (scenario != "missing")
+            await store.RegisterMemberAsync(new(Guid.NewGuid(),
+                scenario == "coordinator" ? MemberKind.Coordinator : MemberKind.Host, "test", null, 1, "1",
+                TimeSpan.FromSeconds(5), capabilities));
+
+        if (scenario == "split")
+            await store.RegisterMemberAsync(new(Guid.NewGuid(), MemberKind.Host, "other", null, 1,
+                "1", TimeSpan.FromSeconds(5), new Dictionary<string, string> { ["region"] = "eu" }));
+
+        if (scenario == "stale")
+            time.Advance(TimeSpan.FromSeconds(15));
+
         await using var provider = Services(store).BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
         var options = new WorkflowOptions { InstanceId = "fail-" + scenario, WhenUnschedulable = WhenUnschedulable.Fail };
         using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
         if (scenario == "matching")
         {
             Assert.Equal(options.InstanceId, await client.StartAsync(definition, new Data(), options, patience.Token));
+
             await using var matching = Services(store, capabilities: new() { ["gpu"] = "present", ["region"] = "eu" })
                 .BuildServiceProvider();
+
             await matching.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+
             Assert.Equal(WorkflowExecutionStatus.Success,
                 (await matching.GetRequiredService<IWorkflowClient>().RecoverAsync(options.InstanceId, patience.Token)).Status);
         }
         else
         {
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.StartAsync(definition, new Data(), options, patience.Token));
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+                client.StartAsync(definition, new Data(), options, patience.Token));
+
             Assert.Equal(WorkflowErrorKind.Unschedulable, error.Kind);
             Assert.Null(await store.GetWorkflowInstanceAsync(options.InstanceId));
             Assert.Empty(await store.GetWorkflowDemandsAsync(options.InstanceId));
         }
+
         Assert.Equal(WhenUnschedulable.Wait, new WorkflowOptions().WhenUnschedulable);
         var waitingId = "wait-" + scenario;
         Assert.Equal(waitingId, await client.StartAsync(definition, new Data(), new() { InstanceId = waitingId }, patience.Token));
@@ -224,6 +279,7 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
         Assert.Equal(WorkflowStatus.Running, waiting.Status);
         Assert.Equal(demands, await store.GetWorkflowDemandsAsync(waitingId));
         Assert.True(waiting.RunnableAtUtc <= time.GetUtcNow().UtcDateTime);
+
         Assert.Contains(await store.GetRunnableInstancesAsync(new ClaimQuery(Guid.NewGuid(),
             demands.ToDictionary(d => d.Key, d => d.Value ?? "present"))), row => row.InstanceId == waitingId);
     }
@@ -236,6 +292,7 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
         await using var matching = Services(store, capabilities: new() { ["gpu"] = "cuda" }).BuildServiceProvider();
         await matching.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var pinned = matching.GetRequiredService<HostSettings>().Id;
+
         Dictionary<string, string> Capabilities(Guid id, bool gpu)
         {
             var result = new Dictionary<string, string>
@@ -243,19 +300,29 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
                 ["host"] = id.ToString("D"),
                 ["workflow:Pinned@1"] = new WorkflowScopeCatalog(definition).StructureHash
             };
-            if (gpu) result["gpu"] = "cuda";
+
+            if (gpu)
+                result["gpu"] = "cuda";
+
             return result;
         }
+
         await store.RegisterMemberAsync(new(pinned, MemberKind.Host, "pinned", null, 1, "1",
             TimeSpan.FromSeconds(5), Capabilities(pinned, false)));
+
         var other = Guid.NewGuid();
+
         await store.RegisterMemberAsync(new(other, MemberKind.Host, "other", null, 1, "1",
             TimeSpan.FromSeconds(5), Capabilities(other, true)));
+
         await using var provider = Services(store).BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
         var options = new WorkflowOptions { InstanceId = "pinned", RequiredHostId = pinned, WhenUnschedulable = WhenUnschedulable.Fail };
         using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => client.StartAsync(definition, new Data(), options, patience.Token));
+
+        var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+            client.StartAsync(definition, new Data(), options, patience.Token));
+
         Assert.Equal(WorkflowErrorKind.Unschedulable, error.Kind);
         Assert.Null(await store.GetWorkflowInstanceAsync(options.InstanceId));
         Assert.Empty(await store.GetWorkflowDemandsAsync(options.InstanceId));
@@ -265,6 +332,7 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
         Assert.Contains(savedDemands, d => d.Key == "host" && d.Value == pinned.ToString("D"));
         Assert.Contains(new WorkflowDemand("gpu", "cuda"), savedDemands);
         Assert.NotNull(await store.GetWorkflowInstanceAsync(options.InstanceId));
+
         Assert.Equal(WorkflowExecutionStatus.Success,
             (await matching.GetRequiredService<IWorkflowClient>().RecoverAsync(options.InstanceId, patience.Token)).Status);
     }
@@ -282,29 +350,40 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task SqlServerCreationIsAtomic() => StoreContract(new SqlWorkflowStateRepository(SqlTestDatabase<WorkflowDemandTests>.ConnectionString));
+    public Task SqlServerCreationIsAtomic() =>
+        StoreContract(new SqlServerWorkflowStateRepository(SqlTestDatabase<WorkflowDemandTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task PostgreSqlCreationIsAtomic() => StoreContract(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<WorkflowDemandTests>.ConnectionString));
+    public Task PostgreSqlCreationIsAtomic() =>
+        StoreContract(new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<WorkflowDemandTests>.ConnectionString));
 
     private static async Task StoreContract(IWorkflowStateRepository store)
     {
         var id = Guid.NewGuid().ToString("N");
+
         var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(Definition("eu"), new Data(),
             new() { InstanceId = id, RequiredHostId = Guid.NewGuid() }, DateTime.UtcNow.AddYears(20));
+
         ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), scopes, DateTime.UtcNow);
-        var lease = (await store.TryAcquireExecutionLeaseAsync(id, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
+
+        var lease = (await store.TryAcquireExecutionLeaseAsync(id, "owner", TimeSpan.FromMinutes(1),
+            new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
+
         var childId = Guid.NewGuid().ToString("N");
         var wait = Guid.NewGuid().ToString("N");
+
         var (child, _, _) = WorkflowInstances.NewInstance(
             Workflow.Create<Data>("ChildRows").Demand("residency", "eu", inherit: true).Step<Noop>().Build(),
             new Data(), new() { InstanceId = childId, ParentInstanceId = id }, DateTime.UtcNow);
+
         child.ParentWaitId = wait;
         var starts = new[] { new ChildStart(childId, JsonSerializer.Serialize(child), wait) };
         var waits = new[] { new OpenedWait(wait, WaitKind.Child, "", "IxIFlow.ChildCompleted", null) };
+
         var refused = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, lease.Epoch, 1,
             childStarts: starts, openedWaits: waits));
+
         Assert.Equal(WorkflowCommitStatus.Conflict, refused.Status);
         Assert.Null(await store.GetWorkflowInstanceAsync(id));
         Assert.Empty(await store.GetWorkflowDemandsAsync(id));
@@ -323,12 +402,17 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
         Assert.Contains(new WorkflowDemand("residency", "eu", Inherit: true), childRows);
         Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await store.CommitWorkflowInstanceAsync(commit)).Status);
         Assert.Equal(demands, await store.GetWorkflowDemandsAsync(id));
+
         // A taken child refuses an entire new parent creation, including its demand rows.
         var (loser, _, _) = WorkflowInstances.NewInstance(Definition("us"), new Data(), new(), DateTime.UtcNow);
         child.ParentInstanceId = loser.InstanceId;
-        var loserOwner = (await store.TryAcquireExecutionLeaseAsync(loser.InstanceId, "loser", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
+
+        var loserOwner = (await store.TryAcquireExecutionLeaseAsync(loser.InstanceId, "loser", TimeSpan.FromMinutes(1),
+            new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
+
         await Assert.ThrowsAnyAsync<Exception>(() => store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(loser,
             loserOwner.Epoch, 0, childStarts: [new(childId, JsonSerializer.Serialize(child), wait)], openedWaits: waits)));
+
         Assert.Null(await store.GetWorkflowInstanceAsync(loser.InstanceId));
         Assert.Empty(await store.GetWorkflowDemandsAsync(loser.InstanceId));
         Assert.Equal(childRows, await store.GetWorkflowDemandsAsync(childId));
@@ -351,8 +435,10 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
         var host = Guid.NewGuid();
         using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var id = "pin-" + seconds;
+
         Assert.Equal(id, await provider.GetRequiredService<IWorkflowClient>().StartAsync(Definition(), new Data(),
             new() { InstanceId = id, RequiredHostId = host }, patience.Token));
+
         var pin = Assert.Single(await store.GetWorkflowDemandsAsync(id), d => d.Key == "host");
         Assert.Equal(host.ToString("D"), pin.Value);
         Assert.Equal(time.GetUtcNow().UtcDateTime.AddSeconds(seconds), pin.ExpiresAtUtc);
@@ -367,21 +453,32 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
         await using var store = new SqliteWorkflowStateRepository(cs);
         await store.GetWorkflowDemandsAsync("initialize");
         await using var connection = new SqliteConnection(cs);
+
         await connection.ExecuteAsync("""
-            CREATE TRIGGER refuse_demands BEFORE INSERT ON ixiflow_demand_set_rows
-            WHEN NEW.demand_key = 'refuse' BEGIN SELECT RAISE(ABORT, 'refused demand'); END;
-            """);
+                                      CREATE TRIGGER refuse_demands BEFORE INSERT ON ixiflow_demand_set_rows
+                                      WHEN NEW.demand_key = 'refuse' BEGIN SELECT RAISE(ABORT, 'refused demand'); END;
+                                      """);
+
         try
         {
             var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(
                 Workflow.Create<Data>("Rollback").Demand("refuse").Step<Noop>().Build(), new Data(), new(), DateTime.UtcNow);
+
             ExecutionCheckpointWriter.Prepare(instance, checkpoint, new Data(), scopes, DateTime.UtcNow);
-            var owner = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1), new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
-            await Assert.ThrowsAnyAsync<Exception>(() => store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, owner.Epoch, 0)));
+
+            var owner = (await store.TryAcquireExecutionLeaseAsync(instance.InstanceId, "owner", TimeSpan.FromMinutes(1),
+                new ClaimQuery(Guid.Empty, new Dictionary<string, string>())))!;
+
+            await Assert.ThrowsAnyAsync<Exception>(() =>
+                store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(instance, owner.Epoch, 0)));
+
             Assert.Null(await store.GetWorkflowInstanceAsync(instance.InstanceId));
             Assert.Empty(await store.GetWorkflowDemandsAsync(instance.InstanceId));
         }
-        finally { await connection.ExecuteAsync("DROP TRIGGER refuse_demands"); }
+        finally
+        {
+            await connection.ExecuteAsync("DROP TRIGGER refuse_demands");
+        }
     }
 
     private static ServiceCollection Services(IWorkflowStateRepository store, TimeSpan? pinLifetime = null,
@@ -390,32 +487,43 @@ public sealed class WorkflowDemandTests : IClassFixture<SqliteTestDatabase<Workf
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(store);
+
         services.AddIxIFlow(options =>
         {
             options.HostPinLifetime = pinLifetime ?? TimeSpan.FromMinutes(5);
-            if (capabilities != null) options.Capabilities = capabilities;
+
+            if (capabilities != null)
+                options.Capabilities = capabilities;
         });
+
         return services;
     }
 
     private static WorkflowDefinition Definition(string? region = null)
     {
         var builder = Workflow.Create<Data>("DemandFlow");
-        if (region != null) builder.Demand("region", region);
+
+        if (region != null)
+            builder.Demand("region", region);
+
         return builder.Step<Noop>().WithId("first").WaitFor<Go>("go").WithId("wait").Build();
     }
 
     public sealed class Data
     {
         public string Region { get; set; } = "";
+
         [System.Text.Json.Serialization.JsonIgnore]
         public string StartOnly => throw new InvalidOperationException("evaluated again");
     }
+
     public sealed class Go;
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     [IxIFlow.Core.Workflow("Declared")]
     public sealed class Declared : IWorkflow<Data>
     {

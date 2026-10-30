@@ -23,12 +23,19 @@ public sealed class ThrowPurityTests
             "public class Failure : Exception { public int Code {get;init;} public List<int> Values {get;init;} = new(); } " +
             "public class Author { public void Build() => Workflow.Create<Data>(\"Throw\").Throw<Failure>(ctx => " + expression +
             "); private static Failure Make(List<int> items) { var alias = items; alias.Clear(); return new Failure(); } }";
+
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator)
-            .Concat(Directory.GetFiles(AppContext.BaseDirectory, "IxIFlow*.dll")).Distinct().Select(p => MetadataReference.CreateFromFile(p));
+            .Concat(Directory.GetFiles(AppContext.BaseDirectory, "IxIFlow*.dll")).Distinct()
+            .Select(p => MetadataReference.CreateFromFile(p));
+
         var compilation = CSharpCompilation.Create("ThrowFactory", [CSharpSyntaxTree.ParseText(source)], references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
         Assert.Empty(compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error));
-        var diagnostics = await compilation.WithAnalyzers(ImmutableArray.Create<DiagnosticAnalyzer>(new PurityAnalyzer())).GetAnalyzerDiagnosticsAsync();
+
+        var diagnostics = await compilation.WithAnalyzers(ImmutableArray.Create<DiagnosticAnalyzer>(new PurityAnalyzer()))
+            .GetAnalyzerDiagnosticsAsync();
+
         Assert.DoesNotContain(diagnostics, d => d.Id == "AD0001");
         Assert.Equal(impure, diagnostics.Any(d => d.Id == "IXIF0101"));
     }

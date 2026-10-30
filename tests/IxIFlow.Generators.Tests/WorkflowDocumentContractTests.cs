@@ -15,13 +15,18 @@ public sealed class WorkflowDocumentContractTests
         var generated = DocumentSchema.Write(typeof(WorkflowDocument));
         Assert.DoesNotContain("\r", generated);
         Assert.EndsWith("\n", generated);
+
         if (Environment.GetEnvironmentVariable("IXIFLOW_WRITE_SCHEMA") == "1")
         {
             Directory.CreateDirectory(Path.GetDirectoryName(WorkflowSchemaFiles.SchemaPath)!);
             File.WriteAllText(WorkflowSchemaFiles.SchemaPath, generated);
+
             return;
         }
-        Assert.True(File.Exists(WorkflowSchemaFiles.SchemaPath) && File.ReadAllText(WorkflowSchemaFiles.SchemaPath).Replace("\r\n", "\n") == generated,
+
+        Assert.True(
+            File.Exists(WorkflowSchemaFiles.SchemaPath) &&
+            File.ReadAllText(WorkflowSchemaFiles.SchemaPath).Replace("\r\n", "\n") == generated,
             "Regenerate the schema with IXIFLOW_WRITE_SCHEMA=1 dotnet test tests/IxIFlow.Generators.Tests --filter SchemaFileMatchesTheDocumentModel");
     }
 
@@ -31,15 +36,22 @@ public sealed class WorkflowDocumentContractTests
         [(typeof(ScopeStepDocument), nameof(ScopeStepDocument.Threading))] = value =>
             Document(new ScopeStepDocument { Activity = "Scope", Threading = value }),
         [(typeof(ActivityDefinitionDocument), nameof(ActivityDefinitionDocument.Concurrency))] = value =>
-            new ActivityDocument { Activity = new() { Key = "acme.values", Version = 1, Scope = "object", Concurrency = value }, Body = "return new object();" },
+            new ActivityDocument
+            {
+                Activity = new() { Key = "acme.values", Version = 1, Scope = "object", Concurrency = value }, Body = "return new object();"
+            },
         [(typeof(ActivityDefinitionDocument), nameof(ActivityDefinitionDocument.Threading))] = value =>
-            new ActivityDocument { Activity = new() { Key = "acme.values", Version = 1, Scope = "object", Threading = value }, Body = "return new object();" },
+            new ActivityDocument
+            {
+                Activity = new() { Key = "acme.values", Version = 1, Scope = "object", Threading = value }, Body = "return new object();"
+            },
         [(typeof(TemplateDocument), nameof(TemplateDocument.SchemaVersion))] = value =>
             Template() with { SchemaVersion = value },
         [(typeof(TemplateHeaderDocument), nameof(TemplateHeaderDocument.Format))] = value =>
             Template() with { Template = Template().Template with { Format = value } },
         [(typeof(ActivityDocument), nameof(ActivityDocument.SchemaVersion))] = value =>
-            new ActivityDocument { Activity = new() { Key = "acme.values", Version = 1 }, Body = "await Task.Yield();", SchemaVersion = value },
+            new ActivityDocument
+                { Activity = new() { Key = "acme.values", Version = 1 }, Body = "await Task.Yield();", SchemaVersion = value },
         [(typeof(ActivityMemberDocument), nameof(ActivityMemberDocument.Control))] = value =>
             new ActivityDocument
             {
@@ -52,11 +64,17 @@ public sealed class WorkflowDocumentContractTests
             Document(new ActivityStepDocument
             {
                 Activity = "Multiply",
-                Input = [new() { Target = "Value", From = new BinaryExpressionDocument
-                {
-                    Operator = value, Left = new ConstantExpressionDocument { Value = value is "and" or "or" ? true : 1 },
-                    Right = new ConstantExpressionDocument { Value = value is "and" or "or" ? false : 2 }
-                } }]
+                Input =
+                [
+                    new()
+                    {
+                        Target = "Value", From = new BinaryExpressionDocument
+                        {
+                            Operator = value, Left = new ConstantExpressionDocument { Value = value is "and" or "or" ? true : 1 },
+                            Right = new ConstantExpressionDocument { Value = value is "and" or "or" ? false : 2 }
+                        }
+                    }
+                ]
             }),
         [(typeof(ForEachParallelDocument), nameof(ForEachParallelDocument.Join))] = value =>
             Document(new ForEachStepDocument
@@ -75,10 +93,16 @@ public sealed class WorkflowDocumentContractTests
         [(typeof(SagaErrorHandlerDocument), nameof(SagaErrorHandlerDocument.Then))] = value =>
             Document(new SagaStepDocument { OnError = [new() { Compensate = "all", Then = value }] }),
         [(typeof(StepErrorPolicyDocument), nameof(StepErrorPolicyDocument.Then))] = value =>
-            Document(new SagaStepDocument { Steps = [new ActivityStepDocument
+            Document(new SagaStepDocument
             {
-                Activity = "Multiply", OnError = [new() { Then = value }]
-            }] }),
+                Steps =
+                [
+                    new ActivityStepDocument
+                    {
+                        Activity = "Multiply", OnError = [new() { Then = value }]
+                    }
+                ]
+            }),
     };
 
     private static string Translate(DocumentNode document) => document switch
@@ -100,7 +124,10 @@ public sealed class WorkflowDocumentContractTests
     private static string ValidateTemplate(TemplateDocument template)
     {
         var validation = TemplateDocumentValidator.Validate(template);
-        if (!validation.IsValid) throw new WorkflowSourceException(validation.Diagnostics[0].Message, "values.yaml", 1, 1);
+
+        if (!validation.IsValid)
+            throw new WorkflowSourceException(validation.Diagnostics[0].Message, "values.yaml", 1, 1);
+
         return WorkflowYamlSerializer.Write(template);
     }
 
@@ -139,9 +166,12 @@ public sealed class WorkflowDocumentContractTests
     public void SchemaIdNamesTheReleaseTag()
     {
         var version = typeof(IxIFlow.Core.WorkflowDefinition).Assembly.GetName().Version!.ToString(3);
+
         Assert.Equal($"https://raw.githubusercontent.com/HumanHub/IxIFlow/v{version}/src/IxIFlow/schemas/workflow.schema.json",
             DocumentSchema.Id(typeof(WorkflowDocument)));
-        Assert.Equal(DocumentSchema.Id(typeof(WorkflowDocument)), JsonDocument.Parse(File.ReadAllText(WorkflowSchemaFiles.SchemaPath)).RootElement.GetProperty("$id").GetString());
+
+        Assert.Equal(DocumentSchema.Id(typeof(WorkflowDocument)),
+            JsonDocument.Parse(File.ReadAllText(WorkflowSchemaFiles.SchemaPath)).RootElement.GetProperty("$id").GetString());
     }
 
     [Fact]
@@ -160,24 +190,29 @@ public sealed class WorkflowDocumentContractTests
     public void JsonReaderUsesTheSharedImpliedPathContract()
     {
         var document = WorkflowJsonSerializer.Read("""
-            {"workflow":{"name":"Implied","dataType":"FlowData"},"definitions":[
-              {"kind":"activity","activity":"Multiply","input":[{"target":"Value","from":{"path":"workflow.Value"}}]}
-            ]}
-            """);
-        Assert.Equal("workflow.Value", Assert.IsType<PathExpressionDocument>(Assert.IsType<ActivityStepDocument>(document.Definitions[0]).Input[0].From).Path);
+                                                   {"workflow":{"name":"Implied","dataType":"FlowData"},"definitions":[
+                                                     {"kind":"activity","activity":"Multiply","input":[{"target":"Value","from":{"path":"workflow.Value"}}]}
+                                                   ]}
+                                                   """);
+
+        Assert.Equal("workflow.Value",
+            Assert.IsType<PathExpressionDocument>(Assert.IsType<ActivityStepDocument>(document.Definitions[0]).Input[0].From).Path);
+
         Assert.Throws<JsonException>(() => WorkflowJsonSerializer.Read("""
-            {"definitions":[{"kind":"if","condition":{"kind":"unknown","path":"workflow.Value"}}]}
-            """));
+                                                                       {"definitions":[{"kind":"if","condition":{"kind":"unknown","path":"workflow.Value"}}]}
+                                                                       """));
     }
 
     [Fact]
     public void ContractMembersHaveDescriptionsAndStableOrdering()
     {
-        foreach (var type in typeof(WorkflowDocument).Assembly.GetTypes().Where(type => type != typeof(DocumentNode) && typeof(DocumentNode).IsAssignableFrom(type)))
+        foreach (var type in typeof(WorkflowDocument).Assembly.GetTypes()
+                     .Where(type => type != typeof(DocumentNode) && typeof(DocumentNode).IsAssignableFrom(type)))
         {
             Assert.NotNull(type.GetCustomAttribute<DescriptionAttribute>());
             Assert.All(DocumentModel.GetMembers(type), member => Assert.NotNull(member.GetCustomAttribute<DescriptionAttribute>()));
         }
+
         Assert.Equal(new[] { "id", "kind", "name", "ref" },
             DocumentModel.GetMembers(typeof(ActivityReferenceStepDocument)).Select(DocumentModel.GetName));
     }
@@ -187,5 +222,6 @@ internal static class WorkflowSchemaFiles
 {
     internal static string RepositoryRoot([CallerFilePath] string source = "") =>
         Path.GetFullPath(Path.Combine(Path.GetDirectoryName(source)!, "../.."));
+
     internal static string SchemaPath => Path.Combine(RepositoryRoot(), "src/IxIFlow/schemas/workflow.schema.json");
 }

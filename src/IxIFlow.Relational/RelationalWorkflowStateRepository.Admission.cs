@@ -18,32 +18,46 @@ public abstract partial class RelationalWorkflowStateRepository
     }
 
     private async Task<EventAppendResult?> ReadWebhookDeliveryAsync(DbConnection connection, DbTransaction transaction,
-        WorkflowEvent workflowEvent, byte[] hash)
+        WorkflowEvent workflowEvent, byte[] hash, CancellationToken cancellationToken = default)
     {
-        var now = await OutboxNowAsync(connection, transaction);
-        var row = await connection.QuerySingleOrDefaultAsync<WebhookDeliveryRow>(RequiredSql(Statement.WebhookDeliveryRead),
-            WithTimes(new { workflowEvent.DeliveryIdentity }, ("Now", now)), transaction);
-        return row == null ? null : row.PayloadHash.SequenceEqual(hash)
-            ? new(EventAppendStatus.Duplicate, row.Sequence, Rejection: (EventRejection?)row.Rejection)
-                { Notice = ReadNotice(row.NoticeJson) }
-            : new(EventAppendStatus.Conflict);
+        var now = await OutboxNowAsync(connection, transaction, cancellationToken: cancellationToken);
+
+        var row = await connection.QuerySingleOrDefaultAsync<WebhookDeliveryRow>(new CommandDefinition(
+            RequiredSql(Statement.WebhookDeliveryRead),
+            WithTimes(new { workflowEvent.DeliveryIdentity }, ("Now", now)), transaction, cancellationToken: cancellationToken));
+
+        return row == null
+            ? null
+            : row.PayloadHash.SequenceEqual(hash)
+                ? new(EventAppendStatus.Duplicate, row.Sequence, Rejection: (EventRejection?)row.Rejection)
+                    { Notice = ReadNotice(row.NoticeJson) }
+                : new(EventAppendStatus.Conflict);
     }
 
     private async Task WriteWebhookDeliveryAsync(DbConnection connection, DbTransaction transaction,
-        WorkflowEvent workflowEvent, byte[] hash, EventAppendResult receipt, DateTime now)
+        WorkflowEvent workflowEvent, byte[] hash, EventAppendResult receipt, DateTime now, CancellationToken cancellationToken = default)
     {
-        await connection.ExecuteAsync(RequiredSql(Statement.WebhookDeliveryDelete), new { workflowEvent.DeliveryIdentity }, transaction);
-        await connection.ExecuteAsync(RequiredSql(Statement.WebhookDeliveryInsert), WithTimes(new
-        {
-            workflowEvent.DeliveryIdentity, PayloadHash = hash, receipt.Sequence, Rejection = (short?)receipt.Rejection,
-            NoticeJson = receipt.Notice == null ? null : JsonSerializer.Serialize(receipt.Notice)
-        }, ("Expires", now + (workflowEvent.DeliveryRetention ?? TimeSpan.FromHours(24)))), transaction);
+        await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.WebhookDeliveryDelete),
+            new { workflowEvent.DeliveryIdentity }, transaction, cancellationToken: cancellationToken));
+
+        await connection.ExecuteAsync(new CommandDefinition(RequiredSql(Statement.WebhookDeliveryInsert), WithTimes(new
+            {
+                workflowEvent.DeliveryIdentity, PayloadHash = hash, receipt.Sequence, Rejection = (short?)receipt.Rejection,
+                NoticeJson = receipt.Notice == null ? null : JsonSerializer.Serialize(receipt.Notice)
+            }, ("Expires", now + (workflowEvent.DeliveryRetention ?? TimeSpan.FromHours(24)))), transaction,
+            cancellationToken: cancellationToken));
     }
 
     private sealed class AdmissionRow
     {
         public string? NoticeJson { get; set; }
         public Guid Incarnation { get; set; }
+
+        public object? IncarnationValue
+        {
+            set => Incarnation = ReadGuid(value);
+        }
+
         public string Sender { get; set; } = "";
         public string Trigger { get; set; } = "";
         public string Key { get; set; } = "";
@@ -62,6 +76,12 @@ public abstract partial class RelationalWorkflowStateRepository
         public string Owner { get; set; } = "";
         public string? Tenant { get; set; }
         public Guid Incarnation { get; set; }
+
+        public object? IncarnationValue
+        {
+            set => Incarnation = ReadGuid(value);
+        }
+
         public WorkflowOwnerKind OwnerKind { get; set; }
     }
 
@@ -69,26 +89,43 @@ public abstract partial class RelationalWorkflowStateRepository
     {
         admission.ValidateCommit(commit);
         await EnsureSchemaAsync();
-        try { return await ExecuteOperationAsync(Operation.Commit, () => CommitAsync(commit, admission)); }
-        catch (Exception error) when (IsRetryableCommit(error) || error is PayloadLockUnavailableException) { return new(WorkflowCommitStatus.Retry, 0); }
+
+        try
+        {
+            return await ExecuteOperationAsync(Operation.Commit, () => CommitAsync(commit, admission));
+        }
+        catch (Exception error) when (IsRetryableCommit(error) || error is PayloadLockUnavailableException)
+        {
+            return new(WorkflowCommitStatus.Retry, 0);
+        }
     }
 
     private async Task<WorkflowAdmissionRecord?> ReadAdmissionAsync(DbConnection connection, DbTransaction? transaction,
-        string sender, string trigger, string key, DateTime now)
+        string sender, string trigger, string key, DateTime now, CancellationToken cancellationToken = default)
     {
-        var row = await connection.QuerySingleOrDefaultAsync<AdmissionRow>(RequiredSql(Statement.AdmissionRead),
-            WithTimes(new { Sender = sender, Trigger = trigger, Key = key }, ("Now", now)), transaction);
-        return row == null ? null : new(row.Sender, row.Trigger, row.Key, row.Fingerprint, row.InstanceId,
-            row.WorkflowName, row.WorkflowVersion, ReadTime(row.ExpiresAtUtc), row.Incarnation)
-            { Notice = ReadNotice(row.NoticeJson) };
+        var row = await connection.QuerySingleOrDefaultAsync<AdmissionRow>(new CommandDefinition(RequiredSql(Statement.AdmissionRead),
+            WithTimes(new { Sender = sender, Trigger = trigger, Key = key }, ("Now", now)), transaction,
+            cancellationToken: cancellationToken));
+
+        return row == null
+            ? null
+            : new(row.Sender, row.Trigger, row.Key, row.Fingerprint, row.InstanceId,
+                    row.WorkflowName, row.WorkflowVersion, ReadTime(row.ExpiresAtUtc), row.Incarnation)
+                { Notice = ReadNotice(row.NoticeJson) };
     }
 
     public async Task<WorkflowAdmissionRecord?> GetWorkflowAdmissionAsync(string sender, string trigger, string key)
     {
+        RuntimeIdentifiers.ValidateText(sender);
+        RuntimeIdentifiers.ValidateText(trigger);
+        RuntimeIdentifiers.ValidateText(key);
+
         await EnsureSchemaAsync();
+
         return await ExecuteOperationAsync(Operation.Read, async () =>
         {
             await using var connection = await OpenConnectionAsync();
+
             return await ReadAdmissionAsync(connection, null, sender, trigger, key,
                 await OutboxNowAsync(connection, null));
         });
@@ -101,13 +138,18 @@ public abstract partial class RelationalWorkflowStateRepository
     {
         InstanceIds.Validate(instanceId);
         await EnsureSchemaAsync();
+
         return await ExecuteOperationAsync(Operation.Read, async () =>
         {
             await using var connection = await OpenConnectionAsync();
+
             var row = await connection.QuerySingleOrDefaultAsync<OwnershipRow>(RequiredSql(Statement.OwnershipRead),
                 WithTimes(new { InstanceId = instanceId }, ("Now", await OutboxNowAsync(connection, null))));
-            return row == null ? null : new WorkflowOwnership(row.InstanceId, row.Sender, row.Trigger, row.Owner,
-                row.Tenant, row.Incarnation, row.OwnerKind);
+
+            return row == null
+                ? null
+                : new WorkflowOwnership(row.InstanceId, row.Sender, row.Trigger, row.Owner,
+                    row.Tenant, row.Incarnation, row.OwnerKind);
         });
     }
 }

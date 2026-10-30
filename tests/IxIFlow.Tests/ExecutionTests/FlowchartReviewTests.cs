@@ -14,16 +14,17 @@ public sealed class FlowchartReviewTests
     public async Task CatchFlowchartPreservesFaultContextPreviousValueAndCatchChaining()
     {
         await using var services = new ServiceCollection().AddLogging().AddIxIFlow().Services.BuildServiceProvider();
+
         var definition = Workflow.Create<Data>("CatchGraphReview").Step<Incoming>()
             .Try(b => b.Step<Throw>())
             .Catch<InvalidOperationException, MessageFault>(c => c
                 .Flowchart(f => f.Start("a")
-                    .Node("a", n => n.Sequence(s => s.Step<Read>(a => a
-                        .Input(x => x.Text).From(ctx => ctx.PreviousStep.Text)
-                        .Output(x => x.Text).To(ctx => ctx.WorkflowData.Inside))),
-                        e => e.When(ctx => ctx.PreviousStep.Text == "incoming", "b"))
-                    .Node("b", n => n.Step<Read>(a => a.Input(x => x.Text).From(ctx => ctx.PreviousStep.Text)
-                        .Output(x => x.Text).To(ctx => ctx.WorkflowData.AtTarget))),
+                        .Node("a", n => n.Sequence(s => s.Step<Read>(a => a
+                                .Input(x => x.Text).From(ctx => ctx.PreviousStep.Text)
+                                .Output(x => x.Text).To(ctx => ctx.WorkflowData.Inside))),
+                            e => e.When(ctx => ctx.PreviousStep.Text == "incoming", "b"))
+                        .Node("b", n => n.Step<Read>(a => a.Input(x => x.Text).From(ctx => ctx.PreviousStep.Text)
+                            .Output(x => x.Text).To(ctx => ctx.WorkflowData.AtTarget))),
                     sourcePath: "catch-graph.cs", sourceLine: 23)
                 .WithId("catch-chart", sourcePath: "catch-graph.cs", sourceLine: 23)
                 .Step<Read>(a => a.Input(x => x.Text).From(ctx => ctx.Fault.Message + ":" + ctx.PreviousStep.Text)
@@ -40,11 +41,13 @@ public sealed class FlowchartReviewTests
         Assert.Equal("catch-graph.cs:23", graph.SourceLocation);
         var scopes = WorkflowDefinitionValidator.ForExecution(definition);
         var fault = new MessageFault { Message = "captured" };
+
         foreach (var (_, step) in scopes.AllSteps.Where(pair => pair.Key == graph.CatalogId ||
                      pair.Key.StartsWith(graph.CatalogId + "/", StringComparison.Ordinal)))
         {
             var context = step.Runtime.Context(new MappingContextValues(new Data(),
                 Activator.CreateInstance(step.PreviousStepDataType!), fault));
+
             Assert.Equal(typeof(FaultContext<,,>), context.GetType().GetGenericTypeDefinition());
             Assert.Same(fault, context.GetType().GetProperty("Fault")!.GetValue(context));
         }
@@ -60,11 +63,13 @@ public sealed class FlowchartReviewTests
         var nested = new ScopePosition { ScopeId = node.ScopeId + "/1/" + child };
         var branch = new ContinuationState { Id = "root", Stack = [root, node, nested] };
         var checkpoint = new ExecutionCheckpoint { StructureHash = "review", Continuations = [branch] };
+
         checkpoint.Debug = checkpoint.Debug with
         {
             Stepping = SteppingPolicy.Start(checkpoint, new DebugCommand("out", 1, DebugCommandKind.Step, 0,
                 "review", ContinuationId: branch.Id, StepKind: DebugStepKind.Out))
         };
+
         checkpoint = ExecutionCheckpoint.Read(JsonSerializer.Serialize(checkpoint));
         branch = checkpoint.Continuations[0];
         Assert.Equal(node.ActivationId, checkpoint.Debug.Stepping!.Origin.ActivationId);
@@ -81,17 +86,24 @@ public sealed class FlowchartReviewTests
         public string AtTarget { get; set; } = "";
         public string After { get; set; } = "";
     }
-    public sealed class MessageFault { public string Message { get; set; } = ""; }
+
+    public sealed class MessageFault
+    {
+        public string Message { get; set; } = "";
+    }
+
     public sealed class Incoming : IAsyncActivity
     {
         public string Text { get; set; } = "incoming";
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     public sealed class Read : IAsyncActivity
     {
         public string Text { get; set; } = "";
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     public sealed class Throw : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>

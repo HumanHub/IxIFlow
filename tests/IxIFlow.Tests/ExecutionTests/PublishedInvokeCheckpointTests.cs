@@ -22,29 +22,37 @@ public sealed class PublishedInvokeCheckpointTests
         {
             SourceOptions = new() { Types = { ["Data"] = "global::" + typeof(FirstData).FullName } }
         };
+
         var source = new InMemoryWorkflowStateRepository();
+
         var calleeDraft = await source.SaveDefinitionAsync(new("Callee", 1, "workflow",
             "workflow: {name: Callee, version: 1, dataType: Data}\ndefinitions: []"), null);
+
         var published = await new WorkflowPublisher(source, source, options).PublishAsync(calleeDraft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
         var original = published.Workflow!;
         await using var stream = (await source.OpenAsync(original.ArtifactDigest!.Value))!;
         var bundle = await WorkflowBundleArchive.ReadAsync(stream, original.ArtifactDigest.Value);
+
         var manifest = bundle.Manifest with
         {
             CheckpointContractVersion = WorkflowDefinitionValidator.CheckpointContractVersion + versionOffset
         };
+
         var bytes = WorkflowBundleArchive.Create(manifest,
             bundle.Entries.ToDictionary(pair => pair.Key, pair => pair.Value.ToArray()));
+
         var store = new InMemoryWorkflowStateRepository();
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream(bytes));
         var verified = await WorkflowBundleArchive.ReadAsync(new MemoryStream(bytes), digest);
         var callee = original with { ArtifactDigest = digest, ManifestJson = JsonSerializer.Serialize(verified.Manifest) };
         await store.RegisterWorkflowVersionAsync(callee);
         callee = (await store.GetWorkflowVersionAsync(callee.Name, callee.Version))!;
+
         var yaml = imported
             ? "workflow: {name: Caller, version: 1, dataType: Data}\nimports:\n  workflows: [Callee@1]\ndefinitions: []"
             : "workflow: {name: Caller, version: 1, dataType: Data}\ndefinitions:\n  - kind: invokeWorkflow\n    workflow: {name: Callee, version: 1}";
+
         var draft = await store.SaveDefinitionAsync(new("Caller", 1, "workflow", yaml), null);
 
         var result = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);

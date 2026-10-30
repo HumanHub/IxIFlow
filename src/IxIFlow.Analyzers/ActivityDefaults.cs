@@ -13,34 +13,57 @@ internal static class ActivityDefaults
     {
         if (attribute.ConstructorArguments.Length == 0)
             return false;
+
         var argument = attribute.ConstructorArguments[0];
         object? value = argument.Value;
         ITypeSymbol? source = argument.Type;
+
         if (attribute.ConstructorArguments.Length == 2 && value is ITypeSymbol declared)
         {
             source = declared;
             value = attribute.ConstructorArguments[1].Value;
+
             if (RuntimeType(declared) is { } declaredType)
             {
-                try { value = ConvertTo(value, declaredType); }
-                catch (Exception) { return false; }
+                try
+                {
+                    value = ConvertTo(value, declaredType);
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
             }
             else if (declared.TypeKind == TypeKind.Enum && !EnumValue(declared, value))
                 return false;
         }
+
         if (value == null)
             return target.IsReferenceType || target.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T;
+
         if (target is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable)
             target = nullable.TypeArguments[0];
+
         if (source != null && compilation.ClassifyCommonConversion(source, target).IsImplicit)
             return true;
+
         if (target.TypeKind == TypeKind.Enum)
             return EnumValue(target, value);
+
         if (RuntimeType(target) is { } type)
         {
-            try { _ = ConvertTo(value, type); return true; }
-            catch (Exception) { return false; }
+            try
+            {
+                _ = ConvertTo(value, type);
+
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
+
         // A custom converter is checked by MappingRules at build, where the consumer's type can be loaded.
         return target.GetAttributes().Any(each =>
             each.AttributeClass?.ToDisplayString() == "System.ComponentModel.TypeConverterAttribute");
@@ -50,7 +73,9 @@ internal static class ActivityDefaults
     {
         if (value == null || target.IsInstanceOfType(value))
             return value;
+
         var converter = TypeDescriptor.GetConverter(target);
+
         return converter.CanConvertFrom(value.GetType())
             ? converter.ConvertFrom(null, CultureInfo.InvariantCulture, value)
             : Convert.ChangeType(value, target, CultureInfo.InvariantCulture);
@@ -58,7 +83,7 @@ internal static class ActivityDefaults
 
     private static bool EnumValue(ITypeSymbol target, object? value) => value is string name
         ? EnumNumericValue(target, name) ||
-          name.Split(',').All(part => target.GetMembers(part.Trim()).OfType<IFieldSymbol>().Any(field => field.HasConstantValue))
+        name.Split(',').All(part => target.GetMembers(part.Trim()).OfType<IFieldSymbol>().Any(field => field.HasConstantValue))
         : value != null && Type.GetTypeCode(value.GetType()) is >= TypeCode.SByte and <= TypeCode.UInt64;
 
     private static bool EnumNumericValue(ITypeSymbol target, string value) =>

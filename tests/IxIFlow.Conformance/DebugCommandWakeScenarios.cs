@@ -22,8 +22,10 @@ public sealed class DebugCommandWakeScenarios
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
         var requester = store.NewRepository();
+
         // SQLite permits one store owner. Independent host gates share that owner's repository.
         var owner = profile == StoreProfiles.LocalSqlite ? requester : store.NewRepository();
+
         await DebugCommandWakeScenario.VerifyAsync(requester, owner, kind,
             store.ConfigureHost, store.StartHostLinksAsync, store.StopHostLinksAsync);
     }

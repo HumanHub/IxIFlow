@@ -1,40 +1,97 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+
 namespace IxIFlow.Core;
 
-public enum DebugCommandKind { Pause, Continue, SetBreakpoints, Step, EditData }
-public enum DebugStepKind { Over, Into, Out, Run }
+public enum DebugCommandKind
+{
+    Pause,
+    Continue,
+    SetBreakpoints,
+    Step,
+    EditData
+}
+
+public enum DebugStepKind
+{
+    Over,
+    Into,
+    Out,
+    Run
+}
 
 /// <summary>A pick occurrence, including repeated loop, item and Arm visits.</summary>
-public sealed record DebugStepPosition(string ActivationId, int StepIndex, int Iteration,
-    int ItemCursor, bool ItemsJoined, long ArmOccurrence = 0);
+public sealed record DebugStepPosition(
+    string ActivationId,
+    int StepIndex,
+    int Iteration,
+    int ItemCursor,
+    bool ItemsJoined,
+    long ArmOccurrence = 0);
 
 /// <summary>The durable origin and the continuations admitted by one isolated step.</summary>
-public sealed record DebugStepping(string ContinuationId, DebugStepKind Kind, DebugStepPosition Origin,
-    IReadOnlyList<string> OriginScopes, IReadOnlyList<string> EligibleContinuations,
-    string CommandId, string Actor, bool Started = false)
+public sealed record DebugStepping(
+    string ContinuationId,
+    DebugStepKind Kind,
+    DebugStepPosition Origin,
+    IReadOnlyList<string> OriginScopes,
+    IReadOnlyList<string> EligibleContinuations,
+    string CommandId,
+    string Actor,
+    bool Started = false)
 {
     /// <summary>The enclosing graph of a step originating within a node or state; null for a graph-step origin.</summary>
     public string? OriginGraph { get; init; }
 }
-public enum DebugCommandStatus { Accepted, AlreadyAccepted, StaleGeneration, InvalidState, NotFound }
+
+public enum DebugCommandStatus
+{
+    Accepted,
+    AlreadyAccepted,
+    StaleGeneration,
+    InvalidState,
+    NotFound
+}
 
 /// <summary>A durable ordered command. Acknowledgement is the revision that applied it.</summary>
-public sealed record DebugCommand(string Id, long Order, DebugCommandKind Kind,
-    long PauseGeneration, string Actor, long? AcknowledgedRevision = null,
-    IReadOnlyList<Breakpoint>? Breakpoints = null, string? ContinuationId = null, DebugStepKind? StepKind = null,
-    DataEditRequest? Edit = null, DataEditResult? EditResult = null);
-public sealed record DebugCommandRequest(string Id, DebugCommandKind Kind, long PauseGeneration, string Actor,
-    IReadOnlyList<Breakpoint>? Breakpoints = null, string? ContinuationId = null, DebugStepKind? StepKind = null, DataEditRequest? Edit = null)
+public sealed record DebugCommand(
+    string Id,
+    long Order,
+    DebugCommandKind Kind,
+    long PauseGeneration,
+    string Actor,
+    long? AcknowledgedRevision = null,
+    IReadOnlyList<Breakpoint>? Breakpoints = null,
+    string? ContinuationId = null,
+    DebugStepKind? StepKind = null,
+    DataEditRequest? Edit = null,
+    DataEditResult? EditResult = null);
+
+public sealed record DebugCommandRequest(
+    string Id,
+    DebugCommandKind Kind,
+    long PauseGeneration,
+    string Actor,
+    IReadOnlyList<Breakpoint>? Breakpoints = null,
+    string? ContinuationId = null,
+    DebugStepKind? StepKind = null,
+    DataEditRequest? Edit = null)
 {
     public Guid? ExpectedIncarnation { get; init; }
 }
+
 public sealed record DebugCommandResult(DebugCommandStatus Status, DebugCommand? Command = null);
 
 /// <summary>Versioned commands outside the checkpoint. Version is the last allocated order.</summary>
 public sealed record WorkflowDebugState(long Version, long PauseGeneration, IReadOnlyList<DebugCommand> Commands);
-public sealed record WorkflowControlRequests(IReadOnlyDictionary<string, CancellationReason> Cancellations,
-    IReadOnlyDictionary<string, WorkflowDebugState> DebugStates);
+
+public sealed record WorkflowControlRequests(
+    IReadOnlyDictionary<string, CancellationReason> Cancellations,
+    IReadOnlyDictionary<string, WorkflowDebugState> DebugStates)
+{
+    /// <summary>Batch or row failures omitted from this partial snapshot. Successful entries remain usable.</summary>
+    public IReadOnlyList<Exception> ReadFailures { get; init; } = [];
+}
 
 /// <summary>The durable execution hold and the command prefix applied by a commit.</summary>
 public sealed record DebugCheckpoint(long PauseGeneration = 0, long AppliedOrder = 0)
@@ -42,10 +99,12 @@ public sealed record DebugCheckpoint(long PauseGeneration = 0, long AppliedOrder
     [JsonIgnore]
     internal bool IsEmpty => PauseGeneration == 0 && AppliedOrder == 0 && Breakpoints.Count == 0 &&
         Stop == null && Evaluation == null && SkipOnce.Count == 0 && Stepping == null;
+
     public IReadOnlyList<Breakpoint> Breakpoints { get; init; } = [];
     public BreakpointStop? Stop { get; init; }
     public BreakpointEvaluation? Evaluation { get; init; }
     public IReadOnlyList<BreakpointStop> SkipOnce { get; init; } = [];
+
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DebugStepping? Stepping { get; init; }
 }
@@ -58,6 +117,7 @@ public interface IWorkflowDebugStore
     /// failures of other reads; if every read fails, throws AggregateException.
     /// </summary>
     Task<WorkflowControlRequests> GetControlRequestsAsync(IReadOnlyCollection<string> instanceIds);
+
     Task<DebugCommandResult> RequestDebugCommandAsync(string instanceId, DebugCommandRequest command);
     Task<IReadOnlyDictionary<string, WorkflowDebugState>> GetDebugStatesAsync(IReadOnlyCollection<string> instanceIds);
 }
@@ -76,14 +136,19 @@ public static class WorkflowDebugRules
 
     public static DebugCheckpoint Checkpoint(WorkflowInstance instance)
     {
-        if (!HasCheckpoint(instance)) return new();
+        if (!HasCheckpoint(instance))
+            return new();
+
         using var json = JsonDocument.Parse(instance.ExecutionStateJson);
+
         return json.RootElement.TryGetProperty("Debug", out var debug) && debug.ValueKind != JsonValueKind.Null
-            ? debug.Deserialize<DebugCheckpoint>()! : new();
+            ? debug.Deserialize<DebugCheckpoint>()!
+            : new();
     }
 
     private static bool HasCheckpoint(WorkflowInstance instance) =>
         instance.ExecutionStateJson.Contains("\"Debug\"", StringComparison.Ordinal) ||
+
         // Imported JSON may escape any letter in the property name. Escaped quotes in ordinary
         // saved application values do not require parsing the checkpoint for debugger state.
         instance.ExecutionStateJson.Contains("\\u0044", StringComparison.Ordinal) ||
@@ -98,9 +163,13 @@ public static class WorkflowDebugRules
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Id);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Actor);
         ArgumentOutOfRangeException.ThrowIfNegative(request.PauseGeneration);
-        if (!Enum.IsDefined(request.Kind)) throw new ArgumentOutOfRangeException(nameof(request));
+
+        if (!Enum.IsDefined(request.Kind))
+            throw new ArgumentOutOfRangeException(nameof(request));
+
         if (instance != null && request.ExpectedIncarnation is { } expected && instance.Incarnation != expected)
             return new(DebugCommandStatus.InvalidState);
+
         if (commands.FirstOrDefault(c => c.Id == request.Id) is { } existing)
         {
             if (existing.Kind != request.Kind || existing.Actor != request.Actor || existing.PauseGeneration != request.PauseGeneration ||
@@ -108,57 +177,87 @@ public static class WorkflowDebugRules
                 JsonSerializer.Serialize(existing.Edit) != JsonSerializer.Serialize(request.Edit) ||
                 JsonSerializer.Serialize(existing.Breakpoints) != JsonSerializer.Serialize(request.Breakpoints))
                 throw new ArgumentException("A debug command ID cannot be reused with different fields");
+
             return new(DebugCommandStatus.AlreadyAccepted, existing);
         }
-        if (instance == null) return new(DebugCommandStatus.NotFound);
+
+        if (instance == null)
+            return new(DebugCommandStatus.NotFound);
+
         if (WorkflowStoreRules.IsTerminal(instance.Status) || instance.Status == WorkflowStatus.NeedsResolution ||
-            Runtime.ExecutionCheckpoint.StopOf(instance) != null) return new(DebugCommandStatus.InvalidState);
+            Runtime.ExecutionCheckpoint.StopOf(instance) != null)
+            return new(DebugCommandStatus.InvalidState);
+
         var checkpoint = Checkpoint(instance);
+
         if (request.Kind == DebugCommandKind.Step)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(request.ContinuationId);
+
             if (request.StepKind == null || !Enum.IsDefined(request.StepKind.Value))
                 throw new ArgumentException("Step requires a valid kind");
         }
         else if (request.ContinuationId != null || request.StepKind != null)
             throw new ArgumentException("Only Step carries a continuation and step kind");
+
         if (request.Kind == DebugCommandKind.SetBreakpoints)
         {
             ArgumentNullException.ThrowIfNull(request.Breakpoints);
             using var state = JsonDocument.Parse(instance.ExecutionStateJson);
             var hash = state.RootElement.GetProperty("StructureHash").GetString();
+
             if (request.Breakpoints.Select(b => b.Id).Distinct(StringComparer.Ordinal).Count() != request.Breakpoints.Count ||
                 request.Breakpoints.Any(b => string.IsNullOrWhiteSpace(b.Id) || string.IsNullOrWhiteSpace(b.StepId) ||
                     b.StructureHash != hash || b.HitCount != 0))
                 throw new ArgumentException("Breakpoint commands require unique resolved breakpoints for this structure hash");
-            foreach (var breakpoint in request.Breakpoints) _ = BreakpointResolver.Matches(breakpoint.HitCondition, 1);
+
+            foreach (var breakpoint in request.Breakpoints)
+                _ = BreakpointResolver.Matches(breakpoint.HitCondition, 1);
         }
-        else if (request.Breakpoints != null) throw new ArgumentException("Only SetBreakpoints carries breakpoints");
+        else if (request.Breakpoints != null)
+            throw new ArgumentException("Only SetBreakpoints carries breakpoints");
+
         if (request.Kind == DebugCommandKind.EditData)
         {
             ArgumentNullException.ThrowIfNull(request.Edit);
             ArgumentNullException.ThrowIfNull(request.Edit.Target);
             ArgumentNullException.ThrowIfNull(request.Edit.Patches);
-            if (request.Edit.Patches.Count == 0) throw new ArgumentException("An edit requires at least one patch");
+
+            if (request.Edit.Patches.Count == 0)
+                throw new ArgumentException("An edit requires at least one patch");
+
             if (request.Edit.Target.PauseGeneration != request.PauseGeneration ||
                 request.Edit.ExpectedRevision != instance.Revision || instance.Status != WorkflowStatus.Paused ||
                 commands.Any(c => c.AcknowledgedRevision == null))
                 return new(DebugCommandStatus.InvalidState);
         }
-        else if (request.Edit != null) throw new ArgumentException("Only EditData carries an edit");
+        else if (request.Edit != null)
+            throw new ArgumentException("Only EditData carries an edit");
+
         var pendingPause = commands.Any(c => c.AcknowledgedRevision == null && c.Kind == DebugCommandKind.Pause);
+
         var generation = checkpoint.PauseGeneration + (request.Kind != DebugCommandKind.Pause &&
-            instance.Status != WorkflowStatus.Paused && pendingPause ? 1 : 0);
+            instance.Status != WorkflowStatus.Paused && pendingPause
+                ? 1
+                : 0);
+
         if (request.Kind is DebugCommandKind.Continue or DebugCommandKind.Step && instance.Status != WorkflowStatus.Paused &&
-            !pendingPause && checkpoint.Stop != null) generation++;
-        if (request.PauseGeneration != generation) return new(DebugCommandStatus.StaleGeneration);
+            !pendingPause && checkpoint.Stop != null)
+            generation++;
+
+        if (request.PauseGeneration != generation)
+            return new(DebugCommandStatus.StaleGeneration);
+
         if (request.Kind != DebugCommandKind.SetBreakpoints && commands.Any(c => c.AcknowledgedRevision == null &&
-            (c.Kind == request.Kind || request.Kind is DebugCommandKind.Continue or DebugCommandKind.Step &&
-                c.Kind is DebugCommandKind.Continue or DebugCommandKind.Step)))
+                (c.Kind == request.Kind || request.Kind is DebugCommandKind.Continue or DebugCommandKind.Step &&
+                    c.Kind is DebugCommandKind.Continue or DebugCommandKind.Step)))
             return new(DebugCommandStatus.InvalidState);
-        if (request.Kind is DebugCommandKind.Continue or DebugCommandKind.Step && instance.Status != WorkflowStatus.Paused && !pendingPause && checkpoint.Stop == null ||
+
+        if (request.Kind is DebugCommandKind.Continue or DebugCommandKind.Step && instance.Status != WorkflowStatus.Paused &&
+            !pendingPause && checkpoint.Stop == null ||
             request.Kind == DebugCommandKind.Pause && instance.Status == WorkflowStatus.Paused)
             return new(DebugCommandStatus.InvalidState);
+
         return new(DebugCommandStatus.Accepted, new(request.Id,
             commands.Count == 0 ? 1 : checked(commands.Max(c => c.Order) + 1),
             request.Kind, request.PauseGeneration, request.Actor, Breakpoints: request.Breakpoints?.ToArray(),
@@ -171,6 +270,7 @@ public static class WorkflowDebugRules
     {
         if (commands.Count == 0 && (previous == null || !HasCheckpoint(previous)) && !HasCheckpoint(next))
             return commands;
+
         return AcknowledgeDebug(previous, next, commands, revision, traceEntries);
     }
 
@@ -180,67 +280,99 @@ public static class WorkflowDebugRules
         var before = previous == null ? new DebugCheckpoint() : Checkpoint(previous);
         var after = Checkpoint(next);
         var applied = commands.Where(c => c.Order > before.AppliedOrder && c.Order <= after.AppliedOrder).ToArray();
+
         bool AlreadyPaused(DebugCommand command) => previous?.Status == WorkflowStatus.Paused && before.Stop != null &&
             command.Kind == DebugCommandKind.Pause && command.PauseGeneration == before.PauseGeneration - 1;
+
         if (applied.Count(c => c.Kind != DebugCommandKind.SetBreakpoints && !AlreadyPaused(c)) > 1)
             throw new InvalidOperationException("A pause and its continue require separate lease assignments");
+
         if (applied.Any(c => c.Kind is DebugCommandKind.Continue or DebugCommandKind.Step) && previous?.Status != WorkflowStatus.Paused)
             throw new InvalidOperationException("Continue requires a committed pause");
+
         foreach (var resume in applied.Where(c => c.Kind is DebugCommandKind.Step or DebugCommandKind.Continue))
         {
             if (resume.Kind == DebugCommandKind.Step
-                ? after.Stepping is not { Started: false } step || step.ContinuationId != resume.ContinuationId ||
+                    ? after.Stepping is not { Started: false } step || step.ContinuationId != resume.ContinuationId ||
                     step.Kind != resume.StepKind || step.CommandId != resume.Id || step.Actor != resume.Actor ||
                     !step.EligibleContinuations.SequenceEqual([resume.ContinuationId!])
-                : after.Stepping != null)
+                    : after.Stepping != null)
                 throw new InvalidOperationException("Resume must durably record its stepping state before dispatch");
         }
+
         foreach (var edit in applied.Where(c => c.Kind == DebugCommandKind.EditData))
         {
             if (previous?.Status != WorkflowStatus.Paused || next.Status != WorkflowStatus.Paused ||
                 edit.Edit?.ExpectedRevision != previous.Revision || after.PauseGeneration != before.PauseGeneration)
                 throw new InvalidOperationException("Edit requires the expected paused revision and generation");
+
             var audits = traceEntries.Select(json => JsonSerializer.Deserialize<ExecutionTraceEntry>(json)!)
                 .Where(e => e.EntryType == TraceEntryType.DataEdited).ToArray();
+
             if (audits.Length != 1 || audits[0].Payload is not DataEditedTrace audit || audit.EditId != edit.Id ||
                 audit.Actor != edit.Actor || audit.Target != edit.Edit.Target || audit.Revision != revision ||
                 audit.Paths.Count != edit.Edit.Patches.Count || audit.Paths.Where((path, i) =>
                     !path.SequenceEqual(edit.Edit.Patches[i].Path)).Any())
                 throw new InvalidOperationException("An edit requires its complete mandatory audit in the same commit");
         }
+
         var generation = before.PauseGeneration;
+
         foreach (var command in applied)
         {
             // An automatic hit may have committed the hold before the watch delivered a manual Pause.
             // Its acknowledgement consumes that redundant request without creating another generation.
-            if (AlreadyPaused(command)) continue;
+            if (AlreadyPaused(command))
+                continue;
+
             // A configuration accepted before an automatic breakpoint pause remains ordered and applicable
             // after that pause. Pause/Continue still require their exact generation at application.
-            if (command.Kind == DebugCommandKind.SetBreakpoints ? command.PauseGeneration > generation : command.PauseGeneration != generation)
+            if (command.Kind == DebugCommandKind.SetBreakpoints
+                    ? command.PauseGeneration > generation
+                    : command.PauseGeneration != generation)
                 throw new InvalidOperationException("Stale debug command in commit");
-            if (command.Kind == DebugCommandKind.Pause) generation++;
+
+            if (command.Kind == DebugCommandKind.Pause)
+                generation++;
         }
+
         if (after.Stop != null && next.Status == WorkflowStatus.Paused && previous?.Status != WorkflowStatus.Paused &&
-            !applied.Any(c => c.Kind == DebugCommandKind.Pause)) generation++;
+            !applied.Any(c => c.Kind == DebugCommandKind.Pause))
+            generation++;
+
         if (after.AppliedOrder < before.AppliedOrder || after.PauseGeneration != generation ||
             after.AppliedOrder != (applied.LastOrDefault()?.Order ?? before.AppliedOrder))
             throw new InvalidOperationException("Commit does not apply a valid ordered debug command prefix");
-        if (applied.LastOrDefault(c => c.Kind != DebugCommandKind.SetBreakpoints) is { } last && !WorkflowStoreRules.IsTerminal(next.Status) &&
+
+        if (applied.LastOrDefault(c => c.Kind != DebugCommandKind.SetBreakpoints) is { } last &&
+            !WorkflowStoreRules.IsTerminal(next.Status) &&
             (last.Kind is DebugCommandKind.Pause or DebugCommandKind.EditData) != (next.Status == WorkflowStatus.Paused))
             throw new InvalidOperationException("Debug command acknowledgement does not match committed status");
+
         return commands.Select(c => c.Order <= after.AppliedOrder && c.AcknowledgedRevision == null
-            ? c with { AcknowledgedRevision = revision, EditResult = c.Kind == DebugCommandKind.EditData
-                ? new(next.InstanceId, c.Id, revision, c.Edit!.Target) : null } : c).ToArray();
+            ? c with
+            {
+                AcknowledgedRevision = revision, EditResult = c.Kind == DebugCommandKind.EditData
+                    ? new(next.InstanceId, c.Id, revision, c.Edit!.Target)
+                    : null
+            }
+            : c).ToArray();
     }
+
     public static bool NeedsWake(WorkflowStatus status, IReadOnlyList<DebugCommand> commands) =>
         !WorkflowStoreRules.IsTerminal(status) && commands.Any(c => c.AcknowledgedRevision == null);
 
     public static IReadOnlyList<Breakpoint> Breakpoints(WorkflowInstance instance, WorkflowDebugState state)
     {
         var checkpoint = Checkpoint(instance);
+
         var requested = state.Commands.LastOrDefault(c => c.Kind == DebugCommandKind.SetBreakpoints &&
             c.Order > checkpoint.AppliedOrder)?.Breakpoints;
-        return requested?.Select(b => b with { HitCount = checkpoint.Breakpoints
-            .FirstOrDefault(old => old.Id == b.Id && old.StepId == b.StepId)?.HitCount ?? 0 }).ToArray() ?? checkpoint.Breakpoints;
+
+        return requested?.Select(b => b with
+        {
+            HitCount = checkpoint.Breakpoints
+                .FirstOrDefault(old => old.Id == b.Id && old.StepId == b.StepId)?.HitCount ?? 0
+        }).ToArray() ?? checkpoint.Breakpoints;
     }
 }

@@ -1,9 +1,18 @@
 namespace IxIFlow.Core.Runtime;
 
-internal sealed record MappingContextValues(object? Data, object? Previous = null, object? Fault = null,
-    object? Reply = null, bool Answered = false, object? Event = null);
+internal sealed record MappingContextValues(
+    object? Data,
+    object? Previous = null,
+    object? Fault = null,
+    object? Reply = null,
+    bool Answered = false,
+    object? Event = null);
 
-internal interface IFaultEventValue { object Context { get; } }
+internal interface IFaultEventValue
+{
+    object Context { get; }
+}
+
 internal sealed record FaultEventValue<TEvent>(TEvent Event, object Context) : IFaultEventValue;
 
 /// <summary>Typed context constructors and activity dispatch captured by builders.</summary>
@@ -61,14 +70,19 @@ internal sealed record WorkflowStepDelegates
     {
         public Func<MappingContextValues, object> Fault<TFault>() =>
             WorkflowStepDelegates.Fault<TData, TFault, TPrevious>;
+
         public Func<MappingContextValues, object>? EventFault<TFault>() => null;
     }
 
     private sealed class WaitContexts<TData, TEvent, TPrevious> : IContexts where TPrevious : class
     {
         public Func<MappingContextValues, object> Fault<TFault>() => WorkflowStepDelegates.Fault<TData, TFault, TPrevious>;
+
         public Func<MappingContextValues, object>? EventFault<TFault>() => values => new FaultEventValue<TEvent>((TEvent)values.Event!,
-            WorkflowStepDelegates.Fault<TData, TFault, TPrevious>(values with { Previous = values.Previous is TPrevious ? values.Previous : null }));
+            WorkflowStepDelegates.Fault<TData, TFault, TPrevious>(values with
+            {
+                Previous = values.Previous is TPrevious ? values.Previous : null
+            }));
     }
 
     public static object Data<TData>(MappingContextValues values) =>
@@ -90,7 +104,8 @@ internal sealed record WorkflowStepDelegates
     public static object Fault<TData, TFault, TPrevious>(MappingContextValues values) where TPrevious : class =>
         new FaultContext<TData, TFault, TPrevious>
         {
-            WorkflowData = (TData)values.Data!, PreviousStep = (TPrevious)values.Previous!, Fault = values.Fault is TFault fault ? fault : default!
+            WorkflowData = (TData)values.Data!, PreviousStep = (TPrevious)values.Previous!,
+            Fault = values.Fault is TFault fault ? fault : default!
         };
 
     public static object Compensation<TData, TCurrent>(MappingContextValues values) where TCurrent : class =>
@@ -101,8 +116,8 @@ internal sealed record WorkflowStepDelegates
 
     public static object RequestCompensation<TData, TCurrent, TReply>(MappingContextValues values)
         where TCurrent : class where TReply : class => new RequestCompensationContext<TData, TCurrent, TReply>
-        {
-            WorkflowData = (TData)values.Data!, CurrentStep = (TCurrent)values.Previous!,
-            Reply = (TReply?)values.Reply, Answered = values.Answered
-        };
+    {
+        WorkflowData = (TData)values.Data!, CurrentStep = (TCurrent)values.Previous!,
+        Reply = (TReply?)values.Reply, Answered = values.Answered
+    };
 }

@@ -7,10 +7,12 @@ public abstract record DocumentNode
 {
     /// <summary>The node's source coordinates, supplied by a reader or host.</summary>
     public DocumentLocation Location { get; set; } = new(1, 1);
+
     /// <summary>Present source members and their coordinates. A nonempty root map enables
     /// omitted-member checks throughout the document; code-built documents use their values.</summary>
     public IReadOnlyDictionary<string, DocumentLocation> Members { get; set; } =
         new Dictionary<string, DocumentLocation>();
+
     /// <summary>Content-line positions for literal YAML scalars, keyed by member path.</summary>
     public IReadOnlyDictionary<string, IReadOnlyList<DocumentLocation>> TextLines { get; set; } =
         new Dictionary<string, IReadOnlyList<DocumentLocation>>();

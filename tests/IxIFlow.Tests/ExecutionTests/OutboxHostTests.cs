@@ -14,6 +14,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 public sealed class OutboxHostTests
 {
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private static WorkflowOutboxService Service(InMemoryWorkflowStateRepository store, TimeProvider time,
         int concurrency, params IOutboxPublisher[] publishers) => new(store, publishers,
         new HostSettings(4, TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(1), "outbox-tests"),
@@ -37,6 +38,7 @@ public sealed class OutboxHostTests
         var awaiting = client.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished);
         Assert.False(awaiting.IsCompleted);
         await client.ResumeAsync(started.InstanceId, "approval", new Approval());
+
         // The fake clock never advances, so store polling cannot complete the await; only the host can.
         Assert.Equal(WorkflowExecutionStatus.Success, (await awaiting.WaitAsync(TimeSpan.FromSeconds(10))).Status);
         Assert.Null(await store.GetPublisherAsync("ixiflow.in-process"));
@@ -53,13 +55,16 @@ public sealed class OutboxHostTests
         var entered = Signal();
         var release = Signal();
         var attempts = 0;
+
         var publisher = new Publisher("drain", async (_, token) =>
         {
             Interlocked.Increment(ref attempts);
             entered.TrySetResult();
             await release.Task.WaitAsync(token);
+
             return OutboxPublishResult.Delivered();
         });
+
         using var service = Service(store, time, 1, publisher);
         await service.StartAsync(default);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -80,17 +85,25 @@ public sealed class OutboxHostTests
         await OutboxStoreContract.CompleteAsync(store);
         var entered = new TaskCompletionSource<OutboxPublishContext>(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancelled = Signal();
+
         var publisher = new Publisher("timeout", async (delivery, token) =>
         {
             entered.SetResult(delivery);
-            try { await Task.Delay(Timeout.InfiniteTimeSpan, token); }
+
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
                 cancelled.TrySetResult();
+
                 throw;
             }
+
             return OutboxPublishResult.Delivered();
         });
+
         using var service = Service(store, time, 1, publisher);
         await service.StartAsync(default);
         var delivery = await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -111,22 +124,31 @@ public sealed class OutboxHostTests
         var store = new InMemoryWorkflowStateRepository(time);
         await store.RegisterPublisherAsync("slow", [OutboxEvent.WorkflowCompleted]);
         await store.RegisterPublisherAsync("fast", [OutboxEvent.WorkflowCompleted]);
-        for (var i = 0; i < 3; i++) await OutboxStoreContract.CompleteAsync(store);
+
+        for (var i = 0; i < 3; i++)
+            await OutboxStoreContract.CompleteAsync(store);
+
         var slowEntered = Signal();
         var release = Signal();
         var fastDone = Signal();
         var fastCount = 0;
+
         var slow = new Publisher("slow", async (_, token) =>
         {
             slowEntered.TrySetResult();
             await release.Task.WaitAsync(token);
+
             return OutboxPublishResult.GiveUp("unavailable");
         });
+
         var fast = new Publisher("fast", (_, _) =>
         {
-            if (Interlocked.Increment(ref fastCount) == 3) fastDone.TrySetResult();
+            if (Interlocked.Increment(ref fastCount) == 3)
+                fastDone.TrySetResult();
+
             return Task.FromResult(OutboxPublishResult.Delivered());
         });
+
         using var service = Service(store, time, 2, slow, fast);
         await service.StartAsync(default);
         await slowEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -145,12 +167,15 @@ public sealed class OutboxHostTests
         await OutboxStoreContract.CompleteAsync(store);
         var entered = new TaskCompletionSource<OutboxPublishContext>(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = Signal();
+
         var publisher = new Publisher("renew", async (delivery, token) =>
         {
             entered.TrySetResult(delivery);
             await release.Task.WaitAsync(token);
+
             return OutboxPublishResult.Delivered();
         });
+
         using var service = Service(store, time, 1, publisher);
         await service.StartAsync(default);
         var original = await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -186,8 +211,10 @@ public sealed class OutboxHostTests
     {
         var time = new FakeTimeProvider();
         var store = new InMemoryWorkflowStateRepository(time);
+
         var publisher = new Publisher("invalid", (_, _) =>
             Task.FromResult(OutboxPublishResult.RetryLater(delay: TimeSpan.FromSeconds(seconds))));
+
         await store.RegisterPublisherAsync(publisher.Name, publisher.EventTypes);
         await OutboxStoreContract.CompleteAsync(store);
         var delivery = Assert.Single(await store.ClaimDeliveriesAsync(publisher.Name, "owner", TimeSpan.FromSeconds(30), 1));
@@ -208,6 +235,7 @@ public sealed class OutboxHostTests
     {
         var raw = new OutboxPublishResult(OutboxPublishOutcome.RetryLater, TimeSpan.FromDays(requestedDays));
         Assert.Equal(TimeSpan.FromDays(expectedDays), WorkflowOutboxService.ClampRetry(raw, 1, TimeSpan.FromDays(40)).RetryAfter);
+
         Assert.Equal(TimeSpan.FromSeconds(2), WorkflowOutboxService.ClampRetry(
             OutboxPublishResult.RetryLater(), 1, TimeSpan.FromSeconds(2)).RetryAfter);
     }
@@ -218,33 +246,42 @@ public sealed class OutboxHostTests
         var time = new FakeTimeProvider();
         var store = new InMemoryWorkflowStateRepository(time);
         var calls = 0;
+
         var publisher = new Publisher("bounded", (_, _) =>
         {
             calls++;
+
             return Task.FromResult(OutboxPublishResult.RetryLater("offline"));
         });
+
         await store.RegisterPublisherAsync(publisher.Name, publisher.EventTypes);
         await OutboxStoreContract.CompleteAsync(store);
         time.Advance(TimeSpan.FromDays(60)); // Retention age does not consume the retry horizon.
+
         for (var i = 0; i < 3; i++)
         {
             var delivery = Assert.Single(await store.ClaimDeliveriesAsync(publisher.Name, "owner", TimeSpan.FromSeconds(30), 1));
+
             using var service = new WorkflowOutboxService(store, [publisher],
                 new HostSettings(4, TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(1), "bounded"),
                 new OutboxSettings(retryHorizon: TimeSpan.FromSeconds(10)), time, NullLogger<WorkflowOutboxService>.Instance);
+
             await service.DeliverAsync(publisher, delivery, default);
             time.Advance(TimeSpan.FromSeconds(5));
         }
+
         Assert.Equal(2, calls);
         Assert.Empty(await store.ClaimDeliveriesAsync(publisher.Name, "owner", TimeSpan.FromSeconds(30), 1));
         Assert.Equal(TimeSpan.FromDays(30), new OutboxSettings().RetryHorizon);
     }
 
-    private sealed class Publisher(string name,
+    private sealed class Publisher(
+        string name,
         Func<OutboxPublishContext, CancellationToken, Task<OutboxPublishResult>> publish) : IOutboxPublisher
     {
         public string Name => name;
         public IReadOnlyCollection<string> EventTypes => [OutboxEvent.WorkflowCompleted];
+
         public Task<OutboxPublishResult> PublishAsync(OutboxPublishContext delivery, CancellationToken cancellationToken) =>
             publish(delivery, cancellationToken);
     }
@@ -256,20 +293,28 @@ public sealed class OutboxHostTests
         private TaskCompletionSource? _read;
         public Task ObserveNextStoreRead() => (_read = Signal()).Task;
         public void Advance(TimeSpan duration) => _clock.Advance(duration);
+
         public override DateTimeOffset GetUtcNow()
         {
             Interlocked.Exchange(ref _read, null)?.TrySetResult();
+
             return _clock.GetUtcNow();
         }
+
         public override long TimestampFrequency => _clock.TimestampFrequency;
         public override long GetTimestamp() => _clock.GetTimestamp();
+
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period) =>
             _clock.CreateTimer(callback, state, dueTime, period);
     }
 
-    public sealed class Data { }
+    public sealed class Data
+    {
+    }
 
-    public sealed class Approval { }
+    public sealed class Approval
+    {
+    }
 
     public sealed class Noop : IAsyncActivity
     {

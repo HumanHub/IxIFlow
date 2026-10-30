@@ -18,6 +18,8 @@ public interface ISagaSwitchBuilder<TWorkflowData, TPreviousStepData, TProperty>
     /// <param name="value">The typed label matched by this case</param>
     /// <param name="configure">Configuration for the saga activities in this case body</param>
     /// <returns>The saga switch builder for chaining additional cases</returns>
+    /// <param name="sourceLine">Source line captured for the workflow step.</param>
+    /// <param name="sourcePath">Source file path captured for the workflow step.</param>
     ISagaSwitchBuilder<TWorkflowData, TPreviousStepData, TProperty> Case(
         TProperty value,
         Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> configure,
@@ -28,6 +30,8 @@ public interface ISagaSwitchBuilder<TWorkflowData, TPreviousStepData, TProperty>
     /// </summary>
     /// <param name="configure">Configuration for the saga activities in the default case body</param>
     /// <returns>The switch builder for configuring cases</returns>
+    /// <param name="sourceLine">Source line captured for the workflow step.</param>
+    /// <param name="sourcePath">Source file path captured for the workflow step.</param>
     ISagaSwitchBuilder<TWorkflowData, TPreviousStepData, TProperty> Default(
         Action<ISagaActivityBuilder<TWorkflowData, TPreviousStepData>> configure,
         [CallerFilePath] string sourcePath = "", [CallerLineNumber] int sourceLine = 0);

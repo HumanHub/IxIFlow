@@ -13,7 +13,8 @@ public sealed class OperationsScenarios
     {
         await using var profileStore = await StoreProfiles.CreateAsync(profile);
         var services = new ServiceCollection();
-        services.AddLogging(); services.AddIxIFlow();
+        services.AddLogging();
+        services.AddIxIFlow();
         services.AddSingleton(profileStore.NewRepository());
         services.AddTransient<Begin>();
         await using var host = services.BuildServiceProvider();
@@ -21,7 +22,10 @@ public sealed class OperationsScenarios
         var operations = host.GetRequiredService<IWorkflowOperations>();
         var definition = Workflow.Create<Data>("OperationsConformance").Step<Begin>().WaitFor<Approval>("approve").Build();
         var start = await client.RunAsync(definition, new Data());
-        Assert.Equal(start.InstanceId, Assert.Single((await operations.SearchAsync(new InstanceQuery(WorkflowName: definition.Name))).Items).InstanceId);
+
+        Assert.Equal(start.InstanceId,
+            Assert.Single((await operations.SearchAsync(new InstanceQuery(WorkflowName: definition.Name))).Items).InstanceId);
+
         Assert.Equal(WorkflowStatus.Suspended, (await operations.GetAsync(start.InstanceId))!.Status);
         Assert.Equal("approve", Assert.Single(await operations.GetWaitsAsync([start.InstanceId])).Key);
         var first = await operations.GetTraceAsync(start.InstanceId, limit: 1);
@@ -30,11 +34,15 @@ public sealed class OperationsScenarios
         var stopped = await operations.TerminateAsync(start.InstanceId, "operator", actor: "conformance");
         Assert.Equal(WorkflowStatus.Terminated, stopped.Status);
         Assert.Empty(await operations.GetWaitsAsync([start.InstanceId]));
-        Assert.Equal(WorkflowExecutionStatus.Terminated, (await client.AwaitAsync(start.InstanceId, WorkflowAwaitCondition.Finished)).Status);
+
+        Assert.Equal(WorkflowExecutionStatus.Terminated,
+            (await client.AwaitAsync(start.InstanceId, WorkflowAwaitCondition.Finished)).Status);
     }
 
     public sealed class Data;
+
     public sealed class Approval;
+
     public sealed class Begin : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;

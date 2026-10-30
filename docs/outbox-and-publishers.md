@@ -29,6 +29,7 @@ public sealed class CompletionLog(ILogger<CompletionLog> logger) : IOutboxPublis
     {
         logger.LogInformation("Completion {EventId}: {Summary}",
             delivery.Event.Id, delivery.Event.DataJson);
+
         return Task.FromResult(OutboxPublishResult.Delivered());
     }
 }
@@ -57,7 +58,7 @@ Removing a publisher from DI does not retire its durable subscription. Use `Unre
 
 Workers claim deliveries with renewable leases. Attempt counts include claims lost with their host. Default outbox concurrency is eight, independent of workflow slots; default lease duration is 30 seconds. A 30-day retry horizon runs from the first claim. Retention maintenance gives up never-claimed deliveries whose event age reaches that horizon, up to the retention batch size per pass, including publishers missing from every host. A previously claimed delivery requires a worker to enforce its first-claim horizon; removing that worker can leave it pending until the publisher returns or is unregistered.
 
-There is no in-process publisher: the host that commits an instance's end completes the awaits on that host itself, without a delivery record. Awaits on other hosts poll the store. The store also exposes publisher/delivery inspection. There is no management HTTP API yet.
+There is no in-process publisher: the host that commits an instance's end completes the awaits on that host itself, without a delivery record. Awaits on other hosts poll the store. The store exposes publisher/delivery inspection. The authorized [operations HTTP mapping](operations-http.md) exposes `GET /outbox/deliveries`, `POST /outbox/deliveries/{eventId}/{publisher}/retry`, `GET /outbox/publishers`, `POST /outbox/publishers/{name}/enable` and `DELETE /outbox/publishers/{name}`, relative to its configured route prefix.
 
 ## Administer retained deliveries
 
@@ -96,4 +97,4 @@ These details come from [WebhookOutboxPublisher.cs](../src/IxIFlow.Webhooks/Webh
 
 `RenderTemplate<TModel>` is recoverable by rendering again. `SendTemplateMessage` calls the application's `ITemplateMessageSender` with the activity invocation ID as message ID; the sender must deduplicate it. These are workflow activities, separate from outbox completion delivery.
 
-[QuoteMessage.cs](../samples/IxIFlow.Samples/QuoteMessage.cs) compiles and exercises publication, culture fallback and sending. The default template store is memory. Persistent workflow catalog metadata, verified YAML bundles, artifact storage and unreferenced artifact retention are implemented; see [publishing](yaml-authoring.md#publishing-and-boundaries) and [stores](stores.md). Bundle template dependencies remain 1.0 work. Broker publisher/consumer examples are [after 1.0](roadmap.md#after-10).
+[QuoteMessage.cs](../samples/IxIFlow.Samples/QuoteMessage.cs) compiles and exercises publication, culture fallback and sending. Templates use the selected workflow catalog store, which defaults to memory. Published bundles embed pinned template content and model dependencies and verify them on load; see [publishing](yaml-authoring.md#publishing-and-boundaries) and [stores](stores.md). Broker publisher/consumer examples are [after 1.0](roadmap.md#after-10).

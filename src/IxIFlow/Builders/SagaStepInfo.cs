@@ -3,7 +3,7 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Information about saga steps for compensation tracking
 /// </summary>
-public class SagaStepInfo
+internal class SagaStepInfo
 {
     public string StepId { get; set; } = "";
     public Type ActivityType { get; set; } = null!;

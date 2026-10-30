@@ -28,6 +28,7 @@ public sealed class RetentionHostTests
         Assert.Equal(100, defaults.RetentionBatchSize);
         var services = new ServiceCollection();
         services.AddLogging();
+
         services.AddIxIFlow(options =>
         {
             options.FinishedInstanceRetention = TimeSpan.FromDays(2);
@@ -35,6 +36,7 @@ public sealed class RetentionHostTests
             options.RetentionScanInterval = TimeSpan.FromMinutes(5);
             options.RetentionBatchSize = 4;
         });
+
         using var provider = services.BuildServiceProvider();
         var settings = provider.GetRequiredService<RetentionSettings>();
         Assert.Equal(new RetentionSettings(TimeSpan.FromDays(2), TimeSpan.FromDays(7), TimeSpan.FromMinutes(5), 4), settings);
@@ -42,15 +44,25 @@ public sealed class RetentionHostTests
     }
 
     [Theory]
-    [InlineData(0)] [InlineData(1)] [InlineData(2)] [InlineData(3)]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
     public void InvalidRetentionSettingsAreRefused(int invalid)
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(options =>
         {
-            if (invalid == 0) options.FinishedInstanceRetention = TimeSpan.FromTicks(-1);
-            if (invalid == 1) options.TombstoneRetention = TimeSpan.Zero;
-            if (invalid == 2) options.RetentionScanInterval = TimeSpan.Zero;
-            if (invalid == 3) options.RetentionBatchSize = 0;
+            if (invalid == 0)
+                options.FinishedInstanceRetention = TimeSpan.FromTicks(-1);
+
+            if (invalid == 1)
+                options.TombstoneRetention = TimeSpan.Zero;
+
+            if (invalid == 2)
+                options.RetentionScanInterval = TimeSpan.Zero;
+
+            if (invalid == 3)
+                options.RetentionBatchSize = 0;
         }));
     }
 
@@ -59,11 +71,14 @@ public sealed class RetentionHostTests
     {
         var time = new FakeTimeProvider();
         var store = new ObservedStore(time);
+
         foreach (var id in new[] { "first", "second" })
             await CompleteAsync(store, time, id);
+
         using var service = new WorkflowRetentionService(store,
             new RetentionSettings(TimeSpan.FromDays(1), TimeSpan.FromDays(7), TimeSpan.FromHours(1), 1),
             time, NullLogger<WorkflowRetentionService>.Instance);
+
         await service.StartAsync(default);
         Assert.Equal(0, (await store.Passes.Reader.ReadAsync()).InstancesRemoved);
         time.Advance(TimeSpan.FromDays(1));
@@ -71,8 +86,11 @@ public sealed class RetentionHostTests
         time.Advance(TimeSpan.FromHours(1));
         Assert.Equal(1, (await store.Passes.Reader.ReadAsync()).InstancesRemoved);
         await service.StopAsync(default);
+
         // A large fake-time jump can enqueue additional zero-work ticks before shutdown.
-        while (store.Passes.Reader.TryRead(out var earlier)) Assert.Equal(0, earlier.InstancesRemoved);
+        while (store.Passes.Reader.TryRead(out var earlier))
+            Assert.Equal(0, earlier.InstancesRemoved);
+
         time.Advance(TimeSpan.FromHours(2));
         Assert.False(store.Passes.Reader.TryRead(out _));
         Assert.NotNull(await store.GetTombstoneAsync("first"));
@@ -103,6 +121,7 @@ public sealed class RetentionHostTests
     {
         var error = Assert.Throws<ArgumentOutOfRangeException>(() => new ServiceCollection().AddIxIFlow(options =>
             options.RetentionScanInterval = TimeSpan.Zero));
+
         Assert.Equal(nameof(IxIFlowOptions.RetentionScanInterval), error.ParamName);
     }
 
@@ -123,23 +142,31 @@ public sealed class RetentionHostTests
     {
         var probe = OutboxServiceTests.Probe.Wrap(new InMemoryWorkflowStateRepository());
         var reads = 0;
+
         probe.OnCall = (method, _) =>
         {
-            if (method.Name == nameof(IWorkflowStateRepository.GetTombstoneAsync)) Interlocked.Increment(ref reads);
+            if (method.Name == nameof(IWorkflowStateRepository.GetTombstoneAsync))
+                Interlocked.Increment(ref reads);
+
             return null;
         };
+
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(probe.Store);
         services.AddIxIFlow();
         await using var provider = services.BuildServiceProvider();
         var client = provider.GetRequiredService<IWorkflowClient>();
+
         var definition = Workflow.Create<RetentionStoreContract.ResultData>("GeneratedRetentionId")
             .Step<RetentionStoreContract.Noop>().Build();
+
         Assert.Equal(WorkflowExecutionStatus.Success, (await client.RunAsync(definition, new RetentionStoreContract.ResultData())).Status);
         Assert.Equal(0, reads);
+
         Assert.Equal(WorkflowExecutionStatus.Success, (await client.RunAsync(definition, new RetentionStoreContract.ResultData(),
             new WorkflowOptions { InstanceId = Guid.NewGuid().ToString("N") })).Status);
+
         Assert.Equal(1, reads);
     }
 
@@ -147,25 +174,31 @@ public sealed class RetentionHostTests
     public async Task NeverAttemptedDeliveriesProduceAPublisherWarningAndMetric()
     {
         var time = new FakeTimeProvider();
+
         // The instance passes 30-day retention while the delivery remains inside its horizon.
         var store = new InMemoryWorkflowStateRepository(time,
             new OutboxSettings(retryHorizon: TimeSpan.FromDays(60)));
+
         var publisher = Guid.NewGuid().ToString("N");
         await store.RegisterPublisherAsync(publisher, [OutboxEvent.WorkflowCompleted]);
         await CompleteAsync(store, time, "blocked");
         time.Advance(TimeSpan.FromDays(31));
         long measured = 0;
         using var listener = new MeterListener();
+
         listener.InstrumentPublished = (instrument, l) =>
         {
             if (instrument.Meter.Name == Telemetry.Name && instrument.Name == "ixiflow.retention.skipped_unattempted")
                 l.EnableMeasurementEvents(instrument);
         };
+
         listener.SetMeasurementEventCallback<long>((_, value, tags, _) =>
         {
             foreach (var tag in tags)
-                if (tag.Key == Telemetry.PublisherName && Equals(tag.Value, publisher)) Interlocked.Add(ref measured, value);
+                if (tag.Key == Telemetry.PublisherName && Equals(tag.Value, publisher))
+                    Interlocked.Add(ref measured, value);
         });
+
         listener.Start();
         var logger = new RetentionLogger();
         using var service = new WorkflowRetentionService(store, RetentionSettings.Default, time, logger);
@@ -189,10 +222,12 @@ public sealed class RetentionHostTests
         services.AddSingleton(store);
         services.AddIxIFlow();
         await using var provider = services.BuildServiceProvider();
+
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(
             Workflow.Create<RetentionStoreContract.ResultData>("HostRetention")
                 .Step<RetentionStoreContract.Noop>().Build(), new RetentionStoreContract.ResultData(),
             new WorkflowOptions { InstanceId = id });
+
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
     }
 
@@ -201,21 +236,25 @@ public sealed class RetentionHostTests
         public List<string> Warnings { get; } = [];
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel level) => true;
+
         public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (level == LogLevel.Warning) Warnings.Add(formatter(state, exception));
+            if (level == LogLevel.Warning)
+                Warnings.Add(formatter(state, exception));
         }
     }
 
-    private sealed class ObservedStore(TimeProvider time) : InMemoryWorkflowStateRepository(time), IWorkflowStateRepository
+    private sealed class ObservedStore(TimeProvider time) : TestWorkflowStateRepository(time), IWorkflowStateRepository
     {
         public Channel<RetentionResult> Passes { get; } = Channel.CreateUnbounded<RetentionResult>();
+
         async Task<RetentionResult> IWorkflowStateRepository.PurgeAsync(TimeSpan retention, TimeSpan tombstones, int size,
             CancellationToken cancellationToken)
         {
             var result = await base.PurgeAsync(retention, tombstones, size, cancellationToken);
             Passes.Writer.TryWrite(result);
+
             return result;
         }
     }

@@ -5,8 +5,10 @@ public sealed record StoredTraceEntry(long Sequence, ExecutionTraceEntry Entry)
 {
     /// <summary>The writing commit's revision; standalone inbox refusals carry the observed revision.</summary>
     public long Revision { get; init; }
+
     /// <summary>The writing commit's final sequence, even when a page ends earlier. Null for standalone inbox appends.</summary>
     public long? CommitEndSequence { get; init; }
+
     /// <summary>The status saved by the writing commit. Null for standalone inbox appends.</summary>
     public WorkflowStatus? CommitStatus { get; init; }
 }

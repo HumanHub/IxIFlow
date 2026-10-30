@@ -1,0 +1,1 @@
+{"AssignmentId":"22222222-2222-2222-2222-222222222222","Outcome":{"Kind":5,"ErrorMessage":"error","ErrorType":"type","ErrorStackTrace":"stack","StepId":null,"AttemptId":null},"LastAcknowledgedCommit":{"CommitId":"commit","Revision":5},"ContractVersion":14,"ExecutorName":"executor","Capabilities":{"host":"local"}}

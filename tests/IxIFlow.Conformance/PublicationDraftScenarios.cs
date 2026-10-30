@@ -22,21 +22,29 @@ public sealed class PublicationDraftScenarios
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
         var revision = await store.GetCatalogRevisionAsync();
+
         var workflow = await store.SaveDefinitionAsync(new("shared", 1, "workflow", " source\n")
             { UpdatedAtUtc = DateTime.MinValue, UpdatedBy = "forged" }, null, "creator");
+
         Assert.NotEqual(Guid.Empty, workflow.Generation);
         Assert.Equal(1, workflow.Revision);
         Assert.Equal("creator", workflow.UpdatedBy);
         Assert.NotEqual(DateTime.MinValue, workflow.UpdatedAtUtc);
         Assert.Equal(revision + 1, await store.GetCatalogRevisionAsync());
+
         foreach (var kind in new[] { "activity", "template" })
         {
             var other = await store.SaveDefinitionAsync(new("shared", 1, kind, kind), null);
             Assert.NotEqual(workflow.Generation, other.Generation);
             Assert.Equal(other, await store.GetDefinitionAsync(kind, "shared", 1));
         }
-        var updated = await store.SaveDefinitionAsync(workflow with { Source = "changed", Generation = Guid.NewGuid(), Revision = 900,
-            UpdatedBy = "forged" }, workflow.Id, "editor");
+
+        var updated = await store.SaveDefinitionAsync(workflow with
+        {
+            Source = "changed", Generation = Guid.NewGuid(), Revision = 900,
+            UpdatedBy = "forged"
+        }, workflow.Id, "editor");
+
         Assert.Equal(workflow.Generation, updated.Generation);
         Assert.Equal(2, updated.Revision);
         Assert.Equal("editor", updated.UpdatedBy);
@@ -44,9 +52,15 @@ public sealed class PublicationDraftScenarios
         await Assert.ThrowsAsync<CatalogPreconditionException>(() => store.DeleteDefinitionAsync(workflow.Id));
         await Assert.ThrowsAsync<ArgumentException>(() => store.SaveDefinitionAsync(workflow with { Kind = "activity" }, workflow.Id));
         await Assert.ThrowsAsync<ArgumentException>(() => store.SaveDefinitionAsync(workflow, null));
-        await Assert.ThrowsAsync<ArgumentException>(() => store.SaveDefinitionAsync(new("Actor", 1, "workflow", ""), null, new string('a', 201)));
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            store.SaveDefinitionAsync(new("Actor", 1, "workflow", ""), null, new string('a', 201)));
+
         await store.SaveDefinitionAsync(new("shared-other", 1, "workflow", "hidden"), null);
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => store.SaveDefinitionAsync(new("activity", 65535, "activity", ""), null));
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            store.SaveDefinitionAsync(new("activity", 65535, "activity", ""), null));
+
         await Assert.ThrowsAsync<ArgumentException>(() => store.SaveDefinitionAsync(new("Upper", 1, "template", ""), null));
         var scope = new CatalogScope(new(["shared"]), new([]), new(), new(["shared"]));
         var page = await store.GetDefinitionsAsync(new(scope, Limit: 1));
@@ -59,8 +73,12 @@ public sealed class PublicationDraftScenarios
         Assert.Equal("editor", second.Items[0].UpdatedBy);
         Assert.Null(second.NextCursor);
         Assert.Equal(await store.GetCatalogRevisionAsync(), second.CatalogRevision);
-        await Assert.ThrowsAsync<ArgumentException>(() => store.GetDefinitionsAsync(new(CatalogScope.Unrestricted, After: page.NextCursor)));
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            store.GetDefinitionsAsync(new(CatalogScope.Unrestricted, After: page.NextCursor)));
+
         Assert.Empty((await store.GetDefinitionsAsync(new(new(new([]), new([]), new([]), new([]))))).Items);
+
         // Literal prefixes must have identical ordinal behavior on SQL LIKE dialects.
         await store.SaveDefinitionAsync(new("%_[]Key", 1, "workflow", "literal"), null);
         await store.SaveDefinitionAsync(new("%_[]key", 1, "workflow", "case"), null);
@@ -83,6 +101,7 @@ public sealed class PublicationDraftScenarios
         var probe = new AwaitedArtifacts(store);
         var publishing = Task.Run(() => store.PublishDefinitionAsync(draft.Id, row, probe));
         WorkflowDraft replacement;
+
         try
         {
             await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(20));
@@ -91,7 +110,11 @@ public sealed class PublicationDraftScenarios
             Assert.NotEqual(draft.Generation, replacement.Generation);
             Assert.Equal(1, replacement.Revision);
         }
-        finally { probe.Release.TrySetResult(); }
+        finally
+        {
+            probe.Release.TrySetResult();
+        }
+
         await Assert.ThrowsAsync<CatalogPreconditionException>(() => publishing);
         await Assert.ThrowsAsync<CatalogPreconditionException>(() => store.DeleteDefinitionAsync(draft.Id));
         await Assert.ThrowsAsync<CatalogPreconditionException>(() => store.SaveDefinitionAsync(draft, draft.Id));
@@ -117,17 +140,32 @@ public sealed class PublicationDraftScenarios
         var store = database.NewRepository();
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream([1]));
         var draft = new WorkflowDraft("Lifecycle", 1, "workflow", "source");
-        await store.RegisterWorkflowVersionAsync(Version(draft, digest) with { State = WorkflowVersionState.Draft, PublishedDraft = null }, store);
+
+        await store.RegisterWorkflowVersionAsync(Version(draft, digest) with { State = WorkflowVersionState.Draft, PublishedDraft = null },
+            store);
+
         var deprecated = (await store.GetWorkflowVersionAsync(draft.Name, 1))!;
         var probe = new AwaitedArtifacts(store);
-        var first = Task.Run(() => store.SetWorkflowVersionStateAsync(draft.Name, 1, WorkflowVersionState.Published, new(deprecated.LifecycleRevision), probe, "winner"));
+
+        var first = Task.Run(() =>
+            store.SetWorkflowVersionStateAsync(draft.Name, 1, WorkflowVersionState.Published, new(deprecated.LifecycleRevision), probe,
+                "winner"));
+
         Task<WorkflowVersion> stale;
+
         try
         {
             await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(20));
-            stale = Task.Run(() => store.SetWorkflowVersionStateAsync(draft.Name, 1, WorkflowVersionState.Retired, new(deprecated.LifecycleRevision), actor: "loser"));
+
+            stale = Task.Run(() =>
+                store.SetWorkflowVersionStateAsync(draft.Name, 1, WorkflowVersionState.Retired, new(deprecated.LifecycleRevision),
+                    actor: "loser"));
         }
-        finally { probe.Release.TrySetResult(); }
+        finally
+        {
+            probe.Release.TrySetResult();
+        }
+
         var winner = await first;
         await Assert.ThrowsAsync<CatalogPreconditionException>(() => stale);
         Assert.Equal("winner", winner.StateChangedBy);
@@ -174,15 +212,24 @@ public sealed class PublicationDraftScenarios
         Assert.Equal("second", abandoned.StartedBy);
         var history = await store.GetPublicationsAsync(new(CatalogScope.Unrestricted, "workflow", draft.Name, 1, Limit: 1));
         var ids = new HashSet<Guid>();
+
         while (true)
         {
             Assert.True(ids.Add(Assert.Single(history.Items).Id));
-            if (history.NextCursor == null) break;
-            history = await store.GetPublicationsAsync(new(CatalogScope.Unrestricted, "workflow", draft.Name, 1, After: history.NextCursor, Limit: 1));
+
+            if (history.NextCursor == null)
+                break;
+
+            history = await store.GetPublicationsAsync(new(CatalogScope.Unrestricted, "workflow", draft.Name, 1, After: history.NextCursor,
+                Limit: 1));
         }
+
         Assert.Equal(3, ids.Count);
         await store.DeleteDefinitionAsync(draft.Id);
-        Assert.Equal("TEST001", Assert.Single((await store.GetPublicationAsync(first.Id, CatalogScope.Unrestricted))!.Outcome!.Diagnostics).Code);
+
+        Assert.Equal("TEST001",
+            Assert.Single((await store.GetPublicationAsync(first.Id, CatalogScope.Unrestricted))!.Outcome!.Diagnostics).Code);
+
         var denied = new CatalogScope(new([]), new(), new(), new());
         Assert.Null(await store.GetPublicationAsync(first.Id, denied));
         Assert.Empty((await store.GetPublicationsAsync(new(denied, "workflow", draft.Name, 1))).Items);
@@ -210,18 +257,23 @@ public sealed class PublicationDraftScenarios
         Assert.NotEqual(draft.Generation, recreated.Generation);
         Assert.Equal(1, recreated.Revision);
         await Assert.ThrowsAsync<CatalogPreconditionException>(() => store.SaveDefinitionAsync(recreated, draft.Id));
+
         if (profile == StoreProfiles.LocalMemory)
         {
-            var issued = (HashSet<Guid>)typeof(InMemoryWorkflowStateRepository).GetField("_draftGenerations", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
+            var issued = (HashSet<Guid>)typeof(InMemoryWorkflowStateRepository).GetField("_draftGenerations",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(store)!;
+
             Assert.Contains(draft.Generation, issued);
             Assert.Contains(recreated.Generation, issued);
         }
         else
         {
             await using var connection = database.NewConnection();
-            Assert.Equal(1, await connection.ExecuteScalarAsync<int>(profile.StartsWith(StoreProfiles.DistributedSqlServer, StringComparison.Ordinal)
-                ? "SELECT COUNT(*) FROM dbo.IxIFlowDraftGenerations WHERE Generation=@Generation"
-                : "SELECT COUNT(*) FROM ixiflow_draft_generations WHERE generation=@Generation", new { draft.Generation }));
+
+            Assert.Equal(1, await connection.ExecuteScalarAsync<int>(
+                profile.StartsWith(StoreProfiles.DistributedSqlServer, StringComparison.Ordinal)
+                    ? "SELECT COUNT(*) FROM dbo.IxIFlowDraftGenerations WHERE Generation=@Generation"
+                    : "SELECT COUNT(*) FROM ixiflow_draft_generations WHERE generation=@Generation", new { draft.Generation }));
         }
     }
 
@@ -237,6 +289,7 @@ public sealed class PublicationDraftScenarios
         await AgeAsync(database, clock, "heartbeat");
         var attempt = await store.BeginPublicationAsync(draft.Id, Guid.NewGuid(), "replacement", TimeSpan.FromMinutes(1));
         var digest = await store.PutAsync(ArtifactKind.Bundle, new MemoryStream([9]));
+
         // An abandoned build can commit the same immutable publication. Its replacement reconciles it.
         var row = await store.PublishDefinitionAsync(draft.Id, Version(draft, digest), store, "publisher");
         await Assert.ThrowsAsync<CatalogPreconditionException>(() => store.CompletePublicationAsync(old.Id, old.HostId, Failure));
@@ -244,10 +297,13 @@ public sealed class PublicationDraftScenarios
         Assert.Equal(WorkflowPublicationState.Running, (await store.GetPublicationAsync(attempt.Id, CatalogScope.Unrestricted))!.State);
         Assert.Equal(revision, await store.GetCatalogRevisionAsync());
         var receipt = new WorkflowPublicationReceipt(draft.Id, JsonSerializer.Serialize(row));
+
         await Assert.ThrowsAsync<ArgumentException>(() => store.CompletePublicationAsync(attempt.Id, attempt.HostId,
             new(receipt with { Draft = draft.Id with { Generation = Guid.NewGuid() } }, [], null)));
+
         await Assert.ThrowsAsync<ArgumentException>(() => store.CompletePublicationAsync(attempt.Id, attempt.HostId,
             new(receipt with { ReceiptJson = "{}" }, [], null)));
+
         var completed = await store.CompletePublicationAsync(attempt.Id, attempt.HostId, new(receipt, [], null));
         Assert.Equal(WorkflowPublicationState.Published, completed.State);
         Assert.Equal(receipt, completed.Outcome!.Receipt);
@@ -257,9 +313,16 @@ public sealed class PublicationDraftScenarios
         Assert.Equal(2, await store.PurgePublicationsAsync(TimeSpan.FromDays(30), 100));
         var recovered = await store.BeginPublicationAsync(draft.Id, Guid.NewGuid(), "after-purge", TimeSpan.FromMinutes(1));
         Assert.Equal(3, recovered.Attempt);
-        Assert.Equal(WorkflowPublicationState.Published, (await store.CompletePublicationAsync(recovered.Id, recovered.HostId, new(receipt, [], null))).State);
-        var code = new WorkflowVersion("Code", 1, "hash", row.ContractJson, row.ContractHash, Descriptor: new WorkflowDescriptor("Code", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), [], PublishedDraft: draft.Id)
+
+        Assert.Equal(WorkflowPublicationState.Published,
+            (await store.CompletePublicationAsync(recovered.Id, recovered.HostId, new(receipt, [], null))).State);
+
+        var code = new WorkflowVersion("Code", 1, "hash", row.ContractJson, row.ContractHash,
+                Descriptor: new WorkflowDescriptor("Code", "", [], null, null,
+                    IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                    IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), [], PublishedDraft: draft.Id)
             { LifecycleRevision = 999, PublishedBy = "forged" };
+
         await store.RegisterWorkflowVersionAsync(code);
         var registered = (await store.GetWorkflowVersionAsync(code.Name, 1))!;
         Assert.Null(registered.PublishedDraft);
@@ -274,19 +337,30 @@ public sealed class PublicationDraftScenarios
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
         var contract = WorkflowContract.OfType(typeof(object));
-        WorkflowVersion Row(string name) => new(name, 1, "hash", contract.ToJson(), contract.Hash, Descriptor: new WorkflowDescriptor(name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), []);
+
+        WorkflowVersion Row(string name) => new(name, 1, "hash", contract.ToJson(), contract.Hash,
+            Descriptor: new WorkflowDescriptor(name, "", [], null, null,
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), []);
+
         await store.RegisterWorkflowVersionAsync(Row("Target"));
+
         foreach (var name in new[] { "Visible", "Hidden" })
             await store.RegisterWorkflowVersionAsync(Row(name) with
-                { Dependencies = [new("Target", 1)], Invocations = [new("Target", 1, "invoke", "fixture")] });
+            {
+                Dependencies = [new("Target", 1)], Invocations = [new("Target", 1, "invoke", "fixture")]
+            });
+
         var scope = new CatalogScope(new(["Target", "Visible"]), new(), new(), new());
         var blockers = await store.GetRetirementBlockersAsync("Target", 1, scope);
         Assert.Equal("Visible", Assert.Single(blockers.Callers).Name);
         Assert.True(blockers.OutsideScope);
         Assert.Null(blockers.UnfinishedCaller);
         var target = (await store.GetWorkflowVersionAsync("Target", 1))!;
+
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SetWorkflowVersionStateAsync("Target", 1,
             WorkflowVersionState.Retired, new(target.LifecycleRevision)));
+
         Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
         Assert.Equal(target.LifecycleRevision, (await store.GetWorkflowVersionAsync("Target", 1))!.LifecycleRevision);
     }
@@ -294,7 +368,11 @@ public sealed class PublicationDraftScenarios
     private static WorkflowVersion Version(WorkflowDraft draft, ArtifactDigest digest)
     {
         var contract = WorkflowContract.OfType(typeof(object));
-        return new(draft.Name, draft.Version, "hash", contract.ToJson(), contract.Hash, Descriptor: new WorkflowDescriptor(draft.Name, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), [], ArtifactDigest: digest,
+
+        return new(draft.Name, draft.Version, "hash", contract.ToJson(), contract.Hash,
+            Descriptor: new WorkflowDescriptor(draft.Name, "", [], null, null,
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), [], ArtifactDigest: digest,
             PublishedDraft: draft.Id, ManifestJson: "{}");
     }
 
@@ -306,12 +384,21 @@ public sealed class PublicationDraftScenarios
         var store = database.NewRepository();
         var draft = await store.SaveDefinitionAsync(new("activity-name", 2, "activity", "source"), null);
         var digest = await store.PutAsync(ArtifactKind.Package, new MemoryStream([9]));
+
         await store.RegisterPackageAsync(new("activity-name", "2.0.0", digest,
-            new Dictionary<string, ArtifactDigest> { ["fixture.nuspec"] = ArtifactDigest.Of([1]) }, []), new([], PackageExtraction.Pending, null, null, []), store);
+                new Dictionary<string, ArtifactDigest> { ["fixture.nuspec"] = ArtifactDigest.Of([1]) }, []),
+            new([], PackageExtraction.Pending, null, null, []), store);
+
         await store.DeleteAsync(digest);
-        var changed = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SaveDefinitionAsync(draft with { Source = "edit" }, draft.Id));
+
+        var changed = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+            store.SaveDefinitionAsync(draft with { Source = "edit" }, draft.Id));
+
         Assert.Equal(WorkflowErrorKind.InvalidState, changed.Kind);
-        var created = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.SaveDefinitionAsync(new(draft.Name, 2, "activity", "new"), null));
+
+        var created = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
+            store.SaveDefinitionAsync(new(draft.Name, 2, "activity", "new"), null));
+
         Assert.Equal(WorkflowErrorKind.InvalidState, created.Kind);
         Assert.Equal(draft, await store.GetDefinitionAsync("activity", draft.Name, 2));
         Assert.NotNull(await store.SaveDefinitionAsync(new(draft.Name, 2, "workflow", "independent"), null));
@@ -322,13 +409,18 @@ public sealed class PublicationDraftScenarios
         if (database.Profile is StoreProfiles.LocalMemory or StoreProfiles.LocalSqlite)
         {
             clock.Advance(column == "finished" ? TimeSpan.FromDays(31) : TimeSpan.FromMinutes(2));
+
             return;
         }
+
         await using var connection = database.NewConnection();
+
         await connection.ExecuteAsync(database.Profile == StoreProfiles.DistributedSqlServer
-            ? column == "finished" ? "UPDATE dbo.IxIFlowPublicationAttempts SET FinishedAtUtc=DATEADD(DAY,-31,SYSUTCDATETIME()) WHERE FinishedAtUtc IS NOT NULL"
+            ? column == "finished"
+                ? "UPDATE dbo.IxIFlowPublicationAttempts SET FinishedAtUtc=DATEADD(DAY,-31,SYSUTCDATETIME()) WHERE FinishedAtUtc IS NOT NULL"
                 : "UPDATE dbo.IxIFlowPublicationAttempts SET HeartbeatAtUtc=DATEADD(MINUTE,-2,SYSUTCDATETIME()) WHERE State='Running'"
-            : column == "finished" ? "UPDATE ixiflow_publication_attempts SET finished_at_utc=clock_timestamp()-INTERVAL '31 days' WHERE finished_at_utc IS NOT NULL"
+            : column == "finished"
+                ? "UPDATE ixiflow_publication_attempts SET finished_at_utc=clock_timestamp()-INTERVAL '31 days' WHERE finished_at_utc IS NOT NULL"
                 : "UPDATE ixiflow_publication_attempts SET heartbeat_at_utc=clock_timestamp()-INTERVAL '2 minutes' WHERE state='Running'");
     }
 
@@ -336,16 +428,26 @@ public sealed class PublicationDraftScenarios
     {
         internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public async ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default)
         {
             Entered.TrySetResult();
             await Release.Task.WaitAsync(cancellationToken);
+
             return await inner.ExistsAsync(digest, cancellationToken);
         }
-        public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) => inner.PutAsync(kind, content, cancellationToken);
-        public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => inner.OpenAsync(digest, cancellationToken);
-        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => inner.DeleteAsync(digest, cancellationToken);
-        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) =>
+
+        public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
+            inner.PutAsync(kind, content, cancellationToken);
+
+        public ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            inner.OpenAsync(digest, cancellationToken);
+
+        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            inner.DeleteAsync(digest, cancellationToken);
+
+        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize,
+            CancellationToken cancellationToken = default) =>
             inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
     }
 }

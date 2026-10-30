@@ -1,0 +1,1 @@
+{"BranchId":"root","StepId":"root/0","BreakpointId":"stop","ActivationId":"activation","Iteration":2,"HitCount":3,"HitAtUtc":"2026-10-29T12:00:00Z","ArmOccurrence":0,"Reason":"ConditionCompilationFailed","Diagnostics":[{"Code":"BPC001","Message":"Refused","Start":0,"Length":3,"Line":1,"Column":1}]}

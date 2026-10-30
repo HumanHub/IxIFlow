@@ -13,23 +13,26 @@ public sealed class ForEachDiagnosticHardeningTests
     public async Task InvalidForEachFormsGiveTheirPositionedDiagnosticThroughBothTranslators(
         string defect, string code, string member, string marker)
     {
-        var body = defect == "alias" ? """
-            - kind: forEach
-              items: {path: workflow.Values}
-              as: entry
-              steps:
-                - kind: forEach
-                  items: {path: workflow.Values}
-                  as: entry
-                  steps: []
-            """ : """
-            - kind: forEach
-              items: {path: workflow.Values}
-              as: entry
-              result: {path: entry}
-              parallel:
-                join: conditionally
-            """ + (defect == "resultType" ? "\n    condition: {path: results.Count > 0}\n" : "\n    resultType: int\n");
+        var body = defect == "alias"
+            ? """
+              - kind: forEach
+                items: {path: workflow.Values}
+                as: entry
+                steps:
+                  - kind: forEach
+                    items: {path: workflow.Values}
+                    as: entry
+                    steps: []
+              """
+            : """
+              - kind: forEach
+                items: {path: workflow.Values}
+                as: entry
+                result: {path: entry}
+                parallel:
+                  join: conditionally
+              """ + (defect == "resultType" ? "\n    condition: {path: results.Count > 0}\n" : "\n    resultType: int\n");
+
         var yaml = "workflow: {name: InvalidEach, dataType: IxIFlow.Generators.Tests.FlowData}\ndefinitions:\n" + body;
         var document = WorkflowYamlSerializer.Read(yaml);
         var validation = await new WorkflowDocumentValidator().ValidateAsync(document, new Contracts());
@@ -43,8 +46,12 @@ public sealed class ForEachDiagnosticHardeningTests
         Assert.True(expectedLine >= 0, marker);
         Assert.Equal(expectedLine + 1, expected.Line);
         Assert.True(expected.Column > 0);
-        foreach (var translate in new Func<string>[] { () => WorkflowSourceTranslator.Translate(yaml, "invalid-each.yaml"),
-                     () => WorkflowSourceTranslator.Translate(document, "invalid-each.yaml") })
+
+        foreach (var translate in new Func<string>[]
+                 {
+                     () => WorkflowSourceTranslator.Translate(yaml, "invalid-each.yaml"),
+                     () => WorkflowSourceTranslator.Translate(document, "invalid-each.yaml")
+                 })
         {
             var error = Assert.Throws<WorkflowSourceException>(translate);
             Assert.Equal(diagnostic.Message, error.Detail);
@@ -52,6 +59,7 @@ public sealed class ForEachDiagnosticHardeningTests
             Assert.Equal(expected.Line, error.Line);
             Assert.Equal(expected.Column, error.Column);
         }
+
         var generated = WorkflowGeneratorHarness.Generate(yaml, "invalid-each.yaml");
         var positioned = Assert.Single(generated.Diagnostics);
         Assert.Equal("IXIYAML001", positioned.Id);
@@ -62,11 +70,15 @@ public sealed class ForEachDiagnosticHardeningTests
 
     private sealed class Contracts : IWorkflowValidationContext
     {
-        public Task<ActivityDocumentContract?> FindActivityAsync(string key, CancellationToken token) => Task.FromResult<ActivityDocumentContract?>(new(key, "1"));
+        public Task<ActivityDocumentContract?> FindActivityAsync(string key, CancellationToken token) =>
+            Task.FromResult<ActivityDocumentContract?>(new(key, "1"));
+
         public Task<bool> HasDataTypeAsync(string key, CancellationToken token) => Task.FromResult(true);
         public Task<bool> HasEventAsync(string key, CancellationToken token) => Task.FromResult(true);
         public Task<bool> HasWorkflowAsync(string name, int? version, CancellationToken token) => Task.FromResult(true);
         public Task<bool> HasStepTemplateAsync(string key, CancellationToken token) => Task.FromResult(true);
-        public Task<TemplateDocumentContract?> FindTemplateAsync(string key, int? version, CancellationToken token) => Task.FromResult<TemplateDocumentContract?>(null);
+
+        public Task<TemplateDocumentContract?> FindTemplateAsync(string key, int? version, CancellationToken token) =>
+            Task.FromResult<TemplateDocumentContract?>(null);
     }
 }

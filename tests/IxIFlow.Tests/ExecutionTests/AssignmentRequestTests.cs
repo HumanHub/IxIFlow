@@ -26,6 +26,7 @@ public sealed class AssignmentRequestTests
         var nextId = Guid.NewGuid();
         using var next = run.Operations.Admit(run.Instance, run.Owner, nextId);
         await RefusedAsync(oldId);
+
         // The clock can expire the lease before its renewal continuation has run.
         run.Time.Advance(TimeSpan.FromHours(2));
         await RefusedAsync(nextId);
@@ -34,17 +35,23 @@ public sealed class AssignmentRequestTests
         {
             var calls = run.Probe.RequestCalls;
             var commit = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision);
+
             Assert.Equal(ConflictReason.NotAssigned,
                 (await run.Host.CheckpointAsync(new(identity, commit))).Conflict);
+
             Assert.Equal(ConflictReason.NotAssigned,
                 (await run.Host.StartChildAsync(new(identity, run.Instance.InstanceId, run.Owner.Epoch,
                     "root/0", new("child", "{}", "wait"), "hash", WorkflowContract.OfType(typeof(Data)).Hash))).Conflict);
+
             Assert.Equal(ConflictReason.NotAssigned,
                 (await run.Host.ReadInboxAsync(new(identity, run.Instance.InstanceId, 0, 10))).Conflict);
+
             Assert.Equal(ConflictReason.NotAssigned,
                 (await run.Host.ReadWaitAsync(new(identity, run.Instance.InstanceId, "wait"))).Conflict);
+
             Assert.Equal(ConflictReason.NotAssigned, run.Operations.AdmitReady(new(identity,
                 new(AssignmentOutcomeKind.Idle), null)));
+
             Assert.Equal(calls, run.Probe.RequestCalls);
         }
     }
@@ -63,16 +70,20 @@ public sealed class AssignmentRequestTests
         changed.Incarnation = run.Instance.Incarnation;
         changed.WorkflowDataJson = StoredJson.Inline("{\"Value\":\"changed\"}");
         var collision = CheckpointCommit.Create(changed, run.Owner.Epoch, run.Instance.Revision, "same");
+
         Assert.Equal(ConflictReason.Revision,
             (await run.Host.CheckpointAsync(new(run.Identity, collision))).Conflict);
+
         var later = run.Host.CheckpointAsync(new(run.Identity,
             CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision + 1, "later")));
+
         Assert.Equal(1, store.Calls);
         store.Release.TrySetResult();
         Assert.Equal(CheckpointReplyKind.Ack, (await first).Kind);
         Assert.Equal(CheckpointReplyKind.Ack, (await duplicate).Kind);
         Assert.Equal(CheckpointReplyKind.Ack, (await later).Kind);
         Assert.Equal(["same", "later"], store.Order);
+
         // A completed request reaches the store receipt/fencing path again.
         Assert.Equal(CheckpointReplyKind.Ack, (await run.Host.CheckpointAsync(new(run.Identity, commit))).Kind);
         Assert.Equal(3, store.Calls);
@@ -84,9 +95,13 @@ public sealed class AssignmentRequestTests
         await using var run = await Assigned.CreateAsync();
         var commit = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision);
         Assert.Equal(CheckpointReplyKind.Ack, (await run.Host.CheckpointAsync(new(run.Identity, commit))).Kind);
+
         // Another store owner has taken over, even though this host has not observed the loss yet.
         await run.ReleaseOwnerAsync();
-        var grant = await run.Store.TryAcquireExecutionLeaseAsync(run.Instance.InstanceId, "takeover", TimeSpan.FromHours(1), await StoreTestSupport.ClaimAsync(run.Services));
+
+        var grant = await run.Store.TryAcquireExecutionLeaseAsync(run.Instance.InstanceId, "takeover", TimeSpan.FromHours(1),
+            await StoreTestSupport.ClaimAsync(run.Services));
+
         Assert.NotNull(grant);
         Assert.Equal(ConflictReason.NotAssigned, (await run.Host.CheckpointAsync(new(run.Identity, commit))).Conflict);
         Assert.Equal(WorkflowCommitStatus.StaleEpoch, (await run.Store.CommitWorkflowInstanceAsync(commit)).Status);
@@ -112,18 +127,25 @@ public sealed class AssignmentRequestTests
         await using var run = await Assigned.CreateAsync(limits: new() { MaxCheckpointBytes = 2_000 });
         var childDefinition = Definition("child-definition");
         await run.Registry.RegisterWorkflowAsync(childDefinition);
+
         var child = WorkflowInstances.Start(childDefinition,
             new Data { Value = variant == "size" ? new string('x', 5_000) : "input" }, run.Instance, "child", "wait", DateTime.UtcNow);
+
         var hash = WorkflowDefinitionValidator.ForExecution(childDefinition).StructureHash;
+
         var reply = await run.Host.StartChildAsync(new(run.Identity, run.Instance.InstanceId, run.Owner.Epoch,
             "root/0", child, variant == "hash" ? "wrong" : hash, WorkflowDefinitionValidator.GetContract(childDefinition).Hash));
+
         Assert.Equal(run.Identity, reply.AssignmentId);
-        if (variant == "accepted") Assert.Equal(child, reply.Start);
+
+        if (variant == "accepted")
+            Assert.Equal(child, reply.Start);
         else
         {
             Assert.Null(reply.Start);
             Assert.Equal(variant == "hash" ? WorkflowErrorKind.ArtifactUnavailable : WorkflowErrorKind.ResourceExhausted, reply.Refusal);
         }
+
         // A preparation request never creates a child: only the parent's checkpoint can do that.
         Assert.Null(await run.Store.GetWorkflowInstanceAsync("child"));
     }
@@ -133,11 +155,15 @@ public sealed class AssignmentRequestTests
     {
         await using var run = await Assigned.CreateAsync();
         var opened = new OpenedWait("wait", WaitKind.Event, "go", IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Go)), null);
+
         var commit = CheckpointCommit.Create(run.Instance, run.Owner.Epoch, run.Instance.Revision,
             openedWaits: [opened]);
+
         Assert.Equal(CheckpointReplyKind.Ack, (await run.Host.CheckpointAsync(new(run.Identity, commit))).Kind);
+
         await run.Store.AppendEventAsync(new WorkflowEvent(run.Instance.InstanceId, "event",
             IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Go)), "{}", "go"));
+
         var page = await run.Host.ReadInboxAsync(new(run.Identity, run.Instance.InstanceId, 0, 1));
         Assert.Equal(run.Identity, page.AssignmentId);
         Assert.Equal("event", Assert.Single(page.Page!.Events).EventId);
@@ -155,14 +181,23 @@ public sealed class AssignmentRequestTests
         using var services = Services(store);
         var client = services.GetRequiredService<IWorkflowClient>();
         var definition = Definition("unknown");
+
         await EngineAssert.StoreFailureAsync(() => client.RunAsync(definition, new Data { Value = "kept" },
             new WorkflowOptions { InstanceId = "uncertain" }));
+
         Assert.Equal(3, store.Unknowns);
         Assert.Single(store.CommitIds.Distinct());
         var saved = await store.GetWorkflowInstanceAsync("uncertain");
         Assert.Equal(WorkflowStatus.Completed, saved!.Status);
         var reads = 0;
-        store.FailRead = _ => { reads++; return false; };
+
+        store.FailRead = _ =>
+        {
+            reads++;
+
+            return false;
+        };
+
         var recovered = await client.RecoverAsync("uncertain");
         Assert.True(reads > 0);
         Assert.Equal(WorkflowExecutionStatus.Success, recovered.Status);
@@ -184,24 +219,40 @@ public sealed class AssignmentRequestTests
         using var services = Services();
         var definition = Definition("preparation");
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+
         foreach (var cancelled in new[] { false, true })
         {
             var assign = NewAssign(definition);
             var checkpoint = ExecutionCheckpoint.Read(assign.Instance.ExecutionStateJson);
             var root = checkpoint.Continuations[0];
             root.Status = ContinuationStatus.WaitingResolution;
-            root.PendingActivity = new ActivityInvocationState { StepId = "root/0",
-                Resolution = new ActivityResolutionState { Kind = ActivityResolutionKind.Completed } };
+
+            root.PendingActivity = new ActivityInvocationState
+            {
+                StepId = "root/0",
+                Resolution = new ActivityResolutionState { Kind = ActivityResolutionKind.Completed }
+            };
+
             assign.Instance.Status = WorkflowStatus.NeedsResolution;
             assign.Instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
-            assign = assign with { Recovery = new([root.Id], cancelled
-                ? new CancellationReason { ReasonCode = "pending" } : null) };
+
+            assign = assign with
+            {
+                Recovery = new([root.Id], cancelled
+                    ? new CancellationReason { ReasonCode = "pending" }
+                    : null)
+            };
+
             var endpoint = new ExecutorHost();
             var ready = await new WorkflowExecutor(services, endpoint).ExecuteAsync(assign, CancellationToken.None);
             Assert.Equal(AssignmentOutcomeKind.Idle, ready.Outcome.Kind);
             Assert.Equal(cancelled ? WorkflowStatus.Cancelled : WorkflowStatus.Completed, endpoint.Saved!.Status);
-            if (cancelled) Assert.Equal("pending", endpoint.Saved.CancellationReason!.ReasonCode);
-            else Assert.Equal(WorkflowStatus.Running, endpoint.Statuses[0]);
+
+            if (cancelled)
+                Assert.Equal("pending", endpoint.Saved.CancellationReason!.ReasonCode);
+            else
+                Assert.Equal(WorkflowStatus.Running, endpoint.Statuses[0]);
+
             Assert.Equal(WorkflowStatus.NeedsResolution, assign.Instance.Status);
         }
     }
@@ -217,11 +268,13 @@ public sealed class AssignmentRequestTests
         var definition = Definition("breakpoints");
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         var endpoint = new ExecutorHost();
+
         var assign = NewAssign(definition) with
         {
             DebuggingEnabled = true,
             Breakpoints = BreakpointResolver.Resolve(definition, [new("first", "root/0")])
         };
+
         var ready = await new WorkflowExecutor(services, endpoint).ExecuteAsync(assign, CancellationToken.None);
         Assert.Equal(AssignmentOutcomeKind.Idle, ready.Outcome.Kind);
         Assert.Equal(WorkflowStatus.Paused, Assert.Single(endpoint.Statuses));
@@ -254,11 +307,22 @@ public sealed class AssignmentRequestTests
         var continuation = Assert.Single(checkpoint.Continuations);
         var pending = continuation.PendingActivity!;
         Assert.Equal(WorkflowTypeIdentity.SavedName(typeof(Data)), pending.ChildDataType);
-        if (unavailable) pending.ChildDataType = "missing-child-data, missing-assembly";
+
+        if (unavailable)
+            pending.ChildDataType = "missing-child-data, missing-assembly";
+
         continuation.Status = ContinuationStatus.Active;
-        continuation.AcceptedWait = new AcceptedWaitState { StepId = pending.StepId,
-            Event = SerializedValue.From(new ChildCompleted { ChildInstanceId = pending.ChildWorkflowId!,
-                Status = WorkflowStatus.Completed, DataJson = StoredJson.Inline("{}") })! };
+
+        continuation.AcceptedWait = new AcceptedWaitState
+        {
+            StepId = pending.StepId,
+            Event = SerializedValue.From(new ChildCompleted
+            {
+                ChildInstanceId = pending.ChildWorkflowId!,
+                Status = WorkflowStatus.Completed, DataJson = StoredJson.Inline("{}")
+            })!
+        };
+
         checkpoint.Waits.Clear();
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         var before = endpoint.Statuses.Count;
@@ -266,12 +330,15 @@ public sealed class AssignmentRequestTests
         collection.AddIxIFlow();
         collection.AddSingleton<IWorkflowDefinitionSource>(new ParentOnlySource(parent));
         using var restarted = collection.BuildServiceProvider();
+
         var assignment = new Assign(Guid.NewGuid(), instance, instance.SavedParts, checkpoint.StructureHash,
             2, 0, ExecutionLimits.Default, false, []);
+
         if (unavailable)
         {
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() =>
                 new WorkflowExecutor(restarted, endpoint).ExecuteAsync(assignment, CancellationToken.None));
+
             Assert.Equal(WorkflowErrorKind.ArtifactUnavailable, error.Kind);
             Assert.Equal(before, endpoint.Statuses.Count);
             Assert.NotNull(ExecutionCheckpoint.Read(instance.ExecutionStateJson).Continuations[0].AcceptedWait);
@@ -288,9 +355,11 @@ public sealed class AssignmentRequestTests
     public async Task AChildRequestThatIsNotAssignedEndsOwnershipWithoutEnteringWorkflowCatch()
     {
         using var services = Services();
+
         var parent = Workflow.Create<Data>("child-ownership").Step<Noop>()
             .Try(body => body.Invoke<Data>("refused-child", 1))
             .Catch<Exception>(handler => handler.Step<Noop>()).Build();
+
         var registry = services.GetRequiredService<IWorkflowCatalog>();
         await registry.RegisterWorkflowAsync(parent);
         await registry.RegisterWorkflowAsync(Definition("refused-child"));
@@ -303,31 +372,41 @@ public sealed class AssignmentRequestTests
 
     private sealed class ParentOnlySource(WorkflowDefinition parent) : IWorkflowDefinitionSource
     {
-        public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest, CancellationToken cancellationToken = default) =>
+        public async Task<WorkflowDefinitionLease> AcquireWorkflowDefinitionAsync(string name, int version, ArtifactDigest? digest,
+            CancellationToken cancellationToken = default) =>
             new((await GetWorkflowDefinitionAsync(name, version))!);
-        public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version, CancellationToken cancellationToken = default) =>
+
+        public Task<WorkflowDefinitionLease> ResolveWorkflowDefinitionAsync(string name, int version,
+            CancellationToken cancellationToken = default) =>
             AcquireWorkflowDefinitionAsync(name, version, null);
 
         public Task<WorkflowDefinition?> GetWorkflowDefinitionAsync(string name, int version)
         {
             Assert.Equal(parent.Name, name);
             Assert.Equal(parent.Version, version);
+
             return Task.FromResult<WorkflowDefinition?>(parent);
         }
     }
 
     private static WorkflowDefinition Definition(string name) => Workflow.Create<Data>(name).Step<Noop>().Build();
+
     private static Assign NewAssign(WorkflowDefinition definition)
     {
         var (instance, checkpoint, scopes) = WorkflowInstances.NewInstance(definition, new Data(), new(), DateTime.UtcNow);
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+
         return new(Guid.NewGuid(), instance, null, scopes.StructureHash, 1, 0, ExecutionLimits.Default, false, []);
     }
+
     private static ServiceProvider Services(IWorkflowStateRepository? store = null)
     {
         var collection = new ServiceCollection().AddLogging();
         collection.AddIxIFlow();
-        if (store != null) collection.AddSingleton(store);
+
+        if (store != null)
+            collection.AddSingleton(store);
+
         return collection.BuildServiceProvider();
     }
 
@@ -346,6 +425,7 @@ public sealed class AssignmentRequestTests
         public required ExecutionLeaseRenewer Renewer;
         public IWorkflowCatalog Registry => Services.GetRequiredService<IWorkflowCatalog>();
         public IExecutionHost Host => new WorkflowHost.InstanceOperations.ExecutionHost(Operations);
+
         public static async Task<Assigned> CreateAsync(IWorkflowStateRepository? store = null, ExecutionLimits? limits = null)
         {
             var time = new FakeTimeProvider();
@@ -358,31 +438,54 @@ public sealed class AssignmentRequestTests
             await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
             var assign = NewAssign(definition);
             await proxy.SeedAsync(assign.Instance);
-            if (store is HeldCommitStore held) held.Hold = true;
+
+            if (store is HeldCommitStore held)
+                held.Hold = true;
+
             var instance = (await proxy.GetWorkflowInstanceAsync(assign.Instance.InstanceId))!;
             var watch = new CancellationWatch(proxy, time);
             var renewer = new ExecutionLeaseRenewer(proxy, time);
+
             var owner = (await WorkflowExecutionLease.TryAcquireAsync(proxy, instance,
-                new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, renewer, await StoreTestSupport.ClaimAsync(services), _ => { }, _ => { }, _ => { }, time))!;
+                new(TimeSpan.FromHours(1), TimeSpan.FromMinutes(30)), watch, renewer, await StoreTestSupport.ClaimAsync(services), _ =>
+                {
+                }, _ =>
+                {
+                }, _ =>
+                {
+                }, time))!;
+
             var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(), proxy,
                 services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), renewer, timeProvider: time, limits: limits);
+
             var identity = Guid.NewGuid();
             var admission = operations.Admit(instance, owner, identity);
-            var result = new Assigned { Services = services, Store = proxy, Probe = probe, Instance = instance,
-                Owner = owner, Operations = operations, Admission = admission, Watch = watch, Renewer = renewer };
+
+            var result = new Assigned
+            {
+                Services = services, Store = proxy, Probe = probe, Instance = instance,
+                Owner = owner, Operations = operations, Admission = admission, Watch = watch, Renewer = renewer
+            };
+
             result._identity = identity;
             result._time = time;
+
             return result;
         }
+
         private Guid _identity;
         private FakeTimeProvider? _time;
         private bool _ownerDisposed;
+
         public async Task ReleaseOwnerAsync()
         {
-            if (_ownerDisposed) return;
+            if (_ownerDisposed)
+                return;
+
             _ownerDisposed = true;
             await Owner.DisposeAsync();
         }
+
         public async ValueTask DisposeAsync()
         {
             Admission.Dispose();
@@ -398,10 +501,12 @@ public sealed class AssignmentRequestTests
         public IWorkflowStateRepository Inner = null!;
         private int _requestCalls;
         public int RequestCalls => Volatile.Read(ref _requestCalls);
+
         protected override object? Invoke(MethodInfo? method, object?[]? args)
         {
             if (method!.Name is "CommitWorkflowInstanceAsync" or "GetPendingEventsAsync" or "GetWaitAsync")
                 Interlocked.Increment(ref _requestCalls);
+
             return method.Invoke(Inner, args);
         }
     }
@@ -413,15 +518,20 @@ public sealed class AssignmentRequestTests
         public int Calls;
         public bool Hold;
         public List<string> Order = [];
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
             // SeedAsync uses an admission commit, before requests are held.
-            if (!Hold) return await base.CommitWorkflowInstanceAsync(commit);
+            if (!Hold)
+                return await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
+
             Interlocked.Increment(ref Calls);
             Entered.TrySetResult();
             await Release.Task;
             Order.Add(commit.CommitId);
-            return await base.CommitWorkflowInstanceAsync(commit);
+
+            return await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
         }
     }
 
@@ -429,15 +539,20 @@ public sealed class AssignmentRequestTests
     {
         public int Unknowns;
         public List<string> CommitIds = [];
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
-            var result = await base.CommitWorkflowInstanceAsync(commit);
+            var result = await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
+
             if (commit.Instance.Status == WorkflowStatus.Completed)
             {
                 Unknowns++;
                 CommitIds.Add(commit.CommitId);
+
                 throw new IOException("Applied, but the reply was lost");
             }
+
             return result;
         }
     }
@@ -446,34 +561,48 @@ public sealed class AssignmentRequestTests
     {
         public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
             Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
+
         public bool UnknownAfterFirst;
         public bool NotAssignedAtChild;
         public int BeforeChild;
         public WorkflowInstance? Saved;
         public List<WorkflowStatus> Statuses = [];
         public AcknowledgedCommit? Acknowledged;
+
         public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
             if (UnknownAfterFirst && Acknowledged != null)
                 return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Unknown));
+
             Saved = request.Commit.ReadInstance(Saved);
             Statuses.Add(Saved.Status);
             Acknowledged = new(request.Commit.CommitId, request.Commit.ExpectedRevision + 1);
+
             return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Ack, Acknowledged.Revision));
         }
+
         public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => Task.FromResult(new ReadInboxReply(request.AssignmentId,
             new InboxPage([], request.AfterSequence, new Dictionary<string, long>())));
+
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => Task.FromResult(new ReadWaitReply(request.AssignmentId));
+
         public Task<StartChildReply> StartChildAsync(StartChild request)
         {
             BeforeChild = Statuses.Count;
+
             return Task.FromResult(NotAssignedAtChild
                 ? new StartChildReply(request.AssignmentId, Conflict: ConflictReason.NotAssigned)
                 : new StartChildReply(request.AssignmentId, request.Start));
         }
     }
-    public sealed class Data { public string Value { get; set; } = ""; }
+
+    public sealed class Data
+    {
+        public string Value { get; set; } = "";
+    }
+
     public sealed class Go;
+
     public sealed class Noop : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;

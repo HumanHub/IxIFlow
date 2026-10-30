@@ -101,10 +101,16 @@ public sealed class ScopePrerequisiteOriginReview3Tests
         public int Output
         {
             get => 0;
-            set { if (value == 2) throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "author output"); }
+            set
+            {
+                if (value == 2)
+                    throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "author output");
+            }
         }
     }
+
     public sealed class Value;
+
     public sealed class Probe(string fault)
     {
         public string Fault { get; } = fault;
@@ -113,30 +119,63 @@ public sealed class ScopePrerequisiteOriginReview3Tests
         public int Catches;
         public TaskCompletionSource CloseGate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+
     public sealed class Container(Probe probe) : IScopeActivity<Value>
     {
         public int Argument { get; set; }
         public object? Leaked { get; set; }
+
         public Task<Value> OpenAsync(ScopeOpening opening, IScopeContext context, CancellationToken token)
         {
             probe.Opens++;
-            if (probe.Fault == "null-open-task") return null!;
-            if (probe.Fault == "null-open-value") return Task.FromResult<Value>(null!);
+
+            if (probe.Fault == "null-open-task")
+                return null!;
+
+            if (probe.Fault == "null-open-value")
+                return Task.FromResult<Value>(null!);
+
             var value = new Value();
-            if (probe.Fault == "engine-settlement") Leaked = value;
+
+            if (probe.Fault == "engine-settlement")
+                Leaked = value;
+
             return probe.Fault == "author-open"
                 ? Task.FromException<Value>(new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "author open"))
                 : Task.FromResult(value);
         }
+
         public Task CloseAsync(Value value, ScopeClosing closing, IScopeContext context, CancellationToken token) =>
-            probe.Fault == "null-close-task" ? null! : probe.Fault is "engine-cleanup-timeout" or "engine-close-timeout" ? probe.CloseGate.Task : probe.Fault == "author-close"
-                ? Task.FromException(new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "author close"))
-                : probe.Fault == "author-timeout" ? Task.FromException(new TimeoutException("author close")) : Task.CompletedTask;
+            probe.Fault == "null-close-task"
+                ? null!
+                : probe.Fault is "engine-cleanup-timeout" or "engine-close-timeout"
+                    ? probe.CloseGate.Task
+                    : probe.Fault == "author-close"
+                        ? Task.FromException(new WorkflowEngineException(WorkflowErrorKind.Infrastructure, "author close"))
+                        : probe.Fault == "author-timeout"
+                            ? Task.FromException(new TimeoutException("author close"))
+                            : Task.CompletedTask;
     }
+
     public sealed class Body(Probe probe) : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken token) { probe.Bodies++; return Task.CompletedTask; } }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken token)
+        {
+            probe.Bodies++;
+
+            return Task.CompletedTask;
+        }
+    }
+
     public sealed class Caught(Probe probe) : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken token) { probe.Catches++; return Task.CompletedTask; } }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken token)
+        {
+            probe.Catches++;
+
+            return Task.CompletedTask;
+        }
+    }
 
     private sealed class Harness : IDisposable
     {
@@ -145,6 +184,7 @@ public sealed class ScopePrerequisiteOriginReview3Tests
         private readonly ExecutionSignals _signals;
         public Host Host { get; }
         public Probe Probe { get; }
+
         public Harness(string fault)
         {
             Probe = new(fault);
@@ -155,43 +195,77 @@ public sealed class ScopePrerequisiteOriginReview3Tests
             _executor = new(_services, Host);
             _signals = _executor.PrepareAssignment(Guid.NewGuid());
         }
+
         public async Task<AssignmentOutcome> RunAsync()
         {
             var definition = new WorkflowBuilder<Data, object>([], "ScopePrerequisiteOrigin")
                 .Try(b => b.Scope<Container>(s => s.Input(x => x.Argument).From(c => AuthorMapping("author-input"))
                     .Output(x => x.Argument).To(c => c.WorkflowData.Output), body => body.Step<Body>()))
                 .Catch<Exception>(b => b.Step<Caught>()).Build();
+
             await _services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
             var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition, new Data(), new(), DateTime.UtcNow);
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
+
             return (await _executor.ExecuteAsync(new(_signals.AssignmentId, instance, null, checkpoint.StructureHash,
-                1, 0, ExecutionLimits.Default with { ScopeCloseTimeout = TimeSpan.FromMilliseconds(100), ReleaseGrace = TimeSpan.FromMilliseconds(100) }, false, []), CancellationToken.None)).Outcome!;
+                1, 0,
+                ExecutionLimits.Default with
+                {
+                    ScopeCloseTimeout = TimeSpan.FromMilliseconds(100), ReleaseGrace = TimeSpan.FromMilliseconds(100)
+                }, false, []), CancellationToken.None)).Outcome!;
         }
+
         private int AuthorMapping(string fault) => Probe.Fault == fault
-            ? throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, fault) : Probe.Fault is "author-output" or "engine-cleanup-timeout" ? 2 : 1;
-        public void Dispose() { Probe.CloseGate.TrySetResult(); _signals.Dispose(); _services.Dispose(); }
+            ? throw new WorkflowEngineException(WorkflowErrorKind.Infrastructure, fault)
+            : Probe.Fault is "author-output" or "engine-cleanup-timeout"
+                ? 2
+                : 1;
+
+        public void Dispose()
+        {
+            Probe.CloseGate.TrySetResult();
+            _signals.Dispose();
+            _services.Dispose();
+        }
     }
+
     private sealed class Host(string fault) : IExecutionHost
     {
         public WorkflowInstance? Saved { get; private set; }
         public int Faults { get; private set; }
+
         public Task<CheckpointReply> CheckpointAsync(Checkpoint request)
         {
             var candidate = request.Commit.ReadInstance(Saved);
             var state = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState(candidate));
+
             if (state.Scopes.Any(scope => scope.Phase == ScopePhase.Opening))
             {
                 if (fault == "retry" && Faults++ < 3)
-                    return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Retry, Error: "commit unavailable"));
-                if (fault == "limit" && Faults++ == 0) throw new CheckpointLimitExceededException(200, 100);
-                if (fault == "verification" && Faults++ == 0) throw new CheckpointVerificationException("unverified scope open");
-                if (fault == "engine" && Faults++ == 0) throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "engine open");
+                    return Task.FromResult(
+                        new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Retry, Error: "commit unavailable"));
+
+                if (fault == "limit" && Faults++ == 0)
+                    throw new CheckpointLimitExceededException(200, 100);
+
+                if (fault == "verification" && Faults++ == 0)
+                    throw new CheckpointVerificationException("unverified scope open");
+
+                if (fault == "engine" && Faults++ == 0)
+                    throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, "engine open");
             }
+
             Saved = candidate;
+
             return Task.FromResult(new CheckpointReply(request.AssignmentId, CheckpointReplyKind.Ack, request.Commit.ExpectedRevision + 1));
         }
-        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) => Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
-        public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => Task.FromResult(new ReadInboxReply(request.AssignmentId, new InboxPage([], request.AfterSequence, new Dictionary<string, long>())));
+
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            Task.FromResult(new ReadPayloadReply(request.AssignmentId, Refusal: WorkflowErrorKind.PayloadUnavailable));
+
+        public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => Task.FromResult(new ReadInboxReply(request.AssignmentId,
+            new InboxPage([], request.AfterSequence, new Dictionary<string, long>())));
+
         public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => Task.FromResult(new ReadWaitReply(request.AssignmentId));
         public Task<StartChildReply> StartChildAsync(StartChild request) => throw new NotSupportedException();
     }

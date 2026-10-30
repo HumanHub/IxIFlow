@@ -19,7 +19,10 @@ public sealed class RetentionStoreTests
         get
         {
             var data = new TheoryData<RetentionScenario>();
-            foreach (var scenario in Enum.GetValues<RetentionScenario>()) data.Add(scenario);
+
+            foreach (var scenario in Enum.GetValues<RetentionScenario>())
+                data.Add(scenario);
+
             return data;
         }
     }
@@ -35,8 +38,13 @@ public sealed class RetentionStoreTests
     public Task MemoryRetentionContract(RetentionScenario scenario)
     {
         var time = new FakeTimeProvider();
+
         return new RetentionStoreContract(new InMemoryWorkflowStateRepository(time, OutboxSettingsFor(scenario)), (_, by) =>
-            { time.Advance(by); return Task.CompletedTask; }).VerifyAsync(scenario);
+        {
+            time.Advance(by);
+
+            return Task.CompletedTask;
+        }).VerifyAsync(scenario);
     }
 
     [Theory]
@@ -47,14 +55,25 @@ public sealed class RetentionStoreTests
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.Retention", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         var connectionString = "Data Source=" + Path.Combine(folder, "retention.db");
+
         try
         {
             var time = new FakeTimeProvider();
             await using var store = new SqliteWorkflowStateRepository(connectionString, time, OutboxSettingsFor(scenario));
-            await new RetentionStoreContract(store, (_, by) => { time.Advance(by); return Task.CompletedTask; },
-                () => new SqliteConnection(new SqliteConnectionStringBuilder(connectionString) { Pooling = false }.ConnectionString)).VerifyAsync(scenario);
+
+            await new RetentionStoreContract(store, (_, by) =>
+                    {
+                        time.Advance(by);
+
+                        return Task.CompletedTask;
+                    },
+                    () => new SqliteConnection(new SqliteConnectionStringBuilder(connectionString) { Pooling = false }.ConnectionString))
+                .VerifyAsync(scenario);
         }
-        finally { await SqliteTestFiles.DeleteAsync(folder); }
+        finally
+        {
+            await SqliteTestFiles.DeleteAsync(folder);
+        }
     }
 
     [SqlServerFact]
@@ -62,8 +81,10 @@ public sealed class RetentionStoreTests
     public async Task SqlServerRetentionContract()
     {
         var connectionString = SqlTestDatabase<RetentionStoreTests>.ConnectionString;
+
         foreach (var scenario in Enum.GetValues<RetentionScenario>())
-            await new RetentionStoreContract(new SqlWorkflowStateRepository(connectionString, outboxSettings: OutboxSettingsFor(scenario)),
+            await new RetentionStoreContract(
+                new SqlServerWorkflowStateRepository(connectionString, outboxSettings: OutboxSettingsFor(scenario)),
                 (ids, by) => AgeRows(() => new SqlConnection(connectionString), ids, by),
                 () => new SqlConnection(connectionString)).VerifyAsync(scenario);
     }
@@ -73,8 +94,10 @@ public sealed class RetentionStoreTests
     public async Task PostgreSqlRetentionContract()
     {
         var connectionString = PostgreSqlTestDatabase<RetentionStoreTests>.ConnectionString;
+
         foreach (var scenario in Enum.GetValues<RetentionScenario>())
-            await new RetentionStoreContract(new PostgreSqlWorkflowStateRepository(connectionString, outboxSettings: OutboxSettingsFor(scenario)),
+            await new RetentionStoreContract(
+                new PostgreSqlWorkflowStateRepository(connectionString, outboxSettings: OutboxSettingsFor(scenario)),
                 (ids, by) => AgeRows(() => new NpgsqlConnection(connectionString), ids, by),
                 () => new NpgsqlConnection(connectionString)).VerifyAsync(scenario);
     }
@@ -84,17 +107,21 @@ public sealed class RetentionStoreTests
     private static async Task AgeRows(Func<DbConnection> open, IReadOnlyCollection<string> ids, TimeSpan by)
     {
         await using var connection = open();
-        var sql = connection is SqlConnection ? """
-            UPDATE dbo.IxIFlowWorkflowInstances SET EndedAtUtc=DATEADD(SECOND, -@Seconds, EndedAtUtc) WHERE InstanceId IN @Ids;
-            UPDATE dbo.IxIFlowOutboxEvents SET OccurredAtUtc=DATEADD(SECOND, -@Seconds, OccurredAtUtc) WHERE InstanceId IN @Ids;
-            UPDATE dbo.IxIFlowWorkflowTombstones SET RemovedAtUtc=DATEADD(SECOND, -@Seconds, RemovedAtUtc),
-                ExpiresAtUtc=DATEADD(SECOND, -@Seconds, ExpiresAtUtc) WHERE InstanceId IN @Ids;
-            """ : """
-            UPDATE ixiflow_workflow_instances SET ended_at_utc=ended_at_utc - @Seconds * INTERVAL '1 second' WHERE instance_id=ANY(@Ids);
-            UPDATE ixiflow_outbox_events SET occurred_at_utc=occurred_at_utc - @Seconds * INTERVAL '1 second' WHERE instance_id=ANY(@Ids);
-            UPDATE ixiflow_workflow_tombstones SET removed_at_utc=removed_at_utc - @Seconds * INTERVAL '1 second',
-                expires_at_utc=expires_at_utc - @Seconds * INTERVAL '1 second' WHERE instance_id=ANY(@Ids);
-            """;
+
+        var sql = connection is SqlConnection
+            ? """
+              UPDATE dbo.IxIFlowWorkflowInstances SET EndedAtUtc=DATEADD(SECOND, -@Seconds, EndedAtUtc) WHERE InstanceId IN @Ids;
+              UPDATE dbo.IxIFlowOutboxEvents SET OccurredAtUtc=DATEADD(SECOND, -@Seconds, OccurredAtUtc) WHERE InstanceId IN @Ids;
+              UPDATE dbo.IxIFlowWorkflowTombstones SET RemovedAtUtc=DATEADD(SECOND, -@Seconds, RemovedAtUtc),
+                  ExpiresAtUtc=DATEADD(SECOND, -@Seconds, ExpiresAtUtc) WHERE InstanceId IN @Ids;
+              """
+            : """
+              UPDATE ixiflow_workflow_instances SET ended_at_utc=ended_at_utc - @Seconds * INTERVAL '1 second' WHERE instance_id=ANY(@Ids);
+              UPDATE ixiflow_outbox_events SET occurred_at_utc=occurred_at_utc - @Seconds * INTERVAL '1 second' WHERE instance_id=ANY(@Ids);
+              UPDATE ixiflow_workflow_tombstones SET removed_at_utc=removed_at_utc - @Seconds * INTERVAL '1 second',
+                  expires_at_utc=expires_at_utc - @Seconds * INTERVAL '1 second' WHERE instance_id=ANY(@Ids);
+              """;
+
         await connection.ExecuteAsync(sql, new { Ids = ids.ToArray(), Seconds = (int)by.TotalSeconds });
     }
 
@@ -106,11 +133,20 @@ public sealed class RetentionStoreTests
         var time = new FakeTimeProvider();
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.Retention", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
-        var store = sqlite ? (IWorkflowStateRepository)new SqliteWorkflowStateRepository(
-            "Data Source=" + Path.Combine(folder, "boundaries.db"), time) : new InMemoryWorkflowStateRepository(time);
+
+        var store = sqlite
+            ? (IWorkflowStateRepository)new SqliteWorkflowStateRepository(
+                "Data Source=" + Path.Combine(folder, "boundaries.db"), time)
+            : new InMemoryWorkflowStateRepository(time);
+
         try
         {
-            var instance = new WorkflowInstance { ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "boundary", WorkflowName = "Boundary", Status = WorkflowStatus.Completed };
+            var instance = new WorkflowInstance
+            {
+                ExecutionStateJson = StoreTestSupport.CheckpointJson, InstanceId = "boundary", WorkflowName = "Boundary",
+                Status = WorkflowStatus.Completed
+            };
+
             await store.SeedAsync(instance);
             var retention = store;
             time.Advance(TimeSpan.FromDays(30) - TimeSpan.FromTicks(1));
@@ -125,7 +161,9 @@ public sealed class RetentionStoreTests
         }
         finally
         {
-            if (store is IAsyncDisposable disposable) await disposable.DisposeAsync();
+            if (store is IAsyncDisposable disposable)
+                await disposable.DisposeAsync();
+
             await SqliteTestFiles.DeleteAsync(folder);
         }
     }

@@ -8,13 +8,13 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Activity setup builder for first step (no previous step access)
 /// </summary>
-public class ActivitySetupBuilder<TWorkflowData, TActivity> : IActivitySetupBuilder<TWorkflowData, TActivity>
+internal class ActivitySetupBuilder<TWorkflowData, TActivity> : IActivitySetupBuilder<TWorkflowData, TActivity>
     where TActivity : class
 {
     internal WorkflowStep Step => _step;
     private readonly WorkflowStep _step;
 
-    public ActivitySetupBuilder(WorkflowStep step)
+    internal ActivitySetupBuilder(WorkflowStep step)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
     }
@@ -41,7 +41,7 @@ public class ActivitySetupBuilder<TWorkflowData, TActivity> : IActivitySetupBuil
 /// <summary>
 ///     Activity setup builder for subsequent steps (with previous step access)
 /// </summary>
-public class ActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> : IActivitySetupBuilder<TWorkflowData, TActivity,
+internal class ActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> : IActivitySetupBuilder<TWorkflowData, TActivity,
     TPreviousStepData>
     where TActivity : class
     where TPreviousStepData : class
@@ -49,7 +49,7 @@ public class ActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> :
     internal WorkflowStep Step => _step;
     private readonly WorkflowStep _step;
 
-    public ActivitySetupBuilder(WorkflowStep step)
+    internal ActivitySetupBuilder(WorkflowStep step)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
     }
@@ -73,18 +73,17 @@ public class ActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData> :
     }
 }
 
-
 /// <summary>
 ///     Input builder for first step (no previous step)
 /// </summary>
-public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty> : IActivitySetupInputBuilder<TWorkflowData, TActivity,
+internal class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty> : IActivitySetupInputBuilder<TWorkflowData, TActivity,
     TProperty>
     where TActivity : class
 {
     private readonly Expression<Func<TActivity, TProperty>> _propertyExpression;
     private readonly WorkflowStep _step;
 
-    public ActivitySetupInputBuilder(WorkflowStep step, Expression<Func<TActivity, TProperty>> propertyExpression)
+    internal ActivitySetupInputBuilder(WorkflowStep step, Expression<Func<TActivity, TProperty>> propertyExpression)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
         _propertyExpression = propertyExpression ?? throw new ArgumentNullException(nameof(propertyExpression));
@@ -105,7 +104,9 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty> : IA
         // Create wrapped function for object context
         Func<object, object?> wrappedFunction = context =>
         {
-            if (context is WorkflowContext<TWorkflowData> typedContext) return compiledFunction(typedContext);
+            if (context is WorkflowContext<TWorkflowData> typedContext)
+                return compiledFunction(typedContext);
+
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}>, got {context.GetType().Name}");
         };
@@ -147,7 +148,9 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty> : IA
 
     private string GetPropertyName<T>(Expression<Func<TActivity, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException("Property expression must be a member access expression",
             nameof(propertyExpression));
     }
@@ -156,15 +159,16 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty> : IA
 /// <summary>
 ///     Input builder for subsequent steps (with previous step access)
 /// </summary>
-public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPreviousStepData> : IActivitySetupInputBuilder<TWorkflowData,
-    TActivity, TProperty, TPreviousStepData>
+internal class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPreviousStepData> :
+    ActivitySetupBuilder<TWorkflowData, TActivity, TPreviousStepData>, IActivitySetupInputBuilder<TWorkflowData,
+        TActivity, TProperty, TPreviousStepData>
     where TActivity : class
     where TPreviousStepData : class
 {
     private readonly Expression<Func<TActivity, TProperty>> _propertyExpression;
     private readonly WorkflowStep _step;
 
-    public ActivitySetupInputBuilder(WorkflowStep step, Expression<Func<TActivity, TProperty>> propertyExpression)
+    internal ActivitySetupInputBuilder(WorkflowStep step, Expression<Func<TActivity, TProperty>> propertyExpression) : base(step)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
         _propertyExpression = propertyExpression ?? throw new ArgumentNullException(nameof(propertyExpression));
@@ -187,6 +191,7 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPre
         {
             if (context is WorkflowContext<TWorkflowData, TPreviousStepData> typedContext)
                 return compiledFunction(typedContext);
+
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}, {typeof(TPreviousStepData).Name}>, got {context.GetType().Name}");
         };
@@ -211,7 +216,7 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPre
     /// <summary>
     ///     Configures an input property mapping with previous step access
     /// </summary>
-    public IActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty2, TPreviousStepData> Input<TProperty2>(
+    public new IActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty2, TPreviousStepData> Input<TProperty2>(
         Expression<Func<TActivity, TProperty2>> property)
     {
         return new ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty2, TPreviousStepData>(_step, property);
@@ -220,7 +225,7 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPre
     /// <summary>
     ///     Configures an output property mapping
     /// </summary>
-    public IActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty2> Output<TProperty2>(
+    public new IActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty2> Output<TProperty2>(
         Expression<Func<TActivity, TProperty2>> property)
     {
         return new ActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty2>(_step, property);
@@ -228,7 +233,9 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPre
 
     private string GetPropertyName<T>(Expression<Func<TActivity, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException("Property expression must be a member access expression",
             nameof(propertyExpression));
     }
@@ -237,14 +244,14 @@ public class ActivitySetupInputBuilder<TWorkflowData, TActivity, TProperty, TPre
 /// <summary>
 ///     Output builder for activity property mappings
 /// </summary>
-public class ActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty> : IActivitySetupOutputBuilder<TWorkflowData, TActivity,
+internal class ActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty> : IActivitySetupOutputBuilder<TWorkflowData, TActivity,
     TProperty>
     where TActivity : class
 {
     private readonly Expression<Func<TActivity, TProperty>> _propertyExpression;
     private readonly WorkflowStep _step;
 
-    public ActivitySetupOutputBuilder(WorkflowStep step, Expression<Func<TActivity, TProperty>> propertyExpression)
+    internal ActivitySetupOutputBuilder(WorkflowStep step, Expression<Func<TActivity, TProperty>> propertyExpression)
     {
         _step = step ?? throw new ArgumentNullException(nameof(step));
         _propertyExpression = propertyExpression ?? throw new ArgumentNullException(nameof(propertyExpression));
@@ -269,6 +276,7 @@ public class ActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty> : I
             if (context is WorkflowContext<TWorkflowData> typedContext && value is TProperty typedValue)
                 compiledAssignment(typedContext, typedValue);
             else if (context is WorkflowContext<TWorkflowData> typedContext2 && value == null)
+
                 // Handle null values gracefully
                 compiledAssignment(typedContext2, default!);
             else
@@ -354,12 +362,15 @@ public class ActivitySetupOutputBuilder<TWorkflowData, TActivity, TProperty> : I
         var lambda =
             Expression.Lambda<Action<WorkflowContext<TWorkflowData>, TProperty>>(assignment, contextParameter,
                 valueParameter);
+
         return lambda.Compile();
     }
 
     private string GetPropertyName<T>(Expression<Func<TActivity, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException("Property expression must be a member access expression",
             nameof(propertyExpression));
     }

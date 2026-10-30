@@ -13,15 +13,14 @@ public sealed class BatchData
 [WorkflowActivity("samples.weigh")]
 public sealed class Weigh : IAsyncActivity
 {
-    [ActivityInput]
-    public int Weight { get; set; }
+    [ActivityInput] public int Weight { get; set; }
 
-    [ActivityOutput]
-    public int Grams { get; private set; }
+    [ActivityOutput] public int Grams { get; private set; }
 
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Grams = Weight * 1000;
+
         return Task.CompletedTask;
     }
 }
@@ -39,12 +38,16 @@ public static class Batch
                 setup =>
                 {
                     setup.As("parcel");
+
                     if (join != "sequential")
                         setup.Parallel(maxConcurrency: 2);
+
                     if (join == "any")
                         setup.WaitAny();
+
                     if (join == "conditional")
                         setup.WaitConditionally<int>(completeWhenExpression: (data, results) => results.Count >= 2);
+
                     setup.Into(ctx => ctx.WorkflowData.Results);
                 })
             .Build();

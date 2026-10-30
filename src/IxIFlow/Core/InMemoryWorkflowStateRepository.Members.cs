@@ -9,36 +9,47 @@ public partial class InMemoryWorkflowStateRepository
     public Task RegisterMemberAsync(MemberRegistration member, CancellationToken cancellationToken = default)
     {
         member = MemberRegistry.Snapshot(member);
+
         lock (_claimLock)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var now = Now;
             PruneMembers(now);
+
             foreach (var package in member.InstalledPackages)
                 if (_installedPackages.TryAdd((package.Id, package.Version, package.Fingerprint), InstalledPackageRules.Snapshot(package)))
                     _catalogRevision = checked(_catalogRevision + 1);
+
             _hostPackages[member.Id] = member.InstalledPackages;
+
             _members[member.Id] = new StoreMember(member,
                 _members.TryGetValue(member.Id, out var prior) ? prior.StartedAtUtc : now, now);
         }
+
         return Task.CompletedTask;
     }
 
     public Task<bool> HeartbeatAsync(Guid memberId, IReadOnlyDictionary<string, string> capabilities,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         MemberRegistry.ValidateId(memberId);
         var snapshot = MemberRegistry.SnapshotCapabilities(capabilities);
+
         lock (_claimLock)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var now = Now;
             PruneMembers(now);
-            if (!_members.TryGetValue(memberId, out var member)) return Task.FromResult(false);
+
+            if (!_members.TryGetValue(memberId, out var member))
+                return Task.FromResult(false);
+
             _members[memberId] = member with
             {
                 Registration = member.Registration with { Capabilities = snapshot }, HeartbeatAtUtc = now
             };
+
             return Task.FromResult(true);
         }
     }
@@ -46,6 +57,7 @@ public partial class InMemoryWorkflowStateRepository
     public Task UnregisterMemberAsync(Guid memberId, CancellationToken cancellationToken = default)
     {
         MemberRegistry.ValidateId(memberId);
+
         lock (_claimLock)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -53,6 +65,7 @@ public partial class InMemoryWorkflowStateRepository
             _hostPackages.Remove(memberId);
             _members.Remove(memberId);
         }
+
         return Task.CompletedTask;
     }
 
@@ -63,29 +76,41 @@ public partial class InMemoryWorkflowStateRepository
             cancellationToken.ThrowIfCancellationRequested();
             var now = Now;
             PruneMembers(now);
+
             return Task.FromResult<IReadOnlyList<StoreMember>>(_members.Values
                 .Where(member => MemberRegistry.IsLive(member, now)).OrderBy(member => member.Id).ToArray());
         }
     }
 
-    public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null)
+    public Task<IReadOnlyList<InstalledActivityPackage>> GetInstalledPackagesAsync(string? id = null,
+        CancellationToken cancellationToken = default)
     {
-        if (id != null) id = WorkflowPackageRules.NormalizeId(id);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (id != null)
+            id = WorkflowPackageRules.NormalizeId(id);
+
         lock (_claimLock)
         {
             var now = Now;
             PruneMembers(now);
+
             var live = _members.Values.Where(member => MemberRegistry.IsLive(member, now))
                 .Select(member => member.Id).ToHashSet();
+
             var hosts = _hostPackages.Where(pair => live.Contains(pair.Key))
                 .SelectMany(pair => pair.Value.Select(mark => (Mark: mark, MemberId: pair.Key)))
                 .ToLookup(pair => (pair.Mark.Id, pair.Mark.Version, pair.Mark.Fingerprint), pair => pair.MemberId);
+
             return Task.FromResult<IReadOnlyList<InstalledActivityPackage>>(_installedPackages.Values
                 .Where(package => id == null || package.Id == id)
                 .OrderBy(package => package.Id, StringComparer.Ordinal).ThenBy(package => package.Version, StringComparer.Ordinal)
                 .ThenBy(package => package.Fingerprint, StringComparer.Ordinal)
-                .Select(package => InstalledPackageRules.Snapshot(package) with { Hosts = Array.AsReadOnly(
-                    hosts[(package.Id, package.Version, package.Fingerprint)].Order().ToArray()) }).ToArray());
+                .Select(package => InstalledPackageRules.Snapshot(package) with
+                {
+                    Hosts = Array.AsReadOnly(
+                        hosts[(package.Id, package.Version, package.Fingerprint)].Order().ToArray())
+                }).ToArray());
         }
     }
 

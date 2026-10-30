@@ -12,6 +12,7 @@ public static class Coordinators
     public static IHost CreateCoordinator(string connectionString)
     {
         var builder = Host.CreateApplicationBuilder();
+
         builder.Services.AddIxIFlow()
             .UsePostgreSql(connectionString)
             .AddCoordinator(options =>
@@ -19,8 +20,10 @@ public static class Coordinators
                 options.ListenEndpoint = new Uri("http://127.0.0.1:5088");
                 options.AllowInsecure = true;
             });
+
         return builder.Build();
     }
+
     // end-snippet: service
 
     // snippet: links
@@ -31,10 +34,12 @@ public static class Coordinators
             .UseCoordinators(options =>
             {
                 options.AllowInsecure = true;
+
                 // Optional: registry discovery already connects to every live coordinator.
                 options.Coordinators.Add(new Uri("http://127.0.0.1:5088"));
             });
     }
+
     // end-snippet: links
 
     // snippet: secure-service
@@ -42,6 +47,7 @@ public static class Coordinators
         X509Certificate2 certificate, string currentKey, string nextKey)
     {
         var builder = Host.CreateApplicationBuilder();
+
         builder.Services.AddIxIFlow().UsePostgreSql(connectionString)
             .AddCoordinator(options =>
             {
@@ -52,8 +58,10 @@ public static class Coordinators
                 options.SharedKeys.Add(currentKey);
                 options.SharedKeys.Add(nextKey);
             });
+
         return builder.Build();
     }
+
     // end-snippet: secure-service
 
     // snippet: secure-links
@@ -66,10 +74,12 @@ public static class Coordinators
                 options.AuthenticationMode = CoordinatorAuthenticationMode.SharedKey;
                 options.SharedKey = sharedKey;
                 options.ServerCertificateTrust.Thumbprints.Add(coordinatorSha256Thumbprint);
+
                 // Optional: the same identity policy protects discovered endpoints.
                 options.Coordinators.Add(new Uri("https://coordinator.example.internal:5088"));
             });
     }
+
     // end-snippet: secure-links
 
     // snippet: mutual-tls
@@ -85,5 +95,6 @@ public static class Coordinators
         client.ServerCertificateTrust.CertificateAuthorities.Add(coordinatorCa);
         client.ServerCertificateNames.Add("coordinator.example.internal");
     }
+
     // end-snippet: mutual-tls
 }

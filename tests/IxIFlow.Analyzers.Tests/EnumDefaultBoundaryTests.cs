@@ -50,27 +50,34 @@ public sealed class EnumDefaultBoundaryTests
     private static async Task Verify(string underlying, string? value, bool nullable, bool accepted, string expected)
     {
         var literal = value == null ? "null" : Microsoft.CodeAnalysis.CSharp.SymbolDisplay.FormatLiteral(value, true);
+
         var source = VerifyUsings + $$"""
-            [Flags] public enum Choice : {{underlying}} { None=0, Read=1, Write=2 }
-            public sealed class Data { public Choice{{(nullable ? "?" : "")}} Value { get; set; } }
-            public sealed class Contract : IAsyncActivity
-            {
-                [ActivityInputOutput, DefaultValue({{literal}})] public Choice{{(nullable ? "?" : "")}} Value { get; set; }
-                public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
-            }
-            public static class Flow
-            {
-                public static WorkflowDefinition Build() => Workflow.Create<Data>("EnumDefault")
-                    .Step<Contract>(step => step.Output(a => a.Value).To(ctx => ctx.WorkflowData.Value)).Build();
-            }
-            """;
+                                      [Flags] public enum Choice : {{underlying}} { None=0, Read=1, Write=2 }
+                                      public sealed class Data { public Choice{{(nullable ? "?" : "")}} Value { get; set; } }
+                                      public sealed class Contract : IAsyncActivity
+                                      {
+                                          [ActivityInputOutput, DefaultValue({{literal}})] public Choice{{(nullable ? "?" : "")}} Value { get; set; }
+                                          public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
+                                      }
+                                      public static class Flow
+                                      {
+                                          public static WorkflowDefinition Build() => Workflow.Create<Data>("EnumDefault")
+                                              .Step<Contract>(step => step.Output(a => a.Value).To(ctx => ctx.WorkflowData.Value)).Build();
+                                      }
+                                      """;
+
         var references = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!).Split(Path.PathSeparator)
             .Concat(Directory.GetFiles(AppContext.BaseDirectory, "IxIFlow*.dll"))
             .Distinct(StringComparer.OrdinalIgnoreCase).Select(path => MetadataReference.CreateFromFile(path));
+
         var compilation = CSharpCompilation.Create("EnumDefault_" + Guid.NewGuid().ToString("N"),
             [CSharpSyntaxTree.ParseText(source)], references, new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
         Assert.Empty(compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error));
-        var diagnostics = await compilation.WithAnalyzers(ImmutableArray.Create<DiagnosticAnalyzer>(new MappingAnalyzer())).GetAnalyzerDiagnosticsAsync();
+
+        var diagnostics = await compilation.WithAnalyzers(ImmutableArray.Create<DiagnosticAnalyzer>(new MappingAnalyzer()))
+            .GetAnalyzerDiagnosticsAsync();
+
         var invalidDefaults = diagnostics.Where(d => d.Id == "IXIF0009").ToArray();
         Assert.Empty(diagnostics.Where(d => d.Id != "IXIF0009"));
         using var stream = new MemoryStream();
@@ -80,39 +87,61 @@ public sealed class EnumDefaultBoundaryTests
         var assembly = AssemblyLoadContext.Default.LoadFromStream(stream);
         WorkflowDefinition? definition = null;
         Exception? runtimeError = null;
-        try { definition = (WorkflowDefinition)assembly.GetType("Flow")!.GetMethod("Build")!.Invoke(null, null)!; }
-        catch (TargetInvocationException error) { runtimeError = error.InnerException; }
+
+        try
+        {
+            definition = (WorkflowDefinition)assembly.GetType("Flow")!.GetMethod("Build")!.Invoke(null, null)!;
+        }
+        catch (TargetInvocationException error)
+        {
+            runtimeError = error.InnerException;
+        }
+
         var runtimeAccepted = runtimeError == null;
         Assert.Equal(accepted, runtimeAccepted);
-        if (!accepted) Assert.Equal(WorkflowErrorKind.InvalidDefinition, Assert.IsType<WorkflowEngineException>(runtimeError).Kind);
+
+        if (!accepted)
+            Assert.Equal(WorkflowErrorKind.InvalidDefinition, Assert.IsType<WorkflowEngineException>(runtimeError).Kind);
+
         // Run the actual analyzer and runtime on the same declaration, without reproducing conversion rules.
         Assert.True(runtimeAccepted == (invalidDefaults.Length == 0),
             $"{underlying} default '{value ?? "null"}' nullable={nullable}: runtime accepted={runtimeAccepted}, IXIF0009 count={invalidDefaults.Length}");
+
         if (!accepted)
         {
             var diagnostic = Assert.Single(invalidDefaults);
             Assert.Contains("Contract.Value", diagnostic.GetMessage());
+
             return;
         }
+
         Assert.Empty(invalidDefaults);
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
         await using var provider = services.BuildServiceProvider();
-        var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition!, Activator.CreateInstance(assembly.GetType("Data")!)!);
+
+        var result = await provider.GetRequiredService<IWorkflowClient>()
+            .RunAsync(definition!, Activator.CreateInstance(assembly.GetType("Data")!)!);
+
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         var actual = result.WorkflowData!.GetType().GetProperty("Value")!.GetValue(result.WorkflowData);
-        Assert.Equal(expected, actual == null ? "null" : Convert.ToString(Convert.ChangeType(actual, Enum.GetUnderlyingType(actual.GetType())), System.Globalization.CultureInfo.InvariantCulture));
+
+        Assert.Equal(expected,
+            actual == null
+                ? "null"
+                : Convert.ToString(Convert.ChangeType(actual, Enum.GetUnderlyingType(actual.GetType())),
+                    System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private const string VerifyUsings = """
-        using System;
-        using System.ComponentModel;
-        using System.Threading;
-        using System.Threading.Tasks;
-        using IxIFlow.ActivitySdk;
-        using IxIFlow.Builders;
-        using IxIFlow.Core;
+                                        using System;
+                                        using System.ComponentModel;
+                                        using System.Threading;
+                                        using System.Threading.Tasks;
+                                        using IxIFlow.ActivitySdk;
+                                        using IxIFlow.Builders;
+                                        using IxIFlow.Core;
 
-        """;
+                                        """;
 }

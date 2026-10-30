@@ -7,60 +7,83 @@ namespace IxIFlow.Core;
 public sealed partial class SqliteWorkflowStateRepository
 {
     // Zero-row reads check every required table and column without changing an existing database.
-    private static async Task ValidateCurrentSchemaAsync(DbConnection connection, DbTransaction transaction)
+    private static async Task ValidateCurrentSchemaAsync(DbConnection connection, DbTransaction transaction,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            using var schema = await connection.QueryMultipleAsync("""
-                SELECT package_id, package_version, "key", version, metadata_type_name, csharp_type_name, display_name, category, icon, search_text, contract_hash, descriptor_json, catalog_revision FROM ixiflow_package_activities WHERE 1=0;
-                SELECT package_id, package_version, "key", version, metadata_type_name, csharp_type_name, display_name, category, icon, search_text, contract_hash, descriptor_json, catalog_revision, fingerprint FROM ixiflow_installed_activities WHERE 1=0;
-                SELECT package_id, package_version, missing_package_id FROM ixiflow_package_pending_dependencies WHERE 1=0;
-                SELECT id, kind, name, version, generation, revision, attempt, state, host_id, started_by, started_at_utc, heartbeat_at_utc, finished_at_utc, outcome_json, catalog_revision FROM ixiflow_publication_attempts WHERE 1=0;
-                SELECT kind, name, version, generation, revision, active_id, last_attempt FROM ixiflow_publication_heads WHERE 1=0;
-                SELECT generation, kind, name, version FROM ixiflow_draft_generations WHERE 1=0;
-                SELECT id, version, fingerprint, catalog_revision FROM ixiflow_installed_packages WHERE 1=0;
-                SELECT member_id, package_id, package_version, fingerprint FROM ixiflow_host_packages WHERE 1=0;
-                SELECT instance_id, command_id, command_order, command_json FROM ixiflow_workflow_debug_commands WHERE 1=0;
-                SELECT digest, bytes, body, metadata_json FROM ixiflow_workflow_payloads WHERE 1=0;
-                SELECT digest, owner_kind, owner_id FROM ixiflow_workflow_payload_refs WHERE 1=0;
-                SELECT name, version, kind, source, revision, generation, source_length, updated_at_utc, updated_by FROM ixiflow_definitions WHERE 1=0;
-                SELECT id, revision FROM ixiflow_catalog_revision WHERE 1=0;
-                SELECT name, version, structure_hash, state, artifact_digest, metadata_json, catalog_revision, published_draft_generation, published_draft_revision, published_at_utc, published_by, state_changed_at_utc, state_changed_by, lifecycle_revision, display_name, category, tags, search_text, descriptor_json, contract_hash FROM ixiflow_workflow_versions WHERE 1=0;
-                SELECT digest, kind, content, created_at_utc FROM ixiflow_artifacts WHERE 1=0;
-                SELECT "key", "version", "engine", "format", "model_type", "model_type_id", "model_packages_json", "cultures_json", "display_name", "description", "search_text", "published_draft_generation", "published_draft_revision", "published_at_utc", "published_by", "metadata_json", "catalog_revision" FROM ixiflow_template_versions WHERE 1=0;
-                SELECT id, version, digest, metadata_json, dependency_groups_json, origin, extraction, extraction_detail, closure_json, withdrawn, withdrawn_at_utc, withdrawn_by, registered_at_utc, registered_by, published_draft_generation, published_draft_revision, published_draft_name, published_draft_version, published_at_utc, published_by, lifecycle_revision, catalog_revision FROM ixiflow_packages WHERE 1=0;
-                SELECT [instance_id], [incarnation], [workflow_name], [workflow_version], [bundle_digest], [created_at_utc], [stop_kind], [stop_crash_count], [status], [correlation_id], [runnable_at_utc], [ended_at_utc], [state_json], [cancellation_json], [cancellation_acknowledged], [revision], [inbox_sequence], [inbox_read_through], [parent_instance_id], [parent_wait_id], [last_host_id], [demand_set_id], [pinned_host], [pin_expires_at_utc], [pin_inherit] FROM ixiflow_workflow_instances WHERE 1=0;
-                SELECT [instance_id], [event_id], [sequence], [event_type], [event_key], [target_wait_id], [subject], [stored_payload_json], [payload_hash], [received_at_utc], [outcome], [wait_id], [rejection], [settled_at_utc], [notice_json] FROM ixiflow_workflow_events WHERE 1=0;
-                SELECT [instance_id], [part_key], [json] FROM ixiflow_workflow_parts WHERE 1=0;
-                SELECT [instance_id], [sequence], [entry_json], [revision], [commit_end_sequence], [commit_status] FROM ixiflow_workflow_traces WHERE 1=0;
-                SELECT instance_id, diagnostic_id, diagnostic_json FROM ixiflow_workflow_diagnostics WHERE 1=0;
-                SELECT [instance_id], [wait_id], [wait_ref], [kind], [wait_key], [event_type], [default_payload_json], [deadline_utc], [opened_sequence], [opened_at_utc], [close_reason], [closed_at_utc] FROM ixiflow_workflow_waits WHERE 1=0;
-                SELECT [instance_id], [commit_id], [expected_revision], [revision], [payload_hash], [notice_json], [made_runnable_json] FROM ixiflow_workflow_commits WHERE 1=0;
-                SELECT [id], [epoch] FROM ixiflow_execution_epoch WHERE 1=0;
-                SELECT [instance_id], [token], [expires_at_utc], [epoch], [crash_count], [host_id] FROM ixiflow_workflow_leases WHERE 1=0;
-                SELECT [name], [types_json], [disabled_at_utc], [enabled_at_utc], [enabled_by], [unregistered_at_utc], [unregistered_by], [last_error] FROM ixiflow_outbox_publishers WHERE 1=0;
-                SELECT [event_id], [incarnation], [instance_id], [event_type], [event_json], [occurred_at_utc] FROM ixiflow_outbox_events WHERE 1=0;
-                SELECT [event_id], [publisher_name], [attempts], [first_attempt_at_utc], [given_up_reason], [retried_at_utc], [retried_by], [next_attempt_at_utc], [status], [last_error], [lease_token], [lease_until_utc] FROM ixiflow_outbox_deliveries WHERE 1=0;
-                SELECT [instance_id], [removed_at_utc], [expires_at_utc] FROM ixiflow_workflow_tombstones WHERE 1=0;
-                SELECT [incarnation], [sender], [trigger_id], [request_key], [fingerprint], [instance_id], [workflow_name], [workflow_version], [expires_at_utc], [notice_json] FROM ixiflow_workflow_admissions WHERE 1=0;
-                SELECT [incarnation], [instance_id], [sender], [trigger_id], [owner_kind], [owner_id], [tenant] FROM ixiflow_workflow_ownership WHERE 1=0;
-                SELECT [delivery_identity], [payload_hash], [sequence], [rejection], [expires_at_utc], [notice_json] FROM ixiflow_webhook_deliveries WHERE 1=0;
-                SELECT member_id, kind, name, endpoint, slots, engine_version, heartbeat_interval_ticks, started_at_utc, heartbeat_at_utc FROM ixiflow_hosts WHERE 1=0;
-                SELECT demand_set_id FROM ixiflow_demand_sets WHERE 1=0;
-                SELECT demand_set_id, demand_key, demand_value, expires_at_utc, value_expires_at_utc, inherit FROM ixiflow_demand_set_rows WHERE 1=0;
-                SELECT member_id, capability_key, capability_value FROM ixiflow_host_capabilities WHERE 1=0;
-                """, transaction: transaction);
-            while (!schema.IsConsumed) await schema.ReadAsync();
-            await ValidateDraftKeysAsync(connection, transaction);
-            await ValidatePackageKeysAsync(connection, transaction);
+            using var schema = await connection.QueryMultipleAsync(new CommandDefinition("""
+                                                                                         SELECT package_id, package_version, "key", version, metadata_type_name, csharp_type_name, display_name, category, icon, search_text, contract_hash, descriptor_json, catalog_revision FROM ixiflow_package_activities WHERE 1=0;
+                                                                                         SELECT package_id, package_version, "key", version, metadata_type_name, csharp_type_name, display_name, category, icon, search_text, contract_hash, descriptor_json, catalog_revision, fingerprint FROM ixiflow_installed_activities WHERE 1=0;
+                                                                                         SELECT package_id, package_version, missing_package_id FROM ixiflow_package_pending_dependencies WHERE 1=0;
+                                                                                         SELECT id, kind, name, version, generation, revision, attempt, state, host_id, started_by, started_at_utc, heartbeat_at_utc, finished_at_utc, outcome_json, catalog_revision FROM ixiflow_publication_attempts WHERE 1=0;
+                                                                                         SELECT kind, name, version, generation, revision, active_id, last_attempt FROM ixiflow_publication_heads WHERE 1=0;
+                                                                                         SELECT generation, kind, name, version FROM ixiflow_draft_generations WHERE 1=0;
+                                                                                         SELECT id, version, fingerprint, catalog_revision FROM ixiflow_installed_packages WHERE 1=0;
+                                                                                         SELECT member_id, package_id, package_version, fingerprint FROM ixiflow_host_packages WHERE 1=0;
+                                                                                         SELECT instance_id, command_id, command_order, command_json FROM ixiflow_workflow_debug_commands WHERE 1=0;
+                                                                                         SELECT digest, bytes, body, metadata_json FROM ixiflow_workflow_payloads WHERE 1=0;
+                                                                                         SELECT digest, owner_kind, owner_id FROM ixiflow_workflow_payload_refs WHERE 1=0;
+                                                                                         SELECT name, version, kind, source, revision, generation, source_length, updated_at_utc, updated_by FROM ixiflow_definitions WHERE 1=0;
+                                                                                         SELECT id, revision FROM ixiflow_catalog_revision WHERE 1=0;
+                                                                                         SELECT name, version, structure_hash, state, artifact_digest, metadata_json, catalog_revision, published_draft_generation, published_draft_revision, published_at_utc, published_by, state_changed_at_utc, state_changed_by, lifecycle_revision, display_name, category, tags, search_text, descriptor_json, contract_hash FROM ixiflow_workflow_versions WHERE 1=0;
+                                                                                         SELECT digest, kind, content, created_at_utc FROM ixiflow_artifacts WHERE 1=0;
+                                                                                         SELECT "key", "version", "engine", "format", "model_type", "model_type_id", "model_packages_json", "cultures_json", "display_name", "description", "search_text", "published_draft_generation", "published_draft_revision", "published_at_utc", "published_by", "metadata_json", "catalog_revision" FROM ixiflow_template_versions WHERE 1=0;
+                                                                                         SELECT id, version, digest, metadata_json, dependency_groups_json, origin, extraction, extraction_detail, closure_json, withdrawn, withdrawn_at_utc, withdrawn_by, registered_at_utc, registered_by, published_draft_generation, published_draft_revision, published_draft_name, published_draft_version, published_at_utc, published_by, lifecycle_revision, catalog_revision FROM ixiflow_packages WHERE 1=0;
+                                                                                         SELECT [instance_id], [incarnation], [workflow_name], [workflow_version], [bundle_digest], [created_at_utc], [stop_kind], [stop_crash_count], [status], [correlation_id], [runnable_at_utc], [ended_at_utc], [state_json], [cancellation_json], [cancellation_acknowledged], [revision], [inbox_sequence], [inbox_read_through], [parent_instance_id], [parent_wait_id], [last_host_id], [demand_set_id], [pinned_host], [pin_expires_at_utc], [pin_inherit] FROM ixiflow_workflow_instances WHERE 1=0;
+                                                                                         SELECT [instance_id], [event_id], [sequence], [event_type], [event_key], [target_wait_id], [subject], [stored_payload_json], [payload_hash], [received_at_utc], [outcome], [wait_id], [rejection], [settled_at_utc], [notice_json] FROM ixiflow_workflow_events WHERE 1=0;
+                                                                                         SELECT [instance_id], [part_key], [json] FROM ixiflow_workflow_parts WHERE 1=0;
+                                                                                         SELECT [instance_id], [sequence], [entry_json], [revision], [commit_end_sequence], [commit_status] FROM ixiflow_workflow_traces WHERE 1=0;
+                                                                                         SELECT instance_id, diagnostic_id, diagnostic_json FROM ixiflow_workflow_diagnostics WHERE 1=0;
+                                                                                         SELECT [instance_id], [wait_id], [wait_ref], [kind], [wait_key], [event_type], [default_payload_json], [deadline_utc], [opened_sequence], [opened_at_utc], [close_reason], [closed_at_utc] FROM ixiflow_workflow_waits WHERE 1=0;
+                                                                                         SELECT [instance_id], [commit_id], [expected_revision], [revision], [payload_hash], [notice_json], [made_runnable_json] FROM ixiflow_workflow_commits WHERE 1=0;
+                                                                                         SELECT [id], [epoch] FROM ixiflow_execution_epoch WHERE 1=0;
+                                                                                         SELECT [instance_id], [token], [expires_at_utc], [epoch], [crash_count], [host_id] FROM ixiflow_workflow_leases WHERE 1=0;
+                                                                                         SELECT [name], [types_json], [disabled_at_utc], [enabled_at_utc], [enabled_by], [unregistered_at_utc], [unregistered_by], [last_error] FROM ixiflow_outbox_publishers WHERE 1=0;
+                                                                                         SELECT [event_id], [incarnation], [instance_id], [event_type], [event_json], [occurred_at_utc] FROM ixiflow_outbox_events WHERE 1=0;
+                                                                                         SELECT [event_id], [publisher_name], [attempts], [first_attempt_at_utc], [given_up_reason], [retried_at_utc], [retried_by], [next_attempt_at_utc], [status], [last_error], [lease_token], [lease_until_utc] FROM ixiflow_outbox_deliveries WHERE 1=0;
+                                                                                         SELECT [instance_id], [removed_at_utc], [expires_at_utc] FROM ixiflow_workflow_tombstones WHERE 1=0;
+                                                                                         SELECT [incarnation], [sender], [trigger_id], [request_key], [fingerprint], [instance_id], [workflow_name], [workflow_version], [expires_at_utc], [notice_json] FROM ixiflow_workflow_admissions WHERE 1=0;
+                                                                                         SELECT [incarnation], [instance_id], [sender], [trigger_id], [owner_kind], [owner_id], [tenant] FROM ixiflow_workflow_ownership WHERE 1=0;
+                                                                                         SELECT [delivery_identity], [payload_hash], [sequence], [rejection], [expires_at_utc], [notice_json] FROM ixiflow_webhook_deliveries WHERE 1=0;
+                                                                                         SELECT member_id, kind, name, endpoint, slots, engine_version, heartbeat_interval_ticks, started_at_utc, heartbeat_at_utc FROM ixiflow_hosts WHERE 1=0;
+                                                                                         SELECT demand_set_id FROM ixiflow_demand_sets WHERE 1=0;
+                                                                                         SELECT demand_set_id, demand_key, demand_value, expires_at_utc, value_expires_at_utc, inherit FROM ixiflow_demand_set_rows WHERE 1=0;
+                                                                                         SELECT member_id, capability_key, capability_value FROM ixiflow_host_capabilities WHERE 1=0;
+                                                                                         """, transaction: transaction,
+                cancellationToken: cancellationToken));
+
+            while (!schema.IsConsumed)
+                await schema.ReadAsync();
+
+            // Names alone do not preserve unbounded checkpoint text or scheduling precision.
+            if (await connection.ExecuteScalarAsync<int>(
+                    new CommandDefinition(
+                        """
+                        SELECT COUNT(*) FROM pragma_table_info('ixiflow_workflow_instances')
+                        WHERE (name='state_json' AND upper(type)='TEXT' AND "notnull"=1)
+                           OR (name='runnable_at_utc' AND upper(type)='TEXT' AND "notnull"=0)
+                        """, transaction: transaction, cancellationToken: cancellationToken)) != 2)
+                throw EarlierBuild();
+
+            await ValidateDraftKeysAsync(connection, transaction, cancellationToken: cancellationToken);
+            await ValidatePackageKeysAsync(connection, transaction, cancellationToken: cancellationToken);
+
             // This required index also distinguishes the StoredJson column encoding from the earlier build.
-            if (await connection.ExecuteScalarAsync<long>("SELECT count(*) FROM sqlite_master WHERE type='index' AND name='ixiflow_payload_refs_owner'", transaction: transaction) != 1)
+            if (await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+                    "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='ixiflow_payload_refs_owner'", transaction: transaction,
+                    cancellationToken: cancellationToken)) != 1)
                 throw EarlierBuild();
-            if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM sqlite_schema WHERE type='index' AND name='ix_ixiflow_instances_set_pin'", transaction: transaction) != 1)
+
+            if (await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+                    "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name='ix_ixiflow_instances_set_pin'",
+                    transaction: transaction, cancellationToken: cancellationToken)) != 1)
                 throw EarlierBuild();
+
             // Opening an existing database must retain catalog, operations and outbox access paths.
-            var indexes = (await connection.QueryAsync<string>("SELECT name FROM sqlite_master WHERE type = 'index'",
-                transaction: transaction)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var indexes = (await connection.QueryAsync<string>(new CommandDefinition("SELECT name FROM sqlite_master WHERE type = 'index'",
+                transaction: transaction, cancellationToken: cancellationToken))).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
             string[] requiredIndexes =
             [
                 "ix_ixiflow_instances_demand_set",
@@ -106,66 +129,111 @@ public sealed partial class SqliteWorkflowStateRepository
                 "ix_ixiflow_workflow_waits_open",
                 "ixiflow_workflow_waits_page",
             ];
+
             if (requiredIndexes.Any(name => !indexes.Contains(name)))
                 throw EarlierBuild();
         }
-        catch (Exception error) when (error is SqliteException { SqliteErrorCode: 1 })
+        catch (Exception error) when (!cancellationToken.IsCancellationRequested && error is SqliteException { SqliteErrorCode: 1 })
         {
             throw EarlierBuild(error);
         }
     }
 
-    private static async Task ValidateDraftKeysAsync(DbConnection connection, DbTransaction transaction)
+    private static async Task ValidateDraftKeysAsync(DbConnection connection, DbTransaction transaction,
+        CancellationToken cancellationToken = default)
     {
-        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_table_info('ixiflow_definitions') WHERE pk>0 ORDER BY pk", transaction: transaction)).SequenceEqual(new[] { "kind", "name", "version" }, StringComparer.Ordinal))
+        if (!(await connection.QueryAsync<string>(new CommandDefinition(
+                "SELECT name FROM pragma_table_info('ixiflow_definitions') WHERE pk>0 ORDER BY pk", transaction: transaction,
+                cancellationToken: cancellationToken))).SequenceEqual(new[] { "kind", "name", "version" }, StringComparer.Ordinal))
             throw EarlierBuild();
-        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_table_info('ixiflow_workflow_versions') WHERE pk>0 ORDER BY pk", transaction: transaction)).SequenceEqual(new[] { "name", "version" }, StringComparer.Ordinal))
+
+        if (!(await connection.QueryAsync<string>(new CommandDefinition(
+                "SELECT name FROM pragma_table_info('ixiflow_workflow_versions') WHERE pk>0 ORDER BY pk", transaction: transaction,
+                cancellationToken: cancellationToken))).SequenceEqual(new[] { "name", "version" }, StringComparer.Ordinal))
             throw EarlierBuild();
-        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_table_info('ixiflow_draft_generations') WHERE pk>0 ORDER BY pk", transaction: transaction)).SequenceEqual(new[] { "generation" }, StringComparer.Ordinal))
+
+        if (!(await connection.QueryAsync<string>(new CommandDefinition(
+                "SELECT name FROM pragma_table_info('ixiflow_draft_generations') WHERE pk>0 ORDER BY pk", transaction: transaction,
+                cancellationToken: cancellationToken))).SequenceEqual(new[] { "generation" }, StringComparer.Ordinal))
             throw EarlierBuild();
-        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_table_info('ixiflow_publication_heads') WHERE pk>0 ORDER BY pk", transaction: transaction)).SequenceEqual(new[] { "kind", "name", "version", "generation", "revision" }, StringComparer.Ordinal))
+
+        if (!(await connection.QueryAsync<string>(new CommandDefinition(
+                "SELECT name FROM pragma_table_info('ixiflow_publication_heads') WHERE pk>0 ORDER BY pk", transaction: transaction,
+                cancellationToken: cancellationToken))).SequenceEqual(new[] { "kind", "name", "version", "generation", "revision" },
+                StringComparer.Ordinal))
             throw EarlierBuild();
-        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_table_info('ixiflow_publication_attempts') WHERE pk>0 ORDER BY pk", transaction: transaction)).SequenceEqual(new[] { "id" }, StringComparer.Ordinal))
+
+        if (!(await connection.QueryAsync<string>(new CommandDefinition(
+                "SELECT name FROM pragma_table_info('ixiflow_publication_attempts') WHERE pk>0 ORDER BY pk", transaction: transaction,
+                cancellationToken: cancellationToken))).SequenceEqual(new[] { "id" }, StringComparer.Ordinal))
             throw EarlierBuild();
-        if (!(await connection.QueryAsync<string>("SELECT name FROM pragma_index_info('ix_publication_attempt_identity') ORDER BY seqno", transaction: transaction)).SequenceEqual(new[] { "kind", "name", "version", "generation", "revision", "attempt" }, StringComparer.Ordinal))
+
+        if (!(await connection.QueryAsync<string>(new CommandDefinition(
+                "SELECT name FROM pragma_index_info('ix_publication_attempt_identity') ORDER BY seqno", transaction: transaction,
+                cancellationToken: cancellationToken)))
+            .SequenceEqual(new[] { "kind", "name", "version", "generation", "revision", "attempt" }, StringComparer.Ordinal))
             throw EarlierBuild();
-        if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM pragma_index_list('ixiflow_publication_attempts') WHERE name='ix_publication_attempt_identity' AND \"unique\"=1 AND partial=0", transaction: transaction) != 1) throw EarlierBuild();
+
+        if (await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+                "SELECT count(*) FROM pragma_index_list('ixiflow_publication_attempts') WHERE name='ix_publication_attempt_identity' AND \"unique\"=1 AND partial=0",
+                transaction: transaction, cancellationToken: cancellationToken)) != 1)
+            throw EarlierBuild();
+
         foreach (var (name, columns) in new[]
-        {
-            ("ix_publication_finished", new[] { "finished_at_utc" }),
-            ("ix_publication_history", new[] { "kind", "name", "version", "started_at_utc", "id" })
-        })
+                 {
+                     ("ix_publication_finished", new[] { "finished_at_utc" }),
+                     ("ix_publication_history", new[] { "kind", "name", "version", "started_at_utc", "id" })
+                 })
         {
             // SQLite has no disabled-index state: a full index in this table's live index list is usable.
-            if (await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM pragma_index_list('ixiflow_publication_attempts') WHERE name=@Name AND \"unique\"=0 AND partial=0", new { Name = name }, transaction) != 1 ||
-                !(await connection.QueryAsync<string>("SELECT CASE WHEN desc=0 AND coll='BINARY' THEN name ELSE '' END FROM pragma_index_xinfo(@Name) WHERE key=1 ORDER BY seqno", new { Name = name }, transaction)).SequenceEqual(columns, StringComparer.Ordinal))
+            if (await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+                    "SELECT count(*) FROM pragma_index_list('ixiflow_publication_attempts') WHERE name=@Name AND \"unique\"=0 AND partial=0",
+                    new { Name = name }, transaction, cancellationToken: cancellationToken)) != 1 ||
+                !(await connection.QueryAsync<string>(new CommandDefinition(
+                        "SELECT CASE WHEN desc=0 AND coll='BINARY' THEN name ELSE '' END FROM pragma_index_xinfo(@Name) WHERE key=1 ORDER BY seqno",
+                        new { Name = name }, transaction, cancellationToken: cancellationToken)))
+                    .SequenceEqual(columns, StringComparer.Ordinal))
                 throw EarlierBuild();
         }
     }
 
-    private static async Task ValidatePackageKeysAsync(DbConnection connection, DbTransaction transaction)
+    private static async Task ValidatePackageKeysAsync(DbConnection connection, DbTransaction transaction,
+        CancellationToken cancellationToken = default)
     {
         foreach (var (table, name, primary, columns) in new (string, string?, bool, string[])[]
-        {
-            ("ixiflow_template_versions", null, true, ["key", "version"]),
-            ("ixiflow_packages", null, true, ["id", "version"]),
-            ("ixiflow_installed_packages", null, true, ["id", "version", "fingerprint"]),
-            ("ixiflow_package_activities", null, true, ["package_id", "package_version", "key"]),
-            ("ixiflow_installed_activities", null, true, ["package_id", "package_version", "fingerprint", "key"]),
-            ("ixiflow_package_pending_dependencies", null, true, ["package_id", "package_version", "missing_package_id"]),
-            ("ixiflow_packages", "ix_packages_origin", false, ["origin", "id", "version"]),
-            ("ixiflow_package_activities", "ix_package_activities_key", false, ["key", "version", "package_id", "package_version"]),
-            ("ixiflow_package_activities", "ix_package_activities_category", false, ["category", "key"]),
-            ("ixiflow_installed_activities", "ix_installed_activities_key", false, ["key", "version", "package_id", "package_version"]),
-            ("ixiflow_workflow_versions", "ix_workflow_versions_category", false, ["category", "name"]),
-            ("ixiflow_installed_activities", "ix_installed_activities_category", false, ["category", "key"]),
-            ("ixiflow_package_pending_dependencies", "ix_package_pending_reverse", false, ["missing_package_id", "package_id", "package_version"]),
-        })
+                 {
+                     ("ixiflow_template_versions", null, true, ["key", "version"]),
+                     ("ixiflow_packages", null, true, ["id", "version"]),
+                     ("ixiflow_installed_packages", null, true, ["id", "version", "fingerprint"]),
+                     ("ixiflow_package_activities", null, true, ["package_id", "package_version", "key"]),
+                     ("ixiflow_installed_activities", null, true, ["package_id", "package_version", "fingerprint", "key"]),
+                     ("ixiflow_package_pending_dependencies", null, true, ["package_id", "package_version", "missing_package_id"]),
+                     ("ixiflow_packages", "ix_packages_origin", false, ["origin", "id", "version"]),
+                     ("ixiflow_package_activities", "ix_package_activities_key", false,
+                         ["key", "version", "package_id", "package_version"]),
+                     ("ixiflow_package_activities", "ix_package_activities_category", false, ["category", "key"]),
+                     ("ixiflow_installed_activities", "ix_installed_activities_key", false,
+                         ["key", "version", "package_id", "package_version"]),
+                     ("ixiflow_workflow_versions", "ix_workflow_versions_category", false, ["category", "name"]),
+                     ("ixiflow_installed_activities", "ix_installed_activities_category", false, ["category", "key"]),
+                     ("ixiflow_package_pending_dependencies", "ix_package_pending_reverse", false,
+                         ["missing_package_id", "package_id", "package_version"]),
+                 })
         {
             var index = name;
-            if (primary) index = await connection.QuerySingleOrDefaultAsync<string>("SELECT name FROM pragma_index_list(@Table) WHERE origin='pk' AND partial=0 AND \"unique\"=1", new { Table = table }, transaction);
-            if (index == null || await connection.ExecuteScalarAsync<int>("SELECT count(*) FROM pragma_index_list(@Table) WHERE name=@Name AND partial=0", new { Table = table, Name = index }, transaction) != 1 ||
-                !(await connection.QueryAsync<string>("SELECT CASE WHEN desc=0 AND coll='BINARY' THEN name ELSE '' END FROM pragma_index_xinfo(@Name) WHERE key=1 ORDER BY seqno", new { Name = index }, transaction)).SequenceEqual(columns, StringComparer.Ordinal))
+
+            if (primary)
+                index = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+                    "SELECT name FROM pragma_index_list(@Table) WHERE origin='pk' AND partial=0 AND \"unique\"=1", new { Table = table },
+                    transaction, cancellationToken: cancellationToken));
+
+            if (index == null || await connection.ExecuteScalarAsync<int>(new CommandDefinition(
+                    "SELECT count(*) FROM pragma_index_list(@Table) WHERE name=@Name AND partial=0", new { Table = table, Name = index },
+                    transaction, cancellationToken: cancellationToken)) != 1 ||
+                !(await connection.QueryAsync<string>(new CommandDefinition(
+                        "SELECT CASE WHEN desc=0 AND coll='BINARY' THEN name ELSE '' END FROM pragma_index_xinfo(@Name) WHERE key=1 ORDER BY seqno",
+                        new { Name = index }, transaction, cancellationToken: cancellationToken)))
+                    .SequenceEqual(columns, StringComparer.Ordinal))
                 throw EarlierBuild();
         }
     }

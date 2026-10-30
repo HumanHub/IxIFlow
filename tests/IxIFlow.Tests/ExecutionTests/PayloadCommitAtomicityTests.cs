@@ -16,18 +16,22 @@ public sealed class PayloadCommitAtomicityTests
     {
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlowPayloadAtomicity", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
+
         try
         {
             await using var repository = new SqliteWorkflowStateRepository("Data Source=" + Path.Combine(folder, "state.db"));
             await Verify(repository);
         }
-        finally { await SqliteTestFiles.DeleteAsync(folder); }
+        finally
+        {
+            await SqliteTestFiles.DeleteAsync(folder);
+        }
     }
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
     public Task SqlServerBodiesShareTheCheckpointTransaction() =>
-        Verify(new SqlWorkflowStateRepository(SqlTestDatabase<PayloadCommitAtomicityTests>.ConnectionString));
+        Verify(new SqlServerWorkflowStateRepository(SqlTestDatabase<PayloadCommitAtomicityTests>.ConnectionString));
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
@@ -42,8 +46,13 @@ public sealed class PayloadCommitAtomicityTests
         var rootBytes = Encoding.UTF8.GetBytes("{\"leaf\":\"" + leaf.Digest + "\"}");
         var root = PayloadReference.Of(rootBytes);
         PayloadBody[] bodies = [new(leaf, leafBytes, []), new(root, rootBytes, [leaf])];
-        var instance = new WorkflowInstance { InstanceId = id, Status = WorkflowStatus.Running,
-            WorkflowDataJson = StoredJson.FromReference(root), ExecutionStateJson = StoreTestSupport.CheckpointJson };
+
+        var instance = new WorkflowInstance
+        {
+            InstanceId = id, Status = WorkflowStatus.Running,
+            WorkflowDataJson = StoredJson.FromReference(root), ExecutionStateJson = StoreTestSupport.CheckpointJson
+        };
+
         var lease = await StoreTestSupport.LeaseAsync(repository, id);
         var rejected = CheckpointCommit.Create(instance, lease.Epoch, 1).WithPayloadBodies(bodies);
         Assert.Equal(WorkflowCommitStatus.Conflict, (await repository.CommitWorkflowInstanceAsync(rejected)).Status);
@@ -61,10 +70,13 @@ public sealed class PayloadCommitAtomicityTests
 
         var saved = (await repository.GetWorkflowInstanceAsync(id))!;
         saved.WorkflowDataJson = StoredJson.Inline("null");
+
         Assert.Equal(WorkflowCommitStatus.Applied,
             (await repository.CommitWorkflowInstanceAsync(CheckpointCommit.Create(saved, lease.Epoch, saved.Revision))).Status);
+
         Assert.True(await repository.PayloadStore.CollectAsync(root, TimeSpan.Zero));
         Assert.True(await repository.PayloadStore.CollectAsync(leaf, TimeSpan.Zero));
+
         // Replaying an old receipt must not recreate bodies or pins already retired by a later transaction.
         Assert.Equal(WorkflowCommitStatus.AlreadyApplied, (await repository.CommitWorkflowInstanceAsync(commit)).Status);
         Assert.Null(await repository.PayloadStore.GetAsync(root));

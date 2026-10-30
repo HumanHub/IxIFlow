@@ -24,7 +24,6 @@ public interface IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData>
     /// <param name="property">Expression identifying the property</param>
     IWorkflowInlineSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty> Output<TProperty>(
         Expression<Func<TInvokedData, TProperty>> property);
-
 }
 
 /// <summary>
@@ -50,7 +49,6 @@ public interface IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPrevi
     /// <param name="property">Expression identifying the property</param>
     new IWorkflowInlineSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty> Output<TProperty>(
         Expression<Func<TInvokedData, TProperty>> property);
-
 }
 
 /// <summary>

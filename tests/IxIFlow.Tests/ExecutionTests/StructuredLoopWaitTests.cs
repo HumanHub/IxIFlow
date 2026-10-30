@@ -19,6 +19,7 @@ public class StructuredLoopWaitTests
     public async Task WhileDoCanCompleteMoreThanOneThousandIterations()
     {
         using var services = CreateServices();
+
         var definition = Workflow.Create<LoopData>("LongFiniteLoop")
             .Step<StartActivity>()
             .WhileDo(ctx => ctx.WorkflowData.Count < 1001,
@@ -58,6 +59,7 @@ public class StructuredLoopWaitTests
     public async Task WhileDo_FalseConditionSkipsTheWait()
     {
         using var services = CreateServices();
+
         var result = await services.GetRequiredService<IWorkflowClient>()
             .RunAsync(WhileWorkflow(), new LoopData { Target = 0 });
 
@@ -83,6 +85,7 @@ public class StructuredLoopWaitTests
     {
         var repository = new InMemoryWorkflowStateRepository();
         string instanceId;
+
         using (var firstProvider = CreateServices(repository))
         {
             var engine = firstProvider.GetRequiredService<IWorkflowClient>();
@@ -94,8 +97,10 @@ public class StructuredLoopWaitTests
         }
 
         using var secondProvider = CreateServices(repository);
+
         await secondProvider.GetRequiredService<IWorkflowCatalog>()
             .RegisterWorkflowAsync(WhileWorkflow());
+
         var completed = await secondProvider.GetRequiredService<IWorkflowClient>()
             .ResumeAsync(instanceId, "approval", new LoopApproval());
 
@@ -126,8 +131,10 @@ public class StructuredLoopWaitTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddIxIFlow();
+
         if (repository != null)
             services.AddSingleton(repository);
+
         return services.BuildServiceProvider();
     }
 
@@ -155,6 +162,7 @@ public class StructuredLoopWaitTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             Result = Count + 1;
+
             return Task.CompletedTask;
         }
     }

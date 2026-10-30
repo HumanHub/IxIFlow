@@ -13,13 +13,13 @@ public sealed class StructureHashAnswer;
 
 public sealed class StructureHashMultiply : IAsyncActivity
 {
-    [ActivityInput]
-    public int Value { get; set; }
-    [ActivityOutput]
-    public int Result { get; private set; }
+    [ActivityInput] public int Value { get; set; }
+    [ActivityOutput] public int Result { get; private set; }
+
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Result = Value * 2;
+
         return Task.CompletedTask;
     }
 }

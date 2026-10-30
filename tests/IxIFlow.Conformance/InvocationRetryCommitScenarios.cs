@@ -26,15 +26,29 @@ public sealed class InvocationRetryCommitScenarios
         var continuation = Assert.Single(checkpoint.Continuations);
         var logicalId = InvocationRecords.LogicalId(parent, continuation, "root/0");
         var childId = InvocationRecords.Identity("child-instance", logicalId, "1");
-        var attempt = new InvocationAttemptState { Id = InvocationRecords.Identity("policy-attempt", logicalId, "1"),
-            Number = 1, PreparedAtUtc = DateTime.UtcNow, ProposedChildInstanceId = childId, Phase = "WaitingChild" };
-        var record = new InvocationRecordState { Id = logicalId, StepId = "root/0", WorkflowName = childDefinition.Name,
+
+        var attempt = new InvocationAttemptState
+        {
+            Id = InvocationRecords.Identity("policy-attempt", logicalId, "1"),
+            Number = 1, PreparedAtUtc = DateTime.UtcNow, ProposedChildInstanceId = childId, Phase = "WaitingChild"
+        };
+
+        var record = new InvocationRecordState
+        {
+            Id = logicalId, StepId = "root/0", WorkflowName = childDefinition.Name,
             WorkflowVersion = 1, ContinuationId = continuation.Id, FrameActivationId = continuation.Stack[0].ActivationId,
-            StartedAtUtc = attempt.PreparedAtUtc, Attempts = [attempt] };
+            StartedAtUtc = attempt.PreparedAtUtc, Attempts = [attempt]
+        };
+
         checkpoint.InvocationRecords.Add(logicalId, record);
         continuation.InvocationRecordId = logicalId;
-        continuation.PendingActivity = new ActivityInvocationState { Id = logicalId, StepId = record.StepId,
-            PolicyAttemptId = attempt.Id, ChildWorkflowId = childId };
+
+        continuation.PendingActivity = new ActivityInvocationState
+        {
+            Id = logicalId, StepId = record.StepId,
+            PolicyAttemptId = attempt.Id, ChildWorkflowId = childId
+        };
+
         var start = WorkflowInstances.Start(childDefinition, new Data(), parent, childId, Guid.NewGuid().ToString("N"), DateTime.UtcNow);
         using var services = new ServiceCollection().BuildServiceProvider();
         new ContinuationTransitions(services, TimeProvider.System).AwaitChild(checkpoint, continuation, record.StepId, start);
@@ -46,15 +60,20 @@ public sealed class InvocationRetryCommitScenarios
         var receipt = await store.CommitWorkflowInstanceAsync(commit);
         Assert.Equal(WorkflowCommitStatus.Applied, receipt.Status);
         var saved = (await store.GetWorkflowInstanceAsync(parent.InstanceId))!;
-        Assert.Equal(childId, Assert.Single(ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords.Values).Attempts[0].ChildInstanceId);
+
+        Assert.Equal(childId,
+            Assert.Single(ExecutionCheckpoint.Read(saved.ExecutionStateJson).InvocationRecords.Values).Attempts[0].ChildInstanceId);
+
         Assert.Single(await store.GetOpenWaitsAsync(new(InstanceId: parent.InstanceId, Kind: WaitKind.Child)));
         Assert.Single((await store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: parent.InstanceId))).Items);
 
         // A stale owner has a fully prepared attempt 2, but neither that record nor its child may publish.
         var nextChildId = InvocationRecords.Identity("child-instance", logicalId, "2");
         var next = WorkflowInstances.Start(childDefinition, new Data(), saved, nextChildId, Guid.NewGuid().ToString("N"), DateTime.UtcNow);
+
         var stale = CheckpointCommit.Create(saved, grant.Epoch - 1, saved.Revision,
             openedWaits: [new OpenedWait(next.ParentWaitId, WaitKind.Child, "", ChildCompleted.EventType, null)], childStarts: [next]);
+
         Assert.Equal(WorkflowCommitStatus.StaleEpoch, (await store.CommitWorkflowInstanceAsync(stale)).Status);
         Assert.Null(await store.GetWorkflowInstanceAsync(nextChildId));
         Assert.Equal(saved.Revision, (await store.GetWorkflowInstanceAsync(parent.InstanceId))!.Revision);
@@ -63,10 +82,15 @@ public sealed class InvocationRetryCommitScenarios
         var childGrant = await StoreTestSupport.LeaseAsync(store, childId);
         child.Status = WorkflowStatus.Failed;
         var childState = ExecutionCheckpoint.Read(child.ExecutionStateJson);
-        childState.UnhandledError = PendingFailure.Capture(new InvalidOperationException("old child failed"), new WorkflowScopeCatalog(new WorkflowDefinition()), childState, null, newOccurrence: true);
+
+        childState.UnhandledError = PendingFailure.Capture(new InvalidOperationException("old child failed"),
+            new WorkflowScopeCatalog(new WorkflowDefinition()), childState, null, newOccurrence: true);
+
         child.ExecutionStateJson = JsonSerializer.Serialize(childState);
+
         var ended = await store.CommitWorkflowInstanceAsync(CheckpointCommit.Create(child, childGrant.Epoch, child.Revision,
             parentNotice: ChildCompleted.NoticeOf(child, childState)));
+
         Assert.Equal(WorkflowCommitStatus.Applied, ended.Status);
         await store.DeleteWorkflowInstanceAsync(childId);
         var replay = await store.CommitWorkflowInstanceAsync(commit);
@@ -74,6 +98,7 @@ public sealed class InvocationRetryCommitScenarios
         Assert.Equal(receipt.Revision, replay.Revision);
         Assert.Equal(receipt.MadeRunnable, replay.MadeRunnable);
         Assert.Null(await store.GetWorkflowInstanceAsync(childId));
+
         Assert.Single(Assert.Single(ExecutionCheckpoint.Read((await store.GetWorkflowInstanceAsync(parent.InstanceId))!.ExecutionStateJson)
             .InvocationRecords.Values).Attempts);
     }

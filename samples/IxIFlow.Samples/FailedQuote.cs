@@ -24,6 +24,7 @@ public sealed class AuditQuote : IAsyncActivity
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Audited = true;
+
         return Task.CompletedTask;
     }
 }

@@ -30,15 +30,21 @@ public sealed class BundleReviewFixTests
         Assert.False(WorkflowSharedAssemblies.IsShared(new AssemblyName("Microsoft.Extensions.Application")));
         Assert.Contains("private/System.Payments.dll", bundle.Entries.Keys);
         var referenced = new HashSet<string>(StringComparer.Ordinal) { "System.Private.CoreLib", "System.Runtime" };
+
         foreach (var entry in bundle.Entries.Where(pair => pair.Key.EndsWith(".dll", StringComparison.Ordinal)))
         {
             using var pe = new System.Reflection.PortableExecutable.PEReader(new MemoryStream(entry.Value.ToArray()));
             var metadata = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(pe);
+
             foreach (var handle in metadata.AssemblyReferences)
                 referenced.Add(metadata.GetString(metadata.GetAssemblyReference(handle).Name));
         }
+
         Assert.All(bundle.Manifest.SharedAssemblies.Keys, key => Assert.Contains(new AssemblyName(key).Name!, referenced));
-        Assert.DoesNotContain(bundle.Manifest.SharedAssemblies.Keys, key => key.StartsWith("Microsoft.AspNetCore.", StringComparison.Ordinal));
+
+        Assert.DoesNotContain(bundle.Manifest.SharedAssemblies.Keys,
+            key => key.StartsWith("Microsoft.AspNetCore.", StringComparison.Ordinal));
+
         Assert.True(WorkflowSharedAssemblies.IsCompatible(bundle.Manifest));
     }
 
@@ -52,6 +58,7 @@ public sealed class BundleReviewFixTests
     {
         var store = new InMemoryWorkflowStateRepository();
         var version = await PublishedBundleScenario.PublishAsync(store);
+
         var limits = bound switch
         {
             "archive" => new WorkflowBundleReadLimits { MaxArchiveBytes = 1 },
@@ -60,9 +67,12 @@ public sealed class BundleReviewFixTests
             "entry" => new WorkflowBundleReadLimits { MaxEntryBytes = 1 },
             _ => new WorkflowBundleReadLimits { MaxExpandedBytes = 1 }
         };
+
         await using var content = (await store.OpenAsync(version.ArtifactDigest!.Value))!;
+
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => WorkflowBundleArchive.ReadAsync(
             new NonSeekable(content), version.ArtifactDigest.Value, limits: limits));
+
         Assert.Equal(WorkflowErrorKind.ResourceExhausted, error.Kind);
     }
 
@@ -82,7 +92,9 @@ public sealed class BundleReviewFixTests
         using var types = first.EnterTypes();
         var composite = typeof(Dictionary<,>).MakeGenericType(typeof(string), privateType.MakeArrayType()).MakeArrayType(2);
         Assert.Equal(composite, WorkflowTypeIdentity.Resolve(WorkflowTypeIdentity.SavedName(composite)));
-        Assert.Same(first.Definition.BundleContext, AssemblyLoadContext.GetLoadContext(composite.GetElementType()!.GetGenericArguments()[1].GetElementType()!.Assembly));
+
+        Assert.Same(first.Definition.BundleContext,
+            AssemblyLoadContext.GetLoadContext(composite.GetElementType()!.GetGenericArguments()[1].GetElementType()!.Assembly));
     }
 
     [Fact]
@@ -112,8 +124,10 @@ public sealed class BundleReviewFixTests
         var waiting = catalog.ResolveWorkflowDefinitionAsync(first.Name, 1);
         cancel.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+
         using (var independent = await catalog.ResolveWorkflowDefinitionAsync(second.Name, 2).WaitAsync(TimeSpan.FromSeconds(10)))
             Assert.Equal(second.ArtifactDigest, independent.Definition.BundleDigest);
+
         artifacts.Release.TrySetResult();
         using var surviving = await waiting;
         Assert.Equal(2, artifacts.Reads);
@@ -130,12 +144,17 @@ public sealed class BundleReviewFixTests
         var store = new InMemoryWorkflowStateRepository();
         var version = await PublishedBundleScenario.PublishAsync(store);
         var artifacts = new ControlledArtifacts(store) { BlockedDigest = version.ArtifactDigest };
+
         using var catalog = new WorkflowCatalog(store, artifacts: artifacts,
             bundles: new(Folder()) { FetchTimeout = timeout ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromSeconds(30) });
+
         using var cancel = new CancellationTokenSource();
         var loading = catalog.ResolveWorkflowDefinitionAsync(version.Name, 1, cancel.Token);
         await artifacts.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        if (!timeout) cancel.Cancel();
+
+        if (!timeout)
+            cancel.Cancel();
+
         if (timeout)
         {
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => loading);
@@ -143,7 +162,9 @@ public sealed class BundleReviewFixTests
             Assert.True(error.IsInterruption);
             Assert.False(cancel.IsCancellationRequested);
         }
-        else await Assert.ThrowsAnyAsync<OperationCanceledException>(() => loading);
+        else
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => loading);
+
         await artifacts.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
         artifacts.Release.TrySetResult();
         using var retry = await catalog.ResolveWorkflowDefinitionAsync(version.Name, 1);
@@ -162,13 +183,17 @@ public sealed class BundleReviewFixTests
         var host = provider.GetRequiredService<WorkflowHost>();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         var occupying = host.RunAsync("occupant", async (_, _, _) =>
         {
             entered.TrySetResult();
             await release.Task;
+
             return new WorkflowExecutionResult { InstanceId = "occupant", Status = WorkflowExecutionStatus.Success };
         }, CancellationToken.None);
+
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
         try
         {
             var catalog = provider.GetRequiredService<IWorkflowCatalog>();
@@ -177,7 +202,10 @@ public sealed class BundleReviewFixTests
             lease.Definition.BundleContext!.Unloading += _ => unloaded.TrySetResult();
             using var cancel = new CancellationTokenSource();
             var client = provider.GetRequiredService<IWorkflowClient>();
-            var start = client.StartAsync(version.Name, new FirstData(), new WorkflowOptions { InstanceId = "queued-bundle" }, cancel.Token);
+
+            var start = client.StartAsync(version.Name, new FirstData(), new WorkflowOptions { InstanceId = "queued-bundle" },
+                cancel.Token);
+
             cancel.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start);
             lease.Dispose();
@@ -187,7 +215,11 @@ public sealed class BundleReviewFixTests
             await PublishedBundleScenario.UntilAsync(store, "queued-bundle", WorkflowStatus.Suspended);
             await unloaded.Task.WaitAsync(TimeSpan.FromSeconds(10));
         }
-        finally { release.TrySetResult(); await occupying; }
+        finally
+        {
+            release.TrySetResult();
+            await occupying;
+        }
     }
 
     [Fact]
@@ -196,8 +228,10 @@ public sealed class BundleReviewFixTests
         var store = new InMemoryWorkflowStateRepository();
         var version = await PublishedBundleScenario.PublishAsync(store, 2);
         await using var host = PublishedBundleScenario.Host(store, Folder());
+
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => host.GetRequiredService<IWorkflowClient>()
             .StartAsync(version.Name, new { Value = new { Nested = "not an integer" } }));
+
         Assert.Equal(WorkflowErrorKind.InvalidRequest, error.Kind);
         Assert.Empty((await store.QueryInstancesAsync(new())).Items);
     }
@@ -225,24 +259,28 @@ public sealed class BundleReviewFixTests
     public async Task PublishedParentCatchesTheChildsExceptionInItsOwnContract()
     {
         var store = new InMemoryWorkflowStateRepository();
+
         await PublishYamlAsync(store, "BundleFailure", """
-            workflow: {name: BundleFailure, dataType: IxIFlow.BundleFixtures.FirstData}
-            definitions: [{kind: activity, activity: IxIFlow.BundleFixtures.Fail}]
-            """);
+                                                       workflow: {name: BundleFailure, dataType: IxIFlow.BundleFixtures.FirstData}
+                                                       definitions: [{kind: activity, activity: IxIFlow.BundleFixtures.Fail}]
+                                                       """);
+
         await PublishYamlAsync(store, "BundleCatch", """
-            workflow: {name: BundleCatch, dataType: IxIFlow.BundleFixtures.FirstData}
-            definitions:
-              - kind: try
-                steps: [{kind: invokeWorkflow, workflow: {name: BundleFailure, version: 1}}]
-                catches:
-                  - exception: IxIFlow.BundleFixtures.ChildFailure
-                    faultType: IxIFlow.BundleFixtures.MessageFault
-                    steps:
-                      - kind: activity
-                        activity: IxIFlow.BundleFixtures.Echo
-                        input: [{target: Value, from: {kind: path, path: fault.Message}}]
-                        output: [{source: Value, to: {kind: path, path: workflow.Result}}]
-            """, options => options.SourceOptions.Workflows["BundleFailure@1"] = new("global::IxIFlow.BundleFixtures.FirstData", 1));
+                                                     workflow: {name: BundleCatch, dataType: IxIFlow.BundleFixtures.FirstData}
+                                                     definitions:
+                                                       - kind: try
+                                                         steps: [{kind: invokeWorkflow, workflow: {name: BundleFailure, version: 1}}]
+                                                         catches:
+                                                           - exception: IxIFlow.BundleFixtures.ChildFailure
+                                                             faultType: IxIFlow.BundleFixtures.MessageFault
+                                                             steps:
+                                                               - kind: activity
+                                                                 activity: IxIFlow.BundleFixtures.Echo
+                                                                 input: [{target: Value, from: {kind: path, path: fault.Message}}]
+                                                                 output: [{source: Value, to: {kind: path, path: workflow.Result}}]
+                                                     """,
+            options => options.SourceOptions.Workflows["BundleFailure@1"] = new("global::IxIFlow.BundleFixtures.FirstData", 1));
+
         await using var host = PublishedBundleScenario.Host(store, Folder());
         var client = host.GetRequiredService<IWorkflowClient>();
         var id = await client.StartAsync("BundleCatch", new FirstData());
@@ -257,38 +295,49 @@ public sealed class BundleReviewFixTests
     {
         var store = new InMemoryWorkflowStateRepository();
         await PublishedBundleScenario.PublishAsync(store);
+
         var version = await PublishYamlAsync(store, "PreviousParent", """
-            workflow: {name: PreviousParent, dataType: IxIFlow.BundleFixtures.FirstData}
-            definitions:
-              - {kind: activity, activity: IxIFlow.BundleFixtures.Echo}
-              - kind: invokeWorkflow
-                workflow: {name: BundleLifecycle, version: 1}
-                input: [{target: Value, from: {kind: path, path: previousStep.Value}}]
-            """, options => options.SourceOptions.Workflows["BundleLifecycle@1"] = new("global::IxIFlow.BundleFixtures.FirstData", 1));
+                                                                      workflow: {name: PreviousParent, dataType: IxIFlow.BundleFixtures.FirstData}
+                                                                      definitions:
+                                                                        - {kind: activity, activity: IxIFlow.BundleFixtures.Echo}
+                                                                        - kind: invokeWorkflow
+                                                                          workflow: {name: BundleLifecycle, version: 1}
+                                                                          input: [{target: Value, from: {kind: path, path: previousStep.Value}}]
+                                                                      """,
+            options => options.SourceOptions.Workflows["BundleLifecycle@1"] = new("global::IxIFlow.BundleFixtures.FirstData", 1));
+
         string id;
+
         using (var catalog = new WorkflowCatalog(store, artifacts: store, bundles: new(Folder())))
         using (var lease = await catalog.ResolveWorkflowDefinitionAsync(version.Name, 1))
         using (lease.EnterTypes())
         {
             var definition = lease.Definition;
+
             var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition,
                 Activator.CreateInstance(definition.WorkflowDataType!)!, new WorkflowOptions(), DateTime.UtcNow);
+
             var continuation = Assert.Single(checkpoint.Continuations);
             continuation.Stack[^1].NextStepIndex = 1;
+
             continuation.Previous = new SerializedValue
             {
                 Type = WorkflowTypeIdentity.SavedName(definition.WorkflowDataType!.Assembly.GetType(typeof(Echo).FullName!)!),
                 Json = StoredJson.Inline("{\"Value\":\"recovered parent previous\"}")
             };
+
             instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
             await store.SeedAsync(instance, wakeAfter: TimeSpan.Zero);
             id = instance.InstanceId;
         }
+
         await using var host = PublishedBundleScenario.Host(store, Folder());
         await host.GetRequiredService<IWorkflowClient>().RecoverAsync(id);
         var child = Assert.Single((await store.QueryInstancesAsync(new(ParentInstanceId: id))).Items);
         var saved = (await store.GetWorkflowInstanceAsync(child.InstanceId))!;
-        Assert.Equal("recovered parent previous", JsonDocument.Parse(saved.WorkflowDataJson.InlineText).RootElement.GetProperty("Value").GetString());
+
+        Assert.Equal("recovered parent previous",
+            JsonDocument.Parse(saved.WorkflowDataJson.InlineText).RootElement.GetProperty("Value").GetString());
     }
 
     [Fact]
@@ -297,14 +346,21 @@ public sealed class BundleReviewFixTests
         var folder = Folder();
         Directory.CreateDirectory(folder);
         var cs = new SqliteConnectionStringBuilder { DataSource = Path.Combine(folder, "state.db") }.ConnectionString;
+
         await using (var store = new SqliteWorkflowStateRepository(cs))
             Assert.Null(await store.GetWorkflowInstanceAsync("missing"));
+
         await using (var connection = new SqliteConnection(cs))
         {
-            var plan = await connection.QueryAsync("EXPLAIN QUERY PLAN SELECT DISTINCT bundle_digest FROM ixiflow_workflow_instances WHERE bundle_digest IS NOT NULL");
-            Assert.Contains(plan, row => ((string)row.detail).Contains("COVERING INDEX ix_ixiflow_instances_bundle_digest", StringComparison.Ordinal));
+            var plan = await connection.QueryAsync(
+                "EXPLAIN QUERY PLAN SELECT DISTINCT bundle_digest FROM ixiflow_workflow_instances WHERE bundle_digest IS NOT NULL");
+
+            Assert.Contains(plan,
+                row => ((string)row.detail).Contains("COVERING INDEX ix_ixiflow_instances_bundle_digest", StringComparison.Ordinal));
+
             await connection.ExecuteAsync("DROP INDEX ix_ixiflow_instances_bundle_digest");
         }
+
         await using var broken = new SqliteWorkflowStateRepository(cs);
         var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => broken.GetWorkflowInstanceAsync("missing"));
         Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
@@ -315,7 +371,9 @@ public sealed class BundleReviewFixTests
     public void FaultProjectionsStayCachedWhileTheirTypeKeysAreAlive()
     {
         var weak = CachedProjection();
-        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
         Assert.True(weak.TryGetTarget(out var projection));
         Assert.Same(projection, FaultProjection.For(typeof(InvalidOperationException), typeof(EmptyFault)));
     }
@@ -334,18 +392,23 @@ public sealed class BundleReviewFixTests
         var counted = DispatchProxy.Create<IWorkflowCatalog, CatalogReads>();
         var proxy = (CatalogReads)(object)counted;
         proxy.Inner = catalog;
+
         await using var provider = PublishedBundleScenario.Host(store, folder, 0,
             configure: services => services.AddSingleton(counted));
+
         var client = provider.GetRequiredService<IWorkflowClient>();
         var first = await client.StartAsync(version.Name, new FirstData());
         var second = await client.StartAsync(version.Name, new FirstData());
         await PublishedBundleScenario.UntilAsync(store, first, WorkflowStatus.Suspended);
         await PublishedBundleScenario.UntilAsync(store, second, WorkflowStatus.Suspended);
+
         // A terminal run's result read can follow its suspended commit. Drain each instance's
         // existing work through its normal queue before counting the listing's acquisitions.
         var host = provider.GetRequiredService<WorkflowHost>();
+
         foreach (var id in new[] { first, second })
             await host.RunAsync(id, (_, _, _) => Task.FromResult(new WorkflowExecutionResult { InstanceId = id }), CancellationToken.None);
+
         proxy.Acquisitions = 0;
         var waits = await client.GetOpenWaitsAsync(new());
         Assert.Equal(2, waits.Count);
@@ -359,12 +422,19 @@ public sealed class BundleReviewFixTests
     public async Task CapabilitySnapshotsRefreshOnlyOnHeartbeatOrCatalogRevisionAndExcludeIncompatibleProfiles(bool sqlite)
     {
         var folder = Folder();
-        if (sqlite) Directory.CreateDirectory(folder);
-        await using var sqliteStore = sqlite ? new SqliteWorkflowStateRepository(new SqliteConnectionStringBuilder
-        { DataSource = Path.Combine(folder, "state.db"), Pooling = false }.ConnectionString) : null;
+
+        if (sqlite)
+            Directory.CreateDirectory(folder);
+
+        await using var sqliteStore = sqlite
+            ? new SqliteWorkflowStateRepository(new SqliteConnectionStringBuilder
+                { DataSource = Path.Combine(folder, "state.db"), Pooling = false }.ConnectionString)
+            : null;
+
         IWorkflowStateRepository store = sqliteStore ?? (IWorkflowStateRepository)new InMemoryWorkflowStateRepository();
         var version = await PublishedBundleScenario.PublishAsync(store);
         var bundle = await ReadAsync(store, version);
+
         foreach (var defect in new[] { "engine", "checkpoint", "shared" })
         {
             var manifest = defect switch
@@ -373,8 +443,10 @@ public sealed class BundleReviewFixTests
                 "checkpoint" => bundle.Manifest with { CheckpointContractVersion = 999 },
                 _ => bundle.Manifest with { SharedAssemblies = new Dictionary<string, string> { ["System.Payments"] = "1.0.0.0" } }
             };
+
             await store.RegisterWorkflowVersionAsync(version with { Name = defect, ManifestJson = JsonSerializer.Serialize(manifest) });
         }
+
         using var catalog = new WorkflowCatalog(store, artifacts: store, bundles: new(Folder()));
         var counted = DispatchProxy.Create<IWorkflowCatalog, CatalogReads>();
         var proxy = (CatalogReads)(object)counted;
@@ -382,8 +454,10 @@ public sealed class BundleReviewFixTests
         var settings = HostSettings.Default with { BundleHostingEnabled = true };
         var first = await settings.GetCapabilitiesAsync(counted);
         Assert.Equal(version.StructureHash, first["workflow:BundleLifecycle@1"]);
+
         foreach (var defect in new[] { "engine", "checkpoint", "shared" })
             Assert.False(first.ContainsKey($"workflow:{defect}@1"));
+
         Assert.Same(first, await settings.GetCapabilitiesAsync(counted));
         Assert.Equal(1, proxy.Reads);
         Assert.Equal(1, proxy.RevisionReads);
@@ -409,13 +483,21 @@ public sealed class BundleReviewFixTests
         public int Reads;
         public int RevisionReads;
         public int Acquisitions;
+
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
-            if (targetMethod!.Name == nameof(IWorkflowCatalog.GetCatalogRevisionAsync)) RevisionReads++;
-            if (targetMethod.Name == nameof(IWorkflowCatalog.GetWorkflowVersionChangesAsync)) Reads++;
+            if (targetMethod!.Name == nameof(IWorkflowCatalog.GetCatalogRevisionAsync))
+                RevisionReads++;
+
+            if (targetMethod.Name == nameof(IWorkflowCatalog.GetWorkflowVersionChangesAsync))
+                Reads++;
+
             if (targetMethod.Name == nameof(IWorkflowCatalog.GetWorkflowVersionsAsync))
                 throw new InvalidOperationException("Capability refresh must not enumerate the full catalog");
-            if (targetMethod.Name == nameof(IWorkflowCatalog.AcquireWorkflowDefinitionAsync)) Acquisitions++;
+
+            if (targetMethod.Name == nameof(IWorkflowCatalog.AcquireWorkflowDefinitionAsync))
+                Acquisitions++;
+
             return targetMethod.Invoke(Inner, args);
         }
     }
@@ -423,6 +505,7 @@ public sealed class BundleReviewFixTests
     private static async Task<WorkflowBundle> ReadAsync(IArtifactStore artifacts, WorkflowVersion version)
     {
         await using var stream = (await artifacts.OpenAsync(version.ArtifactDigest!.Value))!;
+
         return await WorkflowBundleArchive.ReadAsync(stream, version.ArtifactDigest.Value);
     }
 
@@ -434,6 +517,7 @@ public sealed class BundleReviewFixTests
         var draft = await store.SaveDefinitionAsync(new(name, 1, "workflow", yaml), null);
         var published = await new WorkflowPublisher(store, store, options).PublishAsync(draft.Id);
         Assert.True(published.Success, string.Join("; ", published.Diagnostics));
+
         return published.Workflow!;
     }
 
@@ -453,24 +537,37 @@ public sealed class BundleReviewFixTests
         var executor = new WorkflowExecutor(provider, new UnusedExecutionHost());
         var identity = Guid.NewGuid();
         var instance = new WorkflowInstance { WorkflowName = version.Name, WorkflowVersion = 1, BundleDigest = version.ArtifactDigest };
+
         var run = executor.ExecuteAsync(new Assign(identity, instance, null, version.StructureHash, 1, 0,
             ExecutionLimits.Default, false, []), default);
+
         await artifacts.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
         executor.Deliver(new Cancel(identity, kind));
         var ready = await run.WaitAsync(TimeSpan.FromSeconds(10));
+
         Assert.Equal(kind == CancelKind.Ownership ? AssignmentOutcomeKind.OwnershipLost : AssignmentOutcomeKind.RunCancelled,
             ready.Outcome!.Kind);
+
         await artifacts.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Empty((await store.QueryInstancesAsync(new())).Items);
     }
 
     private sealed class UnusedExecutionHost : IExecutionHost
     {
-        public Task<CheckpointReply> CheckpointAsync(Checkpoint request) => throw new InvalidOperationException("Acquisition must not checkpoint");
-        public Task<StartChildReply> StartChildAsync(StartChild request) => throw new InvalidOperationException("Acquisition must not start a child");
-        public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) => throw new InvalidOperationException("Acquisition must not read the inbox");
-        public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) => throw new InvalidOperationException("Acquisition must not read waits");
-        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) => throw new InvalidOperationException("Acquisition must not read payloads");
+        public Task<CheckpointReply> CheckpointAsync(Checkpoint request) =>
+            throw new InvalidOperationException("Acquisition must not checkpoint");
+
+        public Task<StartChildReply> StartChildAsync(StartChild request) =>
+            throw new InvalidOperationException("Acquisition must not start a child");
+
+        public Task<ReadInboxReply> ReadInboxAsync(ReadInbox request) =>
+            throw new InvalidOperationException("Acquisition must not read the inbox");
+
+        public Task<ReadWaitReply> ReadWaitAsync(ReadWait request) =>
+            throw new InvalidOperationException("Acquisition must not read waits");
+
+        public Task<ReadPayloadReply> ReadPayloadAsync(ReadPayload request) =>
+            throw new InvalidOperationException("Acquisition must not read payloads");
     }
 
     private sealed class ControlledArtifacts(IArtifactStore inner) : IArtifactStore
@@ -480,21 +577,42 @@ public sealed class BundleReviewFixTests
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Reads;
+
         public async ValueTask<Stream?> OpenAsync(ArtifactDigest digest, CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref Reads);
+
             if (digest == BlockedDigest)
             {
                 Entered.TrySetResult();
-                try { await Release.Task.WaitAsync(cancellationToken); }
-                catch (OperationCanceledException) { Cancelled.TrySetResult(); throw; }
+
+                try
+                {
+                    await Release.Task.WaitAsync(cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    Cancelled.TrySetResult();
+
+                    throw;
+                }
             }
+
             return await inner.OpenAsync(digest, cancellationToken);
         }
-        public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) => inner.PutAsync(kind, content, cancellationToken);
-        public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => inner.ExistsAsync(digest, cancellationToken);
-        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) => inner.DeleteAsync(digest, cancellationToken);
-        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize, CancellationToken cancellationToken = default) => inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
+
+        public ValueTask<ArtifactDigest> PutAsync(ArtifactKind kind, Stream content, CancellationToken cancellationToken = default) =>
+            inner.PutAsync(kind, content, cancellationToken);
+
+        public ValueTask<bool> ExistsAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            inner.ExistsAsync(digest, cancellationToken);
+
+        public ValueTask DeleteAsync(ArtifactDigest digest, CancellationToken cancellationToken = default) =>
+            inner.DeleteAsync(digest, cancellationToken);
+
+        public ValueTask<int> PurgeUnreferencedAsync(IReadOnlySet<ArtifactDigest> references, DateTime olderThanUtc, int batchSize,
+            CancellationToken cancellationToken = default) =>
+            inner.PurgeUnreferencedAsync(references, olderThanUtc, batchSize, cancellationToken);
     }
 
     private sealed class NonSeekable(Stream inner) : Stream
@@ -503,9 +621,18 @@ public sealed class BundleReviewFixTests
         public override bool CanSeek => false;
         public override bool CanWrite => false;
         public override long Length => throw new NotSupportedException();
-        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
         public override int Read(byte[] buffer, int offset, int count) => inner.Read(buffer, offset, count);
-        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) => inner.ReadAsync(buffer, cancellationToken);
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            inner.ReadAsync(buffer, cancellationToken);
+
         public override void Flush() => throw new NotSupportedException();
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();

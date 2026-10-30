@@ -3,9 +3,9 @@ title: Engine capabilities
 description: Available execution, persistence and integration features.
 ---
 
-This page summarizes implemented behavior. The [roadmap](roadmap.md) identifies the remaining 1.0 work.
+This page summarizes IxIFlow 1.0. The [roadmap](roadmap.md) describes features after 1.0.
 
-| Area | Available now |
+| Area | Available in 1.0 |
 | --- | --- |
 | [Authoring](fluent-api.md) | Typed fluent definitions; YAML forms for every fluent construct; shared build rules, source locations, stable step IDs and contract/purity analyzers |
 | [Activities](activity-sdk.md) | Direction markers, required inputs, typed defaults, .NET display metadata, DI, saved invocation/attempt IDs and recovery contracts |

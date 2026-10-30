@@ -16,7 +16,14 @@ namespace IxIFlow.Tests.ExecutionTests;
 [Trait("Spec", "F-15")]
 public sealed class CatalogArtifactThirdRoundTests
 {
-    public enum Scenario { NewerVersion, UnfinishedParent, PublishedCaller, DeprecatedCaller }
+    public enum Scenario
+    {
+        NewerVersion,
+        UnfinishedParent,
+        PublishedCaller,
+        DeprecatedCaller
+    }
+
     public static TheoryData<Scenario> Scenarios => new(Enum.GetValues<Scenario>());
 
     [Theory, MemberData(nameof(Scenarios))]
@@ -28,25 +35,31 @@ public sealed class CatalogArtifactThirdRoundTests
         var folder = Path.Combine(Path.GetTempPath(), "IxIFlow.PR67R3", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(folder);
         var cs = "Data Source=" + Path.Combine(folder, "catalog.db");
+
         try
         {
             await using var store = new SqliteWorkflowStateRepository(cs);
             await VerifyAsync(store, scenario, () => new SqliteConnection(cs + ";Pooling=False"));
         }
-        finally { await SqliteTestFiles.DeleteAsync(folder); }
+        finally
+        {
+            await SqliteTestFiles.DeleteAsync(folder);
+        }
     }
 
     [Theory, MemberData(nameof(Scenarios)), Trait("Category", "SqlIntegration")]
     public Task SqlServer(Scenario scenario)
     {
         var cs = SqlTestDatabase<CatalogArtifactThirdRoundTests>.ConnectionString;
-        return VerifyAsync(new SqlWorkflowStateRepository(cs), scenario, () => new SqlConnection(cs));
+
+        return VerifyAsync(new SqlServerWorkflowStateRepository(cs), scenario, () => new SqlConnection(cs));
     }
 
     [Theory, MemberData(nameof(Scenarios)), Trait("Category", "PostgreSqlIntegration")]
     public Task PostgreSql(Scenario scenario)
     {
         var cs = PostgreSqlTestDatabase<CatalogArtifactThirdRoundTests>.ConnectionString;
+
         return VerifyAsync(new PostgreSqlWorkflowStateRepository(cs), scenario, () => new NpgsqlConnection(cs));
     }
 
@@ -56,23 +69,46 @@ public sealed class CatalogArtifactThirdRoundTests
         var caller = child + "-caller";
         const int oldVersion = 3;
         const int newVersion = 8;
-        await store.RegisterWorkflowVersionAsync(new(child, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(child, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
-        await store.RegisterWorkflowVersionAsync(new(caller, oldVersion, "old", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(caller, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Dependencies: [new(child, 1)], Invocations: [new(child, 1, "invoke-child", "fixture")]));
-        await store.RegisterWorkflowVersionAsync(new(caller, newVersion, "new", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(caller, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
+
+        await store.RegisterWorkflowVersionAsync(new(child, 1, "child", WorkflowContract.OfType(typeof(object)).ToJson(),
+            WorkflowContract.OfType(typeof(object)).Hash,
+            Descriptor: new WorkflowDescriptor(child, "", [], null, null,
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
+
+        await store.RegisterWorkflowVersionAsync(new(caller, oldVersion, "old", WorkflowContract.OfType(typeof(object)).ToJson(),
+            WorkflowContract.OfType(typeof(object)).Hash,
+            Descriptor: new WorkflowDescriptor(caller, "", [], null, null,
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Dependencies: [new(child, 1)],
+            Invocations: [new(child, 1, "invoke-child", "fixture")]));
+
+        await store.RegisterWorkflowVersionAsync(new(caller, newVersion, "new", WorkflowContract.OfType(typeof(object)).ToJson(),
+            WorkflowContract.OfType(typeof(object)).Hash,
+            Descriptor: new WorkflowDescriptor(caller, "", [], null, null,
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
 
         if (scenario is Scenario.PublishedCaller or Scenario.DeprecatedCaller)
         {
             if (scenario == Scenario.DeprecatedCaller)
-                await store.SetWorkflowVersionStateAsync(caller, oldVersion, WorkflowVersionState.Deprecated, new CatalogMutationToken((await store.GetWorkflowVersionAsync(caller, oldVersion))!.LifecycleRevision));
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await store.SetWorkflowVersionStateAsync(child, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(child, 1))!.LifecycleRevision)));
+                await store.SetWorkflowVersionStateAsync(caller, oldVersion, WorkflowVersionState.Deprecated,
+                    new CatalogMutationToken((await store.GetWorkflowVersionAsync(caller, oldVersion))!.LifecycleRevision));
+
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await store.SetWorkflowVersionStateAsync(child, 1,
+                WorkflowVersionState.Retired,
+                new CatalogMutationToken((await store.GetWorkflowVersionAsync(child, 1))!.LifecycleRevision)));
+
             Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
             Assert.Contains($"is required by caller {caller} v{oldVersion}", error.Message);
             Assert.DoesNotContain("unfinished parent", error.Message);
             Assert.Equal(WorkflowVersionState.Published, (await store.GetWorkflowVersionAsync(child, 1))!.State);
+
             return;
         }
 
         var instances = new List<WorkflowInstance>();
+
         // These unfinished instances share the caller's name, but their version has no dependency.
         for (var i = 0; i < 256; i++)
             await SeedAsync(caller, newVersion);
@@ -80,33 +116,56 @@ public sealed class CatalogArtifactThirdRoundTests
         // Also reject a false cross product of names and versions: (caller,3), (other,8)
         // must not match either (caller,8) above or (other,3) below.
         var other = child + "-other";
-        await store.RegisterWorkflowVersionAsync(new(other, oldVersion, "other-old", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash, Descriptor: new WorkflowDescriptor(other, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
-        await store.RegisterWorkflowVersionAsync(new(other, newVersion, "other-new", WorkflowContract.OfType(typeof(object)).ToJson(), WorkflowContract.OfType(typeof(object)).Hash,
-            Descriptor: new WorkflowDescriptor(other, "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), State: WorkflowVersionState.Retired, Dependencies: [new(child, 1)], Invocations: [new(child, 1, "invoke-child", "fixture")]));
+
+        await store.RegisterWorkflowVersionAsync(new(other, oldVersion, "other-old", WorkflowContract.OfType(typeof(object)).ToJson(),
+            WorkflowContract.OfType(typeof(object)).Hash,
+            Descriptor: new WorkflowDescriptor(other, "", [], null, null,
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), Invocations: []));
+
+        await store.RegisterWorkflowVersionAsync(new(other, newVersion, "other-new", WorkflowContract.OfType(typeof(object)).ToJson(),
+            WorkflowContract.OfType(typeof(object)).Hash,
+            Descriptor: new WorkflowDescriptor(other, "", [], null, null,
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(object)),
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(object))), State: WorkflowVersionState.Retired,
+            Dependencies: [new(child, 1)], Invocations: [new(child, 1, "invoke-child", "fixture")]));
+
         await SeedAsync(other, oldVersion);
         var pairs = new WorkflowVersionReference[] { new(caller, oldVersion), new(other, newVersion) };
         await AssertQueryAsync(false);
 
         if (scenario == Scenario.UnfinishedParent)
-            for (var i = 0; i < 16; i++) await SeedAsync(caller, oldVersion);
-        await store.SetWorkflowVersionStateAsync(caller, oldVersion, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(caller, oldVersion))!.LifecycleRevision));
+            for (var i = 0; i < 16; i++)
+                await SeedAsync(caller, oldVersion);
+
+        await store.SetWorkflowVersionStateAsync(caller, oldVersion, WorkflowVersionState.Retired,
+            new CatalogMutationToken((await store.GetWorkflowVersionAsync(caller, oldVersion))!.LifecycleRevision));
+
         await AssertQueryAsync(scenario == Scenario.UnfinishedParent);
 
         if (scenario == Scenario.UnfinishedParent)
         {
-            var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await store.SetWorkflowVersionStateAsync(child, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(child, 1))!.LifecycleRevision)));
+            var error = await Assert.ThrowsAsync<WorkflowEngineException>(async () => await store.SetWorkflowVersionStateAsync(child, 1,
+                WorkflowVersionState.Retired,
+                new CatalogMutationToken((await store.GetWorkflowVersionAsync(child, 1))!.LifecycleRevision)));
+
             Assert.Equal(WorkflowErrorKind.InvalidState, error.Kind);
             Assert.Contains($"has unfinished parent instances of {caller} v{oldVersion}", error.Message);
             Assert.DoesNotContain("is required by caller", error.Message);
             Assert.Equal(WorkflowVersionState.Published, (await store.GetWorkflowVersionAsync(child, 1))!.State);
+
             foreach (var instance in instances.Where(instance => instance.WorkflowName == caller && instance.WorkflowVersion == oldVersion))
             {
                 instance.Status = WorkflowStatus.Completed;
                 await store.SeedAsync(instance);
             }
+
             await AssertQueryAsync(false);
         }
-        await store.SetWorkflowVersionStateAsync(child, 1, WorkflowVersionState.Retired, new CatalogMutationToken((await store.GetWorkflowVersionAsync(child, 1))!.LifecycleRevision));
+
+        await store.SetWorkflowVersionStateAsync(child, 1, WorkflowVersionState.Retired,
+            new CatalogMutationToken((await store.GetWorkflowVersionAsync(child, 1))!.LifecycleRevision));
+
         Assert.Equal(WorkflowVersionState.Retired, (await store.GetWorkflowVersionAsync(child, 1))!.State);
 
         async Task SeedAsync(string name, int version)
@@ -122,8 +181,10 @@ public sealed class CatalogArtifactThirdRoundTests
             {
                 var match = InMemoryWorkflowStateRepository.FindUnfinishedCaller(instances, pairs.ToHashSet());
                 Assert.Equal(found ? new(caller, oldVersion) : null, match);
+
                 return;
             }
+
             // Execute the production statement directly, so a query returning every newer-version
             // row cannot pass merely because retirement later filters its buffered results in C#.
             var sqlMethod = store.GetType().GetMethod("CatalogSql", BindingFlags.Static | BindingFlags.NonPublic)!;
@@ -132,13 +193,15 @@ public sealed class CatalogArtifactThirdRoundTests
             await using var connection = connect();
             var rows = (await connection.QueryAsync<CallerRow>(sql, new { Callers = JsonSerializer.Serialize(pairs) })).ToArray();
             Assert.InRange(rows.Length, 0, 1);
+
             if (found)
             {
                 var row = Assert.Single(rows);
                 Assert.Equal(caller, row.Name);
                 Assert.Equal(oldVersion, row.Version);
             }
-            else Assert.Empty(rows);
+            else
+                Assert.Empty(rows);
         }
     }
 
@@ -147,12 +210,16 @@ public sealed class CatalogArtifactThirdRoundTests
     {
         var pair = new WorkflowVersionReference("depending-caller", 3);
         var read = 0;
+
         IEnumerable<WorkflowInstance> Rows()
         {
             read++;
+
             yield return Instance(pair.Name, pair.Version);
+
             throw new InvalidOperationException("The memory store read beyond its first match");
         }
+
         Assert.Equal(pair, InMemoryWorkflowStateRepository.FindUnfinishedCaller(Rows(), new HashSet<WorkflowVersionReference> { pair }));
         Assert.Equal(1, read);
     }

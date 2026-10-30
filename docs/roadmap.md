@@ -1,40 +1,16 @@
 ---
-title: Roadmap
-description: Available foundations, remaining 1.0 work and later features.
+title: After 1.0
+description: Features outside the IxIFlow 1.0 release.
 ---
-
-This roadmap matches the [README status section](../README.md#status-and-roadmap). “Planned” means not yet available. A working subset is identified separately from what remains.
-
-## Available foundations
-
-The in-process host, client, slots, checkpointed runner, public executor/host message contract, fenced leases, inbox, reply tokens, independent children, parallel isolation/joins, ForEach, sagas, resource stops and recovery are implemented. Memory, SQLite, SQL Server and PostgreSQL stores are available. Hosts register with store-clock heartbeats and publish automatic and configured capabilities.
-
-YAML covers every fluent construct with strict reading and a packaged schema. Activity direction markers, .NET metadata, mapping validation and analyzers are available. Declared workflow names and versions, compiler-free structure hashes and generated/fluent parity tests exist.
-
-The persistent catalog stores drafts and immutable version metadata, supports latest-published selection and guarded retirement, and registers code-defined workflows. YAML drafts with uploaded or feed-resolved activity packages can be published in process as immutable bundles identified by archive digest, with manifest and entry verification. Artifact stores for memory, SQLite, SQL Server, PostgreSQL and the file system, plus bounded retention of unreferenced artifacts, are implemented. Hosts configured with `UseWorkflowBundles` fetch a published version by its saved bundle digest, verify it, check shared-assembly compatibility and load it in its own collectible context; code-defined definitions are still loaded on each host.
-
-[Placement](coordinator-and-hosts.md) combines definition, registration and start demands, explicit inheritance to children, expiring pins, matching and last-host affinity. [Coordinators](coordinators.md) supply stateless matching, discovery, multiple links, authenticated TLS and polling fallback. Unschedulable work is visible through client/operator reads, telemetry and `GET /unschedulable`. Demands place compute; [full data residency](coordinator-and-hosts.md#placement-and-data-residency) requires a separate cluster and store per region.
-
-Completion outbox publishers, outgoing signed webhooks and [incoming HTTP triggers](incoming-webhooks.md) with atomic idempotent admission are implemented, as are retained results, instance cleanup and tombstones. Committed control-flow, event and operator traces live outside checkpoints; snapshots, scoped logging and OpenTelemetry signals are available. The [debugger](debugging.md) (breakpoints, all-stop pause, stepping, audited data edits, the [Debug Adapter Protocol](debug-adapter.md), inspection and replay) and opt-in [large-payload](large-payloads.md) storage by reference are available. [Redaction](redaction.md) protects inspection values and error text, with privileged reads for raw diagnostics. Versioned Liquid templates, bundled rendering and application-supplied message senders also work. The unified catalog exposes workflow, activity, package, template and built-in step descriptors through scoped library and HTTP reads. YAML code activities publish as NuGet packages for YAML and fluent consumers. Published inline calls pin and copy their executable closures; typed workflow contracts validate input and output mappings. Scope activities provide pass-local resources in fluent and YAML definitions, catalog metadata, inspection and debugger views.
-
-Instance search, safe operator wait listings, trace paging, hard termination and outbox administration are available through [IWorkflowOperations](operations.md) and the authorized [HTTP operations mapping](operations-http.md). Termination can stop an instance even when no live host satisfies its demands or pin. [Reply tokens](reply-tokens.md) are capabilities for answering one wait; HTTP trace and snapshot reads require both inspect and reply authorization.
-
-Conformance covers memory, SQLite and distributed SQL Server/PostgreSQL, including zero, one and two coordinators. The existing fault categories cover lost acknowledgements, stale owners, a host dying after a wake, coordinator/poll races, event timing, nested-join recovery, parent/child cancellation and repeated host crashes through quarantine.
-
-## Publishing and release verification
-
-[Publishing HTTP](publishing-http.md) exposes workflow/activity/template drafts, full no-write validation, durable publication attempts and history, template preview, package upload, lifecycle changes, downloads and scoped catalog reads. The NuGet V3 read subset serves authorized available packages, including withdrawn versions retained for existing consumers. New IxIFlow authoring rejects withdrawn packages.
-
-[Published-artifact samples](../samples/README.md#published-artifacts) exercise package consumers, bundled templates, inline calls and HTTP registration. Local tests cover these paths. SQL Server, PostgreSQL, coordinator profiles and process-based NuGet consumer checks need their matching integration environments; local runs do not establish those deployment results.
-
-The checkpoint and structure-hash formats are reset to 1 with the `ixiflow-1` marker; release verification remains before 1.0. There is no checkpoint migration before 1.0; recreate development stores and republish artifacts when the release formats change.
 
 ## After 1.0
 
-Process isolation is after 1.0: process slots, application-built executor programs, pipe transport, liveness, hard timeouts, process resource accounting, fenced crash reports and the process-isolation conformance axis. Process memory limits belong to the deployment. Native AOT support for compiled-in workflows, including trimming and publish/run verification, is also after 1.0.
+IxIFlow 1.0 runs workflows in the host process. The following features are outside this release:
 
-Broker publisher/consumer samples for RabbitMQ or Azure Service Bus and a distributed map over paged external input are later work. The distributed map is intended to run bounded children and store results outside the parent's checkpoint.
+- Process isolation: separate executor programs and process slots, pipe transport, liveness checks, hard timeouts, resource accounting and fenced crash reports. Deployment tooling supplies process memory limits.
+- Native AOT for compiled-in workflows, with trimming and publish/run verification.
+- Broker publisher and consumer examples for RabbitMQ and Azure Service Bus.
+- A distributed map that pages external input, bounds child concurrency and stores results outside the parent checkpoint.
+- Composed durable-step and workflow-call state-machine triggers.
 
-SQLite single-host durability has already been implemented in the 1.0 scope. Ordinary parallel branches and ForEach are available now; neither requires that future distributed map.
-
-See [engine capabilities](engine-capabilities.md) for today's feature summary and [hosting](coordinator-and-hosts.md) for the current runtime boundary.
+See [engine capabilities](engine-capabilities.md) for the 1.0 feature set and [hosting](coordinator-and-hosts.md) for its deployment boundaries. These directions carry no delivery dates.

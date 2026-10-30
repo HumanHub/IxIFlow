@@ -20,6 +20,7 @@ public sealed class WorkflowHostDisposalReviewTests
     {
         var genericHost = new HostBuilder().ConfigureServices(services =>
             services.AddIxIFlow(options => options.DrainTimeout = TimeSpan.Zero)).Build();
+
         var host = genericHost.Services.GetRequiredService<WorkflowHost>();
         Assert.Contains(host, genericHost.Services.GetServices<IHostedService>());
         var entered = Signal();
@@ -27,27 +28,42 @@ public sealed class WorkflowHostDisposalReviewTests
         var finishRun = Signal();
         var disposed = Signal();
         var context = new HeldSynchronizationContext();
+
         var running = host.RunAsync("context-disposal", async (_, _, token) =>
         {
             using var registration = token.Register(() => cancelled.TrySetResult());
             entered.TrySetResult();
             await finishRun.Task;
+
             return true;
         }, CancellationToken.None);
+
         await entered.Task.WaitAsync(Patience);
+
         var thread = new Thread(() =>
         {
             SynchronizationContext.SetSynchronizationContext(context);
+
             try
             {
-                if (stopFirst) host.StopAsync(CancellationToken.None).GetAwaiter().GetResult();
+                if (stopFirst)
+                    host.StopAsync(CancellationToken.None).GetAwaiter().GetResult();
+
                 genericHost.Dispose();
                 disposed.TrySetResult();
             }
-            catch (Exception error) { disposed.TrySetException(error); }
-            finally { SynchronizationContext.SetSynchronizationContext(null); }
+            catch (Exception error)
+            {
+                disposed.TrySetException(error);
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(null);
+            }
         }) { IsBackground = true };
+
         thread.Start();
+
         try
         {
             // The synchronous caller is blocked in shutdown before work finishes on another thread.
@@ -60,6 +76,7 @@ public sealed class WorkflowHostDisposalReviewTests
         finally
         {
             finishRun.TrySetResult();
+
             // Rescue a regressed implementation so a failed test never leaves a blocked host/thread.
             context.AllowDispatch();
             await disposed.Task.WaitAsync(Patience);
@@ -75,12 +92,14 @@ public sealed class WorkflowHostDisposalReviewTests
     {
         var logger = new RecordingLogger();
         var registrations = new ServiceCollection();
+
         registrations.AddIxIFlow(options =>
         {
             options.HostName = "slow-release-host";
             options.Slots = 2;
             options.DrainTimeout = TimeSpan.Zero;
         });
+
         registrations.AddSingleton<ILogger<WorkflowHost>>(logger);
         await using var provider = registrations.BuildServiceProvider();
         var host = provider.GetRequiredService<WorkflowHost>();
@@ -89,24 +108,31 @@ public sealed class WorkflowHostDisposalReviewTests
         var runEntered = Signal();
         Task? inline = null;
         using var watch = host.WatchSettled("lingering", out var settled);
+
         var lingeringRun = host.RunAsync("lingering", async (_, _, _) =>
         {
             Assert.True(host.TryRunInline(async (_, _, _) =>
             {
                 inlineEntered.TrySetResult();
                 await release.Task; // Deliberately ignores cancellation.
+
                 return true;
             }, CancellationToken.None, out var call));
+
             inline = call;
             await inlineEntered.Task;
+
             return true;
         }, CancellationToken.None);
+
         var admittedRun = host.RunAsync("admitted", async (_, _, _) =>
         {
             runEntered.TrySetResult();
             await release.Task; // Deliberately ignores cancellation.
+
             return true;
         }, CancellationToken.None);
+
         try
         {
             await lingeringRun.WaitAsync(Patience);
@@ -130,7 +156,10 @@ public sealed class WorkflowHostDisposalReviewTests
             release.TrySetResult();
             await admittedRun.WaitAsync(Patience);
             await lingeringRun.WaitAsync(Patience);
-            if (inline != null) await inline.WaitAsync(Patience);
+
+            if (inline != null)
+                await inline.WaitAsync(Patience);
+
             await ((IAsyncDisposable)host).DisposeAsync();
         }
     }
@@ -144,6 +173,7 @@ public sealed class WorkflowHostDisposalReviewTests
         registrations.AddSingleton<ILogger<WorkflowHost>>(logger);
         await using var provider = registrations.BuildServiceProvider();
         var host = provider.GetRequiredService<WorkflowHost>();
+
         // Resolve the hosted-service alias too, so DI captures the same host twice for disposal.
         var hosted = Assert.Single(provider.GetServices<IHostedService>().OfType<WorkflowHost>());
         Assert.Same(host, hosted);
@@ -151,12 +181,15 @@ public sealed class WorkflowHostDisposalReviewTests
         var release = Signal();
         var beginDisposal = Signal();
         using var watch = host.WatchSettled("double-disposal", out var settled);
+
         var running = host.RunAsync("double-disposal", async (_, _, _) =>
         {
             entered.TrySetResult();
             await release.Task; // Deliberately ignores cancellation, keeping disposal at its bound.
+
             return true;
         }, CancellationToken.None);
+
         try
         {
             await entered.Task.WaitAsync(Patience);
@@ -186,12 +219,14 @@ public sealed class WorkflowHostDisposalReviewTests
             await settled.WaitAsync(Patience);
             await provider.DisposeAsync();
         }
+
         // The provider's two captures also reuse the completed disposal, without another warning.
         Assert.Single(logger.Entries, entry => entry.Level == LogLevel.Warning);
 
         Task<Task> BeginDisposalAsync(IAsyncDisposable service) => Task.Run(async () =>
         {
             await beginDisposal.Task;
+
             return service.DisposeAsync().AsTask();
         });
     }
@@ -203,19 +238,24 @@ public sealed class WorkflowHostDisposalReviewTests
         private readonly object _lock = new();
         private bool _dispatch;
         public ConcurrentQueue<(SendOrPostCallback Callback, object? State)> Posts { get; } = new();
+
         public override void Post(SendOrPostCallback callback, object? state)
         {
             lock (_lock)
             {
-                if (!_dispatch) Posts.Enqueue((callback, state));
-                else ThreadPool.QueueUserWorkItem(_ => callback(state));
+                if (!_dispatch)
+                    Posts.Enqueue((callback, state));
+                else
+                    ThreadPool.QueueUserWorkItem(_ => callback(state));
             }
         }
+
         public void AllowDispatch()
         {
             lock (_lock)
             {
                 _dispatch = true;
+
                 while (Posts.TryDequeue(out var post))
                     ThreadPool.QueueUserWorkItem(static queued => queued.Callback(queued.State), post, preferLocal: false);
             }
@@ -223,13 +263,15 @@ public sealed class WorkflowHostDisposalReviewTests
     }
 
     private sealed record LogEntry(LogLevel Level, string Message, Dictionary<string, object?> Properties);
+
     private sealed class RecordingLogger : ILogger<WorkflowHost>
     {
         public ConcurrentQueue<LogEntry> Entries { get; } = new();
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
+
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter) => Entries.Enqueue(new(logLevel,
-                formatter(state, exception), ((IEnumerable<KeyValuePair<string, object?>>)state!).ToDictionary()));
+            formatter(state, exception), ((IEnumerable<KeyValuePair<string, object?>>)state!).ToDictionary()));
     }
 }

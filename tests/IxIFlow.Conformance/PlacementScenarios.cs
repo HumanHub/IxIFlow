@@ -21,26 +21,33 @@ public sealed class PlacementScenarios
     {
         await using var store = await StoreProfiles.CreateAsync(profile);
         var ran = new ConcurrentQueue<string>();
+
         ServiceProvider Host(string name)
         {
             var services = new ServiceCollection();
             services.AddLogging();
+
             services.AddIxIFlow(options =>
             {
                 options.Slots = 1;
                 options.Capabilities["gpu"] = name == "matching" ? "cuda" : "metal";
                 options.Capabilities["region"] = "eu";
             });
+
             services.Replace(ServiceDescriptor.Singleton(store.NewRepository()));
             services.Replace(ServiceDescriptor.Singleton(new InProcessInstanceGate()));
             services.AddSingleton(new Probe(name, ran));
             store.ConfigureHost(services);
+
             return services.BuildServiceProvider();
         }
+
         await using var wrong = Host("wrong");
         await using var matching = Host("matching");
+
         var definition = Workflow.Create<Data>("DistributedPlacement").Demand("gpu", "cuda").Demand("region", "eu")
             .Step<RecordHost>().WaitFor<Go>("go").Step<RecordHost>().Build();
+
         await wrong.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         await matching.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
         await store.StartHostLinksAsync(wrong);
@@ -57,8 +64,10 @@ public sealed class PlacementScenarios
         Assert.Equal(new[] { "matching" }, ran);
         var send = first.ResumeAsync(id, "go", new Go(), patience.Token);
         var repository = wrong.GetRequiredService<IWorkflowStateRepository>();
+
         while ((await repository.GetPendingEventsAsync(id, 0, 10)).Events.Count == 0)
             await Task.Delay(10, patience.Token);
+
         await wrongScanner.RecoverOnceAsync(patience.Token);
         Assert.Equal(new[] { "matching" }, ran);
         await matchingScanner.RecoverOnceAsync(patience.Token);
@@ -69,11 +78,18 @@ public sealed class PlacementScenarios
     }
 
     public sealed class Data;
+
     public sealed class Go;
+
     public sealed record Probe(string Host, ConcurrentQueue<string> Ran);
+
     public sealed class RecordHost(Probe probe) : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { probe.Ran.Enqueue(probe.Host); return Task.CompletedTask; }
+        {
+            probe.Ran.Enqueue(probe.Host);
+
+            return Task.CompletedTask;
+        }
     }
 }

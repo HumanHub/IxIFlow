@@ -1,0 +1,1 @@
+{"Id":"stop","StepId":"root/0","Source":{"Path":"flow.yaml","Line":4},"HitCondition":"\u003E= 3","Enabled":true,"Condition":"context.WorkflowData.Value \u003E 0","RequestedStepId":null,"VerifiedSource":{"Path":"flow.yaml","Line":7},"StructureHash":"golden","HitCount":0}

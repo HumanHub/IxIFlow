@@ -36,8 +36,11 @@ public sealed class PublishedInvokeContractTests
     {
         var yaml = Header + ", " + lists + "}\ndefinitions: []";
         var generated = GeneratorRegressionTests.Build(yaml);
-        var fluent = empty ? Workflow.Create<InvokeContractData>("Contract").Input().Output().Build() :
-            Workflow.Create<InvokeContractData>("Contract").Input(data => data.Extra).Output(data => data.Result).Build();
+
+        var fluent = empty
+            ? Workflow.Create<InvokeContractData>("Contract").Input().Output().Build()
+            : Workflow.Create<InvokeContractData>("Contract").Input(data => data.Extra).Output(data => data.Result).Build();
+
         Assert.Equal(WorkflowDefinitionValidator.GetContract(fluent).ToJson(), WorkflowDefinitionValidator.GetContract(generated).ToJson());
         Assert.Equal(WorkflowDefinitionValidator.Inspect(fluent), WorkflowDefinitionValidator.Inspect(generated));
         var run = WorkflowGeneratorHarness.Generate(yaml);
@@ -54,7 +57,10 @@ public sealed class PublishedInvokeContractTests
         var options = Options();
         options.Workflows.Add("Child@3", new(typeof(InvokeContractData).FullName!, 3));
         var yaml = Header + "}\ndefinitions:\n  - kind: invokeWorkflow\n    workflow: {name: Child, version: 3}\n    " + mapping;
-        var result = await new WorkflowDocumentValidator().ValidateAsync(WorkflowYamlSerializer.Read(yaml), new WorkflowSourceContracts(options));
+
+        var result = await new WorkflowDocumentValidator().ValidateAsync(WorkflowYamlSerializer.Read(yaml),
+            new WorkflowSourceContracts(options));
+
         Assert.Contains(result.Diagnostics, error => error.Code == code && error.Path == path);
     }
 
@@ -64,11 +70,18 @@ public sealed class PublishedInvokeContractTests
         var options = Options();
         var contract = WorkflowContract.OfType(typeof(InvokeContractData));
         options.Workflows.Add("Child@3", new(typeof(InvokeContractData).FullName!, 3) { ContractJson = contract.ToJson() });
-        var source = WorkflowSourceTranslator.Translate(Header + "}\ndefinitions:\n  - kind: invokeWorkflow\n    workflow: {name: Child, version: 3}\n    input: [{target: Value, from: {kind: constant, value: ok}}]", "literal.yaml", options);
+
+        var source = WorkflowSourceTranslator.Translate(
+            Header +
+            "}\ndefinitions:\n  - kind: invokeWorkflow\n    workflow: {name: Child, version: 3}\n    input: [{target: Value, from: {kind: constant, value: ok}}]",
+            "literal.yaml", options);
+
         Assert.Contains("WorkflowContract.Parse(", source);
         Assert.Contains("DefaultJson", source);
         Assert.DoesNotContain("WorkflowDefinitionValidator.GetContract(new", source);
-        Assert.Empty(GeneratorRegressionTests.Compilation(source).GetDiagnostics().Where(error => error.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error));
+
+        Assert.Empty(GeneratorRegressionTests.Compilation(source).GetDiagnostics()
+            .Where(error => error.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error));
     }
 
     private static WorkflowSourceOptions Options()
@@ -76,6 +89,7 @@ public sealed class PublishedInvokeContractTests
         var options = new WorkflowSourceOptions();
         var type = GeneratorRegressionTests.Compilation().GetTypeByMetadataName(typeof(InvokeContractData).FullName!)!;
         options.DataContracts.Add(typeof(InvokeContractData).FullName!, WorkflowDataDocumentContract.FromSymbol(type));
+
         return options;
     }
 }
@@ -83,7 +97,10 @@ public sealed class PublishedInvokeContractTests
 public sealed class InvokeContractData
 {
     [WorkflowInput, Required] public string Value { get; set; } = "";
-    [WorkflowInput, Required, DefaultValue(7)] public int Count { get; set; }
+
+    [WorkflowInput, Required, DefaultValue(7)]
+    public int Count { get; set; }
+
     [WorkflowOutput] public string Result { get; set; } = "";
     public string Extra { get; set; } = "";
     public string ReadOnly => "read";

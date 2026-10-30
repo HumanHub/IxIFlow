@@ -7,7 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
-/// The store is chosen on the builder <c>AddIxIFlow</c> returns; without a choice, instances live in memory (D-21).
+/// The store is chosen on the builder <c>AddIxIFlow</c> returns; without a choice, instances live in memory.
 /// </summary>
 [Trait("Feature", "registration")]
 [Trait("Spec", "C-11")]
@@ -35,7 +35,10 @@ public sealed class StoreBuilderTests : IClassFixture<SqliteTestDatabase<StoreBu
 
     [SqlServerFact]
     [Trait("Category", "SqlIntegration")]
-    public Task UseSqlServerKeepsInstancesInTheDatabase() => VerifyBuilderKeepsInstancesInTheDatabase<SqlWorkflowStateRepository>(builder => builder.UseSqlServer(SqlTestDatabase<StoreBuilderTests>.ConnectionString), () => new SqlWorkflowStateRepository(SqlTestDatabase<StoreBuilderTests>.ConnectionString), "StoredInSqlServer", expectWakeSource: false);
+    public Task UseSqlServerKeepsInstancesInTheDatabase() => VerifyBuilderKeepsInstancesInTheDatabase<SqlServerWorkflowStateRepository>(
+        builder => builder.UseSqlServer(SqlTestDatabase<StoreBuilderTests>.ConnectionString),
+        () => new SqlServerWorkflowStateRepository(SqlTestDatabase<StoreBuilderTests>.ConnectionString), "StoredInSqlServer",
+        expectWakeSource: false);
 
     [Fact]
     public void PostgreSqlIsRefusedAsASecondStoreChoice()
@@ -49,7 +52,10 @@ public sealed class StoreBuilderTests : IClassFixture<SqliteTestDatabase<StoreBu
 
     [PostgreSqlFact]
     [Trait("Category", "PostgreSqlIntegration")]
-    public Task UsePostgreSqlKeepsInstancesInTheDatabase() => VerifyBuilderKeepsInstancesInTheDatabase<PostgreSqlWorkflowStateRepository>(builder => builder.UsePostgreSql(PostgreSqlTestDatabase<StoreBuilderTests>.ConnectionString), () => new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<StoreBuilderTests>.ConnectionString), "StoredInPostgreSql", expectWakeSource: true);
+    public Task UsePostgreSqlKeepsInstancesInTheDatabase() => VerifyBuilderKeepsInstancesInTheDatabase<PostgreSqlWorkflowStateRepository>(
+        builder => builder.UsePostgreSql(PostgreSqlTestDatabase<StoreBuilderTests>.ConnectionString),
+        () => new PostgreSqlWorkflowStateRepository(PostgreSqlTestDatabase<StoreBuilderTests>.ConnectionString), "StoredInPostgreSql",
+        expectWakeSource: true);
 
     public sealed class Data;
 
@@ -58,13 +64,18 @@ public sealed class StoreBuilderTests : IClassFixture<SqliteTestDatabase<StoreBu
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
     }
+
     [Fact]
     [Trait("Category", "SqliteIntegration")]
     [Trait("Spec", "C-11")]
-    public Task UseSqliteKeepsInstancesInTheDatabase() => VerifyBuilderKeepsInstancesInTheDatabase<SqliteWorkflowStateRepository>(builder => builder.UseSqlite(SqliteTestDatabase<StoreBuilderTests>.ConnectionString), () => new SqliteWorkflowStateRepository(SqliteTestDatabase<StoreBuilderTests>.ConnectionString), "StoredInSqlite", expectWakeSource: false);
+    public Task UseSqliteKeepsInstancesInTheDatabase() => VerifyBuilderKeepsInstancesInTheDatabase<SqliteWorkflowStateRepository>(
+        builder => builder.UseSqlite(SqliteTestDatabase<StoreBuilderTests>.ConnectionString),
+        () => new SqliteWorkflowStateRepository(SqliteTestDatabase<StoreBuilderTests>.ConnectionString), "StoredInSqlite",
+        expectWakeSource: false);
 
 
-    private static async Task VerifyBuilderKeepsInstancesInTheDatabase<TStore>(Action<IIxIFlowBuilder> chooseStore, Func<IWorkflowStateRepository> reopen, string workflowName, bool expectWakeSource) where TStore : IWorkflowStateRepository
+    private static async Task VerifyBuilderKeepsInstancesInTheDatabase<TStore>(Action<IIxIFlowBuilder> chooseStore,
+        Func<IWorkflowStateRepository> reopen, string workflowName, bool expectWakeSource) where TStore : IWorkflowStateRepository
     {
         var services = new ServiceCollection().AddLogging();
         chooseStore(services.AddIxIFlow());
@@ -74,13 +85,16 @@ public sealed class StoreBuilderTests : IClassFixture<SqliteTestDatabase<StoreBu
             Workflow.Create<Data>(workflowName).Step<Noop>().Build(), new Data());
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
-        // PostgreSQL also registers the store as the host wake source (C-13).
+
+        // PostgreSQL also registers the store as the host wake source.
         if (expectWakeSource)
             Assert.Same(provider.GetRequiredService<IWorkflowStateRepository>(),
                 provider.GetRequiredService<IRunnableWakeSource>());
+
         Assert.IsType<TStore>(provider.GetRequiredService<IWorkflowStateRepository>());
         await provider.DisposeAsync();
         var repository = reopen();
+
         try
         {
             var saved = await repository.GetWorkflowInstanceAsync(result.InstanceId);
@@ -92,6 +106,4 @@ public sealed class StoreBuilderTests : IClassFixture<SqliteTestDatabase<StoreBu
                 await disposable.DisposeAsync();
         }
     }
-
-
 }

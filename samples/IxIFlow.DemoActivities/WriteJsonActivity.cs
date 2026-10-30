@@ -15,8 +15,7 @@ public sealed class WriteJsonActivity : IAsyncActivity
     [ActivityInput, UIHint("code"), Required, Display(Name = "JSON value")]
     public string Content { get; set; } = string.Empty;
 
-    [ActivityOutput]
-    public string WrittenPath { get; private set; } = string.Empty;
+    [ActivityOutput] public string WrittenPath { get; private set; } = string.Empty;
 
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {

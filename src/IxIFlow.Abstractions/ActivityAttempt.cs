@@ -11,6 +11,7 @@ public sealed class ActivityAttempt
     {
         if (number < 1)
             throw new ArgumentOutOfRangeException(nameof(number), "The first attempt is number 1");
+
         Number = number;
         Previous = previous ?? throw new ArgumentNullException(nameof(previous));
     }

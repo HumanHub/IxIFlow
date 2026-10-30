@@ -58,7 +58,7 @@ public class DslCompilationTests
             ]
         };
 
-        var definition = await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, CreateOptions());
+        var definition = await IxIFlow.Tests.Infrastructure.TestWorkflowCompilation.BuildAsync(document, CreateOptions());
 
         Assert.Equal("OrderProcessing", definition.Name);
         Assert.Single(definition.Steps);
@@ -142,7 +142,7 @@ public class DslCompilationTests
             ]
         };
 
-        var definition = await IxIFlow.Authoring.WorkflowCompilation.BuildAsync(document, CreateOptions());
+        var definition = await IxIFlow.Tests.Infrastructure.TestWorkflowCompilation.BuildAsync(document, CreateOptions());
 
         Assert.Equal(2, definition.Steps.Count);
         Assert.Equal(WorkflowStepType.Activity, definition.Steps[0].StepType);
@@ -219,7 +219,9 @@ public class DslCompilationTests
             (nameof(ValidateOrderAsyncActivity), typeof(ValidateOrderAsyncActivity)),
             (nameof(ProcessOrderAsyncActivity), typeof(ProcessOrderAsyncActivity)),
             (nameof(ApprovalEvent), typeof(ApprovalEvent)));
+
         options.Workflows["ChildWorkflow@3"] = new(YamlTestContracts.Name(typeof(SuspendResumeTestData)), 3);
+
         return options;
     }
 }

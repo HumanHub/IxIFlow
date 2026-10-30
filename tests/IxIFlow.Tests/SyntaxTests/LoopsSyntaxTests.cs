@@ -19,24 +19,24 @@ public class LoopsSyntaxTests
     {
         // Arrange & Act - This test verifies that DoWhile loop syntax compiles correctly
         var definition = Workflow.Create<BatchWorkflowData>("DoWhileLoopTest")
-                .Step<InitializeBatchAsyncActivity>(setup => setup
-                    .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
-                    .Output(act => act.BatchItems).To(ctx => ctx.WorkflowData.RemainingItems)
-                    .Output(act => act.ProcessedCount).To(ctx => ctx.WorkflowData.ProcessedCount))
-                .DoWhile(
-                    loopBody =>
-                    {
-                        loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
-                            .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
-                            .Input(act => act.ProcessedItems)
-                            .From(ctx =>
-                                ctx.PreviousStep.ProcessedCount) // Previous iteration or InitializeBatchAsyncActivity
-                            .Output(act => act.ProcessedItems).To(ctx => ctx.WorkflowData.ProcessedCount)
-                            .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems));
-                    },
-                    condition =>
-                        condition.PreviousStep.RemainingItems.Count > 0 // ProcessBatchItemAsyncActivity.RemainingItems
-                )
+            .Step<InitializeBatchAsyncActivity>(setup => setup
+                .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
+                .Output(act => act.BatchItems).To(ctx => ctx.WorkflowData.RemainingItems)
+                .Output(act => act.ProcessedCount).To(ctx => ctx.WorkflowData.ProcessedCount))
+            .DoWhile(
+                loopBody =>
+                {
+                    loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
+                        .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
+                        .Input(act => act.ProcessedItems)
+                        .From(ctx =>
+                            ctx.PreviousStep.ProcessedCount) // Previous iteration or InitializeBatchAsyncActivity
+                        .Output(act => act.ProcessedItems).To(ctx => ctx.WorkflowData.ProcessedCount)
+                        .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems));
+                },
+                condition =>
+                    condition.PreviousStep.RemainingItems.Count > 0 // ProcessBatchItemAsyncActivity.RemainingItems
+            )
             .Build();
 
         // Assert - Verify workflow definition was created successfully
@@ -52,24 +52,24 @@ public class LoopsSyntaxTests
     {
         // Arrange & Act - This test verifies that WhileDo loop syntax compiles correctly
         var definition = Workflow.Create<BatchWorkflowData>("WhileDoLoopTest")
-                .Step<InitializeBatchAsyncActivity>(setup => setup
-                    .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
-                    .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems)
-                    .Output(act => act.ProcessedCount).To(ctx => ctx.WorkflowData.ProcessedCount))
-                .WhileDo(
-                    condition =>
-                        condition.PreviousStep.RemainingItems.Count > 0, // InitializeBatchAsyncActivity.RemainingItems
-                    loopBody =>
-                    {
-                        loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
-                            .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
-                            .Input(act => act.ProcessedItems)
-                            .From(ctx =>
-                                ctx.PreviousStep.ProcessedCount) // Previous iteration or InitializeBatchAsyncActivity
-                            .Output(act => act.ProcessedItems).To(ctx => ctx.WorkflowData.ProcessedCount)
-                            .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems));
-                    }
-                )
+            .Step<InitializeBatchAsyncActivity>(setup => setup
+                .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
+                .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems)
+                .Output(act => act.ProcessedCount).To(ctx => ctx.WorkflowData.ProcessedCount))
+            .WhileDo(
+                condition =>
+                    condition.PreviousStep.RemainingItems.Count > 0, // InitializeBatchAsyncActivity.RemainingItems
+                loopBody =>
+                {
+                    loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
+                        .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
+                        .Input(act => act.ProcessedItems)
+                        .From(ctx =>
+                            ctx.PreviousStep.ProcessedCount) // Previous iteration or InitializeBatchAsyncActivity
+                        .Output(act => act.ProcessedItems).To(ctx => ctx.WorkflowData.ProcessedCount)
+                        .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems));
+                }
+            )
             .Build();
 
         // Assert
@@ -82,24 +82,24 @@ public class LoopsSyntaxTests
     {
         // Arrange & Act - This test verifies that loops with multiple steps compile correctly
         var definition = Workflow.Create<BatchWorkflowData>("LoopWithMultipleStepsTest")
-                .Step<InitializeBatchAsyncActivity>(setup => setup
-                    .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
-                    .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
-                .DoWhile(
-                    loopBody =>
-                    {
-                        loopBody
-                            .Step<ProcessBatchItemAsyncActivity>(setup => setup
-                                .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
-                                .Output(act => act.ProcessedItems).To(ctx => ctx.WorkflowData.ProcessedCount))
-                            .Step<UpdateAnalyticsAsyncActivity>(setup => setup
-                                .Input(act => act.OrderId)
-                                .From(ctx => ctx.PreviousStep.ProcessedItems.ToString()) // Access previous step in loop
-                                .Input(act => act.Success).From(ctx => ctx.PreviousStep.ProcessedItems > 0)
-                                .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus));
-                    },
-                    condition => condition.WorkflowData.RemainingItems.Count > 0
-                )
+            .Step<InitializeBatchAsyncActivity>(setup => setup
+                .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
+                .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
+            .DoWhile(
+                loopBody =>
+                {
+                    loopBody
+                        .Step<ProcessBatchItemAsyncActivity>(setup => setup
+                            .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
+                            .Output(act => act.ProcessedItems).To(ctx => ctx.WorkflowData.ProcessedCount))
+                        .Step<UpdateAnalyticsAsyncActivity>(setup => setup
+                            .Input(act => act.OrderId)
+                            .From(ctx => ctx.PreviousStep.ProcessedItems.ToString()) // Access previous step in loop
+                            .Input(act => act.Success).From(ctx => ctx.PreviousStep.ProcessedItems > 0)
+                            .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus));
+                },
+                condition => condition.WorkflowData.RemainingItems.Count > 0
+            )
             .Build();
 
         // Assert
@@ -112,24 +112,24 @@ public class LoopsSyntaxTests
     {
         // Arrange & Act - This test verifies that nested loops compile correctly
         var definition = Workflow.Create<BatchWorkflowData>("NestedLoopsTest")
-                .Step<InitializeBatchAsyncActivity>(setup => setup
-                    .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
-                    .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
-                .DoWhile(
-                    outerLoop =>
-                    {
-                        outerLoop.WhileDo(
-                            condition => condition.WorkflowData.RemainingItems.Count > 5, // Inner condition
-                            innerLoop =>
-                            {
-                                innerLoop.Step<ProcessBatchItemAsyncActivity>(setup => setup
-                                    .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
-                                    .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems));
-                            }
-                        );
-                    },
-                    condition => condition.WorkflowData.RemainingItems.Count > 0 // Outer condition
-                )
+            .Step<InitializeBatchAsyncActivity>(setup => setup
+                .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
+                .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
+            .DoWhile(
+                outerLoop =>
+                {
+                    outerLoop.WhileDo(
+                        condition => condition.WorkflowData.RemainingItems.Count > 5, // Inner condition
+                        innerLoop =>
+                        {
+                            innerLoop.Step<ProcessBatchItemAsyncActivity>(setup => setup
+                                .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
+                                .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems));
+                        }
+                    );
+                },
+                condition => condition.WorkflowData.RemainingItems.Count > 0 // Outer condition
+            )
             .Build();
 
         // Assert
@@ -142,16 +142,16 @@ public class LoopsSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<BatchWorkflowData>("LoopStructureTest")
-                .Step<InitializeBatchAsyncActivity>(setup => setup
-                    .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput))
-                .DoWhile(
-                    loopBody =>
-                    {
-                        loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
-                            .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems));
-                    },
-                    condition => condition.WorkflowData.RemainingItems.Count > 0
-                )
+            .Step<InitializeBatchAsyncActivity>(setup => setup
+                .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput))
+            .DoWhile(
+                loopBody =>
+                {
+                    loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
+                        .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems));
+                },
+                condition => condition.WorkflowData.RemainingItems.Count > 0
+            )
             .Build();
 
         // Assert - Verify step types and structure
@@ -168,16 +168,16 @@ public class LoopsSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<BatchWorkflowData>("WhileDoStructureTest")
-                .Step<InitializeBatchAsyncActivity>(setup => setup
-                    .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput))
-                .WhileDo(
-                    condition => condition.WorkflowData.RemainingItems.Count > 0,
-                    loopBody =>
-                    {
-                        loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
-                            .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems));
-                    }
-                )
+            .Step<InitializeBatchAsyncActivity>(setup => setup
+                .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput))
+            .WhileDo(
+                condition => condition.WorkflowData.RemainingItems.Count > 0,
+                loopBody =>
+                {
+                    loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
+                        .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems));
+                }
+            )
             .Build();
 
         // Assert - Verify step types and structure
@@ -194,23 +194,23 @@ public class LoopsSyntaxTests
     {
         // Arrange & Act - Test that step after loop can access loop results
         var definition = Workflow.Create<BatchWorkflowData>("StepAfterLoopTest")
-                .Step<InitializeBatchAsyncActivity>(setup => setup
-                    .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
-                    .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
-                .DoWhile(
-                    loopBody =>
-                    {
-                        loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
-                            .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
-                            .Output(act => act.ProcessedItems).To(ctx => ctx.WorkflowData.ProcessedCount)
-                            .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems));
-                    },
-                    condition => condition.PreviousStep.RemainingItems.Count > 0
-                )
-                .Step<UpdateAnalyticsAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.ProcessedCount.ToString())
-                    .Input(act => act.Success).From(ctx => ctx.PreviousStep.ProcessedItems > 0) // Access loop result
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Step<InitializeBatchAsyncActivity>(setup => setup
+                .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
+                .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
+            .DoWhile(
+                loopBody =>
+                {
+                    loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
+                        .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
+                        .Output(act => act.ProcessedItems).To(ctx => ctx.WorkflowData.ProcessedCount)
+                        .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems));
+                },
+                condition => condition.PreviousStep.RemainingItems.Count > 0
+            )
+            .Step<UpdateAnalyticsAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.ProcessedCount.ToString())
+                .Input(act => act.Success).From(ctx => ctx.PreviousStep.ProcessedItems > 0) // Access loop result
+                .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
             .Build();
 
         // Assert
@@ -225,20 +225,20 @@ public class LoopsSyntaxTests
     {
         // Arrange & Act - Test that complex loop conditions compile correctly
         var definition = Workflow.Create<BatchWorkflowData>("LoopConditionComplexityTest")
-                .Step<InitializeBatchAsyncActivity>(setup => setup
-                    .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
-                    .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems)
-                    .Output(act => act.ProcessedCount).To(ctx => ctx.WorkflowData.ProcessedCount))
-                .DoWhile(
-                    loopBody =>
-                    {
-                        loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
-                            .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
-                            .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems));
-                    },
-                    condition => condition.PreviousStep.RemainingItems.Count > 0 &&
-                                 condition.WorkflowData.ProcessedCount < 100 // Complex condition
-                )
+            .Step<InitializeBatchAsyncActivity>(setup => setup
+                .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
+                .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems)
+                .Output(act => act.ProcessedCount).To(ctx => ctx.WorkflowData.ProcessedCount))
+            .DoWhile(
+                loopBody =>
+                {
+                    loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
+                        .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems)
+                        .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems));
+                },
+                condition => condition.PreviousStep.RemainingItems.Count > 0 &&
+                    condition.WorkflowData.ProcessedCount < 100 // Complex condition
+            )
             .Build();
 
         // Assert
@@ -252,17 +252,17 @@ public class LoopsSyntaxTests
     {
         // Arrange & Act - Test that loop with minimal body compiles
         var definition = Workflow.Create<BatchWorkflowData>("EmptyLoopBodyTest")
-                .Step<InitializeBatchAsyncActivity>(setup => setup
-                    .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
-                    .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
-                .DoWhile(
-                    loopBody =>
-                    {
-                        loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
-                            .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems));
-                    },
-                    condition => false // Loop will not execute
-                )
+            .Step<InitializeBatchAsyncActivity>(setup => setup
+                .Input(act => act.BatchData).From(ctx => ctx.WorkflowData.BatchInput)
+                .Output(act => act.RemainingItems).To(ctx => ctx.WorkflowData.RemainingItems))
+            .DoWhile(
+                loopBody =>
+                {
+                    loopBody.Step<ProcessBatchItemAsyncActivity>(setup => setup
+                        .Input(act => act.BatchItems).From(ctx => ctx.WorkflowData.RemainingItems));
+                },
+                condition => false // Loop will not execute
+            )
             .Build();
 
         // Assert

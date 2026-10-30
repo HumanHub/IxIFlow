@@ -15,38 +15,34 @@ public class BasicTransparentPassThroughSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("BasicTransparentPassThroughTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)
-                    .Output(act => act.ValidationErrors).To(ctx => ctx.WorkflowData.ValidationErrors))
-
-                .Step<CheckInventoryAsyncActivity>(setup => setup
-                    .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                    .Input(act => act.IsOrderValid).From(ctx => ctx.PreviousStep.IsValid)
-                    .Output(act => act.InStock).To(ctx => ctx.WorkflowData.InventoryStatus))
-
-                .Sequence(seq =>
-                {
-                    seq.Step<ReserveInventoryAsyncActivity>(setup => setup
-                            .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
-                            .Input(act => act.InStock).From(ctx => ctx.PreviousStep.InStock)
-                            .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId))
-                        .Step<CalculatePricingAsyncActivity>(setup => setup
-                            .Input(act => act.ReservationId).From(ctx => ctx.PreviousStep.ReservationId)
-                            .Input(act => act.BasePrice).From(ctx => ctx.WorkflowData.BasePrice)
-                            .Output(act => act.FinalPrice).To(ctx => ctx.WorkflowData.FinalPrice));
-                })
-
-                .Step<ProcessPaymentAsyncActivity>(setup => setup
-                    .Input(act => act.Amount).From(ctx => ctx.PreviousStep.FinalPrice)
-                    .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
-                    .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId))
-
-                .Step<UpdateAnalyticsAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Success).From(ctx => !string.IsNullOrEmpty(ctx.PreviousStep.TransactionId))
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)
+                .Output(act => act.ValidationErrors).To(ctx => ctx.WorkflowData.ValidationErrors))
+            .Step<CheckInventoryAsyncActivity>(setup => setup
+                .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                .Input(act => act.IsOrderValid).From(ctx => ctx.PreviousStep.IsValid)
+                .Output(act => act.InStock).To(ctx => ctx.WorkflowData.InventoryStatus))
+            .Sequence(seq =>
+            {
+                seq.Step<ReserveInventoryAsyncActivity>(setup => setup
+                        .Input(act => act.ProductId).From(ctx => ctx.WorkflowData.ProductId)
+                        .Input(act => act.InStock).From(ctx => ctx.PreviousStep.InStock)
+                        .Output(act => act.ReservationId).To(ctx => ctx.WorkflowData.ReservationId))
+                    .Step<CalculatePricingAsyncActivity>(setup => setup
+                        .Input(act => act.ReservationId).From(ctx => ctx.PreviousStep.ReservationId)
+                        .Input(act => act.BasePrice).From(ctx => ctx.WorkflowData.BasePrice)
+                        .Output(act => act.FinalPrice).To(ctx => ctx.WorkflowData.FinalPrice));
+            })
+            .Step<ProcessPaymentAsyncActivity>(setup => setup
+                .Input(act => act.Amount).From(ctx => ctx.PreviousStep.FinalPrice)
+                .Input(act => act.PaymentMethod).From(ctx => ctx.WorkflowData.PaymentMethod)
+                .Output(act => act.TransactionId).To(ctx => ctx.WorkflowData.TransactionId))
+            .Step<UpdateAnalyticsAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Success).From(ctx => !string.IsNullOrEmpty(ctx.PreviousStep.TransactionId))
+                .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
             .Build();
 
         // Assert
@@ -62,31 +58,30 @@ public class BasicTransparentPassThroughSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("ConditionalWorkflowTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
-                    .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)
-                    .Output(act => act.ValidationErrors).To(ctx => ctx.WorkflowData.ValidationErrors))
-                .If(ctx => ctx.PreviousStep.IsValid,
-                    then =>
-                    {
-                        then.Step<ProcessValidOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)
-                            .Input(act => act.ValidationResult).From(ctx => ctx.PreviousStep.IsValid)
-                            .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
-                    },
-                    @else =>
-                    {
-                        @else.Step<RejectOrderAsyncActivity>(setup => setup
-                            .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                            .Input(act => act.ValidationErrors).From(ctx => ctx.PreviousStep.ValidationErrors)
-                            .Output(act => act.RejectionReason).To(ctx => ctx.WorkflowData.ErrorMessage));
-                    })
-
-                .Step<UpdateAnalyticsAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Success).From(ctx => ctx.WorkflowData.ProcessedOrder != null)
-                    .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount)
+                .Output(act => act.IsValid).To(ctx => ctx.WorkflowData.ValidationResult)
+                .Output(act => act.ValidationErrors).To(ctx => ctx.WorkflowData.ValidationErrors))
+            .If(ctx => ctx.PreviousStep.IsValid,
+                then =>
+                {
+                    then.Step<ProcessValidOrderAsyncActivity>(setup => setup
+                        .Input(act => act.OrderData).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.ValidationResult).From(ctx => ctx.PreviousStep.IsValid)
+                        .Output(act => act.ProcessedOrder).To(ctx => ctx.WorkflowData.ProcessedOrder));
+                },
+                @else =>
+                {
+                    @else.Step<RejectOrderAsyncActivity>(setup => setup
+                        .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                        .Input(act => act.ValidationErrors).From(ctx => ctx.PreviousStep.ValidationErrors)
+                        .Output(act => act.RejectionReason).To(ctx => ctx.WorkflowData.ErrorMessage));
+                })
+            .Step<UpdateAnalyticsAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Success).From(ctx => ctx.WorkflowData.ProcessedOrder != null)
+                .Output(act => act.AnalyticsUpdated).To(ctx => ctx.WorkflowData.AnalyticsStatus))
             .Build();
 
         // Assert
@@ -108,9 +103,9 @@ public class BasicTransparentPassThroughSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("WorkflowDataAccessTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
             .Build();
 
         // Assert
@@ -123,11 +118,11 @@ public class BasicTransparentPassThroughSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("PreviousStepAccessTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
-                    .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
-                .Step<CheckInventoryAsyncActivity>(setup => setup
-                    .Input(act => act.IsOrderValid).From(ctx => ctx.PreviousStep.IsValid))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId)
+                .Input(act => act.Amount).From(ctx => ctx.WorkflowData.Amount))
+            .Step<CheckInventoryAsyncActivity>(setup => setup
+                .Input(act => act.IsOrderValid).From(ctx => ctx.PreviousStep.IsValid))
             .Build();
 
         // Assert
@@ -140,15 +135,15 @@ public class BasicTransparentPassThroughSyntaxTests
     {
         // Arrange & Act
         var definition = Workflow.Create<OrderWorkflowData>("SequenceTransparencyTest")
-                .Step<ValidateOrderAsyncActivity>(setup => setup
-                    .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
-                .Sequence(seq => seq
-                    .Step<CheckInventoryAsyncActivity>(setup => setup
-                        .Input(act => act.IsOrderValid).From(ctx => ctx.PreviousStep.IsValid))
-                    .Step<ReserveInventoryAsyncActivity>(setup => setup
-                        .Input(act => act.InStock).From(ctx => ctx.PreviousStep.InStock)))
-                .Step<ProcessPaymentAsyncActivity>(setup => setup
-                    .Input(act => act.Amount).From(ctx => ctx.PreviousStep.Amount))
+            .Step<ValidateOrderAsyncActivity>(setup => setup
+                .Input(act => act.OrderId).From(ctx => ctx.WorkflowData.OrderId))
+            .Sequence(seq => seq
+                .Step<CheckInventoryAsyncActivity>(setup => setup
+                    .Input(act => act.IsOrderValid).From(ctx => ctx.PreviousStep.IsValid))
+                .Step<ReserveInventoryAsyncActivity>(setup => setup
+                    .Input(act => act.InStock).From(ctx => ctx.PreviousStep.InStock)))
+            .Step<ProcessPaymentAsyncActivity>(setup => setup
+                .Input(act => act.Amount).From(ctx => ctx.PreviousStep.Amount))
             .Build();
 
         // Assert

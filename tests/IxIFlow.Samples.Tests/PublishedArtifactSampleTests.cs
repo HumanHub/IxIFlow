@@ -41,10 +41,13 @@ public sealed class PublishedActivitySampleTests
         var dll = entries["lib/net10.0/acme.double.dll"].ToArray();
         var path = Path.Combine(scratch.Path, "acme.double.dll");
         await File.WriteAllBytesAsync(path, dll);
+
         var compiled = WorkflowCompilation.Compile(PublishedActivities.FluentConsumerSource,
             WorkflowCompilation.ReferencePaths().Append(path).ToArray());
+
         Assert.True(compiled.Success, string.Join("; ", compiled.Diagnostics));
         var context = new AssemblyLoadContext("Sample package consumer", isCollectible: true);
+
         try
         {
             context.LoadFromStream(new MemoryStream(dll));
@@ -65,7 +68,10 @@ public sealed class PublishedActivitySampleTests
             Assert.NotEqual(typeof(PublishedNumber).Assembly, yaml.WorkflowData!.GetType().Assembly);
             await yamlHost.GetRequiredService<WorkflowHost>().StopAsync(default);
         }
-        finally { context.Unload(); }
+        finally
+        {
+            context.Unload();
+        }
     }
 }
 
@@ -80,8 +86,10 @@ public sealed class PublishedArtifactSampleTests
         var store = new InMemoryWorkflowStateRepository();
         var publisher = PublishedArtifacts.Publisher(store);
         var before = await store.GetCatalogRevisionAsync();
+
         var preview = await publisher.PreviewTemplateAsync(new("samples.greeting", 1, "template", PublishedArtifacts.TemplateYaml),
             new("fr-CA", JsonSerializer.SerializeToElement(new GreetingModel { Name = "Ada" })));
+
         Assert.Empty(preview.Diagnostics);
         Assert.Equal("Bonjour Ada", preview.Rendered!.Content);
         Assert.Equal(before, await store.GetCatalogRevisionAsync());
@@ -91,14 +99,18 @@ public sealed class PublishedArtifactSampleTests
         var bundle = await ReadBundle(store, workflow);
         Assert.NotEmpty(bundle.Manifest.Templates);
         Assert.Contains("samples.greeting@1", System.Text.Encoding.UTF8.GetString(bundle.Entries[WorkflowBundleArchive.YamlPath].Span));
+
         // A newer live version cannot replace the version embedded in the bundle.
         await new TemplatePublisher(store, store, new TemplateEngines([new LiquidTemplateEngine()]))
             .PublishAsync<GreetingModel>(TemplateVersion.Create<GreetingModel>("samples.greeting", 2, "liquid", TemplateFormat.Text,
                 new TemplateVariant("", "Changed")));
+
         await using var host = Host(store, scratch.Path);
         var client = host.GetRequiredService<IWorkflowClient>();
+
         var start = await client.StartAsync(workflow.Name, version: 1,
             workflowData: new GreetingData { Model = new() { Name = "Ada" } });
+
         var result = await client.AwaitAsync(start, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
         using var data = JsonDocument.Parse(JsonSerializer.Serialize(result.WorkflowData));
@@ -113,11 +125,13 @@ public sealed class PublishedArtifactSampleTests
         var store = new InMemoryWorkflowStateRepository();
         using var logging = LoggerFactory.Create(builder => builder.AddConsole());
         var workflow = await PublishedArtifacts.PublishInlineAsync(store, logging.CreateLogger<WorkflowPublisher>());
+
         Assert.Equal(new[]
         {
             new WorkflowVersionDependency("DoubleNumber", 1, WorkflowDependencyKind.Inline),
             new WorkflowVersionDependency("NumberBody", 1, WorkflowDependencyKind.Inline)
         }, workflow.Dependencies!);
+
         Assert.Equal(2, (await ReadBundle(store, workflow)).Manifest.InlineWorkflows.Count);
         await using var host = Host(store, scratch.Path);
         var client = host.GetRequiredService<IWorkflowClient>();
@@ -136,19 +150,23 @@ public sealed class PublishedArtifactSampleTests
         services.AddLogging();
         services.AddSingleton(store);
         services.AddIxIFlow().UseWorkflowBundles(Path.Combine(cache, "bundles")).AddIxIFlowTemplates().AddLiquid();
+
         return services.BuildServiceProvider();
     }
 
     private static async Task<WorkflowBundle> ReadBundle(IWorkflowStateRepository store, WorkflowVersion workflow)
     {
         await using var stream = (await store.OpenAsync(workflow.ArtifactDigest!.Value))!;
+
         return await WorkflowBundleArchive.ReadAsync(stream, workflow.ArtifactDigest!.Value);
     }
 }
 
 internal sealed class SampleScratch : IDisposable
 {
-    public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "IxIFlow.PublishedSamples", Guid.NewGuid().ToString("N"));
+    public string Path { get; } =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "IxIFlow.PublishedSamples", Guid.NewGuid().ToString("N"));
+
     public SampleScratch() => Directory.CreateDirectory(Path);
     public void Dispose() => Directory.Delete(Path, recursive: true);
 }

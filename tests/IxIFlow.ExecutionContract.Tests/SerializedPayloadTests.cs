@@ -13,9 +13,12 @@ public sealed class SerializedPayloadTests
     public async Task LargeCheckpointBodiesCrossWholeAndLostAcknowledgementReplaysSafely()
     {
         using var harness = new MessageHarness();
+
         var definition = Workflow.Create<MessageHarness.Data>("whole-checkpoint")
             .Step<Grow>(step => step.Output(a => a.Value).To(c => c.WorkflowData.Value)).Step<MessageHarness.Noop>().Build();
+
         await harness.AssignAsync(definition);
+
         // The first checkpoint after the activity's start is the one that carries the large data.
         var lost = false;
         harness.Host.LoseReply = request => request.Commit.PayloadReferences.Count > 0 && !lost && (lost = true);
@@ -25,16 +28,20 @@ public sealed class SerializedPayloadTests
         var reference = PayloadReference.Of(expected);
         var carrying = harness.Host.Requests.Where(r => r.Payloads is { Count: > 0 }).ToArray();
         Assert.True(carrying.Length >= 2);
+
         Assert.All(carrying, request =>
         {
             var payload = Assert.Single(request.Payloads!, body => body.Reference == reference);
             Assert.Equal(expected, payload.Body);
             Assert.Contains(reference, request.Commit.PayloadReferences);
         });
+
         var saved = (await harness.Host.Store.GetWorkflowInstanceAsync(harness.Assignment.Instance.InstanceId))!;
         Assert.NotNull(saved.WorkflowDataJson.Reference);
+
         Assert.Equal(JsonSerializer.Serialize(new MessageHarness.Data { Value = Grow.Text }),
             Encoding.UTF8.GetString((await harness.Host.Store.PayloadStore.GetAsync(saved.WorkflowDataJson.Reference))!.Value.Span));
+
         Assert.False(await harness.Host.Store.PayloadStore.CollectAsync(saved.WorkflowDataJson.Reference, TimeSpan.Zero));
         Assert.Contains(WorkflowCommitStatus.AlreadyApplied, harness.Host.Receipts);
     }
@@ -85,26 +92,39 @@ public sealed class SerializedPayloadTests
     public async Task SavedInputCopiesHydrateOnRecovery()
     {
         using var harness = new MessageHarness();
+
         var definition = Workflow.Create<MessageHarness.Data>("restore-input")
             .Step<Grow>(s => s.Output(a => a.Value).To(c => c.WorkflowData.Value))
             .Step<RecoverInput>(s => s.Input(a => a.Value).From(c => c.WorkflowData.Value)).Build();
+
         var assignment = await harness.AssignAsync(definition);
         var interrupted = false;
+
         harness.ChangeCheckpoint = request =>
         {
             if (!interrupted && request.Commit.Payload.Contains("\"StepId\":\"root/1\"", StringComparison.Ordinal))
-            { interrupted = true; harness.Deliver(new Cancel(assignment.AssignmentId, CancelKind.Ownership)); }
+            {
+                interrupted = true;
+                harness.Deliver(new Cancel(assignment.AssignmentId, CancelKind.Ownership));
+            }
+
             return request;
         };
+
         var first = await harness.ExecuteAsync();
         Assert.Equal(AssignmentOutcomeKind.OwnershipLost, first.Outcome!.Kind);
         var saved = (await harness.Host.Store.GetWorkflowInstanceAsync(assignment.Instance.InstanceId))!;
         using var state = JsonDocument.Parse(saved.ExecutionStateJson);
+
         var input = state.RootElement.GetProperty("Continuations")[0].GetProperty("PendingActivity")
             .GetProperty("Inputs").GetProperty("Properties").GetProperty("Value").GetProperty("Value").GetProperty("Json");
+
         Assert.True(input.TryGetProperty("reference", out _));
         var parts = assignment.Parts!;
-        foreach (var request in harness.Host.Requests) parts = request.Commit.ApplyParts(parts);
+
+        foreach (var request in harness.Host.Requests)
+            parts = request.Commit.ApplyParts(parts);
+
         var restored = assignment with { AssignmentId = Guid.NewGuid(), Instance = saved, Parts = parts };
         harness.ChangeCheckpoint = null;
         harness.Host.Assignment = restored;
@@ -119,16 +139,34 @@ public sealed class SerializedPayloadTests
     {
         public static string Text { get; } = new('é', 500_000);
         public string Value { get; set; } = "";
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Value = Text; return Task.CompletedTask; }
+        {
+            Value = Text;
+
+            return Task.CompletedTask;
+        }
     }
+
     public sealed class RecoverInput : IRecoverableActivity<bool>
     {
         public string Value { get; set; } = "";
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Assert.Equal(Grow.Text, Value); return Task.CompletedTask; }
+        {
+            Assert.Equal(Grow.Text, Value);
+
+            return Task.CompletedTask;
+        }
+
         public bool CaptureRecoveryState(IActivityContext context) => true;
-        public Task<ActivityRecoveryResult<bool>> RecoverAsync(bool state, IActivityContext context, CancellationToken cancellationToken = default)
-        { Assert.Equal(Grow.Text, Value); return Task.FromResult<ActivityRecoveryResult<bool>>(new ActivityRecoveryResult<bool>.Completed()); }
+
+        public Task<ActivityRecoveryResult<bool>> RecoverAsync(bool state, IActivityContext context,
+            CancellationToken cancellationToken = default)
+        {
+            Assert.Equal(Grow.Text, Value);
+
+            return Task.FromResult<ActivityRecoveryResult<bool>>(new ActivityRecoveryResult<bool>.Completed());
+        }
     }
 }

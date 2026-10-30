@@ -12,8 +12,10 @@ public sealed partial class WorkflowHost
         {
             InstanceIds.Validate(instanceId);
             cancellationToken.ThrowIfCancellationRequested();
-            var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId)
+
+            var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId, cancellationToken: cancellationToken)
                 ?? throw new InvalidOperationException("Instance is unavailable");
+
             return await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName, instance.WorkflowVersion,
                 instance.BundleDigest, cancellationToken);
         }
@@ -23,6 +25,7 @@ public sealed partial class WorkflowHost
             using var definitionLease = await DebugDefinitionAsync(instanceId, cancellationToken);
             using var types = definitionLease.EnterTypes();
             var definition = definitionLease.Definition;
+
             return InspectionPrivacy.Clean(definition.StepTable.ToArray(), await DurableWaitIdsAsync(instanceId, cancellationToken));
         }
 
@@ -30,6 +33,7 @@ public sealed partial class WorkflowHost
         {
             using var definitionLease = await DebugDefinitionAsync(instanceId, cancellationToken);
             using var types = definitionLease.EnterTypes();
+
             return InspectionPrivacy.Clean(definitionLease.Definition.SwitchTable.ToArray(),
                 await DurableWaitIdsAsync(instanceId, cancellationToken));
         }
@@ -38,6 +42,7 @@ public sealed partial class WorkflowHost
         {
             using var definitionLease = await DebugDefinitionAsync(instanceId, cancellationToken);
             using var types = definitionLease.EnterTypes();
+
             return InspectionPrivacy.Clean(definitionLease.Definition.GraphTable.ToArray(),
                 await DurableWaitIdsAsync(instanceId, cancellationToken));
         }
@@ -48,48 +53,72 @@ public sealed partial class WorkflowHost
             using var types = definitionLease.EnterTypes();
             var definition = definitionLease.Definition;
             var table = definition.StepTable;
+
             var paths = table.Select(e => e.SourceLocation is { } source && source.LastIndexOf(':') is var colon && colon > 0
-                ? source[..colon] : null);
-            if (!paths.Contains(path, StringComparer.Ordinal)) throw new ArgumentException("Unknown source");
+                ? source[..colon]
+                : null);
+
+            if (!paths.Contains(path, StringComparer.Ordinal))
+                throw new ArgumentException("Unknown source");
+
             string? content;
+
             if (definition.BundleSources is { } bundled)
                 content = bundled.GetValueOrDefault(path);
             else if (File.Exists(path))
             {
-                if (new FileInfo(path).Length > 1024 * 1024) throw new InvalidOperationException("Source exceeds the inspection limit");
+                if (new FileInfo(path).Length > 1024 * 1024)
+                    throw new InvalidOperationException("Source exceeds the inspection limit");
+
                 content = await File.ReadAllTextAsync(path, cancellationToken);
             }
             else
             {
                 content = services.GetService(typeof(IWorkflowDebugSourceProvider)) is IWorkflowDebugSourceProvider sources
-                    ? await sources.ReadAsync(definition.Name, definition.Version, path, cancellationToken) : null;
+                    ? await sources.ReadAsync(definition.Name, definition.Version, path, cancellationToken)
+                    : null;
             }
-            if (content == null) return null;
-            if (System.Text.Encoding.UTF8.GetByteCount(content) > 1024 * 1024) throw new InvalidOperationException("Source exceeds the inspection limit");
+
+            if (content == null)
+                return null;
+
+            if (System.Text.Encoding.UTF8.GetByteCount(content) > 1024 * 1024)
+                throw new InvalidOperationException("Source exceeds the inspection limit");
+
             return InspectionPrivacy.Clean(new[] { content }, await DurableWaitIdsAsync(instanceId, cancellationToken))[0];
         }
 
         public async Task<TraceReplay> OpenReplayAsync(string instanceId, int maxEntries, CancellationToken cancellationToken)
         {
-            if (maxEntries is < 1 or > 100000) throw new ArgumentOutOfRangeException(nameof(maxEntries));
+            if (maxEntries is < 1 or > 100000)
+                throw new ArgumentOutOfRangeException(nameof(maxEntries));
+
             using var definitionLease = await DebugDefinitionAsync(instanceId, cancellationToken);
             using var types = definitionLease.EnterTypes();
             var definition = definitionLease.Definition;
             var entries = new List<StoredTraceEntry>();
+
             while (entries.Count < maxEntries)
             {
                 var page = await GetTracePageAsync(instanceId, entries.LastOrDefault()?.Sequence ?? 0,
                     Math.Min(1000, maxEntries - entries.Count), cancellationToken);
-                if (page.Count == 0) break;
+
+                if (page.Count == 0)
+                    break;
+
                 entries.AddRange(page);
             }
+
             if (entries.Count == maxEntries && (await GetTracePageAsync(instanceId, entries[^1].Sequence, 1, cancellationToken)).Count != 0)
                 throw new InvalidOperationException("Replay history exceeds the requested limit");
+
             var replay = TraceReplay.Load(definition, entries);
             var inspection = await InspectAsync(instanceId, cancellationToken);
+
             if (inspection != null && entries.LastOrDefault()?.CommitEndSequence == entries.LastOrDefault()?.Sequence &&
                 entries.LastOrDefault()?.Revision == inspection.Revision)
                 replay.AttachCheckpoint(inspection);
+
             return replay;
         }
 
@@ -97,84 +126,121 @@ public sealed partial class WorkflowHost
         {
             InstanceIds.Validate(instanceId);
             cancellationToken.ThrowIfCancellationRequested();
-            var instance = await _store.GetWorkflowInstanceAsync(instanceId);
-            if (instance == null || !HasStructuredCheckpoint(instance)) return null;
+            var instance = await _store.GetWorkflowInstanceAsync(instanceId, cancellationToken: cancellationToken);
+
+            if (instance == null || !HasStructuredCheckpoint(instance))
+                return null;
+
             using var definitionLease = await registry.AcquireWorkflowDefinitionAsync(instance.WorkflowName,
                 instance.WorkflowVersion, instance.BundleDigest, cancellationToken);
+
             using var types = definitionLease.EnterTypes();
             var definition = definitionLease.Definition;
             var scopes = WorkflowDefinitionValidator.ForExecution(definition);
             var reader = NewPayloadReader();
-            var checkpoint = await ReadCheckpointAsync(instance, reader);
+            var checkpoint = await ReadCheckpointAsync(instance, reader, cancellationToken: cancellationToken);
+
             if (checkpoint.StructureHash != scopes.StructureHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable, "Workflow structure differs");
-            checkpoint.RootData = JsonSerializer.Deserialize(await reader.ReadAsync(instance.WorkflowDataJson),
+
+            checkpoint.RootData = JsonSerializer.Deserialize(
+                await reader.ReadAsync(instance.WorkflowDataJson, cancellationToken: cancellationToken),
                 WorkflowTypeIdentity.Resolve(instance.WorkflowDataType)!)!;
-            foreach (var branch in checkpoint.Continuations) await reader.HydrateAsync(branch.DataChanges);
-            foreach (var frame in checkpoint.InlineFrames.Values) await reader.ReadAsync(frame.Data);
-            var catchFaults = new List<InspectionCatchFault>();
+
             foreach (var branch in checkpoint.Continuations)
-                foreach (var frame in branch.Stack)
-                    if (frame.TryState is { Phase: TryPhase.Catch, Error.Error.Fault: { } fault } caught)
-                    {
-                        await reader.HydrateAsync(fault);
-                        var owner = scopes.Steps(frame.ScopeId)[frame.NextStepIndex].CatchBlocks[caught.CatchIndex];
-                        catchFaults.Add(new(branch.Id, frame.ActivationId, scopes.Id(owner), fault.Type,
-                            InspectionRedactionPolicy.Default.Value(fault.Read(services)!, services), caught.Error.Error.OriginalFaultLocation));
-                    }
+                await reader.HydrateAsync(branch.DataChanges);
+
+            foreach (var frame in checkpoint.InlineFrames.Values)
+                await reader.ReadAsync(frame.Data, cancellationToken: cancellationToken);
+
+            var catchFaults = new List<InspectionCatchFault>();
+
+            foreach (var branch in checkpoint.Continuations)
+            foreach (var frame in branch.Stack)
+                if (frame.TryState is { Phase: TryPhase.Catch, Error.Error.Fault: { } fault } caught)
+                {
+                    await reader.HydrateAsync(fault);
+                    var owner = scopes.Steps(frame.ScopeId)[frame.NextStepIndex].CatchBlocks[caught.CatchIndex];
+
+                    catchFaults.Add(new(branch.Id, frame.ActivationId, scopes.Id(owner), fault.Type,
+                        InspectionRedactionPolicy.Default.Value(fault.Read(services)!, services),
+                        caught.Error.Error.OriginalFaultLocation));
+                }
+
             var scopeViews = new List<InspectionScope>();
+
             foreach (var entry in checkpoint.Scopes)
             {
                 await reader.HydrateAsync(entry.Inputs);
                 await reader.HydrateAsync(entry.Activity);
                 var step = scopes.Step(entry.StepId);
                 var inputValues = new Dictionary<string, JsonElement>();
+
                 foreach (var (name, input) in entry.Inputs.Properties)
                     if (input.Value is { } saved)
                     {
                         var property = step.ActivityType!.GetProperty(name)!;
-                        var jsonName = System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.Text.Json.Serialization.JsonPropertyNameAttribute>(property)?.Name ?? name;
+
+                        var jsonName = System.Reflection.CustomAttributeExtensions
+                            .GetCustomAttribute<System.Text.Json.Serialization.JsonPropertyNameAttribute>(property)?.Name ?? name;
+
                         inputValues[jsonName] = System.Text.Json.JsonSerializer.Deserialize<JsonElement>(saved.Json.InlineText);
                     }
+
                 var inputs = InspectionRedactionPolicy.Default.StoredValue(System.Text.Json.JsonSerializer.Serialize(inputValues),
                     WorkflowTypeIdentity.SavedName(step.ActivityType!), services);
-                var outputs = entry.Activity is { } activity ? InspectionRedactionPolicy.Default.StoredValue(activity.Json.InlineText, activity.Type, services)
+
+                var outputs = entry.Activity is { } activity
+                    ? InspectionRedactionPolicy.Default.StoredValue(activity.Json.InlineText, activity.Type, services)
                     : System.Text.Json.JsonSerializer.SerializeToElement<object?>(null);
+
                 scopeViews.Add(new(entry.Id, entry.ContinuationId, entry.StepId, WorkflowTypeIdentity.SavedName(step.ScopeValueType!),
                     step.ScopeThreading, step.ScopeConcurrency, entry.Phase.ToString(), entry.RecordedOpens, inputs, outputs));
             }
+
             var threads = InspectionProjection.Threads(instance, checkpoint, scopes, Now);
             var debug = checkpoint.Debug;
-            var liveFrames = checkpoint.Continuations.SelectMany(c => c.Stack).Select(f => f.ActivationId).ToHashSet(StringComparer.Ordinal);
+
+            var liveFrames = checkpoint.Continuations.SelectMany(c => c.Stack).Select(f => f.ActivationId)
+                .ToHashSet(StringComparer.Ordinal);
+
             var result = new InstanceInspection(new(instance.InstanceId, instance.WorkflowName, instance.WorkflowVersion,
-                instance.Status, instance.ParentInstanceId, instance.CreatedAt, instance.CompletedAt,
-                InspectionRedactionPolicy.Default.Reason(checkpoint.ResultDiagnostic))
-                    { Incarnation = instance.Incarnation },
-                instance.Revision, checkpoint.StructureHash,
-                new(debug.PauseGeneration, debug.AppliedOrder, debug.Stop, debug.Stepping)
-                    { Evaluation = debug.Evaluation, SkipOnce = debug.SkipOnce },
-                debug.Breakpoints, threads,
-                checkpoint.Continuations.Where(c => c.PendingActivity != null).Select(c =>
-                {
-                    var p = c.PendingActivity!; var a = p.Attempts.LastOrDefault();
-                    return new InspectionAttempt(c.Id, p.Id, p.StepId, a?.Id, a?.Kind, a?.Host,
-                        p.StartedAtUtc, InspectionRedactionPolicy.Default.Reason(p.ResolutionDiagnostic))
-                        { PolicyAttemptId = p.PolicyAttemptId };
-                }).ToArray(),
-                checkpoint.Waits.Select(w => new InspectionWait(WaitReference.Of(instanceId, w.Id), w.ContinuationId,
-                    w.StepId, w.TableKind, w.Key, w.DeadlineUtc, w.ChildWorkflowId)).ToArray(),
-                checkpoint.Continuations.Select(c =>
-                {
-                    object data;
-                    // A continuation's own copy is below every inline frame on its stack.
-                    if (c.ParentJoinId == null) data = checkpoint.RootData;
-                    else data = c.Data ?? BranchData.Rebuild(checkpoint.Baseline(checkpoint.JoinOf(c)), c.DataChanges ?? []);
-                    return new InspectionData(c.Id, InspectionRedactionPolicy.Default.Value(data, services))
-                        { DataType = WorkflowTypeIdentity.SavedName(data.GetType()) };
-                }).Concat(checkpoint.InlineFrames.Where(pair => liveFrames.Contains(pair.Key)).Select(pair => new InspectionData(pair.Value.OwnerContinuationId,
-                    InspectionRedactionPolicy.Default.Value(pair.Value.Value, services))
-                    { FrameId = pair.Key, DataType = pair.Value.DataType })).ToArray())
+                            instance.Status, instance.ParentInstanceId, instance.CreatedAt, instance.CompletedAt,
+                            InspectionRedactionPolicy.Default.Reason(checkpoint.ResultDiagnostic))
+                        { Incarnation = instance.Incarnation },
+                    instance.Revision, checkpoint.StructureHash,
+                    new(debug.PauseGeneration, debug.AppliedOrder, debug.Stop, debug.Stepping)
+                        { Evaluation = debug.Evaluation, SkipOnce = debug.SkipOnce },
+                    debug.Breakpoints, threads,
+                    checkpoint.Continuations.Where(c => c.PendingActivity != null).Select(c =>
+                    {
+                        var p = c.PendingActivity!;
+                        var a = p.Attempts.LastOrDefault();
+
+                        return new InspectionAttempt(c.Id, p.Id, p.StepId, a?.Id, a?.Kind, a?.Host,
+                                p.StartedAtUtc, InspectionRedactionPolicy.Default.Reason(p.ResolutionDiagnostic))
+                            { PolicyAttemptId = p.PolicyAttemptId };
+                    }).ToArray(),
+                    checkpoint.Waits.Select(w => new InspectionWait(WaitReference.Of(instanceId, w.Id), w.ContinuationId,
+                        w.StepId, w.TableKind, w.Key, w.DeadlineUtc, w.ChildWorkflowId)).ToArray(),
+                    checkpoint.Continuations.Select(c =>
+                    {
+                        object data;
+
+                        // A continuation's own copy is below every inline frame on its stack.
+                        if (c.ParentJoinId == null)
+                            data = checkpoint.RootData;
+                        else
+                            data = c.Data ?? BranchData.Rebuild(checkpoint.Baseline(checkpoint.JoinOf(c)), c.DataChanges ?? []);
+
+                        return new InspectionData(c.Id, InspectionRedactionPolicy.Default.Value(data, services))
+                            { DataType = WorkflowTypeIdentity.SavedName(data.GetType()) };
+                    }).Concat(checkpoint.InlineFrames.Where(pair => liveFrames.Contains(pair.Key)).Select(pair =>
+                        new InspectionData(pair.Value.OwnerContinuationId,
+                                InspectionRedactionPolicy.Default.Value(pair.Value.Value, services))
+                            { FrameId = pair.Key, DataType = pair.Value.DataType })).ToArray())
                 { Invocations = InvocationRecords.Inspect(checkpoint), CatchFaults = catchFaults, Scopes = scopeViews };
+
             return InspectionPrivacy.Clean(result, WaitIds(instance, checkpoint));
         }
 
@@ -183,29 +249,45 @@ public sealed partial class WorkflowHost
         {
             InstanceIds.Validate(instanceId);
             ArgumentOutOfRangeException.ThrowIfNegative(afterSequence);
-            if (limit is < 1 or > 1000) throw new ArgumentOutOfRangeException(nameof(limit));
+
+            if (limit is < 1 or > 1000)
+                throw new ArgumentOutOfRangeException(nameof(limit));
+
             cancellationToken.ThrowIfCancellationRequested();
-            var entries = await _store.GetTraceAsync(instanceId, afterSequence, limit);
+            var entries = await _store.GetTraceAsync(instanceId, afterSequence, limit, cancellationToken: cancellationToken);
+
             return InspectionPrivacy.Clean(entries, await DurableWaitIdsAsync(instanceId, cancellationToken));
         }
 
         private async Task<string[]> DurableWaitIdsAsync(string instanceId, CancellationToken cancellationToken)
         {
             var ids = new HashSet<string>(StringComparer.Ordinal);
+
             foreach (var kind in Enum.GetValues<WaitKind>())
             {
                 string? after = null;
+
                 while (true)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+
                     var page = await _store.GetOpenWaitsAsync(new(InstanceId: instanceId, Kind: kind,
-                        AfterWaitRef: after, Limit: 1000) { IncludeClosed = true });
-                    foreach (var wait in page) ids.Add(wait.WaitId);
-                    if (page.Count < 1000) break;
+                        AfterWaitRef: after, Limit: 1000) { IncludeClosed = true }, cancellationToken: cancellationToken);
+
+                    foreach (var wait in page)
+                        ids.Add(wait.WaitId);
+
+                    if (page.Count < 1000)
+                        break;
+
                     after = WaitReference.Of(instanceId, page[^1].WaitId);
                 }
             }
-            if ((await _store.GetWorkflowInstanceSummaryAsync(instanceId))?.ParentWaitId is { } parent) ids.Add(parent);
+
+            if ((await _store.GetWorkflowInstanceSummaryAsync(instanceId, cancellationToken: cancellationToken))?.ParentWaitId is
+                { } parent)
+                ids.Add(parent);
+
             return ids.ToArray();
         }
 

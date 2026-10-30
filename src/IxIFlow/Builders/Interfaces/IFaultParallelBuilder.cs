@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Linq.Expressions;
+
 namespace IxIFlow.Builders.Interfaces;
 
 /// <summary>
@@ -40,5 +41,4 @@ public interface IFaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData>
     /// <param name="configure">Configuration for the parallel branch</param>
     IFaultParallelBuilder<TWorkflowData, TFault, TPreviousStepData> Do(
         Action<ICatchWorkflowBuilder<TWorkflowData, TFault, TPreviousStepData>> configure);
-
 }

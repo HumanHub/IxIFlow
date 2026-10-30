@@ -13,10 +13,15 @@ public sealed class DiagnosticMessageTests
     public async Task ExecutorCommitsImmutableDiagnosticsAcrossThePublicMessageBoundary()
     {
         using var harness = new MessageHarness();
+
         var assign = await harness.AssignAsync(Workflow.Create<MessageHarness.Data>("serialized-diagnostic")
             .Step<MessageHarness.Noop>().Step<Fail>().Build());
+
         await harness.ExecuteAsync();
-        var raw = Assert.Single(await harness.Host.Store.GetDiagnosticsForIncarnationAsync(assign.Instance.InstanceId, assign.Instance.Incarnation));
+
+        var raw = Assert.Single(
+            await harness.Host.Store.GetDiagnosticsForIncarnationAsync(assign.Instance.InstanceId, assign.Instance.Incarnation));
+
         Assert.Equal(Secret, raw.Message);
         Assert.Equal(typeof(InvalidOperationException).FullName, raw.ErrorType);
         Assert.Contains(nameof(Fail), raw.StackTrace);
@@ -27,8 +32,10 @@ public sealed class DiagnosticMessageTests
         Assert.Null(failed.StackTrace);
         Assert.DoesNotContain(Secret, JsonSerializer.Serialize(trace));
         var saved = (await harness.Host.Store.GetWorkflowInstanceAsync(assign.Instance.InstanceId))!;
+
         var commit = CheckpointCommit.Create(saved, assign.Epoch, saved.Revision,
             diagnostics: [raw], retainedDiagnosticIds: [raw.DiagnosticId]);
+
         var copy = harness.Cross(new Checkpoint(assign.AssignmentId, commit)).Commit;
         Assert.Equal(raw, Assert.Single(copy.Diagnostics));
         Assert.Equal(commit.RetainedDiagnosticIds, copy.RetainedDiagnosticIds);
@@ -43,6 +50,7 @@ public sealed class DiagnosticMessageTests
 
     public sealed class Fail : IAsyncActivity
     {
-        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => throw new InvalidOperationException(Secret);
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException(Secret);
     }
 }

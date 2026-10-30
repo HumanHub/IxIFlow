@@ -36,27 +36,44 @@ public sealed class TemplateVersion
         string? description, IReadOnlyList<TemplateVariant> variants)
     {
         CheckKey(key);
+
         if (version < 1)
             throw new ArgumentOutOfRangeException(nameof(version), "Template versions start at 1");
+
         ArgumentException.ThrowIfNullOrWhiteSpace(engine);
         ArgumentException.ThrowIfNullOrWhiteSpace(modelType);
         WorkflowCatalogRules.ValidateText(modelType);
         WorkflowCatalogRules.ValidateText(modelTypeId);
-        if (engine != "liquid") throw new ArgumentException("Only the liquid engine is supported", nameof(engine));
+
+        if (engine != "liquid")
+            throw new ArgumentException("Only the liquid engine is supported", nameof(engine));
+
         if (!WorkflowTypeIdentity.IsSavedName(modelTypeId) || WorkflowTypeIdentity.CSharpName(modelTypeId) != modelType)
             throw new ArgumentException("Model type and saved identity must agree", nameof(modelTypeId));
+
         ArgumentNullException.ThrowIfNull(modelPackages);
+
         if (displayName?.Length > 200 || displayName != null && string.IsNullOrWhiteSpace(displayName))
             throw new ArgumentException("Display name must be nonblank and at most 200 characters", nameof(displayName));
-        if (displayName != null) WorkflowCatalogRules.ValidateText(displayName);
-        if (description != null) WorkflowCatalogRules.ValidateText(description);
+
+        if (displayName != null)
+            WorkflowCatalogRules.ValidateText(displayName);
+
+        if (description != null)
+            WorkflowCatalogRules.ValidateText(description);
+
         if (modelPackages.Any(item => item == null || !WorkflowPackageRules.ValidId(item.Id) ||
-            WorkflowPackageRules.NormalizeId(item.Id) != item.Id || WorkflowPackageRules.NormalizeVersion(item.Version) != item.Version) ||
+                WorkflowPackageRules.NormalizeId(item.Id) != item.Id ||
+                WorkflowPackageRules.NormalizeVersion(item.Version) != item.Version) ||
             modelPackages.Select(item => item.Id).Distinct(StringComparer.Ordinal).Count() != modelPackages.Count)
             throw new ArgumentException("Model packages require unique canonical package identities", nameof(modelPackages));
-        foreach (var package in modelPackages) _ = new ArtifactDigest(package.Digest.Value);
+
+        foreach (var package in modelPackages)
+            _ = new ArtifactDigest(package.Digest.Value);
+
         if (!Enum.IsDefined(format))
             throw new ArgumentOutOfRangeException(nameof(format));
+
         ArgumentNullException.ThrowIfNull(variants);
         Key = key;
         Version = version;
@@ -68,17 +85,21 @@ public sealed class TemplateVersion
         DisplayName = displayName;
         Description = description;
         _variants = new Dictionary<string, TemplateVariant>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var variant in variants)
         {
             ArgumentNullException.ThrowIfNull(variant, nameof(variants));
+
             if (!_variants.TryAdd(variant.Culture, variant))
                 throw new ArgumentException(
                     $"Template '{key}' v{version} has two variants for culture '{variant.Culture}'", nameof(variants));
         }
+
         if (!_variants.ContainsKey(BaseCulture))
             throw new ArgumentException(
                 $"Template '{key}' v{version} has no base variant, the one without a culture that every culture falls back to",
                 nameof(variants));
+
         Variants = _variants.Values.OrderBy(variant => variant.Culture, StringComparer.Ordinal).ToList()
             .AsReadOnly();
     }
@@ -88,6 +109,7 @@ public sealed class TemplateVersion
         params TemplateVariant[] variants)
     {
         TemplateModelTypes.Validate(typeof(TModel));
+
         return new(key, version, engine, format, ModelTypeName(typeof(TModel)),
             WorkflowTypeIdentity.SavedName(typeof(TModel)), [], null, null, variants);
     }
@@ -102,6 +124,7 @@ public sealed class TemplateVersion
 
     /// <summary>The model type the version is written against, as <see cref="ModelTypeName"/> names it.</summary>
     public string ModelType { get; }
+
     public string ModelTypeId { get; }
     public IReadOnlyList<WorkflowPackageReference> ModelPackages { get; }
     public string? DisplayName { get; }
@@ -119,11 +142,13 @@ public sealed class TemplateVersion
     public TemplateVariant Resolve(CultureInfo culture)
     {
         ArgumentNullException.ThrowIfNull(culture);
+
         for (var current = culture; !Equals(current, CultureInfo.InvariantCulture); current = current.Parent)
         {
             if (_variants.TryGetValue(current.Name, out var variant))
                 return variant;
         }
+
         return _variants[BaseCulture];
     }
 
@@ -134,14 +159,15 @@ public sealed class TemplateVersion
     public bool IsSameAs(TemplateVersion other)
     {
         ArgumentNullException.ThrowIfNull(other);
+
         return Key == other.Key && Version == other.Version &&
-               string.Equals(Engine, other.Engine, StringComparison.OrdinalIgnoreCase) &&
-               Format == other.Format && ModelType == other.ModelType && ModelTypeId == other.ModelTypeId &&
-               ModelPackages.SequenceEqual(other.ModelPackages) && DisplayName == other.DisplayName && Description == other.Description &&
-               Variants.Count == other.Variants.Count &&
-               Variants.Zip(other.Variants).All(pair =>
-                   string.Equals(pair.First.Culture, pair.Second.Culture, StringComparison.OrdinalIgnoreCase) &&
-                   pair.First.Content == pair.Second.Content);
+            string.Equals(Engine, other.Engine, StringComparison.OrdinalIgnoreCase) &&
+            Format == other.Format && ModelType == other.ModelType && ModelTypeId == other.ModelTypeId &&
+            ModelPackages.SequenceEqual(other.ModelPackages) && DisplayName == other.DisplayName && Description == other.Description &&
+            Variants.Count == other.Variants.Count &&
+            Variants.Zip(other.Variants).All(pair =>
+                string.Equals(pair.First.Culture, pair.Second.Culture, StringComparison.OrdinalIgnoreCase) &&
+                pair.First.Content == pair.Second.Content);
     }
 
     /// <summary>
@@ -150,12 +176,14 @@ public sealed class TemplateVersion
     public static string ModelTypeName(Type type)
     {
         ArgumentNullException.ThrowIfNull(type);
+
         return WorkflowTypeIdentity.CSharpName(type);
     }
 
     internal static void CheckKey(string key)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
+
         if (key.Length > 100 || key != key.ToLowerInvariant() || !WorkflowPackageRules.ValidId(key))
             throw new ArgumentException("A template key must use lowercase package-id grammar, 1–100 characters", nameof(key));
     }
@@ -182,7 +210,8 @@ public sealed class TemplateVariant
     public string Content { get; }
 
     /// <summary>The SHA-256 of the content, which engines key their parsed or compiled templates by.</summary>
-    [JsonIgnore] public string Digest { get; }
+    [JsonIgnore]
+    public string Digest { get; }
 
     public static string DigestOf(string content) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant();
@@ -192,8 +221,10 @@ public sealed class TemplateVariant
         try
         {
             var culture = CultureInfo.GetCultureInfo(name, predefinedOnly: true);
+
             if (Equals(culture, CultureInfo.InvariantCulture))
                 throw new CultureNotFoundException(nameof(name), name, "The invariant culture is the base variant");
+
             return culture;
         }
         catch (CultureNotFoundException error)

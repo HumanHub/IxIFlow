@@ -33,10 +33,13 @@ internal static class ExpressionRules
                 Check(step, step.Assignment?.Value);
                 Check(step, step.ExceptionExpression);
                 Check(step, step.AfterExpression);
+
                 foreach (var behavior in Delegates.Select(property => property.GetValue(step) as Delegate))
                     Check(step, DelegateCode.FirstImpure(behavior));
+
                 foreach (var mapping in step.InputMappings.Concat(step.OutputMappings))
                     Check(step, mapping.Expression);
+
                 if (step.StepMetadata.TryGetValue("CompensationActivities", out var value) &&
                     value is List<CompensationActivityInfo> compensations)
                     foreach (var mapping in compensations.SelectMany(item => item.InputMappings.Concat(item.OutputMappings)))
@@ -47,6 +50,7 @@ internal static class ExpressionRules
                 throw WorkflowBuildError.At(step, error);
             }
         }
+
         return steps;
     }
 
@@ -61,6 +65,7 @@ internal static class ExpressionRules
         Check(new WorkflowStep { Name = "DemandFrom(" + demand.Key + ")" }, demand.Expression);
         var clock = new DemandClock();
         clock.Visit(demand.Expression);
+
         if (clock.Found)
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                 $"DemandFrom '{demand.Key}' cannot read the workflow clock; use start data");
@@ -68,7 +73,10 @@ internal static class ExpressionRules
 
     internal static void CheckLabel(WorkflowStep site, LambdaExpression expression)
     {
-        try { Check(site, expression); }
+        try
+        {
+            Check(site, expression);
+        }
         catch (WorkflowEngineException error)
         {
             throw WorkflowBuildError.At(site, new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
@@ -79,10 +87,13 @@ internal static class ExpressionRules
     private sealed class DemandClock : ExpressionVisitor
     {
         internal bool Found;
+
         protected override Expression VisitMember(MemberExpression node)
         {
             if (node.Member.Name == "UtcNow" && node.Member.DeclaringType?.IsGenericType == true &&
-                node.Member.DeclaringType.GetGenericTypeDefinition() == typeof(WorkflowContext<>)) Found = true;
+                node.Member.DeclaringType.GetGenericTypeDefinition() == typeof(WorkflowContext<>))
+                Found = true;
+
             return base.VisitMember(node);
         }
     }
@@ -91,6 +102,7 @@ internal static class ExpressionRules
     {
         if (expression == null)
             return;
+
         var found = new ImpureMembers();
         found.Visit(expression);
         Check(step, found.First);
@@ -114,13 +126,22 @@ internal static class ExpressionRules
         {
             var outer = _freshInitializerReceiver;
             _freshInitializerReceiver = true;
-            try { return base.VisitMemberInit(node); }
-            finally { _freshInitializerReceiver = outer; }
+
+            try
+            {
+                return base.VisitMemberInit(node);
+            }
+            finally
+            {
+                _freshInitializerReceiver = outer;
+            }
         }
 
         protected override MemberAssignment VisitMemberAssignment(MemberAssignment node)
         {
-            if (!_freshInitializerReceiver) First ??= $"{node.Member.Name} (initializer on existing member state)";
+            if (!_freshInitializerReceiver)
+                First ??= $"{node.Member.Name} (initializer on existing member state)";
+
             return base.VisitMemberAssignment(node);
         }
 
@@ -132,6 +153,7 @@ internal static class ExpressionRules
                 ExpressionType.AndAssign or ExpressionType.OrAssign or ExpressionType.ExclusiveOrAssign or
                 ExpressionType.LeftShiftAssign or ExpressionType.RightShiftAssign or ExpressionType.PowerAssign)
                 First ??= "a state assignment";
+
             return base.VisitBinary(node);
         }
 
@@ -140,6 +162,7 @@ internal static class ExpressionRules
             if (node.NodeType is ExpressionType.PreIncrementAssign or ExpressionType.PostIncrementAssign or
                 ExpressionType.PreDecrementAssign or ExpressionType.PostDecrementAssign)
                 First ??= "a state increment or decrement";
+
             return base.VisitUnary(node);
         }
 
@@ -147,12 +170,18 @@ internal static class ExpressionRules
         {
             var outer = _freshInitializerReceiver;
             _freshInitializerReceiver = FreshValueField(node.Member);
+
             try
             {
-                if (!_freshInitializerReceiver) First ??= "a collection initializer on existing member state";
+                if (!_freshInitializerReceiver)
+                    First ??= "a collection initializer on existing member state";
+
                 return base.VisitMemberListBinding(node);
             }
-            finally { _freshInitializerReceiver = outer; }
+            finally
+            {
+                _freshInitializerReceiver = outer;
+            }
         }
 
         private bool FreshValueField(MemberInfo member) => _freshInitializerReceiver &&
@@ -164,36 +193,49 @@ internal static class ExpressionRules
             // prove that this member owns fresh storage (a getter can return shared state).
             var outer = _freshInitializerReceiver;
             _freshInitializerReceiver = FreshValueField(node.Member);
+
             try
             {
                 if (!_freshInitializerReceiver && node.Bindings.Count > 0)
                     First ??= $"{node.Member.Name} (initializer on existing member state)";
+
                 return base.VisitMemberMemberBinding(node);
             }
-            finally { _freshInitializerReceiver = outer; }
+            finally
+            {
+                _freshInitializerReceiver = outer;
+            }
         }
 
         protected override Expression VisitMember(MemberExpression node)
         {
             Note(node.Member.DeclaringType, node.Member.Name);
+
             return base.VisitMember(node);
         }
 
         protected override Expression VisitMethodCall(MethodCallExpression node)
         {
             if ((node.Method.Name.StartsWith("set_", StringComparison.Ordinal) ||
-                 Mutators.Contains(node.Method.Name) && !ReturnsCollection(node.Method) && node.Object != null &&
-                 (typeof(System.Collections.IEnumerable).IsAssignableFrom(node.Object.Type) || node.Object.Type == typeof(System.Text.StringBuilder))) &&
+                    Mutators.Contains(node.Method.Name) && !ReturnsCollection(node.Method) && node.Object != null &&
+                    (typeof(System.Collections.IEnumerable).IsAssignableFrom(node.Object.Type) ||
+                        node.Object.Type == typeof(System.Text.StringBuilder))) &&
                 node.Object is not NewExpression and not MemberInitExpression and not ListInitExpression)
                 First ??= $"{node.Method.DeclaringType?.Name}.{node.Method.Name} (state mutation)";
-            if (Mutators.Contains(node.Method.Name) && !ReturnsCollection(node.Method) && node.Method.IsStatic && node.Arguments.Count > 0 &&
-                (node.Method.DeclaringType == typeof(Array) || node.Method.DeclaringType?.Namespace?.StartsWith("System.Collections", StringComparison.Ordinal) == true) &&
+
+            if (Mutators.Contains(node.Method.Name) && !ReturnsCollection(node.Method) && node.Method.IsStatic &&
+                node.Arguments.Count > 0 &&
+                (node.Method.DeclaringType == typeof(Array) ||
+                    node.Method.DeclaringType?.Namespace?.StartsWith("System.Collections", StringComparison.Ordinal) == true) &&
                 typeof(System.Collections.IEnumerable).IsAssignableFrom(node.Arguments[0].Type) &&
                 node.Arguments[0] is not NewExpression and not NewArrayExpression and not ListInitExpression)
                 First ??= $"{node.Method.Name} (state mutation)";
+
             if (node.Method.GetParameters().Any(parameter => parameter.ParameterType.IsByRef))
                 First ??= $"{node.Method.Name} (ref/out write)";
+
             Note(node.Method.DeclaringType, node.Method.Name);
+
             return base.VisitMethodCall(node);
         }
 
@@ -201,9 +243,12 @@ internal static class ExpressionRules
         {
             // A stream reader or writer is I/O only when it opens a path; over a stream in memory it is pure.
             var type = node.Constructor?.DeclaringType ?? node.Type;
+
             if (OpensAPath(type, node.Constructor))
                 First ??= $"new {type.Name}(path)";
+
             Note(type, ".ctor");
+
             return base.VisitNew(node);
         }
 
@@ -223,7 +268,7 @@ internal static class ExpressionRules
 
     private static bool ReturnsCollection(MethodInfo method) =>
         (method.ReturnType == method.DeclaringType || method.IsStatic && method.GetParameters() is [{ ParameterType: var receiver }, ..] &&
-         method.ReturnType == receiver) && method.ReturnType != typeof(System.Text.StringBuilder) && method.ReturnType.Name != "Builder";
+            method.ReturnType == receiver) && method.ReturnType != typeof(System.Text.StringBuilder) && method.ReturnType.Name != "Builder";
 
     private static bool OpensAPath(Type type, MethodBase? constructor) =>
         (type == typeof(StreamReader) || type == typeof(StreamWriter)) &&
@@ -240,9 +285,11 @@ internal static class ExpressionRules
         public static string? FirstImpure(Delegate? behavior)
         {
             var seen = new HashSet<MethodBase>();
+
             foreach (var each in Reachable(behavior, 0))
                 if (Scan(each.Method, seen) is { } found)
                     return found;
+
             return null;
         }
 
@@ -251,11 +298,14 @@ internal static class ExpressionRules
         {
             if (behavior == null || depth > 4)
                 yield break;
+
             foreach (var each in behavior.GetInvocationList())
             {
                 yield return each;
+
                 if (each.Target == null)
                     continue;
+
                 foreach (var field in each.Target.GetType().GetFields(
                              BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
                     if (field.GetValue(each.Target) is Delegate held)
@@ -269,24 +319,38 @@ internal static class ExpressionRules
             // The engine's own wrappers, and lambdas compiled from expression trees, which are checked as trees.
             if (method.DeclaringType?.Assembly == typeof(ExpressionRules).Assembly || !seen.Add(method))
                 return null;
+
             byte[]? il;
-            try { il = method.GetMethodBody()?.GetILAsByteArray(); }
-            catch (InvalidOperationException) { il = null; }
+
+            try
+            {
+                il = method.GetMethodBody()?.GetILAsByteArray();
+            }
+            catch (InvalidOperationException)
+            {
+                il = null;
+            }
+
             if (il == null)
                 return null;
+
             var position = 0;
+
             while (position < il.Length)
             {
                 var value = (short)il[position++];
+
                 if (value == 0xFE && position < il.Length)
                     value = unchecked((short)(0xFE00 | il[position++]));
+
                 if (!OpCodesByValue.TryGetValue(value, out var code))
                     return null;
+
                 if (code.OperandType is OperandType.InlineMethod or OperandType.InlineField &&
                     position + 4 <= il.Length && Resolve(method, BitConverter.ToInt32(il, position)) is { } member)
                 {
                     if (member is MethodBase called && (called.Name.Contains(">b__", StringComparison.Ordinal) ||
-                                                        called.Name.Contains(">g__", StringComparison.Ordinal)))
+                            called.Name.Contains(">g__", StringComparison.Ordinal)))
                     {
                         if (Scan(called, seen) is { } nested)
                             return nested;
@@ -294,6 +358,7 @@ internal static class ExpressionRules
                     else if (Named(member) is { } impure)
                         return impure;
                 }
+
                 position += code.OperandType switch
                 {
                     OperandType.InlineNone => 0,
@@ -305,6 +370,7 @@ internal static class ExpressionRules
                     _ => 4
                 };
             }
+
             return null;
         }
 
@@ -325,16 +391,20 @@ internal static class ExpressionRules
         private static string? Named(MemberInfo member)
         {
             var type = member.DeclaringType;
+
             if (type == null)
                 return null;
+
             if (member is ConstructorInfo constructor)
                 return OpensAPath(type, constructor) ? $"new {type.Name}(path)"
                     : Impure(type, ".ctor") ? $"new {type.Name}(...)" : null;
+
             var name = member is MethodInfo { IsSpecialName: true } accessor &&
-                       (accessor.Name.StartsWith("get_", StringComparison.Ordinal) ||
-                        accessor.Name.StartsWith("set_", StringComparison.Ordinal))
-                ? accessor.Name[4..]
-                : member.Name;
+                (accessor.Name.StartsWith("get_", StringComparison.Ordinal) ||
+                    accessor.Name.StartsWith("set_", StringComparison.Ordinal))
+                    ? accessor.Name[4..]
+                    : member.Name;
+
             return Impure(type, name) ? $"{type.Name}.{name}" : null;
         }
     }
@@ -365,6 +435,7 @@ internal static class ExpressionRules
         for (var each = type; each != null; each = each.BaseType)
             if (each.FullName != null && names.Contains(each.FullName))
                 return true;
+
         return type.GetInterfaces().Any(each => each.FullName != null && names.Contains(each.FullName));
     }
 }

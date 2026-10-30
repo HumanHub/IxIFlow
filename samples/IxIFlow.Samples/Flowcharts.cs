@@ -16,6 +16,7 @@ public static class Flowcharts
                 .Node("backorder", n => n.Delay(TimeSpan.FromDays(1)),
                     edges => edges.Always("check")))
             .Build();
+
     // end-snippet: stock-flowchart
 
     public sealed class Order
@@ -31,6 +32,7 @@ public static class Flowcharts
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             InStock = ((Order)context.WorkflowData).StockAvailable;
+
             return Task.CompletedTask;
         }
     }
@@ -40,6 +42,7 @@ public static class Flowcharts
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             ((Order)context.WorkflowData).Shipped = true;
+
             return Task.CompletedTask;
         }
     }

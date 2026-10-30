@@ -20,6 +20,7 @@ public sealed class WebhookOutboxPublisher : IOutboxPublisher
     private readonly Random _random;
     private readonly TimeProvider _time;
     private readonly byte[] _secret;
+
     private static readonly TimeSpan[] RetryDelays =
     [
         TimeSpan.FromSeconds(5), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(30), TimeSpan.FromHours(2),
@@ -44,12 +45,16 @@ public sealed class WebhookOutboxPublisher : IOutboxPublisher
         ArgumentException.ThrowIfNullOrWhiteSpace(endpoint.Name);
         ArgumentNullException.ThrowIfNull(endpoint.Url);
         ArgumentException.ThrowIfNullOrWhiteSpace(endpoint.Secret);
+
         if (endpoint.Name.Length > 92 || !endpoint.Url.IsAbsoluteUri ||
             endpoint.Url.Scheme is not ("https" or "http") || endpoint.Url.UserInfo.Length != 0)
             throw new ArgumentException("A webhook needs a name of at most 92 characters and an absolute HTTP(S) URL without credentials");
+
         ArgumentNullException.ThrowIfNull(endpoint.EventTypes);
+
         if (endpoint.EventTypes.Count == 0 || endpoint.EventTypes.Any(string.IsNullOrWhiteSpace))
             throw new ArgumentException("A webhook needs at least one event type");
+
         return StandardWebhookSignature.DecodeSecret(endpoint.Secret);
     }
 
@@ -61,14 +66,17 @@ public sealed class WebhookOutboxPublisher : IOutboxPublisher
         var item = delivery.Event;
         var started = _time.GetTimestamp();
         var storeNow = new DateTimeOffset(DateTime.SpecifyKind(delivery.StoreNowUtc, DateTimeKind.Utc));
+
         if (!EventTypes.Contains(item.Type, StringComparer.Ordinal))
             return OutboxPublishResult.Delivered();
+
         var body = JsonSerializer.SerializeToUtf8Bytes(new
         {
             specversion = "1.0", id = item.Id, source = "urn:ixiflow:workflows", type = item.Type,
             subject = item.InstanceId, time = item.OccurredAtUtc, datacontenttype = "application/json",
             data = JsonSerializer.Deserialize<JsonElement>(item.DataJson)
         });
+
         var timestamp = storeNow.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
         var signature = StandardWebhookSignature.Sign(_secret, item.Id, timestamp, body);
         using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint.Url);
@@ -79,34 +87,46 @@ public sealed class WebhookOutboxPublisher : IOutboxPublisher
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/cloudevents+json");
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30), _time);
         using var attempt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+
         try
         {
             using var http = _http.CreateClient(ClientName(_endpoint));
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, attempt.Token);
+
             if (response.IsSuccessStatusCode)
                 return OutboxPublishResult.Delivered();
+
             if (response.StatusCode == HttpStatusCode.Gone)
                 return OutboxPublishResult.GiveUp("HTTP 410 Gone", disablePublisher: true);
+
             var retryAfter = response.Headers.RetryAfter;
             var requested = retryAfter?.Delta ?? (retryAfter?.Date - (storeNow + _time.GetElapsedTime(started)));
+
             return Retry(delivery.Attempts, "HTTP " + (int)response.StatusCode, requested);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return Retry(delivery.Attempts, "Webhook request timed out");
         }
-        catch (HttpRequestException error) { return Retry(delivery.Attempts, error.Message); }
+        catch (HttpRequestException error)
+        {
+            return Retry(delivery.Attempts, error.Message);
+        }
     }
 
     private OutboxPublishResult Retry(int attempts, string error, TimeSpan? requested = null)
     {
         if (attempts > RetryDelays.Length)
             return OutboxPublishResult.GiveUp(error);
+
         var delay = RetryDelays[Math.Max(0, attempts - 1)];
+
         // Positive jitter of at most 5%, capped at one minute, never shortens Retry-After.
         delay += TimeSpan.FromSeconds(Math.Min(60, delay.TotalSeconds * 0.05) * _random.NextDouble());
+
         if (requested > delay)
             delay = requested.Value > TimeSpan.FromDays(30) ? TimeSpan.FromDays(30) : requested.Value;
+
         return OutboxPublishResult.RetryLater(error, delay);
     }
 }

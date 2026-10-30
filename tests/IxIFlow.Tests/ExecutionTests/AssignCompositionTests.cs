@@ -20,6 +20,7 @@ public sealed class AssignCompositionTests
             .ForEach(itemsExpression: ctx => ctx.WorkflowData.Items,
                 body: (b, item) => b.Assign(ctx => ctx.WorkflowData.Other, ctx => ctx.Item(item)),
                 setup: s => s.Parallel().Combine<int, Sum<int>>(d => d.Other)).Build();
+
         await using var services = Services();
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -29,7 +30,8 @@ public sealed class AssignCompositionTests
     }
 
     [Theory]
-    [InlineData(false, 1)] [InlineData(true, 2)]
+    [InlineData(false, 1)]
+    [InlineData(true, 2)]
     public async Task SagaRetryReappliesAssignmentsOnlyWhenTheForwardPassRestarts(bool restart, int expected)
     {
         var definition = Workflow.Create<Data>("AssignSaga" + restart).Assign(ctx => ctx.WorkflowData.Count, ctx => 0)
@@ -39,6 +41,7 @@ public sealed class AssignCompositionTests
                 var undo = restart ? e.Compensate() : e.CompensateNone();
                 undo.ThenRetry(new RetryPolicy(1));
             }).Build();
+
         await using var services = Services();
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -55,16 +58,19 @@ public sealed class AssignCompositionTests
                     .Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.Fault.Message))
                 .Finally(cleanup => cleanup.Assign(ctx => ctx.WorkflowData.Text, ctx => ctx.WorkflowData.Text + "|" + ctx.Fault.Message)))))
             .Build();
+
         var store = new InMemoryWorkflowStateRepository();
         var catalog = new WorkflowCatalog();
         await catalog.RegisterWorkflowAsync(definition);
         string id;
+
         await using (var first = Services(store, catalog))
         {
             var idle = await first.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
             Assert.Equal(WorkflowExecutionStatus.Suspended, idle.Status);
             id = idle.InstanceId;
         }
+
         await using var second = Services(store, catalog);
         var result = await second.GetRequiredService<IWorkflowClient>().ResumeAsync(id, "inner", new Go());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -75,9 +81,11 @@ public sealed class AssignCompositionTests
     public async Task ClockAndPreviousValuesUseTheCurrentExecutionContext()
     {
         var time = new FakeTimeProvider();
+
         var definition = Workflow.Create<Data>("AssignClock").Assign(ctx => ctx.WorkflowData.Stamp, ctx => ctx.UtcNow)
             .Step<Seed>().Sequence(b => b.Assign(ctx => ctx.WorkflowData.Count, ctx => ctx.PreviousStep.Count))
             .Assign(ctx => ctx.WorkflowData.Other, ctx => ctx.PreviousStep.Count).Build();
+
         await using var services = Services(time: time);
         var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
@@ -94,15 +102,24 @@ public sealed class AssignCompositionTests
             .Assign(ctx => ctx.WorkflowData.Items[ctx.WorkflowData.Items.Remove(1) ? 0 : 1], ctx => 2).Build()).Message);
     }
 
-    private static ServiceProvider Services(IWorkflowStateRepository? store = null, IWorkflowCatalog? catalog = null, TimeProvider? time = null)
+    private static ServiceProvider Services(IWorkflowStateRepository? store = null, IWorkflowCatalog? catalog = null,
+        TimeProvider? time = null)
     {
         var services = new ServiceCollection().AddLogging().AddIxIFlow(o => o.PayloadThresholdBytes = 1).Services;
         services.AddSingleton<Attempts>();
-        if (store != null) services.AddSingleton(store);
-        if (catalog != null) services.AddSingleton(catalog);
-        if (time != null) services.AddSingleton(time);
+
+        if (store != null)
+            services.AddSingleton(store);
+
+        if (catalog != null)
+            services.AddSingleton(catalog);
+
+        if (time != null)
+            services.AddSingleton(time);
+
         return services.BuildServiceProvider();
     }
+
     public sealed class Data
     {
         public int Count { get; set; }
@@ -111,15 +128,43 @@ public sealed class AssignCompositionTests
         public DateTimeOffset Stamp { get; set; }
         public List<int> Items { get; set; } = [1, 2];
     }
-    public sealed class Fault { public string Message { get; set; } = ""; }
-    public sealed class Go { }
-    public sealed class Attempts { public int Count; }
+
+    public sealed class Fault
+    {
+        public string Message { get; set; } = "";
+    }
+
+    public sealed class Go
+    {
+    }
+
+    public sealed class Attempts
+    {
+        public int Count;
+    }
+
     public sealed class FailOnce(Attempts attempts) : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => ++attempts.Count == 1 ? Task.FromException(new InvalidOperationException("retry")) : Task.CompletedTask; }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => ++attempts.Count == 1
+            ? Task.FromException(new InvalidOperationException("retry"))
+            : Task.CompletedTask;
+    }
+
     public sealed class FailOuter : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.FromException(new InvalidOperationException("outer")); }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.FromException(new InvalidOperationException("outer"));
+    }
+
     public sealed class FailInner : IAsyncActivity
-    { public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.FromException(new ArgumentException("inner")); }
+    {
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>
+            Task.FromException(new ArgumentException("inner"));
+    }
+
     public sealed class Seed : IAsyncActivity
-    { public int Count { get; set; } = 7; public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask; }
+    {
+        public int Count { get; set; } = 7;
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
 }

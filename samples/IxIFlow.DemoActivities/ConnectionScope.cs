@@ -16,7 +16,8 @@ public sealed class ConnectionScope(IDemoConnectionFactory factory) : IScopeActi
     public Task<DbConnection> OpenAsync(ScopeOpening opening, IScopeContext context, CancellationToken cancellationToken = default) =>
         factory.OpenAsync(ConnectionRef, cancellationToken);
 
-    public async Task CloseAsync(DbConnection value, ScopeClosing closing, IScopeContext context, CancellationToken cancellationToken = default) =>
+    public async Task CloseAsync(DbConnection value, ScopeClosing closing, IScopeContext context,
+        CancellationToken cancellationToken = default) =>
         await value.DisposeAsync();
 }
 
@@ -32,13 +33,23 @@ public sealed class QueryCustomerInScope : IAsyncActivity
         await using var command = context.Scope<DbConnection>().CreateCommand();
         command.CommandText = "select id, name from customers where id = @customerId";
         var parameter = command.CreateParameter();
-        parameter.ParameterName = "@customerId"; parameter.Value = CustomerId;
+        parameter.ParameterName = "@customerId";
+        parameter.Value = CustomerId;
         command.Parameters.Add(parameter);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken)) { CustomerJson = "null"; return; }
+
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            CustomerJson = "null";
+
+            return;
+        }
+
         var result = new Dictionary<string, object?>(StringComparer.Ordinal);
+
         for (var index = 0; index < reader.FieldCount; index++)
             result[reader.GetName(index)] = await reader.IsDBNullAsync(index, cancellationToken) ? null : reader.GetValue(index);
+
         CustomerJson = JsonSerializer.Serialize(result);
     }
 }

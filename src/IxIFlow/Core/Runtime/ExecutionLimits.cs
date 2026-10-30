@@ -3,27 +3,49 @@ namespace IxIFlow.Core.Runtime;
 /// <summary>Limits the host applies to every instance it runs.</summary>
 public sealed record ExecutionLimits
 {
+    /// <summary>Default maximum checkpoint bytes: four MiB.</summary>
     public const long DefaultMaxCheckpointBytes = 4 * 1024 * 1024;
+
+    /// <summary>Default maximum trace entries in one commit: 1,000.</summary>
     public const int DefaultMaxTraceEntriesPerCommit = 1_000;
+
+    /// <summary>Default maximum active branches per instance: 1,000.</summary>
     public const int DefaultMaxActiveBranches = 1_000;
+
+    /// <summary>Default maximum concurrent activities per run: 100.</summary>
     public const int DefaultMaxActivitiesPerRun = 100;
+
+    /// <summary>Default maximum saved ForEach items: 1,000.</summary>
     public const int DefaultMaxForEachItems = 1_000;
+
     /// <summary>The default number of graph entries between prepared commits.</summary>
     public const int DefaultMaxGraphTransitionsPerPass = 1_000;
+
+    /// <summary>Default threshold for parking retries: one second.</summary>
     public static readonly TimeSpan DefaultParkRetriesLongerThan = TimeSpan.FromSeconds(1);
 
+    /// <summary>Default execution limits for a workflow instance.</summary>
     public static ExecutionLimits Default { get; } = new();
 
     /// <summary>The largest checkpoint, counting inline JSON and encoded reference metadata.</summary>
     public long MaxCheckpointBytes { get; init; } = DefaultMaxCheckpointBytes;
+
+    /// <summary>Whole-value claim-check threshold in UTF-8 bytes; zero disables claim checks.</summary>
     public long PayloadThresholdBytes { get; init; } = PayloadStoreSettings.DefaultPayloadThresholdBytes;
+
+    /// <summary>Maximum bytes in one payload put; defaults to 64 MiB.</summary>
     public long MaxPayloadBytes { get; init; } = PayloadStoreSettings.DefaultMaxPayloadBytes;
+
     /// <summary>Aggregate bytes hydrated or being transferred in one run.</summary>
     public long MaxHydratedPayloadBytes { get; init; } = 128L * 1024 * 1024;
 
     /// <summary>The maximum trace entries per commit, including a truncation marker when needed.</summary>
     public int MaxTraceEntriesPerCommit { get; init; } = DefaultMaxTraceEntriesPerCommit;
+
+    /// <summary>Amount of control-flow detail retained in the trace.</summary>
     public TraceDetail TraceDetail { get; init; } = TraceDetail.Full;
+
+    /// <summary>Optional total instance trace budget; null leaves the budget unlimited.</summary>
     public long? MaxTraceEntriesPerInstance { get; init; }
 
     /// <summary>
@@ -47,11 +69,26 @@ public sealed record ExecutionLimits
     /// </summary>
     public TimeSpan ParkRetriesLongerThan { get; init; } = DefaultParkRetriesLongerThan;
 
-    /// <summary>Serialize every part at each commit and fail it when one changed without being marked.</summary>
+    /// <summary>Maximum time allowed for scope resource cleanup; defaults to thirty seconds.</summary>
     public TimeSpan ScopeCloseTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Grace period for releasing resources after cancellation; defaults to five seconds.</summary>
     public TimeSpan ReleaseGrace { get; init; } = TimeSpan.FromSeconds(5);
 
+    /// <summary>Serialize every part at each commit and fail it when one changed without being marked.</summary>
     public bool VerifyCheckpointParts { get; init; }
+
+    internal void Validate()
+    {
+        if (MaxCheckpointBytes <= 0 || PayloadThresholdBytes < 0 || MaxPayloadBytes <= 0 ||
+            PayloadThresholdBytes > MaxPayloadBytes || MaxHydratedPayloadBytes <= 0 ||
+            MaxTraceEntriesPerCommit <= 0 || MaxTraceEntriesPerInstance is < 0 || !Enum.IsDefined(TraceDetail) ||
+            MaxActiveBranches <= 0 || MaxActivitiesPerRun <= 0 || MaxForEachItems <= 0 ||
+            MaxGraphTransitionsPerPass <= 0 || ParkRetriesLongerThan < TimeSpan.Zero ||
+            ScopeCloseTimeout <= TimeSpan.Zero || ReleaseGrace <= TimeSpan.Zero ||
+            ScopeCloseTimeout.TotalMilliseconds > uint.MaxValue - 1 || ReleaseGrace.TotalMilliseconds > uint.MaxValue - 1)
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidRequest, "Execution limits are invalid");
+    }
 }
 
 /// <summary>A configured limit would be exceeded; nothing over it was committed.</summary>

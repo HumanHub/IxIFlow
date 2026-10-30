@@ -35,8 +35,10 @@ public sealed class YamlSampleTests
     public async Task InvocationRetrySamplesMatchFluent(string sample, bool retry)
     {
         var parent = sample == "invocation-retries";
+
         var first = await Execute(parent ? InvocationRetries.Definition() : InvocationRetries.Child(),
             InvocationRetries.Child());
+
         var second = await Execute(YamlDefinitions[sample](), YamlDefinitions["invocation-retries-child"]());
         Assert.Equal(first, second);
 
@@ -48,29 +50,40 @@ public sealed class YamlSampleTests
             collection.AddSingleton<TimeProvider>(time);
             collection.AddSingleton<ILookup>(lookup);
             await using var services = collection.BuildServiceProvider();
+
             if (parent)
                 await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(child);
+
             var client = SampleTests.Client(services);
             object data = parent ? new LookupRequest { Query = "customer" } : new LookupData { Query = "customer" };
             var result = await client.RunAsync(definition, data);
+
             if (retry)
             {
                 var store = services.GetRequiredService<IWorkflowStateRepository>();
                 var deadline = time.GetUtcNow().UtcDateTime.AddSeconds(5);
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
                 while ((await store.GetWorkflowInstanceAsync(result.InstanceId))!.RunnableAtUtc != deadline)
                     await Task.Delay(10, timeout.Token);
+
                 Assert.Equal(1, lookup.Calls);
                 time.Advance(TimeSpan.FromSeconds(5));
             }
+
             if (result.Status is WorkflowExecutionStatus.Running or WorkflowExecutionStatus.Suspended)
                 result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished)
                     .WaitAsync(TimeSpan.FromSeconds(10));
+
             Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
             Assert.Equal(retry ? 2 : 1, lookup.Calls);
-            var response = parent ? Assert.IsType<LookupRequest>(result.WorkflowData).Response
+
+            var response = parent
+                ? Assert.IsType<LookupRequest>(result.WorkflowData).Response
                 : Assert.IsType<LookupData>(result.WorkflowData).Response;
+
             Assert.Equal("found:customer", response);
+
             return (JsonSerializer.Serialize(result.WorkflowData), await StructureHash(services, result.InstanceId));
         }
     }
@@ -95,6 +108,7 @@ public sealed class YamlSampleTests
             "reminder" => Reminder.Definition(),
             _ => throw new ArgumentException("Unknown sample", nameof(sample))
         };
+
         var first = await Execute(fluent);
         var second = await Execute(YamlDefinitions[sample]());
         Assert.Equal(first.StructureHash, second.StructureHash);
@@ -105,6 +119,7 @@ public sealed class YamlSampleTests
             var time = new FakeTimeProvider();
             await using var services = SampleTests.Services(time);
             var client = SampleTests.Client(services);
+
             object data = sample switch
             {
                 "restock" => new StockData { Count = initial },
@@ -113,29 +128,39 @@ public sealed class YamlSampleTests
                 "reminder" => new ReminderData(),
                 _ => new QuoteData()
             };
+
             var result = await client.RunAsync(definition, data);
+
             if (sample == "reminder")
             {
                 Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
                 time.Advance(TimeSpan.FromMinutes(59));
                 Assert.Equal(WorkflowExecutionStatus.Suspended, (await client.AwaitAsync(result.InstanceId)).Status);
                 time.Advance(TimeSpan.FromMinutes(1));
+
                 result = await client.AwaitAsync(result.InstanceId, WorkflowAwaitCondition.Finished)
                     .WaitAsync(TimeSpan.FromSeconds(10));
             }
+
             Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
+
             switch (result.WorkflowData)
             {
                 case StockData stock:
                     Assert.Equal(initial == 0 ? 3 : 6, stock.Count);
+
                     break;
                 case QuoteData quote:
-                    if (sample == "all") Assert.Equal(17.5m, quote.Amount);
-                    else Assert.Contains(quote.Amount, new[] { 12.5m, 15m });
+                    if (sample == "all")
+                        Assert.Equal(17.5m, quote.Amount);
+                    else
+                        Assert.Contains(quote.Amount, new[] { 12.5m, 15m });
+
                     break;
                 case FailureData failure:
                     Assert.Equal("Quote expired", failure.Message);
                     Assert.True(failure.Audited);
+
                     break;
                 case RetryData retry:
                     Assert.Equal(2, retry.Attempt);
@@ -145,15 +170,19 @@ public sealed class YamlSampleTests
                     Assert.NotEmpty(retry.AttemptId);
                     Assert.NotEmpty(retry.EarlierAttemptId);
                     Assert.NotEqual(retry.EarlierAttemptId, retry.AttemptId);
+
                     // Runtime IDs differ between instances; compare their roles after checking their values.
                     retry.InvocationId = "invocation";
                     retry.EarlierAttemptId = "first attempt";
                     retry.AttemptId = "second attempt";
+
                     break;
                 case ReminderData reminder:
                     Assert.Equal(time.GetUtcNow(), reminder.SentAt);
+
                     break;
             }
+
             return (result.WorkflowData!, await StructureHash(services, result.InstanceId));
         }
     }
@@ -183,13 +212,16 @@ public sealed class YamlSampleTests
             Assert.True(ReplyToken.TryRead(request.ReplyToken, out _, out _, out var digest));
             Assert.Equal(ReplyToken.Digest("order-1:40"), digest);
             WorkflowExecutionResult result;
+
             if (answer == "timeout")
             {
                 time.Advance(TimeSpan.FromMinutes(59));
                 Assert.Equal(WorkflowExecutionStatus.Suspended, (await client.AwaitAsync(start.InstanceId)).Status);
                 time.Advance(TimeSpan.FromMinutes(1));
+
                 result = await client.AwaitAsync(start.InstanceId, WorkflowAwaitCondition.Finished)
                     .WaitAsync(TimeSpan.FromSeconds(10));
+
                 Assert.Equal(EventRejection.WaitTimedOut,
                     (await client.ReplyAsync(request.ReplyToken, new ApprovalDecision())).Event!.Rejection);
             }
@@ -197,17 +229,22 @@ public sealed class YamlSampleTests
             {
                 result = await client.ReplyAsync(request.ReplyToken,
                     new ApprovalDecision { Approved = answer == "approve", By = "manager" });
+
                 Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
+
                 Assert.Equal(EventRejection.WaitAnswered,
                     (await client.ReplyAsync(request.ReplyToken, new ApprovalDecision())).Event!.Rejection);
+
                 result = await client.ResumeAsync(start.InstanceId, "dispatched", new OrderDispatched());
             }
+
             Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
             var order = Assert.IsType<Order>(result.WorkflowData);
             Assert.Equal(answer == "approve", order.Approved);
             Assert.Equal(answer == "timeout", order.Escalated);
             Assert.Equal(answer == "timeout" ? "" : answer == "approve" ? "approved" : "rejected", order.Outcome);
             Assert.Equal(answer == "timeout" ? "" : "manager", order.ApprovedBy);
+
             return (JsonSerializer.Serialize(order), await StructureHash(services, result.InstanceId));
         }
     }
@@ -228,29 +265,36 @@ public sealed class YamlSampleTests
             await using var services = Services(gateway, time);
             var client = SampleTests.Client(services);
             var running = client.RunAsync(definition, new Payment { OrderId = "order-1", Amount = 40m });
+
             if (stockFails)
             {
                 await time.WaitForTimerDueAtAsync(time.GetUtcNow() + TimeSpan.FromSeconds(1));
                 time.Advance(TimeSpan.FromSeconds(1));
             }
+
             var start = await running.WaitAsync(TimeSpan.FromSeconds(10));
             Assert.Equal(WorkflowExecutionStatus.Suspended, start.Status);
             var tokens = gateway.Payments.ToArray();
             Assert.Equal(stockFails ? 2 : 1, tokens.Length);
             Assert.Equal(stockFails ? ["pay-1"] : Array.Empty<string>(), gateway.Refunds.ToArray());
+
             if (stockFails)
             {
                 Assert.NotEqual(tokens[0], tokens[1]);
+
                 Assert.Equal(EventRejection.WaitCancelled,
                     (await client.ReplyAsync(tokens[0], new PaymentReceived { Status = "paid" })).Event!.Rejection);
             }
+
             Assert.Equal(EventRejection.NotMatched,
                 (await client.ReplyAsync(tokens[^1], new PaymentReceived { Status = "pending" })).Event!.Rejection);
+
             var result = await client.ReplyAsync(tokens[^1], new PaymentReceived { Status = "paid" });
             Assert.True(result.Status == WorkflowExecutionStatus.Success, result.ErrorMessage);
             var payment = Assert.IsType<Payment>(result.WorkflowData);
             Assert.Equal(stockFails ? "pay-2" : "pay-1", payment.PaymentReference);
             Assert.Equal("paid", payment.PaymentStatus);
+
             return (JsonSerializer.Serialize(payment), await StructureHash(services, result.InstanceId));
         }
     }
@@ -259,6 +303,7 @@ public sealed class YamlSampleTests
     {
         var saved = await services.GetRequiredService<IWorkflowStateRepository>().GetWorkflowInstanceAsync(instanceId);
         using var checkpoint = JsonDocument.Parse(saved!.ExecutionStateJson);
+
         return checkpoint.RootElement.GetProperty("StructureHash").GetString()!;
     }
 
@@ -271,6 +316,7 @@ public sealed class YamlSampleTests
         services.AddSingleton<IPaymentProvider>(gateway);
         services.AddSingleton<IPaymentRefunds>(gateway);
         services.AddSingleton<IStock>(gateway);
+
         return services.BuildServiceProvider();
     }
 
@@ -282,8 +328,10 @@ public sealed class YamlSampleTests
         public Task<string> FetchAsync(string query, CancellationToken cancellationToken)
         {
             Calls++;
+
             if (FailFirst && Calls == 1)
                 throw new InvalidOperationException("Lookup temporarily unavailable");
+
             return Task.FromResult("found:" + query);
         }
     }
@@ -298,6 +346,7 @@ public sealed class YamlSampleTests
         public Task SendAsync(ApprovalRequest request, CancellationToken cancellationToken)
         {
             Approvals.Enqueue(request);
+
             return Task.CompletedTask;
         }
 
@@ -305,23 +354,28 @@ public sealed class YamlSampleTests
         {
             Assert.Equal(40m, amount);
             Payments.Enqueue(replyToken);
+
             return Task.FromResult("pay-" + Payments.Count);
         }
 
         public Task RefundAsync(string reference, CancellationToken cancellationToken)
         {
             Refunds.Enqueue(reference);
+
             return Task.CompletedTask;
         }
 
         public Task ReserveAsync(string orderId, CancellationToken cancellationToken)
         {
             Assert.Equal("order-1", orderId);
+
             if (FailStock)
             {
                 FailStock = false;
+
                 throw new StockUnavailable("Restock first");
             }
+
             return Task.CompletedTask;
         }
     }

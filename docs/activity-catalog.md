@@ -8,13 +8,13 @@ Descriptors include display metadata, inputs and outputs, package identity, `Met
 
 ## Uploads and indexing
 
-Use `PackageIngestion` from the authoring assembly to verify and store a package independently of workflow publishing:
+Use `WorkflowPublisher` from the authoring assembly to verify and store a package independently of workflow publishing:
 
 <!-- snippet: samples/IxIFlow.Samples/DocumentationExamples.cs#package-ingestion -->
 ```csharp
-var ingestion = new PackageIngestion(catalog, artifacts, publisherOptions);
-var candidate = await ingestion.ReadPackageAsync(stream, cancellationToken);
-var receipt = await ingestion.StorePackageAsync(candidate, actor, cancellationToken);
+var publisher = new WorkflowPublisher(catalog, artifacts, publisherOptions);
+var candidate = await publisher.ReadPackageAsync(stream, cancellationToken);
+var receipt = await publisher.StorePackageAsync(candidate, actor, cancellationToken);
 ```
 
 `UploadPackageAsync(stream, actor, cancellationToken)` combines these calls. Both paths enforce the configured archive, entry, expanded-size, entry-count and nuspec bounds. Storage revalidates caller-created candidates. A verified upload supplies its root bytes directly to resolution, so the root needs no feed or prior catalog registration.
@@ -27,14 +27,7 @@ Extraction selects this publisher's managed runtime assets and uses a bounded co
 - `Pending` has an unresolved closure and durable missing dependency IDs, with no partial activity rows.
 - `Unloadable` has no managed implementation for this publisher's runtime.
 
-Uploads revisit pending dependents. Run `PackageIndexingService` on a publishing host for startup and periodic recovery after a crash:
-
-<!-- snippet: samples/IxIFlow.Samples/DocumentationExamples.cs#package-indexing -->
-```csharp
-services.AddHostedService(provider => new PackageIndexingService(
-    provider.GetRequiredService<IWorkflowStateRepository>(),
-    provider.GetRequiredService<IArtifactStore>(), publisherOptions));
-```
+Uploads revisit pending dependents. `builder.AddPublishing(publisherOptions)` registers one hosted `PackageIndexingService` for startup and periodic recovery after a crash. `builder.AddWorkflowPublishing(httpOptions, publisherOptions)` uses the same registration. Configure `WorkflowPublisherOptions.PackageIndexingInterval` (one minute by default) and `MaxPackagesPerIndexingPass` (256 by default, accepted range 1–1,000). A manually constructed indexer also exposes init-only `Interval` and `MaxPackagesPerPass`; normal publishing hosts use the registered service. Private NuGet credential handling serializes HTTP-feed resolution process-wide; concurrent upload admission does not make those feed resolutions concurrent. See the [Authoring README](../src/IxIFlow.Authoring/README.md).
 
 Its passes are bounded, continue through pending work, and retry completion against the recorded digest. Reference/runtime disagreement reports `PUB014`; a selected dependency closure changing an indexed activity's contract reports `PUB015`.
 
@@ -48,7 +41,7 @@ Shared application interfaces must be declared in `WorkflowPublisherOptions.Shar
 
 `SetPackageWithdrawnAsync(id, version, true, new CatalogMutationToken(package.LifecycleRevision), actor)` withdraws a package from new authoring. A stale token raises `CatalogPreconditionException`. Withdrawal is allowed with holders and preserves identity, descriptors and bytes. Known withdrawn identities are rejected before feed acquisition, including explicit imports and seeded candidates. Existing digest-pinned execution, verified callee copying and exact package downloads keep using their saved bytes.
 
-Restore by uploading the identical verified archive through `PackageIngestion` or `WorkflowPublisher`. The store clears withdrawal atomically, advances its lifecycle token and preserves the original registration/publication audit and stronger origin. Different bytes are refused; `SetPackageWithdrawnAsync(..., false, ...)` cannot restore metadata alone. Resolver replay and extraction completion cannot restore a package.
+Restore by uploading the identical verified archive through `WorkflowPublisher`. The store clears withdrawal atomically, advances its lifecycle token and preserves the original registration/publication audit and stronger origin. Different bytes are refused; `SetPackageWithdrawnAsync(..., false, ...)` cannot restore metadata alone. Resolver replay and extraction completion cannot restore a package.
 
 `GetPackageHoldersAsync(id, version, scope)` reports scoped workflow, template and package references, instance pins, unreadable orphan pins and whether holders exist outside scope. Holders inform retention and never veto withdrawal. Uploaded and Published packages retain their complete closures, including while withdrawn. Template model packages, workflow manifests and retained instance pins also protect bytes. Unreadable orphan pins conservatively protect package content and recorded closures while unrelated abandoned bundles remain collectable. Unheld Resolved bytes may be collected after retention grace; their immutable identity and activity rows remain visible with `ArtifactPresent` false.
 

@@ -18,32 +18,42 @@ internal static class ParallelRules
     public static List<WorkflowStep> Checked(List<WorkflowStep> steps)
     {
         Validate(steps);
+
         return steps;
     }
 
     public static void Validate(IReadOnlyList<WorkflowStep> steps)
     {
         var all = Flatten(steps, crossInline: false).ToList();
+
         var parallel = all.Where(step => step.StepType == WorkflowStepType.Parallel ||
-                                         step is { StepType: WorkflowStepType.ForEach, ForEachParallel: true } ||
-                                         step.StepType == WorkflowStepType.StateMachine && step.GraphStates.Any(state =>
-                                             state.Transitions.Any(t => t.Steps[0].TriggerKind == TriggerKind.Activity))).ToList();
+            step is { StepType: WorkflowStepType.ForEach, ForEachParallel: true } ||
+            step.StepType == WorkflowStepType.StateMachine && step.GraphStates.Any(state =>
+                state.Transitions.Any(t => t.Steps[0].TriggerKind == TriggerKind.Activity))).ToList();
+
         foreach (var dataType in all.Select(step => step.WorkflowDataType).OfType<Type>().Distinct())
             WorkflowBuildError.Check(parallel.FirstOrDefault(step => step.WorkflowDataType == dataType) ??
                 all.First(step => step.WorkflowDataType == dataType), () =>
-                { BranchData.Validate(dataType, branches: parallel.Any(step => step.WorkflowDataType == dataType)); return true; });
+                {
+                    BranchData.Validate(dataType, branches: parallel.Any(step => step.WorkflowDataType == dataType));
+
+                    return true;
+                });
+
         foreach (var step in parallel)
             if (step.StepType == WorkflowStepType.StateMachine)
             {
-                foreach (var state in step.GraphStates.Where(state => state.Transitions.Any(t => t.Steps[0].TriggerKind == TriggerKind.Activity)))
-                    foreach (var transition in state.Transitions)
-                        _ = Writes(step, transition.RunSteps.Count > 0 ? transition.RunSteps : transition.Steps,
-                            waitAny: true).ToList();
+                foreach (var state in step.GraphStates.Where(state =>
+                             state.Transitions.Any(t => t.Steps[0].TriggerKind == TriggerKind.Activity)))
+                foreach (var transition in state.Transitions)
+                    _ = Writes(step, transition.RunSteps.Count > 0 ? transition.RunSteps : transition.Steps,
+                        waitAny: true).ToList();
             }
             else if (step.ParallelJoinMode == ParallelJoinMode.WaitAny)
             {
                 // One branch is merged, so branches may write the same data, but every write must reach it.
                 var bodies = step.StepType == WorkflowStepType.Parallel ? step.ParallelBranches : [step.ForEachBodySteps];
+
                 foreach (var body in bodies)
                     _ = Writes(step, body).ToList();
             }
@@ -54,7 +64,7 @@ internal static class ParallelRules
     }
 
     // Every item of a parallel ForEach runs the same body, so any write it makes, other than the results
-    // the engine stores, could be made by more than one item and needs a combiner (D-34).
+    // the engine stores, could be made by more than one item and needs a combiner.
     private static void CheckItems(WorkflowStep forEach)
     {
         foreach (var path in Distinct(Writes(forEach, forEach.ForEachBodySteps)))
@@ -68,18 +78,20 @@ internal static class ParallelRules
     private static void Check(WorkflowStep parallel)
     {
         var writes = parallel.ParallelBranches.Select(branch => Distinct(Writes(parallel, branch))).ToList();
+
         for (var first = 0; first < writes.Count; first++)
-            for (var second = first + 1; second < writes.Count; second++)
-                foreach (var one in writes[first])
-                    foreach (var other in writes[second].Where(other => Overlaps(one, other)))
-                    {
-                        var shorter = one.Count <= other.Count ? one : other;
-                        if (!Combined(parallel.WorkflowDataType, shorter, parallel.ParallelCombiners))
-                            throw WorkflowBuildError.Invalid(parallel,
-                                $"Branches {first + 1} and {second + 1} of parallel step '{parallel.Name}' both " +
-                                $"write '{string.Join('.', shorter)}' and it has no combiner; give the property a " +
-                                "combiner, write separate properties, or join with WaitAny");
-                    }
+        for (var second = first + 1; second < writes.Count; second++)
+            foreach (var one in writes[first])
+            foreach (var other in writes[second].Where(other => Overlaps(one, other)))
+            {
+                var shorter = one.Count <= other.Count ? one : other;
+
+                if (!Combined(parallel.WorkflowDataType, shorter, parallel.ParallelCombiners))
+                    throw WorkflowBuildError.Invalid(parallel,
+                        $"Branches {first + 1} and {second + 1} of parallel step '{parallel.Name}' both " +
+                        $"write '{string.Join('.', shorter)}' and it has no combiner; give the property a " +
+                        "combiner, write separate properties, or join with WaitAny");
+            }
     }
 
     // The workflow data paths a branch body can write, including nested bodies and joins, as the JSON paths
@@ -87,16 +99,20 @@ internal static class ParallelRules
     private static IEnumerable<List<string>?> Writes(WorkflowStep parallel, IReadOnlyList<WorkflowStep> body, bool waitAny = false)
     {
         var dataType = parallel.WorkflowDataType;
+
         foreach (var step in Flatten(body, crossInline: false))
         {
             foreach (var path in WorkflowDataWrites.Of(step))
             {
-                if (path == null && (waitAny || parallel.ParallelJoinMode == ParallelJoinMode.WaitAny)) continue;
+                if (path == null && (waitAny || parallel.ParallelJoinMode == ParallelJoinMode.WaitAny))
+                    continue;
+
                 if (path == null)
                     throw WorkflowBuildError.Invalid(step,
                         $"Step '{step.Name}' in a branch of parallel step '{parallel.Name}' writes a target that is " +
                         "not a chain of members, indexes and casts, so it cannot be shown not to conflict with " +
                         "another branch; write a named property, or join with WaitAny");
+
                 if (dataType != null)
                     yield return WorkflowBuildError.Check(step, () => BranchData.MergePath(dataType, path,
                         () => $"Step '{step.Name}' in a branch of parallel step '{parallel.Name}'"));
@@ -124,13 +140,15 @@ internal static class ParallelRules
         foreach (var step in steps)
         {
             yield return step;
+
             // Keep validation order: catches precede timeouts, and item bodies follow both.
-            foreach (var scope in step.ChildScopes().Where(scope => crossInline || scope.Kind != "inline").OrderBy(scope => scope.Kind switch
-                     {
-                         "timeout" => 1, "foreach" => 2, "branch" or "case" or "default" => 3, _ => 0
-                     }))
-                foreach (var inner in Flatten(scope.Steps, crossInline))
-                    yield return inner;
+            foreach (var scope in step.ChildScopes().Where(scope => crossInline || scope.Kind != "inline").OrderBy(scope =>
+                         scope.Kind switch
+                         {
+                             "timeout" => 1, "foreach" => 2, "branch" or "case" or "default" => 3, _ => 0
+                         }))
+            foreach (var inner in Flatten(scope.Steps, crossInline))
+                yield return inner;
         }
     }
 

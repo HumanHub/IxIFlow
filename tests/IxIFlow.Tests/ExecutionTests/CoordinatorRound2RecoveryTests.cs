@@ -35,12 +35,22 @@ public sealed class CoordinatorRound2RecoveryTests
     {
         internal bool Throw = true;
         private readonly IWorkflowStateRepository _inner = new InMemoryWorkflowStateRepository();
+
         protected override object? Invoke(MethodInfo? method, object?[]? args)
         {
             if (method!.Name == nameof(IWorkflowStateRepository.GetRunnableInstancesAsync) && Throw)
                 return Task.FromException<IReadOnlyList<RunnableInstance>>(new IOException("runnable read failed"));
-            try { return method.Invoke(_inner, args); }
-            catch (TargetInvocationException error) { ExceptionDispatchInfo.Capture(error.InnerException!).Throw(); throw; }
+
+            try
+            {
+                return method.Invoke(_inner, args);
+            }
+            catch (TargetInvocationException error)
+            {
+                ExceptionDispatchInfo.Capture(error.InnerException!).Throw();
+
+                throw;
+            }
         }
     }
 }

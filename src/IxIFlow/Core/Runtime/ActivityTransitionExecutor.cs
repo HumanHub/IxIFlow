@@ -1,9 +1,22 @@
 namespace IxIFlow.Core.Runtime;
 
-internal sealed record ActivityPreparation(WorkflowStep Step, WorkflowDefinition Definition, WorkflowInstance Instance,
-    object Data, object? Previous, object? Fault, CancellationToken CancellationToken, string InvocationId,
-    string AttemptId, int StepNumber, bool ApplyInputs, IReadOnlyCollection<string>? CodeInputs,
-    CompensationInputs? CompensationInputs, IDictionary<string, object>? Metadata, ItemValues Items, ScopeValues Scopes);
+internal sealed record ActivityPreparation(
+    WorkflowStep Step,
+    WorkflowDefinition Definition,
+    WorkflowInstance Instance,
+    object Data,
+    object? Previous,
+    object? Fault,
+    CancellationToken CancellationToken,
+    string InvocationId,
+    string AttemptId,
+    int StepNumber,
+    bool ApplyInputs,
+    IReadOnlyCollection<string>? CodeInputs,
+    CompensationInputs? CompensationInputs,
+    IDictionary<string, object>? Metadata,
+    ItemValues Items,
+    ScopeValues Scopes);
 
 /// <summary>Dispatches an activity through the delegate captured by its builder.</summary>
 internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
@@ -24,8 +37,10 @@ internal sealed class ActivityTransitionExecutor(IActivityExecutor executor)
             var request = CreateRequest<TData, TPrevious>(values.Step, values.Definition, values.Instance,
                 values.Data, values.Previous, values.Fault, values.CancellationToken, values.StepNumber,
                 values.CompensationInputs, values.Metadata);
+
             request.Items = values.Items;
             request.Scopes = values.Scopes;
+
             return executor.PrepareTypedActivityAsync(request, values.ApplyInputs, values.InvocationId,
                 values.AttemptId, values.CodeInputs);
         };

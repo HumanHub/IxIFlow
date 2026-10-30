@@ -6,7 +6,6 @@ namespace IxIFlow.Tests.SyntaxTests.Models;
 [IxIFlow.Core.Workflow("ValidationWorkflow", Version = 1)]
 public class ValidationWorkflow : IWorkflow<ValidationWorkflowData>
 {
-
     public void Build(IWorkflowBuilder<ValidationWorkflowData> builder)
     {
         // Placeholder implementation for testing workflow invocation syntax

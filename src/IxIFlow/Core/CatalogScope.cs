@@ -15,31 +15,37 @@ public sealed record CatalogScope
     public static CatalogScope Unrestricted { get; } = new(new(), new(), new(), new());
     public string Hash { get; }
 
-    public CatalogScope(CatalogNames Workflows, CatalogNames Activities, CatalogNames Packages, CatalogNames Templates)
+    public CatalogScope(CatalogNames workflows, CatalogNames activities, CatalogNames packages, CatalogNames templates)
     {
-        this.Workflows = Normalize(Workflows, 200, false);
-        this.Activities = Normalize(Activities, 100, false);
-        this.Packages = Normalize(Packages, 100, true);
-        this.Templates = Normalize(Templates, 100, true);
+        this.Workflows = Normalize(workflows, 200, false);
+        this.Activities = Normalize(activities, 100, false);
+        this.Packages = Normalize(packages, 100, true);
+        this.Templates = Normalize(templates, 100, true);
         Hash = CatalogPaging.Hash(new[] { this.Workflows, this.Activities, this.Packages, this.Templates });
     }
 
     private static CatalogNames Normalize(CatalogNames names, int max, bool lower)
     {
         ArgumentNullException.ThrowIfNull(names);
+
         IReadOnlyList<string>? List(IReadOnlyList<string>? values)
         {
-            if (values == null) return null;
+            if (values == null)
+                return null;
+
             ArgumentOutOfRangeException.ThrowIfGreaterThan(values.Count, 100);
+
             return Array.AsReadOnly(values.Select(value =>
             {
                 ArgumentException.ThrowIfNullOrWhiteSpace(value);
                 WorkflowCatalogRules.ValidateText(value);
                 value = value.Trim();
                 ArgumentOutOfRangeException.ThrowIfGreaterThan(value.Length, max);
+
                 return lower ? value.ToLowerInvariant() : value;
             }).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray());
         }
+
         // A missing list and an empty list mean the same thing in a restricted scope.
         return names.Names == null && names.Prefixes == null ? new() : new(List(names.Names) ?? [], List(names.Prefixes) ?? []);
     }
@@ -56,7 +62,10 @@ public sealed record CatalogScope
     public bool Allows(string kind, string name)
     {
         var names = For(kind);
-        if (kind == "package") name = name.ToLowerInvariant();
+
+        if (kind == "package")
+            name = name.ToLowerInvariant();
+
         return names.Names == null && names.Prefixes == null ||
             (names.Names?.Contains(name, StringComparer.Ordinal) ?? false) ||
             (names.Prefixes?.Any(prefix => name.StartsWith(prefix, StringComparison.Ordinal)) ?? false);
@@ -64,44 +73,67 @@ public sealed record CatalogScope
 }
 
 public sealed record CatalogPage<T>(IReadOnlyList<T> Items, string? NextCursor, long CatalogRevision);
+
 public sealed record CatalogVersionQuery(CatalogScope Scope, string? After = null, int Limit = 100);
 
 internal static class CatalogPaging
 {
     // UTF-8 binary order is lexicographic Unicode scalar order, unlike UTF-16 ordinal order.
     internal static readonly IComparer<string> DraftNames = Comparer<string>.Create(CompareDraftNames);
+
     internal static int CompareDraftNames(string left, string right)
     {
         var x = left.EnumerateRunes();
         var y = right.EnumerateRunes();
+
         while (x.MoveNext())
         {
-            if (!y.MoveNext()) return 1;
+            if (!y.MoveNext())
+                return 1;
+
             var compared = x.Current.Value.CompareTo(y.Current.Value);
-            if (compared != 0) return compared;
+
+            if (compared != 0)
+                return compared;
         }
+
         return y.MoveNext() ? -1 : 0;
     }
 
     internal static string Hash<T>(T value) => Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(value)));
+
     private sealed record Cursor(int Version, string Filter, string[] Key);
+
     internal static string Encode(string filter, params string[] key) =>
         Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(new Cursor(1, filter, key)));
+
     internal static string[]? Decode(string? after, string filter, int keyCount, int limit)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, 1000);
-        if (after == null) return null;
+
+        if (after == null)
+            return null;
+
         try
         {
-            if (after.Length > 8192) throw new FormatException();
-            var cursor = JsonSerializer.Deserialize<Cursor>(Convert.FromBase64String(after));
-            if (cursor is not { Version: 1 } || cursor.Filter != filter || cursor.Key == null || cursor.Key.Length != keyCount || cursor.Key.Any(string.IsNullOrEmpty))
+            if (after.Length > 8192)
                 throw new FormatException();
-            foreach (var key in cursor.Key) WorkflowCatalogRules.ValidateText(key);
+
+            var cursor = JsonSerializer.Deserialize<Cursor>(Convert.FromBase64String(after));
+
+            if (cursor is not { Version: 1 } || cursor.Filter != filter || cursor.Key == null || cursor.Key.Length != keyCount ||
+                cursor.Key.Any(string.IsNullOrEmpty))
+                throw new FormatException();
+
+            foreach (var key in cursor.Key)
+                WorkflowCatalogRules.ValidateText(key);
+
             return cursor.Key;
         }
         catch (Exception error) when (error is FormatException or JsonException)
-        { throw new ArgumentException("Invalid catalog cursor or scope/filter mismatch", nameof(after), error); }
+        {
+            throw new ArgumentException("Invalid catalog cursor or scope/filter mismatch", nameof(after), error);
+        }
     }
 }

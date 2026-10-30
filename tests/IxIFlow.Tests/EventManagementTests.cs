@@ -7,8 +7,8 @@ using Microsoft.Extensions.DependencyInjection;
 namespace IxIFlow.Tests;
 
 /// <summary>
-/// An event sent to a busy instance is stored and taken at its owner's next pass (D-02, D-33), and a
-/// published event reaches every instance with an open wait for its key, busy or not (D-13).
+/// An event sent to a busy instance is stored and taken at its owner's next pass, and a
+/// published event reaches every instance with an open wait for its key, busy or not.
 /// </summary>
 [Trait("Feature", "waits")]
 public class EventManagementTests
@@ -26,8 +26,10 @@ public class EventManagementTests
 
         // The instance is running its activity when the event arrives; the event waits for its next pass.
         var sent = engine.ResumeAsync(started, "approval", new TestEvent { ApprovalStatus = "approved" }, "e1");
-        while (await repository.GetEventAsync(started, "e1") == null)
-            await Task.Delay(10);
+
+        await IxIFlow.Tests.Infrastructure.TestEventually.UntilAsync(started, "event e1 stored",
+            () => repository.GetEventAsync(started, "e1"), entry => entry != null);
+
         Assert.False(sent.IsCompleted);
         gate.Release.TrySetResult();
 
@@ -55,11 +57,14 @@ public class EventManagementTests
             new[] { new EventDelivery(idle, EventAppendStatus.Stored), new EventDelivery(busy, EventAppendStatus.Stored) }
                 .OrderBy(item => item.InstanceId),
             deliveries.OrderBy(item => item.InstanceId));
+
         Assert.Equal(EventOutcome.Consumed, (await EventAssert.DecidedAsync(repository, idle, "e1")).Outcome);
+
         // The busy instance's owner is woken by the host and takes its copy while its activity still runs.
         Assert.Equal(EventOutcome.Consumed, (await EventAssert.DecidedAsync(repository, busy, "e1")).Outcome);
         Assert.False(gate.Release.Task.IsCompleted);
         gate.Release.TrySetResult();
+
         Assert.Equal(WorkflowExecutionStatus.Success,
             (await engine.AwaitAsync(busy, WorkflowAwaitCondition.Finished).WaitAsync(TimeSpan.FromSeconds(10))).Status);
 
@@ -71,8 +76,9 @@ public class EventManagementTests
     private static async Task BusyAndWaitingAsync(BusyGate gate, IWorkflowInbox inbox, string instanceId)
     {
         await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        while ((await inbox.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId))).Count == 0)
-            await Task.Delay(10);
+
+        await IxIFlow.Tests.Infrastructure.TestEventually.UntilAsync(instanceId, "an open wait",
+            () => inbox.GetOpenWaitsAsync(new WaitQuery(InstanceId: instanceId)), waits => waits.Count > 0);
     }
 
     private static ServiceProvider Services()
@@ -82,6 +88,7 @@ public class EventManagementTests
         services.AddSingleton<BusyGate>();
         services.AddTransient<BlockingActivity>();
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 

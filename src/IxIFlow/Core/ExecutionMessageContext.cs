@@ -53,16 +53,35 @@ public partial class ExecutionMessageContext : JsonSerializerContext;
 [JsonSerializable(typeof(CheckpointCommitFields))]
 internal partial class CheckpointCommitContext : JsonSerializerContext;
 
-internal sealed record CheckpointCommitFields(CommittedInstance Instance, string Payload,
-    IReadOnlyList<CheckpointPart> Parts, IReadOnlyList<string> DeletedParts, bool ReplacesParts,
-    Guid Incarnation, long Epoch, string CommitId, long ExpectedRevision, bool ClearsCrashCount,
-    bool Parks, IReadOnlyList<EventSettlement> Settlements, long? InboxReadThrough,
-    IReadOnlyList<OpenedWait> OpenedWaits, IReadOnlyList<ArmedWait> ArmedWaits,
-    IReadOnlyList<ClosedWait> ClosedWaits, TimeSpan? WakeAfter, bool Stopped,
-    IReadOnlyList<ChildStart> ChildStarts, IReadOnlyList<ChildCancellation> ChildCancellations,
-    ParentNotice? ParentNotice, IReadOnlyList<string> TraceEntries, byte[] ContentHash,
-    IReadOnlyList<WorkflowDiagnostic> Diagnostics, IReadOnlyList<string>? RetainedDiagnosticIds,
-    IReadOnlyList<PayloadReference> PayloadReferences, bool PreservesPayloadPins, IReadOnlyList<PayloadBody> PayloadBodies);
+internal sealed record CheckpointCommitFields(
+    CommittedInstance Instance,
+    string Payload,
+    IReadOnlyList<CheckpointPart> Parts,
+    IReadOnlyList<string> DeletedParts,
+    bool ReplacesParts,
+    Guid Incarnation,
+    long Epoch,
+    string CommitId,
+    long ExpectedRevision,
+    bool ClearsCrashCount,
+    bool Parks,
+    IReadOnlyList<EventSettlement> Settlements,
+    long? InboxReadThrough,
+    IReadOnlyList<OpenedWait> OpenedWaits,
+    IReadOnlyList<ArmedWait> ArmedWaits,
+    IReadOnlyList<ClosedWait> ClosedWaits,
+    TimeSpan? WakeAfter,
+    bool Stopped,
+    IReadOnlyList<ChildStart> ChildStarts,
+    IReadOnlyList<ChildCancellation> ChildCancellations,
+    ParentNotice? ParentNotice,
+    IReadOnlyList<string> TraceEntries,
+    byte[] ContentHash,
+    IReadOnlyList<WorkflowDiagnostic> Diagnostics,
+    IReadOnlyList<string>? RetainedDiagnosticIds,
+    IReadOnlyList<PayloadReference> PayloadReferences,
+    bool PreservesPayloadPins,
+    IReadOnlyList<PayloadBody> PayloadBodies);
 
 internal sealed class CheckpointCommitJsonConverter : JsonConverter<CheckpointCommit>
 {
@@ -70,6 +89,7 @@ internal sealed class CheckpointCommitJsonConverter : JsonConverter<CheckpointCo
     {
         var fields = JsonSerializer.Deserialize(ref reader, CheckpointCommitContext.Default.CheckpointCommitFields)
             ?? throw new JsonException("Missing checkpoint commit");
+
         try
         {
             var commit = CheckpointCommit.FromFields(fields.Instance, fields.Payload, fields.Parts, fields.DeletedParts,
@@ -78,19 +98,29 @@ internal sealed class CheckpointCommitJsonConverter : JsonConverter<CheckpointCo
                 fields.ArmedWaits, fields.ClosedWaits, fields.WakeAfter, fields.Stopped, fields.ChildStarts,
                 fields.ChildCancellations, fields.ParentNotice, fields.TraceEntries, fields.Diagnostics, fields.RetainedDiagnosticIds,
                 fields.PayloadReferences, fields.PreservesPayloadPins, fields.PayloadBodies);
+
             if (fields.ContentHash == null || !commit.ContentHash.AsSpan().SequenceEqual(fields.ContentHash))
                 throw new JsonException("Checkpoint content hash differs from its fields");
+
             return commit;
         }
-        catch (ArgumentException error) { throw new JsonException("Invalid checkpoint commit", error); }
+        catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidRequest)
+        {
+            throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, error.Message, error);
+        }
+        catch (ArgumentException error)
+        {
+            throw new JsonException("Invalid checkpoint commit", error);
+        }
     }
 
     public override void Write(Utf8JsonWriter writer, CheckpointCommit value, JsonSerializerOptions options) =>
         JsonSerializer.Serialize(writer, new CheckpointCommitFields(value.Instance, value.Payload, value.Parts,
-            value.DeletedParts, value.ReplacesParts, value.Incarnation, value.Epoch, value.CommitId,
-            value.ExpectedRevision, value.ClearsCrashCount, value.Parks, value.Settlements, value.InboxReadThrough,
-            value.OpenedWaits, value.ArmedWaits, value.ClosedWaits, value.WakeAfter, value.Stopped, value.ChildStarts,
-            value.ChildCancellations, value.ParentNotice, value.TraceEntries, value.ContentHash,
-            value.Diagnostics, value.RetainedDiagnosticIds,
-            value.PayloadReferences, value.PreservesPayloadPins, value.PayloadBodies), CheckpointCommitContext.Default.CheckpointCommitFields);
+                value.DeletedParts, value.ReplacesParts, value.Incarnation, value.Epoch, value.CommitId,
+                value.ExpectedRevision, value.ClearsCrashCount, value.Parks, value.Settlements, value.InboxReadThrough,
+                value.OpenedWaits, value.ArmedWaits, value.ClosedWaits, value.WakeAfter, value.Stopped, value.ChildStarts,
+                value.ChildCancellations, value.ParentNotice, value.TraceEntries, value.ContentHash,
+                value.Diagnostics, value.RetainedDiagnosticIds,
+                value.PayloadReferences, value.PreservesPayloadPins, value.PayloadBodies),
+            CheckpointCommitContext.Default.CheckpointCommitFields);
 }

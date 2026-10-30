@@ -11,11 +11,21 @@ public static class StandardWebhookSignature
     {
         if (secret == null || !secret.StartsWith("whsec_", StringComparison.Ordinal))
             throw new ArgumentException("A Standard Webhooks secret must start with whsec_");
+
         byte[] bytes;
-        try { bytes = Convert.FromBase64String(secret[6..]); }
-        catch (FormatException) { throw new ArgumentException("A Standard Webhooks secret must contain base64"); }
+
+        try
+        {
+            bytes = Convert.FromBase64String(secret[6..]);
+        }
+        catch (FormatException)
+        {
+            throw new ArgumentException("A Standard Webhooks secret must contain base64");
+        }
+
         if (bytes.Length is < 24 or > 64)
             throw new ArgumentException("A Standard Webhooks secret must contain 24 to 64 bytes");
+
         return bytes;
     }
 
@@ -25,23 +35,35 @@ public static class StandardWebhookSignature
     public static bool Verify(IEnumerable<byte[]> secrets, string id, string timestamp, string signatures,
         ReadOnlySpan<byte> body, DateTimeOffset now, TimeSpan tolerance)
     {
-        if (string.IsNullOrWhiteSpace(id) || id.Length > WorkflowAdmission.MaxKeyLength || id != id.Trim() || signatures.Length > 4096 ||
+        if (signatures == null || string.IsNullOrWhiteSpace(id) || id.Length > WorkflowAdmission.MaxKeyLength || id != id.Trim() ||
+            signatures.Length > 4096 ||
             !long.TryParse(timestamp, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds) ||
             tolerance <= TimeSpan.Zero || Math.Abs((double)now.ToUnixTimeSeconds() - seconds) > tolerance.TotalSeconds)
             return false;
+
         var candidates = new List<byte[]>();
+
         foreach (var signature in signatures.Split(' ', StringSplitOptions.RemoveEmptyEntries))
             if (signature.StartsWith("v1,", StringComparison.Ordinal))
             {
-                try { candidates.Add(Convert.FromBase64String(signature[3..])); }
-                catch (FormatException) { }
+                try
+                {
+                    candidates.Add(Convert.FromBase64String(signature[3..]));
+                }
+                catch (FormatException)
+                {
+                }
             }
+
         foreach (var key in secrets)
         {
             var expected = Digest(key, id, timestamp, body);
+
             foreach (var candidate in candidates)
-                if (CryptographicOperations.FixedTimeEquals(expected, candidate)) return true;
+                if (CryptographicOperations.FixedTimeEquals(expected, candidate))
+                    return true;
         }
+
         return false;
     }
 
@@ -51,6 +73,7 @@ public static class StandardWebhookSignature
         var signed = new byte[prefix.Length + body.Length];
         prefix.CopyTo(signed, 0);
         body.CopyTo(signed.AsSpan(prefix.Length));
+
         return HMACSHA256.HashData(secret, signed);
     }
 }

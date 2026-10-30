@@ -31,8 +31,10 @@ internal sealed class WorkflowScopeCatalog
     public Type? RootDataType { get; }
     public string StructureHash { get; }
     public StepTable StepTable { get; private set; }
+
     internal void BindBundleSources(IReadOnlyList<WorkflowInlineWorkflow> inlineWorkflows) =>
         StepTable = StepTable.InBundle(inlineWorkflows);
+
     public GraphTable GraphTable { get; }
     public SwitchTable SwitchTable { get; }
 
@@ -60,8 +62,10 @@ internal sealed class WorkflowScopeCatalog
 
     public string Id(WorkflowStep step) => _ids[step];
     public string NodeScope(WorkflowStep graph, string key) => ScopeId(graph, "node", key);
+
     public string EdgeScope(WorkflowStep graph, string key, int index) =>
         ScopeId(graph, "node", key + "/to/" + index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
     public string StateScope(WorkflowStep graph, string key) => ScopeId(graph, "state", key);
     public string StateExitScope(WorkflowStep graph, string key) => ScopeId(graph, "state", key + "/exit");
     public string ScopeBodyScope(WorkflowStep step) => ScopeId(step, "scope");
@@ -73,54 +77,78 @@ internal sealed class WorkflowScopeCatalog
     public string LoopScope(WorkflowStep step) => ScopeId(step, "loop");
     public string ForEachScope(WorkflowStep step) => ScopeId(step, "foreach");
     public string SagaScope(WorkflowStep step) => SequenceScope(step);
+
     public string CompensationScope(WorkflowStep saga, WorkflowStep source)
     {
         if (!_compensationScopeIds.TryGetValue((saga, source), out var id))
             _compensationScopeIds.Add((saga, source), id = $"{Id(saga)}/compensation/{Id(source)}");
+
         return id;
     }
+
     public string FinallyScope(WorkflowStep step) => ScopeId(step, "finally");
     public string TimeoutScope(WorkflowStep step) => ScopeId(step, "timeout");
     public string CatchBodyScope(WorkflowStep catchBlock) => SequenceScope(catchBlock);
-    public string BranchScope(WorkflowStep step, int index) => ScopeId(step, "branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture));
-    public string OutcomeScope(WorkflowStep step, int index) => step.OutcomeBranches[index].IsDefault ? ScopeId(step, "default") : ScopeId(step, "case", index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+    public string BranchScope(WorkflowStep step, int index) =>
+        ScopeId(step, "branch", index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+    public string OutcomeScope(WorkflowStep step, int index) => step.OutcomeBranches[index].IsDefault
+        ? ScopeId(step, "default")
+        : ScopeId(step, "case", index.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
     private string ScopeId(WorkflowStep step, string kind, string? childKey = null)
     {
         var key = (step, kind, childKey);
+
         if (!_scopeIds.TryGetValue(key, out var id))
             _scopeIds.Add(key, id = childKey == null ? $"{Id(step)}/{kind}" : $"{Id(step)}/{kind}/{childKey}");
+
         return id;
     }
 
     private readonly HashSet<WorkflowStep> _tryCatchOwners = new(ReferenceEqualityComparer.Instance);
 
-    private void AddScope(string id, IReadOnlyList<WorkflowStep> steps, string? authorPrefix = null, string? faultOwner = null, string? rethrowOwner = null)
+    private void AddScope(string id, IReadOnlyList<WorkflowStep> steps, string? authorPrefix = null, string? faultOwner = null,
+        string? rethrowOwner = null)
     {
         _scopes.Add(id, steps);
+
         for (var index = 0; index < steps.Count; index++)
         {
             var step = steps[index];
             var stepId = $"{id}/{index}";
-            if (step.StepType == WorkflowStepType.Rethrow) step.RethrowOwnerId = rethrowOwner;
-            if (step.LexicalFaultType != null) step.LexicalFaultOwnerId = faultOwner;
+
+            if (step.StepType == WorkflowStepType.Rethrow)
+                step.RethrowOwnerId = rethrowOwner;
+
+            if (step.LexicalFaultType != null)
+                step.LexicalFaultOwnerId = faultOwner;
+
             _steps.Add(stepId, step);
             _authorIds.TryAdd(step, authorPrefix + step.Id);
             InlineConstruction.Cataloged(step);
+
             if (!_ids.TryAdd(step, stepId))
                 throw WorkflowBuildError.Invalid(step, $"Step '{step.Id}' belongs to two scopes");
+
             if (step.ForEachItem != null && !_handles.TryAdd(step.ForEachItem, stepId))
                 throw WorkflowBuildError.Invalid(step,
                     $"{step.ForEachItem} belongs to two ForEach steps, '{_handles[step.ForEachItem]}' and '{stepId}'");
+
             if (step.StepType == WorkflowStepType.TryCatch)
-                foreach (var handler in step.CatchBlocks) _tryCatchOwners.Add(handler);
+                foreach (var handler in step.CatchBlocks)
+                    _tryCatchOwners.Add(handler);
+
             foreach (var scope in step.ChildScopes())
             {
                 AddScope(ScopeId(step, scope.Kind, scope.Key), scope.Steps,
                     scope.Kind == "inline" ? AuthorId(step) + "/" : authorPrefix,
                     scope.Kind == "inline" ? null : step.StepType == WorkflowStepType.CatchBlock ? stepId : faultOwner,
-                    scope.Kind == "inline" ? null : step.StepType == WorkflowStepType.CatchBlock &&
-                        _tryCatchOwners.Contains(step) ? stepId : rethrowOwner);
+                    scope.Kind == "inline" ? null :
+                    step.StepType == WorkflowStepType.CatchBlock &&
+                    _tryCatchOwners.Contains(step) ? stepId : rethrowOwner);
+
                 if (scope.Kind == "catch" && step.StepType == WorkflowStepType.Saga)
                     AddSagaCompensations(step, authorPrefix);
             }
@@ -134,6 +162,7 @@ internal sealed class WorkflowScopeCatalog
             var activities = source.StepMetadata.TryGetValue("CompensationActivities", out var value)
                 ? value as List<CompensationActivityInfo>
                 : null;
+
             var steps = activities?.Select((activity, index) => new WorkflowStep
             {
                 Runtime = activity.Runtime,
@@ -151,6 +180,7 @@ internal sealed class WorkflowScopeCatalog
                     ["IsCompensationActivity"] = true
                 }
             }).ToList() ?? [];
+
             AddScope(CompensationScope(saga, source), steps, authorPrefix);
         }
     }
@@ -162,9 +192,12 @@ internal sealed class WorkflowScopeCatalog
             if (step.StepType == WorkflowStepType.Activity &&
                 step.StepMetadata.ContainsKey("IsSagaStep"))
                 yield return step;
-            foreach (var scope in step.ChildScopes().Where(scope => scope.Kind is "case" or "default" || step.StepType == WorkflowStepType.CancellationScope && scope.Kind == "sequence"))
-                foreach (var nested in SagaActivities(scope.Steps))
-                    yield return nested;
+
+            foreach (var scope in step.ChildScopes().Where(scope =>
+                         scope.Kind is "case" or "default" ||
+                         step.StepType == WorkflowStepType.CancellationScope && scope.Kind == "sequence"))
+            foreach (var nested in SagaActivities(scope.Steps))
+                yield return nested;
         }
     }
 
@@ -175,6 +208,7 @@ internal sealed class WorkflowScopeCatalog
         var manifest = new
         {
             Format = 1,
+
             // The release namespace prevents reuse of a pre-release format-1 hash.
             Runtime = ExecutionCheckpoint.RuntimeMarker,
             RequiredScopes = definition.RequiredScopes.Select(WorkflowTypeIdentity.StableName).Order(StringComparer.Ordinal),
@@ -187,6 +221,7 @@ internal sealed class WorkflowScopeCatalog
             Steps = _steps.OrderBy(pair => pair.Key, StringComparer.Ordinal).Select(pair =>
             {
                 var step = pair.Value;
+
                 return WorkflowBuildError.Check(step, () => new
                 {
                     Id = pair.Key,
@@ -206,13 +241,15 @@ internal sealed class WorkflowScopeCatalog
                     step.Target, step.IsDefault, step.Explicit, step.TriggerKind,
                     After = Shape(step.AfterExpression),
                     EdgeLabel = SwitchLabelSignature.Of(step.EdgeLabel),
-                    Graph = step.StepType is WorkflowStepType.Flowchart or WorkflowStepType.StateMachine ? new
-                    {
-                        Kind = step.StepType, Start = step.GraphStart,
-                        Nodes = step.GraphNodes.Select(node => new { node.Key, Final = false })
-                            .Concat(step.GraphStates.Select(state => new { state.Key, state.Final }))
-                            .OrderBy(node => node.Key, StringComparer.Ordinal)
-                    } : null,
+                    Graph = step.StepType is WorkflowStepType.Flowchart or WorkflowStepType.StateMachine
+                        ? new
+                        {
+                            Kind = step.StepType, Start = step.GraphStart,
+                            Nodes = step.GraphNodes.Select(node => new { node.Key, Final = false })
+                                .Concat(step.GraphStates.Select(state => new { state.Key, state.Final }))
+                                .OrderBy(node => node.Key, StringComparer.Ordinal)
+                        }
+                        : null,
                     Exception = WorkflowTypeIdentity.StableName(step.ExceptionType),
                     Fault = WorkflowTypeIdentity.StableName(step.FaultType),
                     Factory = Shape(step.ExceptionExpression),
@@ -221,9 +258,14 @@ internal sealed class WorkflowScopeCatalog
                     Condition = Shape(step.ConditionExpression),
                     Outcome = Shape(step.OutcomeExpression),
                     SwitchValueType = WorkflowTypeIdentity.StableName(step.SwitchValueType),
-                    Assignment = step.Assignment == null ? null : new { step.Assignment.TargetPath,
-                        Type = WorkflowTypeIdentity.StableName(step.Assignment.ValueType),
-                        Target = Shape(step.Assignment.Target), Value = Shape(step.Assignment.Value) },
+                    Assignment = step.Assignment == null
+                        ? null
+                        : new
+                        {
+                            step.Assignment.TargetPath,
+                            Type = WorkflowTypeIdentity.StableName(step.Assignment.ValueType),
+                            Target = Shape(step.Assignment.Target), Value = Shape(step.Assignment.Value)
+                        },
                     Completion = Shape(step.ParallelCompletionExpression),
                     Outcomes = step.OutcomeBranches.Select(OutcomeBranchSignature),
                     Policy = ErrorPolicySignature(step),
@@ -252,7 +294,9 @@ internal sealed class WorkflowScopeCatalog
                 });
             })
         };
+
         var bytes = JsonSerializer.SerializeToUtf8Bytes(manifest);
+
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes));
     }
 
@@ -283,6 +327,7 @@ internal sealed class WorkflowScopeCatalog
                     WorkflowTypeIdentity.StableName(handler.ExceptionType), handler.HandlerAction,
                     RetrySignature(handler.RetryPolicy))))
                 : "";
+
         var saga = step.StepMetadata.TryGetValue("SagaErrorConfig", out value) &&
             value is SagaErrorConfiguration policy
                 ? string.Join(':', policy.CompensationStrategy, policy.ContinuationAction,
@@ -290,6 +335,7 @@ internal sealed class WorkflowScopeCatalog
                     WorkflowTypeIdentity.StableName(policy.CompensationTargetType),
                     RetrySignature(policy.RetryPolicy))
                 : "";
+
         return handlers + "|" + saga;
     }
 

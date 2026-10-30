@@ -15,17 +15,23 @@ public sealed class WorkflowContractCatalogScenarios
         await using var database = await StoreProfiles.CreateAsync(profile);
         var store = database.NewRepository();
         var contract = WorkflowContract.OfType(typeof(Data));
-        var row = new WorkflowVersion("ContractCatalog", 1, "structure", ContractJson: contract.ToJson(), ContractHash: contract.Hash, Descriptor: new WorkflowDescriptor("ContractCatalog", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(Data))), Invocations: []);
+
+        var row = new WorkflowVersion("ContractCatalog", 1, "structure", ContractJson: contract.ToJson(), ContractHash: contract.Hash,
+            Descriptor: new WorkflowDescriptor("ContractCatalog", "", [], null, null,
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(Data))), Invocations: []);
+
         await store.RegisterWorkflowVersionAsync(row);
         Assert.Equal(row, await store.GetWorkflowVersionAsync(row.Name, row.Version));
         await store.RegisterWorkflowVersionAsync(row);
         var changed = new WorkflowContract([], [], true);
+
         foreach (var (proposed, message) in new[]
-        {
-            (row with { ContractJson = changed.ToJson() }, "requires a canonical contract and matching contract hash"),
-            (row with { ContractHash = changed.Hash }, "requires a canonical contract and matching contract hash"),
-            (row with { ContractJson = changed.ToJson(), ContractHash = changed.Hash }, "immutable")
-        })
+                 {
+                     (row with { ContractJson = changed.ToJson() }, "requires a canonical contract and matching contract hash"),
+                     (row with { ContractHash = changed.Hash }, "requires a canonical contract and matching contract hash"),
+                     (row with { ContractJson = changed.ToJson(), ContractHash = changed.Hash }, "immutable")
+                 })
         {
             var error = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.RegisterWorkflowVersionAsync(proposed));
             Assert.Equal(message == "immutable" ? WorkflowErrorKind.InvalidState : WorkflowErrorKind.InvalidRequest, error.Kind);
@@ -33,12 +39,21 @@ public sealed class WorkflowContractCatalogScenarios
             Assert.Equal(row.ContractJson, (await store.GetWorkflowVersionAsync(row.Name, row.Version))!.ContractJson);
             Assert.Equal(row.ContractHash, (await store.GetWorkflowVersionAsync(row.Name, row.Version))!.ContractHash);
         }
-        await store.SetWorkflowVersionStateAsync(row.Name, row.Version, WorkflowVersionState.Deprecated, new CatalogMutationToken((await store.GetWorkflowVersionAsync(row.Name, row.Version))!.LifecycleRevision));
+
+        await store.SetWorkflowVersionStateAsync(row.Name, row.Version, WorkflowVersionState.Deprecated,
+            new CatalogMutationToken((await store.GetWorkflowVersionAsync(row.Name, row.Version))!.LifecycleRevision));
+
         var saved = (await store.GetWorkflowVersionAsync(row.Name, row.Version))!;
         Assert.Equal(row.ContractJson, saved.ContractJson);
         Assert.Equal(row.ContractHash, saved.ContractHash);
         Assert.Equal(WorkflowVersionState.Deprecated, saved.State);
-        var missing = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.RegisterWorkflowVersionAsync(new("MissingContract", 1, "structure", null!, null!, Descriptor: new WorkflowDescriptor("MissingContract", "", [], null, null, IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)), IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(Data))), Invocations: [])));
+
+        var missing = await Assert.ThrowsAsync<WorkflowEngineException>(() => store.RegisterWorkflowVersionAsync(new("MissingContract", 1,
+            "structure", null!, null!,
+            Descriptor: new WorkflowDescriptor("MissingContract", "", [], null, null,
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.SavedName(typeof(Data)),
+                IxIFlow.Core.Runtime.WorkflowTypeIdentity.CSharpName(typeof(Data))), Invocations: [])));
+
         Assert.Equal(WorkflowErrorKind.InvalidRequest, missing.Kind);
     }
 

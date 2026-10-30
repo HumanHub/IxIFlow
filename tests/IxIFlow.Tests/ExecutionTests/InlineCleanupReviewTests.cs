@@ -17,19 +17,26 @@ public sealed class InlineCleanupReviewTests
         var store = new InMemoryWorkflowStateRepository();
         var catalog = new WorkflowCatalog();
         var callee = CleanupDefinition(recover);
+
         var pin = new WorkflowInlinePin(callee.Name, callee.Version,
             WorkflowDefinitionValidator.Inspect(callee), WorkflowDefinitionValidator.GetContract(callee).Hash);
+
         var definition = Workflow.Create<Data>("InlineInheritedCleanupReview").Step<Noop>()
             .Try(b =>
             {
-                if (inline) b.Use<Data>(() => CleanupDefinition(recover), pin);
-                else NestedCleanup(b, recover);
+                if (inline)
+                    b.Use<Data>(() => CleanupDefinition(recover), pin);
+                else
+                    NestedCleanup(b, recover);
             }).Finally(b => b.Step<MarkFinally>()).Build();
+
         WorkflowExecutionResult result;
+
         await using (var first = Services(store, catalog))
         {
             result = await first.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data())
                 .WaitAsync(TimeSpan.FromSeconds(10));
+
             if (recover)
             {
                 Assert.Equal(WorkflowExecutionStatus.Suspended, result.Status);
@@ -43,19 +50,24 @@ public sealed class InlineCleanupReviewTests
                 Assert.False(ContinuationTransitions.CanFinish(state, inner));
                 Assert.False(ContinuationTransitions.Merges(state, inner));
                 var ancestor = Assert.Single(state.Joins, j => j != inner);
+
                 Assert.All(state.BranchesOf(ancestor), c =>
                     Assert.True(c.Status is ContinuationStatus.Completed or ContinuationStatus.Cancelled));
+
                 Assert.False(ContinuationTransitions.CanFinish(state, ancestor));
                 Assert.Equal("cleanup", state.UnhandledError!.Message);
                 Assert.Equal(0, Assert.IsType<Data>(result.WorkflowData).Finally);
             }
         }
+
         if (recover)
         {
             await using var second = Services(store, catalog);
+
             result = await second.GetRequiredService<IWorkflowClient>().ResumeAsync(result.InstanceId, "inner-settle", new Signal())
                 .WaitAsync(TimeSpan.FromSeconds(10));
         }
+
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(1, Assert.IsType<Data>(result.WorkflowData).Finally);
         var terminal = ExecutionCheckpoint.Read(StoredCheckpoint.WholeState((await store.GetWorkflowInstanceAsync(result.InstanceId))!));
@@ -68,6 +80,7 @@ public sealed class InlineCleanupReviewTests
     {
         var builder = Workflow.Create<Data>("InheritedCleanupBody").Step<Noop>();
         NestedCleanup(builder, recover);
+
         return builder.Build();
     }
 
@@ -77,9 +90,11 @@ public sealed class InlineCleanupReviewTests
                 .Do(z => z.Step<Fail>())
                 .Do(z =>
                 {
-                    if (recover) z.Try(w => w.WaitFor<Signal>("inner-hold"))
-                        .Finally(w => w.WaitFor<Signal>("inner-settle").Step<Noop>());
-                    else z.Step<Noop>();
+                    if (recover)
+                        z.Try(w => w.WaitFor<Signal>("inner-hold"))
+                            .Finally(w => w.WaitFor<Signal>("inner-settle").Step<Noop>());
+                    else
+                        z.Step<Noop>();
                 }))))
             .Do(x => x.Step<Noop>())));
 
@@ -89,6 +104,7 @@ public sealed class InlineCleanupReviewTests
         services.AddIxIFlow();
         services.AddSingleton(store);
         services.AddSingleton(catalog);
+
         return services.BuildServiceProvider();
     }
 
@@ -96,8 +112,11 @@ public sealed class InlineCleanupReviewTests
     public async Task FailureInNestedParallelCleanupStillRunsOuterFinally()
     {
         var store = new InMemoryWorkflowStateRepository();
-        var collection = new ServiceCollection().AddLogging(); collection.AddIxIFlow(); collection.AddSingleton<IWorkflowStateRepository>(store);
+        var collection = new ServiceCollection().AddLogging();
+        collection.AddIxIFlow();
+        collection.AddSingleton<IWorkflowStateRepository>(store);
         await using var services = collection.BuildServiceProvider();
+
         var definition = Workflow.Create<Data>("InlineCleanupReview").Step<Noop>()
             .Try(b => b.Parallel(p => p.WaitAny()
                 .Do(x => x.Try(y => y.WaitFor<Signal>("hold"))
@@ -105,15 +124,52 @@ public sealed class InlineCleanupReviewTests
                 .Do(x => x.Step<Noop>())))
             .Catch<InvalidOperationException>(b => b.Step<MarkCatch>())
             .Finally(b => b.Step<MarkFinally>()).Build();
-        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data()).WaitAsync(TimeSpan.FromSeconds(10));
+
+        var result = await services.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data())
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Equal(0, Assert.IsType<Data>(result.WorkflowData).Catch);
         Assert.Equal(1, Assert.IsType<Data>(result.WorkflowData).Finally);
     }
-    public sealed class Data { public int Catch { get; set; } public int Finally { get; set; } }
-    public sealed class Signal { }
-    public sealed class Noop : IAsyncActivity { public Task ExecuteAsync(IActivityContext c, CancellationToken ct) => Task.CompletedTask; }
-    public sealed class Fail : IAsyncActivity { public Task ExecuteAsync(IActivityContext c, CancellationToken ct) => throw new InvalidOperationException("cleanup"); }
-    public sealed class MarkCatch : IAsyncActivity { public Task ExecuteAsync(IActivityContext c, CancellationToken ct) { ((Data)c.WorkflowData).Catch++; return Task.CompletedTask; } }
-    public sealed class MarkFinally : IAsyncActivity { public Task ExecuteAsync(IActivityContext c, CancellationToken ct) { ((Data)c.WorkflowData).Finally++; return Task.CompletedTask; } }
+
+    public sealed class Data
+    {
+        public int Catch { get; set; }
+        public int Finally { get; set; }
+    }
+
+    public sealed class Signal
+    {
+    }
+
+    public sealed class Noop : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext c, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    public sealed class Fail : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext c, CancellationToken ct) => throw new InvalidOperationException("cleanup");
+    }
+
+    public sealed class MarkCatch : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext c, CancellationToken ct)
+        {
+            ((Data)c.WorkflowData).Catch++;
+
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class MarkFinally : IAsyncActivity
+    {
+        public Task ExecuteAsync(IActivityContext c, CancellationToken ct)
+        {
+            ((Data)c.WorkflowData).Finally++;
+
+            return Task.CompletedTask;
+        }
+    }
 }

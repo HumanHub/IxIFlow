@@ -68,3 +68,5 @@ Errors use `application/problem+json`: malformed or invalid requests return `400
 ## Publishing operations
 
 The separate [publishing and catalog HTTP mapping](publishing-http.md) manages drafts, publication attempts, template preview, upload, workflow lifecycle and package withdrawal. It requires its own policies and `ICatalogQueryScope`. Source and artifact access use DownloadPolicy; instance inspection and reply authorization remain part of the operations mapping.
+
+`WorkflowOperationsOptions.MaxRequestBodyBytes` bounds every operations request body, including resolutions, cancellation and termination. The default is one MiB; requests exceeding the configured limit receive HTTP 413 before deserialization.

@@ -208,6 +208,7 @@ public sealed class Escalate : IAsyncActivity
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Escalated = true;
+
         return Task.CompletedTask;
     }
 }
@@ -229,8 +230,10 @@ public sealed class CountLine : IAsyncActivity
     public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         Next++;
+
         if (Decision)
             Approved++;
+
         return Task.CompletedTask;
     }
 }

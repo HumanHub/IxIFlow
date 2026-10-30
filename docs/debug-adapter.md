@@ -10,6 +10,7 @@ services.AddIxIFlow(o =>
 }).AddDebugging(o =>
 {
     o.NamedPipe("ixiflow-debug");
+
     o.Authorize = (request, cancellationToken) =>
         policy.CanDebugAsync(request.Actor, request.InstanceId,
             request.Operation, cancellationToken);
@@ -20,7 +21,7 @@ services.AddIxIFlow(o =>
 
 For TCP, replace `NamedPipe` with `o.Tcp(IPAddress.Loopback, 4711, sessionToken, "developer-session")`. Supply a randomly generated token with at least 32 bytes, for example `Convert.ToHexString(RandomNumberGenerator.GetBytes(32))`. The application sets the actor associated with that token. A request's `actor` field has no effect. TCP accepts loopback addresses only and checks the token with a constant-time digest comparison.
 
-Open this repository's `extensions/ixiflow-debug` directory in VS Code. Use **Run > Start Debugging** with VS Code's **Extension** development configuration, or run `code --extensionDevelopmentPath=<absolute path to extensions/ixiflow-debug>`. The extension uses its JavaScript source directly and needs no dependency installation or compilation. No marketplace package is required.
+Open this repository root in VS Code. The checked-in `.vscode/launch.json` launches the extension from `extensions/ixiflow-debug`. Use **Run > Start Debugging** with VS Code's **Extension** development configuration, or run `code --extensionDevelopmentPath=<absolute path to extensions/ixiflow-debug>`. The extension uses its JavaScript source directly and needs no dependency installation or compilation. No marketplace package is required.
 
 In the extension development window, open your workflow checkout and add this configuration to `.vscode/launch.json`:
 
@@ -64,3 +65,5 @@ Use **Step Back** on a paused or finished workflow to enter read-only replay, or
 Timers and deadlines always keep running while paused. Due deadlines are handled when execution continues, and events arriving after a wait deadline are rejected. Disconnect leaves the instance paused by default. `continueOnDisconnect` requires authorization and resumes it; termination requests never terminate the application or workflow.
 
 A launch configuration uses `request: "launch"`, `workflow`, `version`, JSON `input`, and optional `stopOnEntry`. It starts a definition already registered in the application. The initial hold is saved before dispatching workflow code. The application authorizes the generated instance ID before launch. This extension does not launch an application executable.
+
+A TCP listener can use port `0` for an ephemeral port. Keep the `DebuggingOptions` reference supplied to the configuration callback and read `BoundTcpEndpoint` after the hosted service starts. It is null before binding and after shutdown. `MaxConcurrentSessions` defaults to 16; `AuthenticationTimeout` defaults to ten seconds and requires a successful attach or launch within that deadline.

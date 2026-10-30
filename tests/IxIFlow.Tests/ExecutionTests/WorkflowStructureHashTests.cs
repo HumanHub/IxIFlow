@@ -19,12 +19,14 @@ public sealed class WorkflowStructureHashTests
     public void EngineFactoriesAndAdaptersDoNotChangeTheStructureHash(string behavior)
     {
         var original = Define(behavior, 1);
+
         var changed = new WorkflowDefinition
         {
             Name = "Hand-built fixture", Version = 1,
             WorkflowDataType = original.WorkflowDataType,
             Steps = original.Steps.Select(step => step.Clone()).ToList()
         };
+
         foreach (var step in ParallelRules.Flatten(changed.Steps))
         {
             step.Runtime = step.Runtime with
@@ -36,14 +38,33 @@ public sealed class WorkflowStructureHashTests
                 Prepare = (_, _) => throw new InvalidOperationException("different dispatch"),
                 ChildDefinition = _ => throw new InvalidOperationException("different child factory")
             };
-            if (step.CompiledCondition != null) step.CompiledCondition = _ => false;
-            if (step.OutcomeSelector != null) step.OutcomeSelector = _ => null;
-            if (step.ParallelCompletionCondition != null) step.ParallelCompletionCondition = _ => false;
-            if (step.RequestSubject != null) step.RequestSubject = _ => "different adapter";
-            if (step.ForEachItems != null) step.ForEachItems = _ => Array.Empty<int>();
-            if (step.ForEachCompletionCondition != null) step.ForEachCompletionCondition = (_, _) => false;
-            if (step.ResultSelector != null) step.ResultSelector = _ => null;
-            if (step.ForEachInto != null) step.ForEachInto = (_, _) => { };
+
+            if (step.CompiledCondition != null)
+                step.CompiledCondition = _ => false;
+
+            if (step.OutcomeSelector != null)
+                step.OutcomeSelector = _ => null;
+
+            if (step.ParallelCompletionCondition != null)
+                step.ParallelCompletionCondition = _ => false;
+
+            if (step.RequestSubject != null)
+                step.RequestSubject = _ => "different adapter";
+
+            if (step.ForEachItems != null)
+                step.ForEachItems = _ => Array.Empty<int>();
+
+            if (step.ForEachCompletionCondition != null)
+                step.ForEachCompletionCondition = (_, _) => false;
+
+            if (step.ResultSelector != null)
+                step.ResultSelector = _ => null;
+
+            if (step.ForEachInto != null)
+                step.ForEachInto = (_, _) =>
+                {
+                };
+
             foreach (var mapping in step.InputMappings.Concat(step.OutputMappings))
             {
                 mapping.ContextFactory = _ => throw new InvalidOperationException("different mapping factory");
@@ -51,6 +72,7 @@ public sealed class WorkflowStructureHashTests
                 mapping.TargetAssignmentFunction = (_, _) => throw new InvalidOperationException("different output adapter");
             }
         }
+
         Assert.Equal(new WorkflowScopeCatalog(original).StructureHash, new WorkflowScopeCatalog(changed).StructureHash);
     }
 
@@ -64,20 +86,28 @@ public sealed class WorkflowStructureHashTests
     public void RealStructureChangesStillChangeTheStructureHash()
     {
         static string Hash(WorkflowDefinition definition) => new WorkflowScopeCatalog(definition).StructureHash;
+
         WorkflowDefinition Member(bool alternate) => Workflow.Create<Data>("Members").Step<Activity>(step =>
         {
-            if (alternate) step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Other);
-            else step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Total);
+            if (alternate)
+                step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Other);
+            else
+                step.Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Total);
         }).Build();
+
         Assert.NotEqual(Hash(Member(false)), Hash(Member(true)));
         var original = Workflow.Create<Data>("Steps").Step<Activity>().WaitFor<Answer>("answer").Build();
+
         Assert.NotEqual(Hash(original), Hash(Workflow.Create<Data>("Steps").Step<Activity>()
             .WaitFor<Answer>("answer").Step<Activity>().Build()));
+
         var reordered = Workflow.Create<Data>("Steps").Step<Activity>().WaitFor<Answer>("answer").Build();
         (reordered.Steps[0], reordered.Steps[1]) = (reordered.Steps[1], reordered.Steps[0]);
         Assert.NotEqual(Hash(original), Hash(reordered));
+
         Assert.NotEqual(Hash(original), Hash(Workflow.Create<Data>("Steps").Step<Activity>()
             .WaitFor<Answer>("other-key").Build()));
+
         Assert.NotEqual(Hash(original), Hash(Workflow.Create<Data>("Steps").Step<Activity>()
             .WaitFor<OtherAnswer>("answer").Build()));
     }
@@ -85,10 +115,13 @@ public sealed class WorkflowStructureHashTests
     private static WorkflowDefinition Define(string behavior, int threshold)
     {
         var start = Workflow.Create<Data>("Fingerprint");
+
         if (behavior == "first-request")
             return start.Request<Question>("question", subject: ctx => ctx.WorkflowData.Total + ":" + threshold)
                 .WaitFor<Answer>("question").Build();
+
         var builder = start.Step<Activity>();
+
         return behavior switch
         {
             "mapping" => builder.Step<Activity>(setup => setup
@@ -112,7 +145,7 @@ public sealed class WorkflowStructureHashTests
                 (body, _) => body.Step<Activity>().Result(
                     (Expression<Func<WorkflowContext<Data, Activity>, int>>)(ctx => ctx.PreviousStep.Value + threshold)),
                 setup => setup.Parallel(2).WaitConditionally<int>(
-                    (Expression<Func<Data, IReadOnlyList<ItemResult<int>>, bool>>)((_, results) => results.Count > threshold))
+                        (Expression<Func<Data, IReadOnlyList<ItemResult<int>>, bool>>)((_, results) => results.Count > threshold))
                     .Into(ctx => ctx.WorkflowData.Results)).Build(),
             "outcome" => builder.Saga(saga => saga.Step<Activity>().Switch(
                 ctx => ctx.PreviousStep.Value + threshold, outcomes => outcomes.Case(1, body => body.Step<Activity>())
@@ -138,8 +171,11 @@ public sealed class WorkflowStructureHashTests
         public int Value { get; set; }
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
+
     public sealed class Answer;
+
     public sealed class OtherAnswer;
+
     public sealed class Question : IAsyncActivity, IRequestActivity<Answer>
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;

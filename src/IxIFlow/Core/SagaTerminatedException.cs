@@ -7,7 +7,9 @@ namespace IxIFlow.Core;
 public class SagaTerminatedException : Exception
 {
     public SagaTerminatedException(string reason, Exception originalException)
-        : this(reason, originalException, false) { }
+        : this(reason, originalException, false)
+    {
+    }
 
     public SagaTerminatedException(string reason, Exception originalException, bool isPolicyTermination)
         : base($"Saga terminated: {reason}. Original error: {originalException.Message}", originalException)

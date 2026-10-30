@@ -3,6 +3,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Suppress missing-member XML warnings for this project; XML documentation is generated and packaged. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
     <Version>1.0.0</Version>
     <Description>Workflow document validation and activity catalogs for IxIFlow.</Description>
     <PackageReadmeFile>README.md</PackageReadmeFile>
@@ -12,7 +14,9 @@
     <PackageDownload Include="Microsoft.NETCore.App.Ref" Version="[10.0.0]" />
     <PackageReference Include="NuGet.Protocol" Version="6.14.3" />
     <PackageReference Include="NuGet.Resolver" Version="6.14.3" />
+    <InternalsVisibleTo Include="IxIFlow.TestSupport" />
     <InternalsVisibleTo Include="IxIFlow.Tests" />
+    <InternalsVisibleTo Include="IxIFlow.Conformance" />
     <InternalsVisibleTo Include="IxIFlow.AspNetCore" />
     <ProjectReference Include="..\IxIFlow\IxIFlow.csproj" />
     <ProjectReference Include="..\IxIFlow.Templates\IxIFlow.Templates.csproj" />

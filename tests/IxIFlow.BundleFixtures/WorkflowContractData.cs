@@ -6,11 +6,12 @@ namespace IxIFlow.BundleFixtures;
 
 public sealed class WorkflowContractData
 {
-    [WorkflowInput, Required, DefaultValue("child default"), Display(Name = nameof(WorkflowContractResources.Label), Description = nameof(WorkflowContractResources.Help), ResourceType = typeof(WorkflowContractResources)), UIHint("text")]
+    [WorkflowInput, Required, DefaultValue("child default"),
+     Display(Name = nameof(WorkflowContractResources.Label), Description = nameof(WorkflowContractResources.Help),
+         ResourceType = typeof(WorkflowContractResources)), UIHint("text")]
     public string? Value { get; set; }
 
-    [WorkflowOutput]
-    public string? Result { get; set; }
+    [WorkflowOutput] public string? Result { get; set; }
 }
 
 public static class WorkflowContractResources

@@ -8,7 +8,7 @@ namespace IxIFlow.Tests.ExecutionTests;
 
 /// <summary>
 /// An activity attempt sees the attempts of its invocation before it: the host each ran on, the error it ended with,
-/// and the note it left (D-37). A retry starts from the saved inputs, so this is how it learns to do something else.
+/// and the note it left. A retry starts from the saved inputs, so this is how it learns to do something else.
 /// </summary>
 [Trait("Feature", "recovery")]
 [Trait("Spec", "A-09")]
@@ -19,6 +19,7 @@ public sealed class AttemptContextTests
     {
         var probe = new Probe();
         using var services = Services(new InMemoryWorkflowStateRepository(), probe, "node-1");
+
         var definition = Workflow.Create<Data>("RetrySeesFailure")
             .Step<Noop>()
             .Saga(saga => saga.Step<TriesAnotherEndpoint>(step => step
@@ -30,6 +31,7 @@ public sealed class AttemptContextTests
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal("eu-2", Assert.IsType<Data>(result.WorkflowData).Endpoint);
+
         Assert.Collection(probe.Seen,
             first =>
             {
@@ -54,17 +56,22 @@ public sealed class AttemptContextTests
     {
         var store = new FaultInjectingRepository();
         var probe = new Probe();
+
         var definition = Workflow.Create<Data>("RecoverySeesLostAttempt")
             .Step<RecoversByRunningAgain>()
             .Build();
+
         var instanceId = Guid.NewGuid().ToString("N");
+
         using (var first = Services(store, probe, "node-1"))
         {
             // The host dies as it saves the activity's end.
             store.FailCommit = _ => probe.Seen.Count > 0;
+
             await Assert.ThrowsAnyAsync<Exception>(() => first.GetRequiredService<IWorkflowClient>()
                 .RunAsync(definition, new Data(), new WorkflowOptions { InstanceId = instanceId }));
         }
+
         store.FailCommit = _ => false;
         using var second = Services(store, probe, "node-2");
         await second.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
@@ -86,6 +93,7 @@ public sealed class AttemptContextTests
     {
         var probe = new Probe();
         using var services = Services(new InMemoryWorkflowStateRepository(), probe, "node-1");
+
         var definition = Workflow.Create<Data>("CaptureSeesAttempt")
             .Step<Noop>()
             .Saga(saga => saga.Step<CapturesItsAttempt>(step => step
@@ -103,6 +111,7 @@ public sealed class AttemptContextTests
     public async Task ANoteThatCannotBeSavedFailsTheRun()
     {
         using var services = Services(new InMemoryWorkflowStateRepository(), new Probe(), "node-1");
+
         var definition = Workflow.Create<Data>("UnsavableNote")
             .Step<Noop>()
             .Saga(saga => saga.Step<LeavesAnUnsavableNote>(step => step
@@ -125,6 +134,7 @@ public sealed class AttemptContextTests
         services.AddTransient<RecoversByRunningAgain>();
         services.AddTransient<CapturesItsAttempt>();
         services.AddIxIFlow(options => options.HostName = hostName);
+
         return services.BuildServiceProvider();
     }
 
@@ -167,12 +177,16 @@ public sealed class AttemptContextTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Saw(context.Attempt);
+
             if (context.Attempt.Previous is [.., { Note: "eu-1" }])
             {
                 Endpoint = "eu-2";
+
                 return Task.CompletedTask;
             }
+
             context.Attempt.Note = "eu-1";
+
             throw new HttpRequestException("connection reset");
         }
     }
@@ -182,6 +196,7 @@ public sealed class AttemptContextTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             probe.Saw(context.Attempt);
+
             return Task.CompletedTask;
         }
 
@@ -203,6 +218,7 @@ public sealed class AttemptContextTests
         public int CaptureRecoveryState(IActivityContext context)
         {
             probe.Saw(context.Attempt);
+
             return context.Attempt.Number;
         }
 
@@ -216,6 +232,7 @@ public sealed class AttemptContextTests
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
             context.Attempt.Note = new Cyclic();
+
             throw new InvalidOperationException("fails once");
         }
     }

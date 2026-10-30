@@ -26,28 +26,38 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
         ExecutionSession host, WorkflowInstance instance)
     {
         var inbox = checkpoint.Inbox;
+
         if (!inbox.MayHaveUnread)
             return false;
+
         checkpoint.CloseEndedRequests();
         var decided = false;
+
         while (true)
         {
             var page = await host.ReadInboxAsync(inbox.ReadThrough ?? 0, PageSize);
+
             if (page.StoreTimeUtc is { } storeTime)
                 checkpoint.Clock.Observe(storeTime, Now);
+
             checkpoint.ReadDeadlines(page);
+
             // A cancellation request the host learned of meanwhile goes first; the events stay unread.
             if (ContinuationTransitions.CancellationPending(checkpoint))
                 return decided;
+
             if (checkpoint.Debug.Stepping == null && checkpoint.ExecutionTimerOpen && page.IsDue(checkpoint.ExecutionTimerId!))
             {
                 inbox.Due([checkpoint.ExecutionTimerId!]);
+
                 return decided;
             }
+
             foreach (var stored in page.Events)
             {
                 if (inbox.IsDecided(stored.EventId))
                     continue;
+
                 if (checkpoint.Debug.Stepping != null)
                 {
                     // Defer the entire event if it addresses any held branch. Do not run its
@@ -55,19 +65,24 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
                     var addressed = checkpoint.Waits.Where(w => stored.TargetWaitId != null
                         ? w.Id == stored.TargetWaitId
                         : w.TableKind == WaitKind.Event && (stored.Key == null || w.Key == stored.Key) &&
-                          page.OpenWaits.TryGetValue(w.Id, out var opened) && opened < stored.Sequence).ToArray();
+                        page.OpenWaits.TryGetValue(w.Id, out var opened) && opened < stored.Sequence).ToArray();
+
                     if (addressed.Length == 0 || addressed.Any(w => !SteppingPolicy.Allows(checkpoint, w.ContinuationId)))
                         continue;
                 }
+
                 await DecideAsync(scopes, checkpoint, host, stored, page, instance);
                 decided = true;
             }
+
             inbox.Read(page.ReadThrough);
+
             // Only a page that reads to the end of the inbox has seen every event received before a
             // deadline it finds due.
             if (page.Events.Count < PageSize)
             {
                 inbox.Due(page.Deadlines?.Keys.Where(page.IsDue) ?? []);
+
                 return decided;
             }
         }
@@ -78,12 +93,16 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     {
         await host.Reader.ReadAsync(stored.PayloadJson);
         var payload = Read(stored);
+
         if (payload == null)
         {
             Reject(instance, checkpoint, stored, EventRejection.NotMatched);
+
             return;
         }
+
         var eventType = payload.GetType();
+
         // The waits this event is addressed to and that were open for it. A request's answer is
         // addressed by its token only, and is taken even before its WaitFor is reached; a child's
         // completion only by the wait its parent opened for it.
@@ -91,48 +110,62 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             (stored.TargetWaitId != null
                 ? wait.Id == stored.TargetWaitId
                 : wait.TableKind == WaitKind.Event && (stored.Key == null || wait.Key == stored.Key) &&
-                  page.OpenWaits.TryGetValue(wait.Id, out var opened) && opened < stored.Sequence) &&
+                page.OpenWaits.TryGetValue(wait.Id, out var opened) && opened < stored.Sequence) &&
             checkpoint.Continuations.Any(item => item.Id == wait.ContinuationId &&
                 (item.Status == ContinuationStatus.Waiting || wait.IsReply &&
-                 item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled)))).ToList();
+                    item.Status is not (ContinuationStatus.Completed or ContinuationStatus.Cancelled)))).ToList();
+
         // A wait the store found due takes only an event received before its deadline; both are the
-        // store's times (D-35).
+        // store's times.
         var onTime = addressed.Where(wait => !page.IsDue(wait.Id) ||
-                                              stored.ReceivedAtUtc < page.Deadlines![wait.Id]).ToList();
+            stored.ReceivedAtUtc < page.Deadlines![wait.Id]).ToList();
+
         var typed = onTime.Where(wait =>
             WorkflowTypeIdentity.Resolve(wait.EventType)?.IsAssignableFrom(eventType) == true).ToList();
+
         // An answer can confirm only what its request was about.
         var aboutIt = typed.Where(wait => wait.Subject == null ||
-                                          string.Equals(wait.Subject, stored.Subject, StringComparison.Ordinal))
+                string.Equals(wait.Subject, stored.Subject, StringComparison.Ordinal))
             .ToList();
+
         foreach (var wait in aboutIt)
             await host.PrepareReadAsync(checkpoint, checkpoint.ContinuationById(wait.ContinuationId)!, scopes, restoreInputs: false);
+
         var matching = aboutIt.Where(wait => Accepts(scopes, checkpoint, wait, payload)).ToList();
+
         if (matching.Count == 1)
         {
             if (payload is ChildCompleted)
             {
                 var invocation = checkpoint.Continuations.Single(item => item.Id == matching[0].ContinuationId).PendingActivity!;
                 var step = scopes.Step(invocation.StepId);
-                using var childLease = invocation.ChildBundleDigest == null ? null
+
+                using var childLease = invocation.ChildBundleDigest == null
+                    ? null
                     : await ((IWorkflowDefinitionSource)services.GetService(typeof(IWorkflowDefinitionSource))!)
                         .AcquireWorkflowDefinitionAsync(step.WorkflowName!, step.WorkflowVersion!.Value, invocation.ChildBundleDigest,
                             checkpoint.Signals?.AcquisitionToken ?? default);
+
                 using var childTypes = WorkflowTypeIdentity.Enter(childLease?.Definition.BundleContext);
+
                 if (WorkflowTypeIdentity.Resolve(invocation.ChildDataType) == null)
                     throw new WorkflowEngineException(WorkflowErrorKind.ArtifactUnavailable,
                         $"Child data type '{invocation.ChildDataType}' is unavailable");
             }
+
             Consume(scopes, checkpoint, stored, matching[0], payload);
             Record(instance, checkpoint, stored, matching[0], null);
+
             return;
         }
+
         var rejection = matching.Count > 1 ? EventRejection.Ambiguous
             : typed.Count > 0 && aboutIt.Count == 0 ? EventRejection.SubjectMismatch
             : typed.Count > 0 || onTime.Count > 0 ? EventRejection.NotMatched
             : addressed.Count > 0 ? EventRejection.WaitTimedOut
             : stored.TargetWaitId != null ? await ClosedTargetAsync(checkpoint, host, stored.TargetWaitId)
             : EventRejection.NoOpenWait;
+
         Reject(instance, checkpoint, stored, rejection);
     }
 
@@ -140,6 +173,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     {
         if (WorkflowTypeIdentity.Resolve(stored.EventType) is not { } type)
             return null;
+
         try
         {
             return JsonSerializer.Deserialize(stored.PayloadJson.InlineText, type);
@@ -157,7 +191,9 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     {
         if (wait.TableKind == WaitKind.Child)
             return payload is ChildCompleted completed && completed.ChildInstanceId == wait.ChildWorkflowId;
+
         var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
+
         try
         {
             return WorkflowValueBinding.Matches(scopes.Step(wait.StepId), payload, checkpoint.DataOf(continuation),
@@ -165,8 +201,7 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
                 TryScopeTransitions.CatchFault(checkpoint, continuation, services, scopes.Step(wait.StepId), scopes));
         }
         catch (Exception error) when (error is not OutOfMemoryException &&
-                                      !(WorkflowEngineException.IsEngineFailure(error) &&
-                                        error is WorkflowEngineException { Kind: WorkflowErrorKind.PayloadUnavailable }))
+                                      !WorkflowEngineException.IsEngineFailure(error))
         {
             return false;
         }
@@ -177,14 +212,17 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     {
         var continuation = checkpoint.Continuations.Single(item => item.Id == wait.ContinuationId);
         checkpoint.Touch(continuation);
-        // A saga request's compensation, and a retry that keeps the request, read the answer it got (D-36).
+
+        // A saga request's compensation, and a retry that keeps the request, read the answer it got.
         if (wait.IsReply)
             SagaScopeTransitions.NoteReply(continuation, wait.InvocationId, SerializedValue.From(payload)!,
                 stored.EventId, wait.Id);
+
         if (wait.IsReply && !IsAt(scopes, continuation, wait))
         {
             // The request's WaitFor is not reached yet: the answer is kept for it.
             checkpoint.RemoveWaits(item => item.Id == wait.Id, WaitCloseReason.Answered);
+
             checkpoint.BoundReplies.Add(new BoundReplyState
             {
                 WaitId = wait.Id,
@@ -196,9 +234,12 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
                 Subject = wait.Subject,
                 Event = SerializedValue.From(payload)!
             });
+
             checkpoint.Inbox.Settle(new EventSettlement(stored.EventId, EventOutcome.Consumed, wait.Id));
+
             return;
         }
+
         continuation.AcceptedWait = new AcceptedWaitState
         {
             StepId = wait.StepId,
@@ -206,12 +247,16 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
             EventId = stored.EventId,
             WaitId = wait.Id
         };
+
         if (wait.IsReply)
             GraphTransitions.RetainReply(continuation, wait, continuation.AcceptedWait.Event!, stored.EventId);
+
         continuation.Status = ContinuationStatus.Active;
         checkpoint.RemoveWaits(item => item.Id == wait.Id, WaitCloseReason.Answered);
+
         if (scopes.Step(wait.StepId).StepType == WorkflowStepType.Trigger)
             GraphTransitions.TriggerFired(checkpoint, continuation);
+
         checkpoint.Inbox.Settle(new EventSettlement(stored.EventId, EventOutcome.Consumed, wait.Id));
     }
 
@@ -220,8 +265,10 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     {
         if (continuation.Status != ContinuationStatus.Waiting)
             return false;
+
         var position = continuation.Stack[^1];
         var steps = scopes.Steps(position.ScopeId);
+
         return position.NextStepIndex < steps.Count && (scopes.Id(steps[position.NextStepIndex]) == wait.StepId ||
             GraphTransitions.Accepts(scopes, continuation, wait.StepId));
     }
@@ -243,7 +290,8 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
                 EntryType = refusal == null ? TraceEntryType.EventReceived : TraceEntryType.EventRefused,
                 Payload = new ReceivedEventTrace(stored.EventId, stored.Key ?? wait?.Key, stored.EventType,
                     (wait?.Id ?? stored.TargetWaitId) is { } waitId
-                        ? WaitReference.Of(instance.InstanceId, waitId) : null, wait?.StepId, refusal)
+                        ? WaitReference.Of(instance.InstanceId, waitId)
+                        : null, wait?.StepId, refusal)
             });
     }
 
@@ -253,7 +301,9 @@ internal sealed class EventIntake(IServiceProvider services, TimeProvider time)
     {
         if (checkpoint.Inbox.ClosureOf(waitId) is { } reason)
             return reason.Rejection();
-        return await host.ReadWaitAsync(waitId) is { IsOpen: false } closed ? closed.Rejection
+
+        return await host.ReadWaitAsync(waitId) is { IsOpen: false } closed
+            ? closed.Rejection
             : EventRejection.UnknownWait;
     }
 }

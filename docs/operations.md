@@ -11,7 +11,9 @@ The same interface provides [outbox administration](outbox-and-publishers.md#adm
 var page = await operations.SearchAsync(new InstanceQuery(
     Statuses: [WorkflowStatus.Suspended, WorkflowStatus.NeedsResolution],
     WorkflowName: "Order", WorkflowVersion: 2, Limit: 100));
+
 var waits = await operations.GetWaitsAsync(page.Items.Select(row => row.InstanceId).ToArray());
+
 var next = await operations.SearchAsync(new InstanceQuery(
     Statuses: [WorkflowStatus.Suspended, WorkflowStatus.NeedsResolution],
     WorkflowName: "Order", WorkflowVersion: 2, Limit: 100, After: page.NextCursor));
@@ -45,14 +47,16 @@ A pending terminate prevents lease renewal. If an activity or cancellation clean
 
 Unhandled saga `ThenTerminate` also produces `WorkflowExecutionStatus.Terminated`, and finished awaits recognize that status. A surrounding catch can still handle the saga exception. Failed compensation and exhausted retries retain failure semantics.
 
-Databases created by an earlier schema build must be recreated. The new row columns and search indexes are declared when each database is created.
+Databases created by an earlier schema build must be recreated. The row columns and search indexes are declared when each database is created.
 
 ## Operating resource scopes
 
 Waits, parks, committed debugger pauses and orderly drains close live scopes as `Suspended`. Continuing or moving to another host re-opens them lazily before author work. Transient session state does not survive those boundaries; save required state explicitly in the remote system or workflow data. A database transaction belongs inside a single activity.
 
-Termination and ownership loss run no `CloseAsync`. Once in-flight users finish, the former owner releases values locally and disposes disposable values on their owning thread, without committing cleanup. Process death cannot run local disposal. Remote sessions may therefore linger. `ScopeCloseTimeout` bounds waiting for close; `ReleaseGrace` bounds local release waits. Timed-out work and its thread remain quarantined and counted until they actually finish. `MaxScopeThreadsPerHost` defaults to 64 and counts these retained threads. A resource-limit stop needs operator attention; an unresolved activity whose scope cannot re-open also waits for an operator. See [the lifecycle contract](activity-sdk.md#scope-activities) and [debugger pause behavior](debugging.md#scope-activities).
+Termination and ownership loss run no `CloseAsync`. Once in-flight users finish, the former owner releases values locally and disposes disposable values on their owning thread, without committing cleanup. Process death cannot run local disposal. Remote sessions may therefore linger. The core host uses fixed bounds of 30 seconds for scope close and five seconds for local release waits. These are `ExecutionLimits.ScopeCloseTimeout` and `ExecutionLimits.ReleaseGrace` defaults, not configurable `IxIFlowOptions` settings. Timed-out work and its thread remain quarantined and counted until they actually finish. `MaxScopeThreadsPerHost` defaults to 64 and counts these retained threads. A resource-limit stop needs operator attention; an unresolved activity whose scope cannot re-open also waits for an operator. See [the lifecycle contract](activity-sdk.md#scope-activities) and [debugger pause behavior](debugging.md#scope-activities).
 
 ## Publishing operations
 
 The separate [publishing and catalog HTTP mapping](publishing-http.md) manages drafts, publication attempts, template preview, upload, workflow lifecycle and package withdrawal. It requires its own policies and `ICatalogQueryScope`. Source and artifact access use DownloadPolicy; instance inspection and reply authorization remain part of the operations mapping.
+
+The four `IWorkflowOperations.Submit*Async` methods accept a trailing optional cancellation token. For incarnation-aware operations, `expectedIncarnation` precedes `cancellationToken`. Cancelling a submission wait does not undo an already accepted command; its completion continues under the host lifetime. `GetStatusAsync` and `GetTraceAsync` also accept a cancellation token.

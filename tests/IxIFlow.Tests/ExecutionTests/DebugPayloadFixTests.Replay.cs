@@ -40,12 +40,15 @@ public sealed partial class DebugPayloadFixTests
         control.OnUnscheduled(scheduler.Unschedule);
         await using var watch = new CancellationWatch(store, h.Clock);
         await using var renewer = new ExecutionLeaseRenewer(store, h.Clock);
+
         var operations = new WorkflowHost.InstanceOperations(services, services.GetRequiredService<IActivityExecutor>(),
             store, services.GetRequiredService<IWorkflowCatalog>(), new InProcessInstanceGate(), renewer,
             timeProvider: h.Clock, watch: watch, control: control);
+
         store.Owner = () => ((IDictionary)typeof(WorkflowHost.InstanceOperations)
-            .GetField("_assignments", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(operations)!)
+                .GetField("_assignments", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(operations)!)
             .Values.Cast<WorkflowHost.InstanceOperations.HostedRun>().Single().Owner;
+
         var definition = ending switch
         {
             "parked" => Workflow.Create<Data>("replay-park").Step<Noop>()
@@ -54,9 +57,12 @@ public sealed partial class DebugPayloadFixTests
             "idle" => Workflow.Create<Data>("replay-idle").Step<Noop>().Delay(TimeSpan.FromHours(1)).Build(),
             _ => Workflow.Create<Data>("replay-complete").Step<Noop>().Build()
         };
+
         await services.GetRequiredService<IWorkflowCatalog>().RegisterWorkflowAsync(definition);
+
         var (instance, checkpoint, _) = WorkflowInstances.NewInstance(definition, new Data { Text = "kept" }, new(),
             h.Clock.GetUtcNow().UtcDateTime);
+
         instance.ExecutionStateJson = JsonSerializer.Serialize(checkpoint);
         await store.SeedAsync(instance);
         var result = await operations.RecoverAsync(instance.InstanceId, default).WaitAsync(TimeSpan.FromSeconds(10));
@@ -64,8 +70,13 @@ public sealed partial class DebugPayloadFixTests
         Assert.Equal(2, store.CommitIds.Count);
         Assert.Single(store.CommitIds.Distinct());
         Assert.Equal(1, store.RejectedRenewals);
-        Assert.Equal(ending == "completed" ? WorkflowExecutionStatus.Success : ending == "parked"
-            ? WorkflowExecutionStatus.Scheduled : WorkflowExecutionStatus.Suspended, result.Status);
+
+        Assert.Equal(ending == "completed"
+            ? WorkflowExecutionStatus.Success
+            : ending == "parked"
+                ? WorkflowExecutionStatus.Scheduled
+                : WorkflowExecutionStatus.Suspended, result.Status);
+
         Assert.Equal("kept", Assert.IsType<Data>(result.WorkflowData).Text);
     }
 
@@ -76,33 +87,47 @@ public sealed partial class DebugPayloadFixTests
         public List<WorkflowCommitStatus> Statuses { get; } = [];
         public List<string> CommitIds { get; } = [];
         public int RejectedRenewals;
-        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit)
+
+        public override async Task<WorkflowCommitResult> CommitWorkflowInstanceAsync(CheckpointCommit commit,
+            CancellationToken cancellationToken = default)
         {
-            var result = await base.CommitWorkflowInstanceAsync(commit);
+            var result = await base.CommitWorkflowInstanceAsync(commit, cancellationToken: cancellationToken);
+
             if (commit.Parks || commit.Instance.Status != WorkflowStatus.Running)
             {
                 Statuses.Add(result.Status);
                 CommitIds.Add(commit.CommitId);
+
                 if (Statuses.Count == 1)
                 {
                     var owner = Owner();
                     ((Microsoft.Extensions.Time.Testing.FakeTimeProvider)time).Advance(ExecutionLeaseSettings.Default.RenewalInterval);
+
                     await ((Task)typeof(WorkflowExecutionLease).GetField("_renewal",
                         BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(owner)!).WaitAsync(TimeSpan.FromSeconds(10));
+
                     Assert.Throws<ExecutionOwnershipLostException>(owner.ThrowIfLost);
+
                     return retry ? new(WorkflowCommitStatus.Retry, 0) : throw new IOException("Lost final reply");
                 }
             }
+
             return result;
         }
-        public override async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(IReadOnlyList<ExecutionLeaseRenewal> leases)
+
+        public override async Task<IReadOnlyList<ExecutionLeaseRenewalResult>> RenewExecutionLeasesAsync(
+            IReadOnlyList<ExecutionLeaseRenewal> leases, CancellationToken cancellationToken = default)
         {
-            var results = await base.RenewExecutionLeasesAsync(leases);
+            var results = await base.RenewExecutionLeasesAsync(leases, cancellationToken: cancellationToken);
+
             foreach (var result in results)
-                if (result.Status != ExecutionLeaseRenewalStatus.Renewed) Interlocked.Increment(ref RejectedRenewals);
+                if (result.Status != ExecutionLeaseRenewalStatus.Renewed)
+                    Interlocked.Increment(ref RejectedRenewals);
+
             return results;
         }
     }
+
     public sealed class ReplayFailure : IAsyncActivity
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) =>

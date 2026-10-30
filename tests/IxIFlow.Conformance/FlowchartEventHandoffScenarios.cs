@@ -19,11 +19,15 @@ public sealed class FlowchartEventHandoffScenarios
         var registrations = new ServiceCollection().AddLogging();
         registrations.AddIxIFlow(options => options.Debugging = true);
         registrations.AddSingleton(repository);
-        if (time != null) registrations.AddSingleton<TimeProvider>(time);
+
+        if (time != null)
+            registrations.AddSingleton<TimeProvider>(time);
+
         registrations.AddBreakpointConditions();
         store.ConfigureHost(registrations);
         await using var services = registrations.BuildServiceProvider();
         await store.StartHostLinksAsync(services);
+
         await FlowchartEventHandoffScenario.VerifyAsync(services,
             id => FlowchartScenarios.WaitForTimeoutAsync(repository, id, time),
             timeout: time == null ? TimeSpan.FromSeconds(5) : null);

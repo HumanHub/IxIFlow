@@ -21,15 +21,19 @@ internal sealed class ChildCompleted
     public static ParentNotice? NoticeOf(WorkflowInstance instance, ExecutionCheckpoint checkpoint)
     {
         if (instance is not { ParentInstanceId: { } parent, ParentWaitId: { } wait } ||
-            !WorkflowStoreRules.IsTerminal(instance.Status)) return null;
+            !WorkflowStoreRules.IsTerminal(instance.Status))
+            return null;
+
         var payload = JsonSerializer.Serialize(new ChildCompleted
         {
             ChildInstanceId = instance.InstanceId,
             Status = instance.Status,
-            DataJson = instance.Status != WorkflowStatus.Completed ? StoredJson.Inline("")
+            DataJson = instance.Status != WorkflowStatus.Completed
+                ? StoredJson.Inline("")
                 : instance.WorkflowDataJson,
             Error = instance.Status == WorkflowStatus.Failed ? checkpoint.UnhandledError?.Error : null
         });
+
         return new ParentNotice(parent, wait, $"child-completed-{instance.InstanceId}", EventType, payload)
         {
             PayloadDependencies = CheckpointPayloads.References<ChildCompleted>(payload)
@@ -41,11 +45,12 @@ internal sealed class ChildCompleted
     /// <paramref name="dataType"/>, when it completed; its own error when it failed; and
     /// <see cref="ChildWorkflowEndedException"/> when it was cancelled, timed out or terminated.
     /// </summary>
-    public ActivityRunResult Outcome(Type dataType, ExecutionCheckpoint checkpoint) => Status switch
+    public ActivityRunResult Outcome(Type dataType, ExecutionCheckpoint checkpoint) => WorkflowStatuses.Read(Status) switch
     {
         WorkflowStatus.Completed => ActivityRunResult.Returned(JsonSerializer.Deserialize(DataJson.InlineText, dataType)),
         WorkflowStatus.Failed => ActivityRunResult.Propagated(Error
-            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState, $"Failed child workflow '{ChildInstanceId}' has no saved failure"), checkpoint),
+            ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
+                $"Failed child workflow '{ChildInstanceId}' has no saved failure"), checkpoint),
         _ => ActivityRunResult.Threw(new ChildWorkflowEndedException(ChildInstanceId, Status))
     };
 }
@@ -60,65 +65,89 @@ internal static class ChildInputs
     /// </summary>
     public static object NewData(WorkflowDefinition definition, WorkflowStep step, object context)
     {
-        return NewData(definition.WorkflowDataType, WorkflowDefinitionValidator.GetContract(definition), step, context);
+        return NewData(WorkflowDefinitionValidator.RequireDataType(definition), WorkflowDefinitionValidator.GetContract(definition), step,
+            context);
     }
 
     internal static object NewData(Type dataType, WorkflowContract contract, WorkflowStep step, object context)
     {
         var data = Activator.CreateInstance(dataType)
             ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition, $"Failed to create instance of {dataType}");
+
         var assigned = new Dictionary<string, object?>(StringComparer.Ordinal);
+
         foreach (var member in contract.Inputs.Where(member => member.HasDefault &&
-                     !step.InputMappings.Any(mapping => mapping.Direction == PropertyMappingDirection.Input && mapping.TargetProperty == member.Name)))
+                     !step.InputMappings.Any(mapping =>
+                         mapping.Direction == PropertyMappingDirection.Input && mapping.TargetProperty == member.Name)))
         {
-            var target = WorkflowContract.FindProperty(data.GetType(), member.Name) ?? throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
+            var target = WorkflowContract.FindProperty(data.GetType(), member.Name) ?? throw new WorkflowEngineException(
+                WorkflowErrorKind.InvalidDefinition,
                 $"Child workflow input '{data.GetType().Name}.{member.Name}' is not a property of its data");
+
             var value = WorkflowJson.Deserialize(member.DefaultJson!, target.PropertyType);
             target.SetValue(data, value);
             assigned[member.Name] = value;
         }
+
         foreach (var mapping in step.InputMappings.Where(item => item.Direction == PropertyMappingDirection.Input))
         {
             var target = WorkflowContract.FindProperty(data.GetType(), mapping.TargetProperty);
+
             if (target is not { CanWrite: true })
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Child workflow input '{data.GetType().Name}.{mapping.TargetProperty}' is " +
                     (target == null ? "not a property of its data" : "not writable"));
+
             var value = Convert(mapping.SourceFunction(context), target, data.GetType());
             target.SetValue(data, value);
             assigned[target.Name] = value;
         }
-        try { contract.ValidateRequired(data, data.GetType(), assigned); }
+
+        try
+        {
+            contract.ValidateRequired(data, data.GetType(), assigned);
+        }
         catch (WorkflowEngineException error) when (error.Kind == WorkflowErrorKind.InvalidRequest)
-        { throw WorkflowEngineException.FromWorkflowCode(error); }
+        {
+            throw WorkflowEngineException.FromWorkflowCode(error);
+        }
+
         return data;
     }
 
     internal static void CheckContract(WorkflowDefinition definition, WorkflowStep step, WorkflowContract contract)
     {
         if (step.InvokedContract == null || !contract.RequiredScopes.OrderBy(item => item.Type, StringComparer.Ordinal)
-            .SequenceEqual(step.InvokedContract.RequiredScopes.OrderBy(item => item.Type, StringComparer.Ordinal)))
-            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch, "Resolved workflow scope requirements differ from its invocation contract");
+                .SequenceEqual(step.InvokedContract.RequiredScopes.OrderBy(item => item.Type, StringComparer.Ordinal)))
+            throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch,
+                "Resolved workflow scope requirements differ from its invocation contract");
+
         if (step.InvokedContractKind == WorkflowInvocationContractKind.ExactPin)
         {
             if (contract.Hash != step.InvokedContractHash)
                 throw new WorkflowEngineException(WorkflowErrorKind.ArtifactMismatch,
                     $"Workflow {definition.Name} v{definition.Version} contract hash differs: resolved '{contract.Hash}', invoked '{step.InvokedContractHash}'");
+
             return;
         }
+
         foreach (var mapping in step.InputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Input))
         {
             if (WorkflowContract.FindProperty(definition.WorkflowDataType!, mapping.TargetProperty) == null)
                 throw InvalidInput(mapping.TargetProperty, "is not a property of its data");
+
             if (!contract.Inputs.Any(member => member.Name == mapping.TargetProperty))
                 throw InvalidInput(mapping.TargetProperty, "is not an input in its workflow contract");
         }
+
         foreach (var mapping in step.OutputMappings.Where(mapping => mapping.Direction == PropertyMappingDirection.Output))
             if (!contract.Outputs.Any(member => member.Name == mapping.TargetProperty))
                 throw new WorkflowEngineException(WorkflowErrorKind.InvalidDefinition,
                     $"Child workflow output '{definition.WorkflowDataType!.Name}.{mapping.TargetProperty}' is not an output in its workflow contract");
+
         foreach (var member in contract.Inputs.Where(member => member.Required && !member.HasDefault))
-            if (!step.InputMappings.Any(mapping => mapping.Direction == PropertyMappingDirection.Input && mapping.TargetProperty == member.Name))
+            if (!step.InputMappings.Any(mapping =>
+                    mapping.Direction == PropertyMappingDirection.Input && mapping.TargetProperty == member.Name))
                 throw InvalidInput(member.Name, "is a required input in its workflow contract and is not mapped");
 
         WorkflowEngineException InvalidInput(string member, string reason) => new(WorkflowErrorKind.InvalidDefinition,
@@ -129,11 +158,14 @@ internal static class ChildInputs
     {
         if (value == null || target.PropertyType.IsInstanceOfType(value))
             return value;
+
         var underlying = Nullable.GetUnderlyingType(target.PropertyType) ?? target.PropertyType;
+
         try
         {
             if (!typeof(IConvertible).IsAssignableFrom(underlying))
                 return JsonSerializer.Deserialize(JsonSerializer.Serialize(value), target.PropertyType);
+
             // A whole number takes an enum property as reflection assigns it.
             return underlying.IsEnum && Type.GetTypeCode(value.GetType()) is >= TypeCode.SByte and <= TypeCode.UInt64
                 ? Enum.ToObject(underlying, value)

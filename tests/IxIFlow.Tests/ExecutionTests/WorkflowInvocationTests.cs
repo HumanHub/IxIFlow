@@ -42,6 +42,7 @@ public class WorkflowInvocationTests
 
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var trace = await provider.GetRequiredService<IWorkflowClient>().GetTraceAsync(result.InstanceId);
+
         Assert.Contains(trace, entry =>
             entry.EntryType == TraceEntryType.ActivityCompleted &&
             entry.ActivityName.Contains("ChildWorkflow"));
@@ -87,6 +88,7 @@ public class WorkflowInvocationTests
         // Arrange
         var definition = Workflow
             .Create<ParentWorkflowData>("ParentWorkflowFactory")
+
             // Step 1: Prepare data
             .Step<PrepareDataActivity>(setup => setup
                 .Input(act => act.RawInput).From(ctx => ctx.WorkflowData.OrderId)
@@ -162,6 +164,7 @@ public class WorkflowInvocationTests
         // Arrange - Create a workflow that tests context propagation through invocation
         var definition = Workflow
             .Create<ParentWorkflowData>("ContextPropagationWorkflow")
+
             // Step 1: Set initial value
             .Step<PrepareDataActivity>(setup => setup
                 .Input(act => act.RawInput).From(ctx => ctx.WorkflowData.OrderId)
@@ -249,7 +252,6 @@ public class WorkflowInvocationTests
     [IxIFlow.Core.Workflow("ChildWorkflow", Version = 1)]
     public class ChildWorkflow : IWorkflow<ChildWorkflowData>
     {
-
         public void Build(IWorkflowBuilder<ChildWorkflowData> builder)
         {
             builder
@@ -264,10 +266,10 @@ public class WorkflowInvocationTests
     [IxIFlow.Core.Workflow("ParentWorkflow", Version = 1)]
     public class ParentWorkflow : IWorkflow<ParentWorkflowData>
     {
-
         public void Build(IWorkflowBuilder<ParentWorkflowData> builder)
         {
             builder
+
                 // Step 1: Prepare data
                 .Step<PrepareDataActivity>(setup => setup
                     .Input(act => act.RawInput).From(ctx => ctx.WorkflowData.OrderId)

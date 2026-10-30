@@ -38,12 +38,16 @@ public sealed class SendTemplateMessage : IRecoverableActivity<TemplateMessageRe
     public async Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(context);
+
         if (string.IsNullOrWhiteSpace(Channel))
             throw new InvalidOperationException("SendTemplateMessage needs a channel");
+
         if (Recipients is not { Count: > 0 })
             throw new InvalidOperationException("SendTemplateMessage needs at least one recipient");
+
         if (Body is null)
             throw new InvalidOperationException("SendTemplateMessage needs a rendered body");
+
         var message = new TemplateMessage(context.InvocationId, Channel, Recipients.ToList(), Subject, Body);
         await context.Services.GetRequiredService<ITemplateMessageSender>().SendAsync(message, cancellationToken);
         MessageId = message.MessageId;
@@ -85,5 +89,8 @@ public sealed record TemplateMessage(
 /// </summary>
 public interface ITemplateMessageSender
 {
+    /// <summary>Delivers the rendered message idempotently using its message ID; retries of the same ID must not duplicate delivery.</summary>
+    /// <param name="message">The rendered content, destination and stable idempotency key.</param>
+    /// <param name="cancellationToken">Signals that this delivery attempt should stop.</param>
     Task SendAsync(TemplateMessage message, CancellationToken cancellationToken = default);
 }

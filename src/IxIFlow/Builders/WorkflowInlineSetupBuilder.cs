@@ -8,7 +8,7 @@ namespace IxIFlow.Builders;
 /// <summary>
 ///     Workflow inline call builder for first step (no previous step access)
 /// </summary>
-public class WorkflowInlineSetupBuilder<TWorkflowData, TInvokedData>(WorkflowStep step)
+internal class WorkflowInlineSetupBuilder<TWorkflowData, TInvokedData>(WorkflowStep step)
     : IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData>
     where TWorkflowData : class
     where TInvokedData : class
@@ -37,7 +37,7 @@ public class WorkflowInlineSetupBuilder<TWorkflowData, TInvokedData>(WorkflowSte
 /// <summary>
 ///     Workflow inline call builder for subsequent steps (with previous step access)
 /// </summary>
-public class WorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(WorkflowStep step)
+internal class WorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>(WorkflowStep step)
     : IWorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousStepData>
     where TWorkflowData : class
     where TInvokedData : class
@@ -78,7 +78,7 @@ public class WorkflowInlineSetupBuilder<TWorkflowData, TInvokedData, TPreviousSt
 /// <summary>
 ///     Input builder for first step workflow inline call (no previous step)
 /// </summary>
-public class WorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TProperty>(
+internal class WorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TProperty>(
     WorkflowStep step,
     Expression<Func<TInvokedData, TProperty>> propertyExpression)
     : IWorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TProperty>
@@ -105,7 +105,9 @@ public class WorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TPrope
         // Create wrapped function for object context
         Func<object, object?> wrappedFunction = context =>
         {
-            if (context is WorkflowContext<TWorkflowData> typedContext) return compiledFunction(typedContext);
+            if (context is WorkflowContext<TWorkflowData> typedContext)
+                return compiledFunction(typedContext);
+
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}>, got {context.GetType().Name}");
         };
@@ -144,7 +146,9 @@ public class WorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TPrope
 
     private string GetPropertyName<T>(Expression<Func<TInvokedData, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException(
             "Property expression must be a member access expression",
             nameof(propertyExpression));
@@ -154,7 +158,7 @@ public class WorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TPrope
 /// <summary>
 ///     Input builder for subsequent step workflow inline call (with previous step access)
 /// </summary>
-public class WorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData>(
+internal class WorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData>(
     WorkflowStep step,
     Expression<Func<TInvokedData, TProperty>> propertyExpression)
     : IWorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TProperty, TPreviousStepData>
@@ -185,6 +189,7 @@ public class WorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TPrope
         {
             if (context is WorkflowContext<TWorkflowData, TPreviousStepData> typedContext)
                 return compiledFunction(typedContext);
+
             throw new WorkflowEngineException(WorkflowErrorKind.InvalidState,
                 $"Expected WorkflowContext<{typeof(TWorkflowData).Name}, {typeof(TPreviousStepData).Name}>, got {context.GetType().Name}");
         };
@@ -243,7 +248,9 @@ public class WorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TPrope
 
     private string GetPropertyName<T>(Expression<Func<TInvokedData, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException(
             "Property expression must be a member access expression",
             nameof(propertyExpression));
@@ -253,7 +260,7 @@ public class WorkflowInlineSetupInputBuilder<TWorkflowData, TInvokedData, TPrope
 /// <summary>
 ///     Output builder for workflow inline call property mappings
 /// </summary>
-public class WorkflowInlineSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty>(
+internal class WorkflowInlineSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty>(
     WorkflowStep step,
     Expression<Func<TInvokedData, TProperty>> propertyExpression)
     : IWorkflowInlineSetupOutputBuilder<TWorkflowData, TInvokedData, TProperty>
@@ -283,6 +290,7 @@ public class WorkflowInlineSetupOutputBuilder<TWorkflowData, TInvokedData, TProp
             if (context is WorkflowContext<TWorkflowData> typedContext && value is TProperty typedValue)
                 compiledAssignment(typedContext, typedValue);
             else if (context is WorkflowContext<TWorkflowData> typedContext2 && value == null)
+
                 // Handle null values gracefully
                 compiledAssignment(typedContext2, default!);
             else
@@ -368,12 +376,15 @@ public class WorkflowInlineSetupOutputBuilder<TWorkflowData, TInvokedData, TProp
             Expression.Lambda<Action<WorkflowContext<TWorkflowData>, TProperty>>(
                 assignment, contextParameter,
                 valueParameter);
+
         return lambda.Compile();
     }
 
     private string GetPropertyName<T>(Expression<Func<TInvokedData, T>> propertyExpression)
     {
-        if (propertyExpression.Body is MemberExpression memberExpression) return memberExpression.Member.Name;
+        if (propertyExpression.Body is MemberExpression memberExpression)
+            return memberExpression.Member.Name;
+
         throw new ArgumentException(
             "Property expression must be a member access expression",
             nameof(propertyExpression));

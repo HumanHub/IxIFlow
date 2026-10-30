@@ -38,7 +38,9 @@ public sealed partial class ActivityCompilationTests
                 ("0.10000000000000000000000000000", 0.1m), ("10e-29", 0.0000000000000000000000000001m),
                 ("792281625142643375935439503350e-1", decimal.MaxValue), ("0e-99999999999999999999", 0m)
             ];
+
             AssertCompiledDefaults(type, controls.Concat(controls.Select(item => ("\" " + item.Literal + " \"", item.Expected))).ToArray());
+
             foreach (var literal in new[]
                      {
                          "79228162514264337593543950335.1", "-79228162514264337593543950335.1",
@@ -52,6 +54,5 @@ public sealed partial class ActivityCompilationTests
                 AssertInvalidNumericDefault(type, "\"" + literal + "\"");
             }
         }
-
     }
 }

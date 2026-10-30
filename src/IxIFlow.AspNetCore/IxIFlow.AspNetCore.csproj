@@ -3,6 +3,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- Suppress missing-member XML warnings for this project; XML documentation is generated and packaged. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
     <Version>1.0.0</Version>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <Description>Authorized HTTP triggers, CloudEvents ingress and workflow operations for IxIFlow.</Description>

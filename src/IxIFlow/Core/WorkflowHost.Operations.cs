@@ -11,41 +11,67 @@ public sealed partial class WorkflowHost
         public Task<UnschedulablePage> GetUnschedulableAsync(int limit, UnschedulableCursor? cursor, CancellationToken cancellationToken)
         {
             UnschedulableWork.Validate(limit, cursor);
+
             return _store.GetUnschedulableAsync(limit, cursor, cancellationToken);
         }
 
-        public async Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName) =>
-            await _store.GetDeliveryAsync(eventId, publisherName) is { } delivery ? InspectionRedactionPolicy.Default.Delivery(DeliverySummary.From(delivery)) : null;
-        public async Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query)
+        public async Task<DeliverySummary?> GetDeliveryAsync(string eventId, string publisherName,
+            CancellationToken cancellationToken = default) =>
+            await _store.GetDeliveryAsync(eventId, publisherName, cancellationToken: cancellationToken) is { } delivery
+                ? InspectionRedactionPolicy.Default.Delivery(DeliverySummary.From(delivery))
+                : null;
+
+        public async Task<DeliveryPage> ListDeliveriesAsync(DeliveryQuery query, CancellationToken cancellationToken = default)
         {
-            var page = await _store.ListDeliveriesAsync(query);
+            var page = await _store.ListDeliveriesAsync(query, cancellationToken: cancellationToken);
+
             return page with { Items = page.Items.Select(InspectionRedactionPolicy.Default.Delivery).ToArray() };
         }
-        public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor) => _store.RetryDeliveryAsync(eventId, publisherName, actor);
-        public async Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync() =>
-            (await _store.ListPublishersAsync()).Select(InspectionRedactionPolicy.Default.Publisher).ToArray();
-        public Task<bool> EnablePublisherAsync(string publisherName, string actor) => _store.EnablePublisherAsync(publisherName, actor);
-        public Task UnregisterPublisherAsync(string publisherName, string actor) => _store.UnregisterPublisherAsync(publisherName, actor);
+
+        public Task<bool> RetryDeliveryAsync(string eventId, string publisherName, string actor,
+            CancellationToken cancellationToken = default) =>
+            _store.RetryDeliveryAsync(eventId, publisherName, actor, cancellationToken: cancellationToken);
+
+        public async Task<IReadOnlyList<OutboxPublisherState>> ListPublishersAsync(CancellationToken cancellationToken = default) =>
+            (await _store.ListPublishersAsync(cancellationToken: cancellationToken)).Select(InspectionRedactionPolicy.Default.Publisher)
+            .ToArray();
+
+        public Task<bool> EnablePublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default) =>
+            _store.EnablePublisherAsync(publisherName, actor, cancellationToken: cancellationToken);
+
+        public Task UnregisterPublisherAsync(string publisherName, string actor, CancellationToken cancellationToken = default) =>
+            _store.UnregisterPublisherAsync(publisherName, actor, cancellationToken: cancellationToken);
+
         private static WorkflowExecutionResult TerminatedResult(string instanceId) =>
             new() { InstanceId = instanceId, Status = WorkflowExecutionStatus.Terminated };
 
-        public Task<InstancePage> SearchInstancesAsync(InstanceQuery query) => _store.QueryInstancesAsync(query);
-        public Task<IReadOnlyList<StoredTraceEntry>> GetTracePageAsync(string instanceId, long after, int limit)
+        public Task<InstancePage> SearchInstancesAsync(InstanceQuery query, CancellationToken cancellationToken = default) =>
+            _store.QueryInstancesAsync(query, cancellationToken: cancellationToken);
+
+        public Task<IReadOnlyList<StoredTraceEntry>> ReadTracePageAsync(string instanceId, long after, int limit,
+            CancellationToken cancellationToken = default)
         {
             InstanceIds.Validate(instanceId);
-            return _store.GetTraceAsync(instanceId, after, limit);
+
+            return _store.GetTraceAsync(instanceId, after, limit, cancellationToken: cancellationToken);
         }
 
-        public async Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, string reasonCode, string? description, string? actor, Guid? expectedIncarnation = null)
+        public async Task<WorkflowControlReceipt> RequestTerminationAsync(string instanceId, string reasonCode, string? description,
+            string? actor, Guid? expectedIncarnation = null, CancellationToken cancellationToken = default)
         {
             InstanceIds.Validate(instanceId);
+
             var receipt = await _store.RequestTerminationAsync(instanceId, new CancellationReason
             {
                 Mode = WorkflowControlMode.Terminate, ReasonCode = reasonCode, Description = description ?? "",
                 RequestedBy = actor ?? _defaultActor ?? "", RequestedAt = Now
-            }, expectedIncarnation);
+            }, expectedIncarnation, cancellationToken: cancellationToken);
+
             _notifications?.Publish(receipt.Notice);
-            if (receipt.Notice?.Claimable == true) _control.Runnable(instanceId);
+
+            if (receipt.Notice?.Claimable == true)
+                _control.Runnable(instanceId);
+
             return receipt;
         }
 
@@ -55,26 +81,42 @@ public sealed partial class WorkflowHost
         {
             InstanceIds.Validate(instanceId);
             var reason = await _store.GetCancellationRequestAsync(instanceId);
-            if (reason?.Mode != WorkflowControlMode.Terminate) return false;
+
+            if (reason?.Mode != WorkflowControlMode.Terminate)
+                return false;
+
             var instance = await _store.GetWorkflowInstanceSummaryAsync(instanceId);
+
             if (instance == null || expectedIncarnation is { } identity && instance.Incarnation != identity ||
-                WorkflowStoreRules.IsTerminal(instance.Status)) return false;
+                WorkflowStoreRules.IsTerminal(instance.Status))
+                return false;
+
             var prepared = await PrepareTerminationAsync(instance);
-            if (prepared == null) return false;
+
+            if (prepared == null)
+                return false;
+
             using var signals = Executor.PrepareAssignment(Guid.NewGuid());
             using var recycle = _control.Register(signals.AssignmentId, Executor.Deliver);
             await using var owner = await AcquireAsync(prepared.Saved, signals, ExecutionClaimKind.Termination);
-            if (owner == null) return false;
+
+            if (owner == null)
+                return false;
+
             using var assignment = Admit(prepared.Saved, owner, signals.AssignmentId, signals.AcquisitionToken);
             var commit = prepared.Commit(owner.Epoch);
-            for (var attempt = 1; ; attempt++)
+
+            for (var attempt = 1;; attempt++)
             {
                 var reply = await assignment.CheckpointAsync(new(signals.AssignmentId, commit));
+
                 if (reply.Kind == CheckpointReplyKind.Ack)
                 {
                     _control.Unschedule(instanceId);
+
                     return true;
                 }
+
                 if (reply.Kind is not (CheckpointReplyKind.Retry or CheckpointReplyKind.Unknown) || attempt == 3)
                     return false;
             }
@@ -84,13 +126,20 @@ public sealed partial class WorkflowHost
         // not require a loaded definition or deserializable user data.
         private sealed record TerminationPreparation(WorkflowInstance Saved, Func<long, CheckpointCommit> Commit);
 
-        private async Task<TerminationPreparation?> PrepareTerminationAsync(WorkflowInstance assigned)
+        private async Task<TerminationPreparation?> PrepareTerminationAsync(WorkflowInstance assigned,
+            CancellationToken cancellationToken = default)
         {
             var instanceId = assigned.InstanceId;
-            var reason = await _store.GetCancellationRequestAsync(instanceId);
-            if (reason?.Mode != WorkflowControlMode.Terminate) return null;
-            var instance = await _store.GetWorkflowInstanceAsync(instanceId);
-            if (instance == null || instance.Incarnation != assigned.Incarnation || WorkflowStoreRules.IsTerminal(instance.Status)) return null;
+            var reason = await _store.GetCancellationRequestAsync(instanceId, cancellationToken: cancellationToken);
+
+            if (reason?.Mode != WorkflowControlMode.Terminate)
+                return null;
+
+            var instance = await _store.GetWorkflowInstanceAsync(instanceId, cancellationToken: cancellationToken);
+
+            if (instance == null || instance.Incarnation != assigned.Incarnation || WorkflowStoreRules.IsTerminal(instance.Status))
+                return null;
+
             // A command blocks all further ordinary commits, including child starts. Every child
             // committed before acceptance is therefore visible to this scan. Detached children follow
             // the same subtree policy: their work is hard-stopped too, even after the parent stopped waiting.
@@ -98,27 +147,37 @@ public sealed partial class WorkflowHost
             var parents = new Queue<string>();
             var visited = new HashSet<string>(StringComparer.Ordinal) { instanceId };
             parents.Enqueue(instanceId);
+
             while (parents.TryDequeue(out var parentId))
             {
                 string? after = null;
+
                 do
                 {
-                    var page = await _store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: parentId, After: after, Limit: 1000));
+                    var page = await _store.QueryInstancesAsync(new InstanceQuery(ParentInstanceId: parentId, After: after, Limit: 1000),
+                        cancellationToken: cancellationToken);
+
                     foreach (var child in page.Items)
                     {
-                        if (!visited.Add(child.InstanceId)) continue;
+                        if (!visited.Add(child.InstanceId))
+                            continue;
+
                         if (WorkflowStoreRules.IsTerminal(child.Status))
                         {
                             // A completed child can still have detached descendants. Its result stays
                             // intact, while administrative subtree termination reaches their work.
                             parents.Enqueue(child.InstanceId);
+
                             continue;
                         }
+
                         children.Add(new ChildCancellation(child.InstanceId, reason, child.ParentWaitId));
                     }
+
                     after = page.NextCursor;
                 } while (after != null);
             }
+
             var saved = instance;
             instance = saved.AsTrunk(saved.ExecutionStateJson);
             instance.WorkflowDataJson = saved.WorkflowDataJson;
@@ -131,6 +190,7 @@ public sealed partial class WorkflowHost
             state["OperatorStop"] = null;
             state["InvocationClosure"] = JsonSerializer.SerializeToNode(new InvocationClosure(Now, "Terminated"));
             state.AsObject().Remove(nameof(ExecutionCheckpoint.Demands));
+
             // Termination closes activities, preserving operator-authored records and the latest failure.
             var prior = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
             var operatorIds = (prior.OperatorDiagnosticIds ?? []).ToHashSet(StringComparer.Ordinal);
@@ -140,23 +200,31 @@ public sealed partial class WorkflowHost
             state["Diagnostics"] = retained.Length == 0 ? null : JsonSerializer.SerializeToNode(retained);
             instance.ExecutionStateJson = state.ToJsonString();
             instance.Stored = null;
+
             var trace = new ExecutionTraceEntry
             {
                 Timestamp = Now, EntryType = TraceEntryType.WorkflowTerminated,
                 Payload = new CancellationTrace(reason.RequestedBy, reason.RequestedAt, reason.ReasonCode)
             };
+
             var checkpoint = ExecutionCheckpoint.ReadTrunk(instance.ExecutionStateJson);
             checkpoint.Trace.ConfigureMetadata(instance, checkpoint, _limits, _time);
+
             foreach (var entry in checkpoint.InvocationIndex.Where(entry => entry.Open && entry.PolicyAttemptId != null))
-                checkpoint.Trace.Add(new ExecutionTraceEntry { Timestamp = Now, EntryType = TraceEntryType.InvocationPolicyApplied,
+                checkpoint.Trace.Add(new ExecutionTraceEntry
+                {
+                    Timestamp = Now, EntryType = TraceEntryType.InvocationPolicyApplied,
                     StepId = entry.StepId, ContinuationId = entry.ContinuationId,
                     Payload = new InvocationTrace(entry.Id, entry.StepId, entry.ContinuationId,
                         entry.PolicyAttemptId!, entry.AttemptNumber, entry.ChildInstanceId, null,
-                        "Terminated", null, null, null) });
+                        "Terminated", null, null, null)
+                });
+
             state[nameof(ExecutionCheckpoint.TraceEntriesRecorded)] = checkpoint.TraceEntriesRecorded;
             state[nameof(ExecutionCheckpoint.TraceBudgetExhausted)] = checkpoint.TraceBudgetExhausted;
             instance.ExecutionStateJson = state.ToJsonString();
             var traces = checkpoint.Trace.Pending.Append(trace).ToArray();
+
             return new(saved, epoch => CheckpointCommit.Terminate(saved, instance, epoch,
                 children, ChildCompleted.NoticeOf(instance, checkpoint), traces,
                 retained.Select(item => item.DiagnosticId).ToArray()));

@@ -15,8 +15,10 @@ namespace IxIFlow.Tests.ExecutionTests;
 public sealed class WebhookPublisherTests
 {
     private static readonly byte[] Key = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
+
     private static WebhookEndpoint Endpoint => new("orders", new Uri("https://receiver.example/events"),
         "whsec_" + Convert.ToBase64String(Key), [OutboxEvent.WorkflowCompleted]);
+
     private static OutboxPublishContext Delivery(int attempts = 1) => new(
         new OutboxEvent("fixed_event_id", OutboxEvent.WorkflowCompleted, "order-42", "Orders", 1, "correlation",
             new DateTime(2026, 10, 18, 12, 0, 0, DateTimeKind.Utc), "{\"status\":\"Completed\"}"),
@@ -29,13 +31,17 @@ public sealed class WebhookPublisherTests
         using var handler = new Handler(HttpStatusCode.Accepted);
         var http = new Factory(handler);
         var publisher = new WebhookOutboxPublisher(Endpoint, http, time, new FixedRandom(0));
-        Assert.Equal(OutboxPublishOutcome.Delivered, (await publisher.PublishAsync(Delivery() with { StoreNowUtc = time.GetUtcNow().UtcDateTime }, default)).Outcome);
+
+        Assert.Equal(OutboxPublishOutcome.Delivered,
+            (await publisher.PublishAsync(Delivery() with { StoreNowUtc = time.GetUtcNow().UtcDateTime }, default)).Outcome);
+
         var sent = Assert.Single(handler.Sent);
         Assert.Equal("fixed_event_id", sent.Id);
         Assert.Equal(time.GetUtcNow().ToUnixTimeSeconds().ToString(), sent.Timestamp);
         Assert.Equal("application/cloudevents+json", sent.ContentType);
         Assert.Equal(HttpMethod.Post, sent.Method);
         Assert.Equal(Endpoint.Url, sent.Url);
+
         // Independent verifier: instance HMAC API, decode the signature, sign the exact captured wire body.
         using var verifier = new HMACSHA256(Convert.FromBase64String(Endpoint.Secret.Split('_', 2)[1]));
         var expected = verifier.ComputeHash(Encoding.UTF8.GetBytes(string.Join('.', sent.Id, sent.Timestamp, sent.Body)));
@@ -62,6 +68,7 @@ public sealed class WebhookPublisherTests
         var http = new Factory(handler);
         var publisher = new WebhookOutboxPublisher(Endpoint, http, time, new FixedRandom(0));
         double[] seconds = [5, 300, 1800, 7200, 18000, 36000, 50400, 72000, 86400];
+
         for (var i = 0; i < seconds.Length; i++)
         {
             var result = await publisher.PublishAsync(Delivery(i + 1) with { StoreNowUtc = time.GetUtcNow().UtcDateTime }, default);
@@ -69,7 +76,10 @@ public sealed class WebhookPublisherTests
             Assert.Equal(TimeSpan.FromSeconds(seconds[i]), result.RetryAfter);
             time.Advance(result.RetryAfter!.Value);
         }
-        Assert.Equal(OutboxPublishOutcome.GiveUp, (await publisher.PublishAsync(Delivery(10) with { StoreNowUtc = time.GetUtcNow().UtcDateTime }, default)).Outcome);
+
+        Assert.Equal(OutboxPublishOutcome.GiveUp,
+            (await publisher.PublishAsync(Delivery(10) with { StoreNowUtc = time.GetUtcNow().UtcDateTime }, default)).Outcome);
+
         Assert.Single(handler.Sent.Select(x => x.Id).Distinct());
         Assert.Single(handler.Sent.Select(x => x.Body).Distinct());
         Assert.Equal(10, handler.Sent.Select(x => x.Timestamp).Distinct().Count());
@@ -78,8 +88,13 @@ public sealed class WebhookPublisherTests
     }
 
     [Theory]
-    [InlineData(200, true)] [InlineData(204, true)] [InlineData(299, true)]
-    [InlineData(301, false)] [InlineData(400, false)] [InlineData(429, false)] [InlineData(500, false)]
+    [InlineData(200, true)]
+    [InlineData(204, true)]
+    [InlineData(299, true)]
+    [InlineData(301, false)]
+    [InlineData(400, false)]
+    [InlineData(429, false)]
+    [InlineData(500, false)]
     public async Task Only2xxIsDelivered(int status, bool delivered)
     {
         using var handler = new Handler((HttpStatusCode)status);
@@ -126,6 +141,7 @@ public sealed class WebhookPublisherTests
         var store = new InMemoryWorkflowStateRepository(time);
         using var handler = new Handler(HttpStatusCode.InternalServerError);
         var http = new Factory(handler);
+
         // A skewed host clock must not decide the attempt timestamp or the next attempt deadline.
         var hostTime = new FakeTimeProvider(time.GetUtcNow().AddYears(10));
         var publisher = new WebhookOutboxPublisher(Endpoint, http, hostTime, new FixedRandom(0));
@@ -137,7 +153,10 @@ public sealed class WebhookPublisherTests
         time.Advance(TimeSpan.FromSeconds(5));
         var retry = Assert.Single(await store.ClaimDeliveriesAsync(publisher.Name, "two", TimeSpan.FromMinutes(1), 1));
         handler.Status = HttpStatusCode.OK;
-        Assert.Equal(OutboxPublishOutcome.Delivered, (await publisher.PublishAsync(new(retry.Event, retry.Attempts, retry.StoreNowUtc), default)).Outcome);
+
+        Assert.Equal(OutboxPublishOutcome.Delivered,
+            (await publisher.PublishAsync(new(retry.Event, retry.Attempts, retry.StoreNowUtc), default)).Outcome);
+
         Assert.Equal(handler.Sent[0].Id, handler.Sent[1].Id);
         Assert.Equal(first.Event.Id, handler.Sent[1].Id);
         Assert.Equal(handler.Sent[0].Body, handler.Sent[1].Body);
@@ -167,10 +186,13 @@ public sealed class WebhookPublisherTests
     {
         using var handler = new Handler(HttpStatusCode.ServiceUnavailable);
         var factory = new Factory(handler);
+
         var minimum = await new WebhookOutboxPublisher(Endpoint, factory, random: new FixedRandom(0))
             .PublishAsync(Delivery(attempt), default);
+
         var maximum = await new WebhookOutboxPublisher(Endpoint, factory, random: new FixedRandom(1))
             .PublishAsync(Delivery(attempt), default);
+
         Assert.Equal(TimeSpan.FromSeconds(maximumSeconds), maximum.RetryAfter - minimum.RetryAfter);
         Assert.Equal(["IxIFlow.Webhooks.orders", "IxIFlow.Webhooks.orders"], factory.Names);
     }
@@ -178,8 +200,12 @@ public sealed class WebhookPublisherTests
     [Fact]
     public void CompletionSummaryHasAnErrorKindWithoutExceptionTextAndEndpointRedactsItsSecret()
     {
-        var item = OutboxEvent.Completion(new WorkflowInstance { Status = WorkflowStatus.Failed,
-            LastError = "Password=super-secret", LastErrorStackTrace = "private stack" }, DateTime.UtcNow);
+        var item = OutboxEvent.Completion(new WorkflowInstance
+        {
+            Status = WorkflowStatus.Failed,
+            LastError = "Password=super-secret", LastErrorStackTrace = "private stack"
+        }, DateTime.UtcNow);
+
         using var json = JsonDocument.Parse(item.DataJson);
         Assert.Equal("Failed", json.RootElement.GetProperty("status").GetString());
         Assert.Equal("WorkflowFailure", json.RootElement.GetProperty("errorKind").GetString());
@@ -196,7 +222,10 @@ public sealed class WebhookPublisherTests
         services.AddIxIFlow().AddWebhook(Endpoint);
         await using var provider = services.BuildServiceProvider();
         var handler = provider.GetRequiredService<IHttpMessageHandlerFactory>().CreateHandler("IxIFlow.Webhooks.orders");
-        while (handler is DelegatingHandler delegating) handler = delegating.InnerHandler!;
+
+        while (handler is DelegatingHandler delegating)
+            handler = delegating.InnerHandler!;
+
         var sockets = Assert.IsType<SocketsHttpHandler>(handler);
         Assert.False(sockets.AllowAutoRedirect);
         Assert.Equal(TimeSpan.FromMinutes(5), sockets.PooledConnectionLifetime);
@@ -210,28 +239,41 @@ public sealed class WebhookPublisherTests
     private sealed class Factory(HttpMessageHandler handler) : IHttpClientFactory
     {
         public List<string> Names { get; } = [];
+
         public HttpClient CreateClient(string name)
         {
             Names.Add(name);
+
             return new HttpClient(handler, disposeHandler: false);
         }
     }
 
-    private sealed record SentRequest(string Id, string Timestamp, string Signature, string Body,
-        string? ContentType, HttpMethod Method, Uri? Url);
+    private sealed record SentRequest(
+        string Id,
+        string Timestamp,
+        string Signature,
+        string Body,
+        string? ContentType,
+        HttpMethod Method,
+        Uri? Url);
+
     private sealed class Handler(HttpStatusCode status, TimeSpan? retryAfter = null) : HttpMessageHandler
     {
         public HttpStatusCode Status { get; set; } = status;
         public List<SentRequest> Sent { get; } = [];
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
         {
             Sent.Add(new SentRequest(request.Headers.GetValues("webhook-id").Single(),
                 request.Headers.GetValues("webhook-timestamp").Single(), request.Headers.GetValues("webhook-signature").Single(),
                 await request.Content!.ReadAsStringAsync(token), request.Content.Headers.ContentType?.MediaType,
                 request.Method, request.RequestUri));
+
             var response = new HttpResponseMessage(Status);
+
             if (retryAfter != null)
                 response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(retryAfter.Value);
+
             return response;
         }
     }

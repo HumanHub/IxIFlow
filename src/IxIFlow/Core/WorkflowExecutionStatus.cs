@@ -3,59 +3,55 @@ namespace IxIFlow.Core;
 /// <summary>
 /// Represents the execution status of a workflow throughout its lifecycle
 /// </summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(WorkflowExecutionStatusJsonConverter))]
 public enum WorkflowExecutionStatus
 {
     /// <summary>
     /// Workflow is queued/scheduled but not yet started
     /// </summary>
-    Scheduled,
-    
+    Scheduled = 0,
+
     /// <summary>
     /// Workflow is currently executing
     /// </summary>
-    Running,
-    
+    Running = 1,
+
     /// <summary>
     /// Workflow completed successfully
     /// </summary>
-    Success,
-    
+    Success = 2,
+
     /// <summary>
     /// Workflow is suspended waiting for an event (can be resumed)
     /// </summary>
-    Suspended,
-    
+    Suspended = 3,
+
     /// <summary>
-    /// Workflow failed during execution due to an exception (can potentially be compensated/retried)
+    /// Execution failed, or the request was refused before execution; consult the result's ErrorKind.
     /// </summary>
-    Faulted,
-    
-    /// <summary>
-    /// Workflow failed to start or definitively failed (cannot be recovered)
-    /// </summary>
-    Failed,
-    
+    Faulted = 4,
+
     /// <summary>
     /// Workflow exceeded its execution timeout
     /// </summary>
-    TimedOut,
-    
+    TimedOut = 6,
+
     /// <summary>
     /// Workflow was cancelled by user request
     /// </summary>
-    Cancelled,
+    Cancelled = 7,
 
     /// <summary>
-    /// An activity invocation has an unknown result and was not replayed automatically.
+    /// Execution is stopped for activity resolution, a resource limit, quarantine or verification; inspect the instance stop information.
     /// </summary>
-    NeedsResolution,
+    NeedsResolution = 8,
 
     /// <summary>Retention removed the result; the instance ID is still reserved.</summary>
-    Removed,
+    Removed = 9,
 
     /// <summary>Held until an authorized continue or cancellation.</summary>
-    Paused,
+    Paused = 10,
 
     /// <summary>A hard stop or an unhandled saga termination ended the instance.</summary>
-    Terminated
+    Terminated = 11
 }

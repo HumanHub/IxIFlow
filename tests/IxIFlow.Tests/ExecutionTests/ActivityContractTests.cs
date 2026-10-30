@@ -32,9 +32,16 @@ public sealed class ActivityContractTests
         var definition = new WorkflowDefinition
         {
             Name = "InvalidContract", Version = 1, WorkflowDataType = typeof(Data),
-            Steps = [new WorkflowStep { Id = "contract", Name = activity.Name, StepType = WorkflowStepType.Activity,
-                ActivityType = activity, WorkflowDataType = typeof(Data) }]
+            Steps =
+            [
+                new WorkflowStep
+                {
+                    Id = "contract", Name = activity.Name, StepType = WorkflowStepType.Activity,
+                    ActivityType = activity, WorkflowDataType = typeof(Data)
+                }
+            ]
         };
+
         var error = Assert.Throws<WorkflowEngineException>(() => WorkflowDefinitionValidator.Validate(definition));
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.Contains($"Activity property '{activity.Name}.Value' {reason}", error.Message);
@@ -45,10 +52,13 @@ public sealed class ActivityContractTests
     {
         var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Data>("MissingRequired")
             .Step<RequiredText>().Build());
+
         Assert.Equal(WorkflowErrorKind.InvalidDefinition, error.Kind);
         Assert.Contains("RequiredText.Value", error.Message);
+
         Workflow.Create<Data>("MappedRequired").Step<RequiredText>(step => step
             .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Text)).Build();
+
         Workflow.Create<Data>("DefaultRequired").Step<Defaults>().Build();
     }
 
@@ -57,9 +67,12 @@ public sealed class ActivityContractTests
     {
         var error = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Data>("Unmarked")
             .Step<InOut>(step => step.Input(activity => activity.Unmarked).From(ctx => ctx.WorkflowData.Number)).Build());
+
         Assert.Contains("InOut.Unmarked' is not an input", error.Message);
+
         var output = Assert.Throws<WorkflowEngineException>(() => Workflow.Create<Data>("UnmarkedOutput")
             .Step<InOut>(step => step.Output(activity => activity.Unmarked).To(ctx => ctx.WorkflowData.Number)).Build());
+
         Assert.Contains("InOut.Unmarked' is not an output", output.Message);
     }
 
@@ -69,6 +82,7 @@ public sealed class ActivityContractTests
         var definition = Workflow.Create<Data>("FluentInOut").Step<InOut>(step => step
             .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Number)
             .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Number)).Build();
+
         var result = await Execute(definition, new Data { Number = 4 });
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(5, Assert.IsType<Data>(result.WorkflowData).Number);
@@ -80,33 +94,40 @@ public sealed class ActivityContractTests
     public async Task InOutMapsBothWaysThroughYamlAndStepDefaultsSatisfyRequired(bool stepDefault, int expected)
     {
         var yaml = """
-            schemaVersion: "1.0"
-            workflow:
-              name: YamlInOut
-              version: 1
-              dataType: Data
-            definitions:
-              - kind: activity
-                id: in-out
-                activity: InOut
-                input:
-                  - target: Value
-                    from:
-                      kind: path
-                      path: workflow.Number
-                output:
-                  - source: Value
-                    to:
-                      kind: path
-                      path: workflow.Number
-            """;
+                   schemaVersion: "1.0"
+                   workflow:
+                     name: YamlInOut
+                     version: 1
+                     dataType: Data
+                   definitions:
+                     - kind: activity
+                       id: in-out
+                       activity: InOut
+                       input:
+                         - target: Value
+                           from:
+                             kind: path
+                             path: workflow.Number
+                       output:
+                         - source: Value
+                           to:
+                             kind: path
+                             path: workflow.Number
+                   """;
+
         yaml = yaml.Replace("\r\n", "\n", StringComparison.Ordinal);
+
         if (stepDefault)
-            yaml = yaml.Replace("    input:\n      - target: Value\n        from:\n          kind: path\n          path: workflow.Number", "    defaults:\n      Value: 11", StringComparison.Ordinal);
+            yaml = yaml.Replace("    input:\n      - target: Value\n        from:\n          kind: path\n          path: workflow.Number",
+                "    defaults:\n      Value: 11", StringComparison.Ordinal);
+
         var options = new WorkflowSourceOptions();
         options.Types["Data"] = "global::IxIFlow.Tests.ExecutionTests.ActivityContractTests.Data";
         options.Types["InOut"] = "global::IxIFlow.Tests.ExecutionTests.ActivityContractTests.RequiredInOut";
-        var definition = IxIFlow.Authoring.WorkflowCompilation.Build(WorkflowSourceTranslator.Translate(yaml, "contract.yaml", options));
+
+        var definition =
+            IxIFlow.Tests.Infrastructure.TestWorkflowCompilation.Build(WorkflowSourceTranslator.Translate(yaml, "contract.yaml", options));
+
         var result = await Execute(definition, new Data { Number = 4 });
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(expected, Assert.IsType<Data>(result.WorkflowData).Number);
@@ -118,6 +139,7 @@ public sealed class ActivityContractTests
         var definition = Workflow.Create<Data>("Convention").Step<Convention>(step => step
             .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Number)
             .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Number)).Build();
+
         var result = await Execute(definition, new Data { Number = 8 });
         Assert.Equal(9, Assert.IsType<Data>(result.WorkflowData).Number);
     }
@@ -129,6 +151,7 @@ public sealed class ActivityContractTests
     {
         var definition = Workflow.Create<Data>("RequiredRuntime").Step<RequiredText>(step => step
             .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Text)).Build();
+
         var result = await Execute(definition, new Data { Text = value });
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         Assert.Contains("InvalidInput", result.ErrorMessage);
@@ -142,12 +165,15 @@ public sealed class ActivityContractTests
         var definition = Workflow.Create<Data>("RetryRequired").Step<Empty>().Saga(saga => saga.Step<RequiredText>(step => step
             .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Text)
             .OnError<WorkflowEngineException>(handler => handler.ThenRetry(1)))).Build();
+
         using var provider = Services();
         var result = await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition, new Data());
         Assert.Equal(WorkflowExecutionStatus.Faulted, result.Status);
         var trace = await provider.GetRequiredService<IWorkflowClient>().GetTraceAsync(result.InstanceId);
+
         Assert.Collection(trace.Where(entry => entry.EntryType == TraceEntryType.ActivityFailed),
             SafeFailure, SafeFailure);
+
         var raw = Assert.Single(await provider.GetRequiredService<IWorkflowDiagnostics>().ReadAsync(result.InstanceId));
         Assert.Contains("InvalidInput", raw.Message);
         Assert.Equal(trace.Last(entry => entry.EntryType == TraceEntryType.ActivityFailed).Error!.DiagnosticId, raw.DiagnosticId);
@@ -166,6 +192,7 @@ public sealed class ActivityContractTests
     {
         var definition = Workflow.Create<Data>("RequiredWhitespace").Step<RequiredText>(step => step
             .Input(activity => activity.Value).From(ctx => ctx.WorkflowData.Text)).Build();
+
         var result = await Execute(definition, new Data { Text = " " });
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.True(Assert.IsType<Data>(result.WorkflowData).Executed);
@@ -178,9 +205,12 @@ public sealed class ActivityContractTests
     {
         var definition = Workflow.Create<Data>("TypedDefaults").Step<Defaults>(step =>
         {
-            if (mapped) step.Input(activity => activity.Typed).From(ctx => ctx.WorkflowData.Number);
+            if (mapped)
+                step.Input(activity => activity.Typed).From(ctx => ctx.WorkflowData.Number);
+
             step.Output(activity => activity.Result).To(ctx => ctx.WorkflowData.Number);
         }).Build();
+
         var result = await Execute(definition, new Data { Number = 23 });
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         var data = Assert.IsType<Data>(result.WorkflowData);
@@ -194,6 +224,7 @@ public sealed class ActivityContractTests
         var definition = Workflow.Create<Data>("RetryDefault").Step<Empty>().Saga(saga => saga.Step<RetryDefault>(step => step
             .Output(activity => activity.Value).To(ctx => ctx.WorkflowData.Number)
             .OnError<InvalidOperationException>(handler => handler.ThenRetry(1)))).Build();
+
         var result = await Execute(definition, new Data());
         Assert.Equal(WorkflowExecutionStatus.Success, result.Status);
         Assert.Equal(7, Assert.IsType<Data>(result.WorkflowData).Number);
@@ -250,12 +281,14 @@ public sealed class ActivityContractTests
         services.AddLogging();
         IxIFlow.Tests.Infrastructure.DiagnosticTestAccess.Allow(services);
         services.AddIxIFlow();
+
         return services.BuildServiceProvider();
     }
 
     private static async Task<WorkflowExecutionResult> Execute(WorkflowDefinition definition, Data data)
     {
         using var provider = Services();
+
         return await provider.GetRequiredService<IWorkflowClient>().RunAsync(definition, data,
             new WorkflowOptions { EnableTracing = true });
     }
@@ -271,69 +304,164 @@ public sealed class ActivityContractTests
     {
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
-    public sealed class PrivateInput : Empty { [ActivityInput] private int Value { get; set; } }
-    public sealed class InputWithoutSetter : Empty { [ActivityInput] public int Value { get; private set; } }
-    public sealed class OutputWithoutGetter : Empty { [ActivityOutput] public int Value { private get; set; } }
-    public sealed class InOutWithoutSetter : Empty { [ActivityInputOutput] public int Value { get; private set; } }
-    public sealed class InOutWithoutGetter : Empty { [ActivityInputOutput] public int Value { private get; set; } }
-    public sealed class RequiredOutput : Empty { [ActivityOutput, Required] public int Value { get; set; } }
-    public sealed class RequiredConventionOutput : Empty { [Required] public int Value => 1; }
-    public sealed class DefaultWithoutSetter : Empty { [DefaultValue(1)] public int Value { get; private set; } }
-    public sealed class InconvertibleDefault : Empty { [ActivityInput, DefaultValue("no-number")] public int Value { get; set; } }
-    public class InvalidTypedLiteral : Empty { [ActivityInput, DefaultValue(typeof(int), "invalid")] public virtual string? Value { get; set; } }
-    public sealed class DerivedInvalidTypedLiteral : InvalidTypedLiteral { public override string? Value { get; set; } }
-    public sealed class NullValueDefault : Empty { [ActivityInput, DefaultValue(null)] public int Value { get; set; } }
+
+    public sealed class PrivateInput : Empty
+    {
+        [ActivityInput] private int Value { get; set; }
+    }
+
+    public sealed class InputWithoutSetter : Empty
+    {
+        [ActivityInput] public int Value { get; private set; }
+    }
+
+    public sealed class OutputWithoutGetter : Empty
+    {
+        [ActivityOutput] public int Value { private get; set; }
+    }
+
+    public sealed class InOutWithoutSetter : Empty
+    {
+        [ActivityInputOutput] public int Value { get; private set; }
+    }
+
+    public sealed class InOutWithoutGetter : Empty
+    {
+        [ActivityInputOutput] public int Value { private get; set; }
+    }
+
+    public sealed class RequiredOutput : Empty
+    {
+        [ActivityOutput, Required] public int Value { get; set; }
+    }
+
+    public sealed class RequiredConventionOutput : Empty
+    {
+        [Required] public int Value => 1;
+    }
+
+    public sealed class DefaultWithoutSetter : Empty
+    {
+        [DefaultValue(1)] public int Value { get; private set; }
+    }
+
+    public sealed class InconvertibleDefault : Empty
+    {
+        [ActivityInput, DefaultValue("no-number")]
+        public int Value { get; set; }
+    }
+
+    public class InvalidTypedLiteral : Empty
+    {
+        [ActivityInput, DefaultValue(typeof(int), "invalid")]
+        public virtual string? Value { get; set; }
+    }
+
+    public sealed class DerivedInvalidTypedLiteral : InvalidTypedLiteral
+    {
+        public override string? Value { get; set; }
+    }
+
+    public sealed class NullValueDefault : Empty
+    {
+        [ActivityInput, DefaultValue(null)] public int Value { get; set; }
+    }
 
     public class InOut : IAsyncActivity
     {
         [ActivityInputOutput] public virtual int Value { get; set; }
         public int Unmarked { get; set; }
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Value++; return Task.CompletedTask; }
+        {
+            Value++;
+
+            return Task.CompletedTask;
+        }
     }
-    public sealed class RequiredInOut : InOut { [Required] public override int Value { get; set; } }
+
+    public sealed class RequiredInOut : InOut
+    {
+        [Required] public override int Value { get; set; }
+    }
 
     [WorkflowActivity("contract.convention")]
     public sealed class Convention : IAsyncActivity
     {
         public int Value { get; set; }
-        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Value++; return Task.CompletedTask; }
-    }
-    public sealed class RequiredText : IAsyncActivity
-    {
-        [ActivityInput, Required] public string? Value { get; set; }
-        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { ((Data)context.WorkflowData).Executed = true; return Task.CompletedTask; }
-    }
-    public sealed class Defaults : IAsyncActivity
-    {
-        [ActivityInput, Required, DefaultValue(7)] public int Typed { get; set; }
-        [ActivityInput, DefaultValue("12")] public int Converted { get; set; }
-        [ActivityInput, Required, DefaultValue("customer-db")] public string ConnectionRef { get; set; } = string.Empty;
-        [ActivityOutput] public int Result { get; private set; }
-        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
-        { Result = Typed + Converted; ((Data)context.WorkflowData).Text = ConnectionRef; return Task.CompletedTask; }
-    }
-    public sealed class RetryDefault : IAsyncActivity
-    {
-        [ActivityInputOutput, DefaultValue(7)] public int Value { get; set; }
+
         public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
         {
-            ((Data)context.WorkflowData).Text += Value + ",";
-            if (context.Attempt.Number == 1) { Value = 99; throw new InvalidOperationException("Retry"); }
+            Value++;
+
             return Task.CompletedTask;
         }
     }
+
+    public sealed class RequiredText : IAsyncActivity
+    {
+        [ActivityInput, Required] public string? Value { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            ((Data)context.WorkflowData).Executed = true;
+
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class Defaults : IAsyncActivity
+    {
+        [ActivityInput, Required, DefaultValue(7)]
+        public int Typed { get; set; }
+
+        [ActivityInput, DefaultValue("12")] public int Converted { get; set; }
+
+        [ActivityInput, Required, DefaultValue("customer-db")]
+        public string ConnectionRef { get; set; } = string.Empty;
+
+        [ActivityOutput] public int Result { get; private set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            Result = Typed + Converted;
+            ((Data)context.WorkflowData).Text = ConnectionRef;
+
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class RetryDefault : IAsyncActivity
+    {
+        [ActivityInputOutput, DefaultValue(7)] public int Value { get; set; }
+
+        public Task ExecuteAsync(IActivityContext context, CancellationToken cancellationToken = default)
+        {
+            ((Data)context.WorkflowData).Text += Value + ",";
+
+            if (context.Attempt.Number == 1)
+            {
+                Value = 99;
+
+                throw new InvalidOperationException("Retry");
+            }
+
+            return Task.CompletedTask;
+        }
+    }
+
     [WorkflowActivity("contract.catalog")]
     public sealed class CatalogActivity : Empty
     {
         [ActivityInput, Required, DefaultValue(3), Display(Name = "Input label", Description = "Input help"), UIHint("code")]
         public int Input { get; set; }
+
         [ActivityOutput, Display(Name = "Output label", Description = "Output help")]
         public int Output { get; private set; }
+
         [ActivityInputOutput, Display(Name = "Shared label", Description = "Shared help")]
         public int Shared { get; set; }
+
         public int Unmarked { get; set; }
     }
 }

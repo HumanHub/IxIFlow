@@ -1,5 +1,4 @@
 'use strict';
-// spec: G-10
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -24,7 +23,7 @@ function factory(platform) {
     return endpoint => registered.createDebugAdapterDescriptor({ configuration: { endpoint } });
 }
 
-test('G-10 descriptor connects to the configured current-user pipe or IPv4/IPv6 loopback port', () => {
+test('Descriptor connects to the configured current-user pipe or IPv4/IPv6 loopback port', () => {
     const connect = factory('win32');
     assert.equal(connect('pipe:ixiflow-debug').pipe, '\\\\.\\pipe\\ixiflow-debug');
     assert.equal(connect('tcp://127.0.0.1:4711').host, '127.0.0.1');
@@ -33,7 +32,7 @@ test('G-10 descriptor connects to the configured current-user pipe or IPv4/IPv6 
     assert.match(factory('linux')('pipe:ixiflow-debug').pipe, /CoreFxPipe_ixiflow-debug$/);
 });
 
-test('G-10 descriptor refuses external endpoints, URL credentials and arbitrary pipe paths', () => {
+test('Descriptor refuses external endpoints, URL credentials and arbitrary pipe paths', () => {
     const connect = factory('win32');
     for (const endpoint of ['tcp://example.com:4711', 'tcp://0.0.0.0:4711', 'tcp://secret@127.0.0.1:4711',
         'tcp://127.0.0.1:4711?token=secret', 'https://127.0.0.1:4711', 'pipe:../other', 'pipe:']) {

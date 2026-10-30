@@ -18,12 +18,17 @@ internal sealed class RedactingJson(IServiceProvider services)
         try
         {
             var provider = services.GetService(typeof(IRedactorProvider)) as IRedactorProvider;
+
             return provider?.GetRedactor(SensitiveAttribute.Classification)?.Redact(value) ?? "";
         }
-        catch { return ""; }
+        catch
+        {
+            return "";
+        }
     }
 
     private static readonly ConditionalWeakTable<Type, ClassifiedPath[]> Paths = new();
+
     internal sealed record ClassifiedPath(string Path, DataClassificationSet Classifications);
 
     internal static IReadOnlyList<ClassifiedPath> ClassifiedPaths(Type type) =>
@@ -35,8 +40,10 @@ internal sealed class RedactingJson(IServiceProvider services)
                 ? Attribute.GetCustomAttributes(member, typeof(DataClassificationAttribute), inherit: true)
                 : provider?.GetCustomAttributes(typeof(DataClassificationAttribute), true))
             ?.Cast<DataClassificationAttribute>().ToArray();
-        return attributes is not { Length: > 0 } ? null :
-            new DataClassificationSet(attributes.Select(attribute => attribute.Classification).ToArray());
+
+        return attributes is not { Length: > 0 }
+            ? null
+            : new DataClassificationSet(attributes.Select(attribute => attribute.Classification).ToArray());
     }
 
     public string Serialize(object? value)
@@ -57,15 +64,19 @@ internal sealed class RedactingJson(IServiceProvider services)
         try
         {
             var type = WorkflowTypeIdentity.Resolve(typeName);
+
             // Never run an opaque converter just to inspect its output.
             if (type == null || type.IsDefined(typeof(JsonConverterAttribute), true))
                 return "\"\"";
+
             if (ActivityTypes.IsActivity(type))
             {
                 using var saved = JsonDocument.Parse(json);
+
                 return new Projection(services.GetService(typeof(IRedactorProvider)) as IRedactorProvider)
                     .ProjectSaved(saved.RootElement, type).GetRawText();
             }
+
             return Serialize(JsonSerializer.Deserialize(json, type));
         }
         catch
@@ -86,6 +97,7 @@ internal sealed class RedactingJson(IServiceProvider services)
         {
             _provider = provider;
             _raw = raw;
+
             _options = new JsonSerializerOptions
             {
                 TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { Modify } }
@@ -98,19 +110,25 @@ internal sealed class RedactingJson(IServiceProvider services)
             {
                 if (++_depth > 64)
                     throw new JsonException("Inspection depth exceeded");
+
                 if (value == null)
                     return JsonSerializer.SerializeToElement<object?>(null);
+
                 var type = value.GetType();
                 _ = ClassifiedPaths(type);
                 var info = _options.GetTypeInfo(type);
+
                 if (info.Kind == JsonTypeInfoKind.Object)
                     return JsonSerializer.SerializeToElement(value, info);
+
                 if (info.Kind == JsonTypeInfoKind.Enumerable)
                     return JsonSerializer.SerializeToElement(((IEnumerable)value).Cast<object?>().Select(Project).ToArray());
+
                 // Dictionary keys, arbitrary JSON and custom converters do not provide member classification.
                 if (info.Kind == JsonTypeInfoKind.None && Scalar(type) &&
                     !type.IsDefined(typeof(JsonConverterAttribute), true))
                     return JsonSerializer.SerializeToElement(value, info);
+
                 return Unsupported();
             }
             finally
@@ -124,40 +142,75 @@ internal sealed class RedactingJson(IServiceProvider services)
         {
             try
             {
-                if (++_depth > 64 || type.IsDefined(typeof(JsonConverterAttribute), true)) return Erased;
-                if (saved.ValueKind == JsonValueKind.Null) return saved.Clone();
+                if (++_depth > 64 || type.IsDefined(typeof(JsonConverterAttribute), true))
+                    return Erased;
+
+                if (saved.ValueKind == JsonValueKind.Null)
+                    return saved.Clone();
+
                 type = Nullable.GetUnderlyingType(type) ?? type;
+
                 if (Scalar(type))
                     return Project(System.Text.Json.JsonSerializer.Deserialize(saved.GetRawText(), type,
                         new JsonSerializerOptions { NumberHandling = JsonNumberHandling.AllowReadingFromString }));
+
                 if (saved.ValueKind == JsonValueKind.Array)
                 {
-                    var element = type.IsArray ? type.GetElementType() : type.GetInterfaces().Prepend(type)
-                        .FirstOrDefault(item => item.IsGenericType && item.GetGenericTypeDefinition() == typeof(IEnumerable<>))?.GenericTypeArguments[0];
-                    return element == null ? Erased : JsonSerializer.SerializeToElement(saved.EnumerateArray().Select(item => ProjectSaved(item, element)).ToArray());
+                    var element = type.IsArray
+                        ? type.GetElementType()
+                        : type.GetInterfaces().Prepend(type)
+                            .FirstOrDefault(item => item.IsGenericType && item.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+                            ?.GenericTypeArguments[0];
+
+                    return element == null
+                        ? Erased
+                        : JsonSerializer.SerializeToElement(saved.EnumerateArray().Select(item => ProjectSaved(item, element)).ToArray());
                 }
-                if (saved.ValueKind != JsonValueKind.Object || type == typeof(object) || typeof(IDictionary).IsAssignableFrom(type)) return Erased;
-                var properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public).Where(property => property.GetIndexParameters().Length == 0)
+
+                if (saved.ValueKind != JsonValueKind.Object || type == typeof(object) || typeof(IDictionary).IsAssignableFrom(type))
+                    return Erased;
+
+                var properties = type.GetProperties(BindingFlags.Instance | BindingFlags.Public)
+                    .Where(property => property.GetIndexParameters().Length == 0)
                     .GroupBy(property => property.GetCustomAttribute<JsonPropertyNameAttribute>()?.Name ?? property.Name)
                     .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+
                 var projected = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+
                 foreach (var field in saved.EnumerateObject())
                 {
                     if (!properties.TryGetValue(field.Name, out var property) || property.IsDefined(typeof(JsonConverterAttribute)) ||
-                        property.IsDefined(typeof(JsonExtensionDataAttribute))) { projected[field.Name] = Erased; continue; }
+                        property.IsDefined(typeof(JsonExtensionDataAttribute)))
+                    {
+                        projected[field.Name] = Erased;
+
+                        continue;
+                    }
+
                     if (Classification(property) is { } classified)
                     {
                         // A classified opaque shape is erased; scalar redactors receive its original typed value.
                         var memberType = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
-                        projected[field.Name] = Scalar(memberType) ? Redact(System.Text.Json.JsonSerializer.Deserialize(field.Value.GetRawText(), memberType,
-                            new JsonSerializerOptions { NumberHandling = JsonNumberHandling.AllowReadingFromString }), classified) : Erased;
+
+                        projected[field.Name] = Scalar(memberType)
+                            ? Redact(System.Text.Json.JsonSerializer.Deserialize(field.Value.GetRawText(), memberType,
+                                new JsonSerializerOptions { NumberHandling = JsonNumberHandling.AllowReadingFromString }), classified)
+                            : Erased;
                     }
-                    else projected[field.Name] = ProjectSaved(field.Value, property.PropertyType);
+                    else
+                        projected[field.Name] = ProjectSaved(field.Value, property.PropertyType);
                 }
+
                 return JsonSerializer.SerializeToElement(projected);
             }
-            catch { return Erased; }
-            finally { _depth--; }
+            catch
+            {
+                return Erased;
+            }
+            finally
+            {
+                _depth--;
+            }
         }
 
         // Replace the property contract, including its type: numbers and objects can become JSON strings.
@@ -165,29 +218,37 @@ internal sealed class RedactingJson(IServiceProvider services)
         {
             if (info.Kind != JsonTypeInfoKind.Object)
                 return;
+
             for (var index = 0; index < info.Properties.Count; index++)
             {
                 var original = info.Properties[index];
+
                 if (original.Get == null)
                     continue;
+
                 var classification = Classification(original.AttributeProvider);
                 var replacement = info.CreateJsonPropertyInfo(typeof(JsonElement), original.Name);
                 replacement.Order = original.Order;
+
                 replacement.Get = owner =>
                 {
                     try
                     {
                         if (original.AttributeProvider == null || original.CustomConverter != null || original.IsExtensionData)
                             return Unsupported();
+
                         var value = original.Get(owner);
+
                         return !_raw && classification is { } classified
-                            ? Redact(value, classified) : Project(value);
+                            ? Redact(value, classified)
+                            : Project(value);
                     }
                     catch when (!_raw)
                     {
                         return Erased;
                     }
                 };
+
                 info.Properties[index] = replacement;
             }
         }
@@ -198,18 +259,25 @@ internal sealed class RedactingJson(IServiceProvider services)
             {
                 if (++_depth > 64)
                     throw new JsonException("Inspection depth exceeded");
+
                 if (value == null)
                     return Erased;
+
                 var info = _options.GetTypeInfo(value.GetType());
+
                 if (info.Kind == JsonTypeInfoKind.Enumerable)
                     return JsonSerializer.SerializeToElement(((IEnumerable)value).Cast<object?>()
                         .Select(item => Redact(item, classification)).ToArray());
+
                 var redactor = _provider?.GetRedactor(classification);
+
                 if (redactor == null)
                     return Erased;
+
                 // Inspect the complete value before handing it to a redactor. Unsupported shapes erase whole.
                 var raw = new Projection(null, raw: true).Project(value);
                 var input = value is string text ? text : raw.GetRawText();
+
                 return JsonSerializer.SerializeToElement(redactor.Redact(input));
             }
             catch
@@ -223,7 +291,8 @@ internal sealed class RedactingJson(IServiceProvider services)
         }
 
         private JsonElement Unsupported() => _raw
-            ? throw new JsonException("The inspection contract is opaque") : Erased;
+            ? throw new JsonException("The inspection contract is opaque")
+            : Erased;
 
         private static bool Scalar(Type type) => type.IsPrimitive || type.IsEnum ||
             type == typeof(string) || type == typeof(decimal) || type == typeof(Guid) ||
