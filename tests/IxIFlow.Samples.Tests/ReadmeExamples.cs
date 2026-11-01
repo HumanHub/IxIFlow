@@ -3,6 +3,7 @@ using IxIFlow.Core;
 using IxIFlow.Extensions;
 using IxIFlow.Samples;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
 
 namespace IxIFlow.Samples.Tests;
 
@@ -33,6 +34,41 @@ public sealed class ReadmeExamples
 
         Console.WriteLine(((QuoteData)result.WorkflowData!).Amount); // 12.50
         Assert.Equal(12.5m, Assert.IsType<QuoteData>(result.WorkflowData).Amount);
+    }
+
+    [Fact]
+    public async Task RootApprovalWaitsForAReply()
+    {
+        await using var provider = SampleTests.Services();
+        var client = SampleTests.Client(provider);
+
+        var started = await client.RunAsync(OrderApproval.Definition(), new OrderData());
+
+        // started.Status is Suspended: the instance is saved and waits for a decision.
+
+        var wait = (await client.GetOpenWaitsAsync(new WaitQuery(InstanceId: started.InstanceId))).Single();
+        var finished = await client.ReplyAsync(wait.Token, new OrderDecision { Approved = true, By = "manager" });
+
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+        Assert.True(finished.Status == WorkflowExecutionStatus.Success, finished.ErrorMessage);
+        Assert.Equal("approved", Assert.IsType<OrderData>(finished.WorkflowData).Outcome);
+    }
+
+    [Fact]
+    public async Task RootApprovalEscalatesWhenNobodyAnswers()
+    {
+        var time = new FakeTimeProvider();
+        await using var provider = SampleTests.Services(time);
+        var client = SampleTests.Client(provider);
+
+        var started = await client.RunAsync(OrderApproval.Definition(), new OrderData());
+        Assert.Equal(WorkflowExecutionStatus.Suspended, started.Status);
+
+        time.Advance(TimeSpan.FromDays(2));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var finished = await client.AwaitAsync(started.InstanceId, WorkflowAwaitCondition.Finished, deadline.Token);
+        Assert.True(finished.Status == WorkflowExecutionStatus.Success, finished.ErrorMessage);
+        Assert.Equal("escalated", Assert.IsType<OrderData>(finished.WorkflowData).Outcome);
     }
 
     [Fact]

@@ -3,7 +3,7 @@ title: Engine capabilities
 description: Available execution, persistence and integration features.
 ---
 
-This page summarizes IxIFlow 1.0. The [roadmap](roadmap.md) describes features after 1.0.
+This page summarizes IxIFlow 1.0. The [roadmap](roadmap.md) describes what comes next.
 
 | Area | Available in 1.0 |
 | --- | --- |
@@ -28,4 +28,4 @@ All activity and compensation code executes inside the host process in 1.0. Dura
 
 Expressions and combiners must be pure, and external effects need application idempotency or explicit recovery. The engine cannot make a remote service participate in its checkpoint transaction.
 
-Outgoing webhooks, incoming HTTP triggers, management endpoints and bundle publishing are built. Interactive debugger controls and large-payload storage by reference are available. Process isolation and Native AOT are after 1.0.
+Outgoing webhooks, incoming HTTP triggers, management endpoints and bundle publishing are built. Interactive debugger controls and large-payload storage by reference are available.

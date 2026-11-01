@@ -110,6 +110,6 @@ The optional [coordinator package](coordinators.md) provides matching, registry 
 
 SQL Server and PostgreSQL support zero, one or several coordinators. Hosts connect to every live coordinator and writers send a hint through one available link. Losing the last link immediately restores ordinary polling. Demands, claim filtering, affinity and visibility of unschedulable work run in the stores and host recovery service independently of coordinators. A woken host that dies before claiming leaves its instance runnable; competing coordinator and poll claims are settled by the same fenced lease.
 
-The public executor/host message contract is implemented. In 1.0, workflows run only in the host process; an activity crash can stop that host, and saved instances recover on another compatible host or after restart. Process slots, executor programs, pipe transport and process liveness/resource accounting are after 1.0. See the [roadmap](roadmap.md).
+The public executor/host message contract is implemented. In 1.0, workflows run only in the host process; an activity crash can stop that host, and saved instances recover on another compatible host or after restart.
 
 For private certificate trust, `CoordinatorCertificateTrust.RevokedThumbprints` optionally denies SHA-256 certificate hashes. Revocation takes precedence over a leaf pin and is checked on the validated private CA chain as well. Operators can revoke a compromised leaf without rotating the trust anchor.

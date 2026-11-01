@@ -5,7 +5,7 @@ description: Author, run and operate durable .NET 10 workflows.
 
 IxIFlow is a durable workflow engine for .NET 10 and C#. Author a typed definition with the fluent API or YAML, run it through `IWorkflowClient`, and choose a store for checkpoints, inboxes, waits, traces and completion deliveries.
 
-These guides describe IxIFlow 1.0. The [roadmap](roadmap.md) describes features outside this release.
+These guides describe IxIFlow 1.0. The [roadmap](roadmap.md) describes what comes next.
 
 ## Guides
 
@@ -17,6 +17,7 @@ These guides describe IxIFlow 1.0. The [roadmap](roadmap.md) describes features 
 | [Activity SDK](activity-sdk.md) | Activity contracts, .NET metadata, DI and installed catalogs |
 | [Activity and package catalog](activity-catalog.md) | Portable descriptors, verified uploads, indexing and scoped readers |
 | [Workflow catalog](workflow-catalog.md) | Workflow descriptors, presentation refresh and scoped workflow reads |
+| [Bundle hosting](bundle-hosting.md) | Published versions, package resolution, native libraries, the bundle cache and its limits |
 | [Execution model](execution-model.md) | Commits, recovery, leases, inboxes, waits, children and parallel data |
 | [Sagas](sagas.md) | Compensation, saved faults and retry scopes |
 | [Reply tokens](reply-tokens.md) | Capability tokens, safe handling and reply authorization |
@@ -40,7 +41,7 @@ These guides describe IxIFlow 1.0. The [roadmap](roadmap.md) describes features 
 | [Diagnostics](diagnostics.md) | Analyzer and YAML diagnostic IDs and their meaning |
 | [Architecture](architecture.md) | Runtime boundaries and packages |
 | [Engine capabilities](engine-capabilities.md) | A compact guide to available behavior |
-| [Roadmap](roadmap.md) | Features after 1.0 |
+| [Roadmap](roadmap.md) | What comes next |
 
 ## Examples
 

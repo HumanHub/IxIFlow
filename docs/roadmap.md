@@ -1,16 +1,17 @@
 ---
-title: After 1.0
-description: Features outside the IxIFlow 1.0 release.
+title: Roadmap
+description: What comes after IxIFlow 1.0.
 ---
 
-## After 1.0
+IxIFlow 1.0 is the engine: typed fluent and YAML authoring, durable execution, publishing, catalogs, coordinators and the debugger. The next step is a visual designer built on it.
 
-IxIFlow 1.0 runs workflows in the host process. The following features are outside this release:
+## Next: a workflow and activity designer
 
-- Process isolation: separate executor programs and process slots, pipe transport, liveness checks, hard timeouts, resource accounting and fenced crash reports. Deployment tooling supplies process memory limits.
-- Native AOT for compiled-in workflows, with trimming and publish/run verification.
-- Broker publisher and consumer examples for RabbitMQ and Azure Service Bus.
-- A distributed map that pages external input, bounds child concurrency and stores results outside the parent checkpoint.
-- Composed durable-step and workflow-call state-machine triggers.
+A web editor for designing workflows and activities without writing their documents by hand:
 
-See [engine capabilities](engine-capabilities.md) for the 1.0 feature set and [hosting](coordinator-and-hosts.md) for its deployment boundaries. These directions carry no delivery dates.
+- **Workflow editor.** Build sequences, branches, parallel paths, waits, sagas and workflow calls on a canvas. The editor works on the same YAML document that the engine validates, publishes and runs, so a design and its document stay one artifact.
+- **Activity designer.** Describe an activity's inputs, outputs, defaults and presentation, and author YAML code activities.
+- **Catalog-driven palette.** Installed and published activities, templates and workflows appear with the descriptors that the catalog APIs return.
+- **Publishing from the editor.** Validate, preview and publish drafts through the [publishing HTTP API](publishing-http.md), with its authorization, preconditions and publication history.
+
+The designer uses the 1.0 publishing and catalog APIs; the engine remains a library that runs in your process. There are no delivery dates. See [engine capabilities](engine-capabilities.md) for what 1.0 provides today.

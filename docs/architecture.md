@@ -42,6 +42,6 @@ The supported executor runs in process. Shared SQL Server or PostgreSQL state al
 
 Coordinator discovery, authenticated links, capability/demand placement, expiring pins, last-host affinity and unschedulable-work inspection are implemented. Coordinators improve wake latency; fenced store claims enforce placement and polling provides fallback. Demands place compute only; [full data residency](coordinator-and-hosts.md#placement-and-data-residency) needs a separate cluster and store per region.
 
-1.0 runs workflows only in the host process. Process isolation and pipe transport are after 1.0, as is Native AOT support.
+1.0 runs workflows only in the host process.
 
 See [hosting](coordinator-and-hosts.md), [execution model](execution-model.md) and the [roadmap](roadmap.md).

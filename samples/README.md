@@ -66,7 +66,7 @@ Pure fluent activities can use the public-setter/input and public-getter/output 
 
 [SampleTests.cs](../tests/IxIFlow.Samples.Tests/SampleTests.cs) and [YamlSampleTests.cs](../tests/IxIFlow.Samples.Tests/YamlSampleTests.cs) compare saved structure hashes and serialized results for YAML/fluent pairs, including empty lists, loop boundaries, each parallel join, typed faults, retries, delays, replies and timeouts. Retry checks verify runtime IDs before comparing their roles across instances. [RecipeTests.cs](../tests/IxIFlow.Samples.Tests/RecipeTests.cs) runs every existing recipe on memory with fake time. [ReadmeExamples.cs](../tests/IxIFlow.Samples.Tests/ReadmeExamples.cs) compiles and executes the root README quick start. The existing conformance suite supplies additional store and failure scenarios.
 
-The [root release scope](../README.md#status-and-roadmap) describes 1.0 and links to features after 1.0. Workflow publishing, coordinators, debugger controls, management HTTP and incoming HTTP triggers are available. Process isolation remains after 1.0; see the [documentation index](../docs/index.md).
+The [root release scope](../README.md#status-and-roadmap) describes 1.0 and what comes next. Workflow publishing, coordinators, debugger controls, management HTTP and incoming HTTP triggers are available. See the [documentation index](../docs/index.md).
 
 ## Demo activities
 
