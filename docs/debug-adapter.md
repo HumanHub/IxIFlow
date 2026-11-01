@@ -1,4 +1,7 @@
-# Attach the workflow debugger from VS Code
+---
+title: Attach the workflow debugger from VS Code
+description: Attach VS Code to a running host through the workflow debug adapter.
+---
 
 The application hosts the adapter in its own process. Enable engine debugging and register a local endpoint and an application authorization policy:
 

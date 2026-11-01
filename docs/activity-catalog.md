@@ -1,4 +1,7 @@
-# Activity and package catalog
+---
+title: Activity and package catalog
+description: Activity descriptors, installed packages and the activity and package catalog.
+---
 
 `ActivityDescriptor.OfType(type, packageId, packageVersion)` derives a declaration from an activity's attributes and public properties. `Scan(assembly, packageId, packageVersion)` refuses invalid attributed types. Local registration additionally requires the default, noncollectible load context and a transient service registration.
 

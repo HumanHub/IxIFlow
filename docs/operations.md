@@ -1,4 +1,7 @@
-# Workflow operations
+---
+title: Workflow operations
+description: Inspect, resolve, release, cancel and terminate workflow instances.
+---
 
 For authorized management endpoints, see [operations over HTTP](operations-http.md).
 

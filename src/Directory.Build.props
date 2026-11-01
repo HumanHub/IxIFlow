@@ -2,9 +2,9 @@
   <!-- Every package ships under Apache 2.0 with its license text and NOTICE. -->
   <PropertyGroup>
     <Version>1.0.0</Version>
-    <Authors>HumanHub.io</Authors>
-    <Company>HumanHub.io</Company>
-    <Copyright>Copyright 2025-2026 HumanHub.io</Copyright>
+    <Authors>HumanHub LLC</Authors>
+    <Company>HumanHub LLC</Company>
+    <Copyright>Copyright 2025-2026 HumanHub LLC</Copyright>
     <RepositoryUrl>https://github.com/HumanHub/IxIFlow</RepositoryUrl>
     <PackageProjectUrl>https://github.com/HumanHub/IxIFlow</PackageProjectUrl>
     <RepositoryType>git</RepositoryType>

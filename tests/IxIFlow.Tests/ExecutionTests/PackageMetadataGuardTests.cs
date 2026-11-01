@@ -14,7 +14,7 @@ public sealed class PackageMetadataGuardTests
 
         var required = new Dictionary<string, string>
         {
-            ["Version"] = "1.0.0", ["Authors"] = "HumanHub.io", ["Company"] = "HumanHub.io",
+            ["Version"] = "1.0.0", ["Authors"] = "HumanHub LLC", ["Company"] = "HumanHub LLC",
             ["RepositoryUrl"] = "https://github.com/HumanHub/IxIFlow",
             ["PackageProjectUrl"] = "https://github.com/HumanHub/IxIFlow", ["RepositoryType"] = "git",
             ["PackageLicenseExpression"] = "Apache-2.0", ["PublishRepositoryUrl"] = "true",

@@ -1,4 +1,7 @@
-# Workflow operations over HTTP
+---
+title: Workflow operations over HTTP
+description: Authorized management endpoints for instances, waits, traces and outboxes.
+---
 
 `IxIFlow.AspNetCore` maps an application's management API onto `IWorkflowOperations` and `IWorkflowClient`. Register the engine, ASP.NET Core authentication, named authorization policies and an application implementation of `IInstanceQueryScope`, then map the routes:
 

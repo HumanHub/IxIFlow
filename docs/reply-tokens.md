@@ -1,4 +1,7 @@
-# Reply tokens
+---
+title: Reply tokens
+description: Capability tokens that let one replier answer one wait.
+---
 
 A reply token is a capability: holding it is the right to answer its one wait. Send it only to the intended replier, such as in an approval link or request metadata. Protect token-bearing discovery output and avoid putting tokens in logs, traces, analytics or broadly accessible inspection output. A leaked token can be used by whoever holds it.
 

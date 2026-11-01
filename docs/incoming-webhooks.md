@@ -1,4 +1,7 @@
-# Incoming workflow webhooks
+---
+title: Incoming workflow webhooks
+description: Start workflows and deliver events through signed incoming webhooks.
+---
 
 Install `IxIFlow.AspNetCore` in a .NET 10 ASP.NET Core application. It references the ASP.NET Core shared framework and the workflow engine. Choose the engine's memory, SQLite, SQL Server, or PostgreSQL store normally. Each store supports the same atomic admission protocol.
 

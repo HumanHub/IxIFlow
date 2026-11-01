@@ -1,4 +1,7 @@
-# Diagnostics
+---
+title: Diagnostics
+description: Compiler and YAML diagnostics shipped with IxIFlow and what each one means.
+---
 
 IxIFlow 1.0.0 ships the following compiler diagnostics. Unless indicated otherwise, diagnostics are errors. The diagnostic location identifies the mapping, declaration or YAML source to correct.
 

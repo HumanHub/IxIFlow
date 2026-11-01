@@ -1,4 +1,7 @@
-# Unified catalog and descriptor reads
+---
+title: Unified catalog and descriptor reads
+description: Scoped workflow, activity, package, template and step metadata reads.
+---
 
 `IWorkflowCatalogStore` supplies scoped workflow, activity, package, template
 and built-in step metadata on memory, SQLite, SQL Server and PostgreSQL.
