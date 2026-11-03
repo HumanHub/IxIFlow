@@ -16,10 +16,12 @@
     <GenerateDocumentationFile Condition="'$(IsPackable)' != 'false'">true</GenerateDocumentationFile>
     <ContinuousIntegrationBuild Condition="'$(CI)' != '' or '$(GITHUB_ACTIONS)' != ''">true</ContinuousIntegrationBuild>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageIcon>icon.png</PackageIcon>
   </PropertyGroup>
   <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)../LICENSE" Pack="true" PackagePath="/" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)../NOTICE" Pack="true" PackagePath="/" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)../assets/icon.png" Pack="true" PackagePath="/" Visible="false" />
   </ItemGroup>
   <!-- Publish source links to the public repository even when building from a local mirror. -->
   <Target Name="SetIxIFlowSourceRepository" AfterTargets="InitializeSourceControlInformation">

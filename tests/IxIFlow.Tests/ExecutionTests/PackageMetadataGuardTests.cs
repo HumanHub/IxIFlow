@@ -64,6 +64,32 @@ public sealed class PackageMetadataGuardTests
         }
     }
 
+    [Fact]
+    public void LibraryPackagesShipThePngIcon()
+    {
+        var root = RepositoryRoot();
+        var shared = XDocument.Load(Path.Combine(root, "src", "Directory.Build.props"));
+        var icon = shared.Root!.Elements("PropertyGroup").Elements("PackageIcon").Single().Value;
+
+        var item = Assert.Single(shared.Descendants("None"), none =>
+            Path.GetFileName(((string?)none.Attribute("Include") ?? "").Replace('\\', '/')) == icon);
+
+        Assert.Equal("true", (string?)item.Attribute("Pack"));
+        Assert.Equal("/", (string?)item.Attribute("PackagePath"));
+
+        var path = Path.GetFullPath(Path.Combine(root, "src",
+            item.Attribute("Include")!.Value.Replace("$(MSBuildThisFileDirectory)", "").Replace('\\', Path.DirectorySeparatorChar)));
+
+        var bytes = File.ReadAllBytes(path);
+
+        // nuget.org accepts PNG or JPEG icons up to 1 MB and renders them square.
+        Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }, bytes[..8]);
+        Assert.True(bytes.Length < 1024 * 1024);
+
+        Assert.Equal(System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(16, 4)),
+            System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(20, 4)));
+    }
+
     private static string RepositoryRoot([CallerFilePath] string source = "") =>
         Path.GetFullPath("../../..", Path.GetDirectoryName(source)!);
 }
